@@ -633,6 +633,44 @@ public class Id3v2TagTests
 		Assert.AreEqual ("Test", result.Tag!.Title);
 	}
 
+	[TestMethod]
+	public void Read_TruncatedFile_HandlesGracefully ()
+	{
+		// Create a tag that claims to be 1000 bytes but only has 50 bytes of data.
+		// This simulates a truncated file. The parser should handle this gracefully
+		// by parsing what's available without throwing exceptions.
+		var claimedSize = (uint)1000;
+		var header = CreateMinimalTag (version: 4, size: claimedSize);
+
+		// Add a valid frame that fits in the truncated data
+		var frame = CreateFrameBytes ("TIT2", "Test", version: 4);
+
+		// Total data is header (10) + frame (~16), but header claims 1000 bytes
+		var data = new byte[header.Length + frame.Length];
+		Array.Copy (header, data, header.Length);
+		Array.Copy (frame, 0, data, header.Length, frame.Length);
+
+		var result = Id3v2Tag.Read (data);
+
+		// Should succeed and parse the frame that's actually present
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Test", result.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Read_HeaderClaimsLargeSize_NoFramesAvailable ()
+	{
+		// Header claims 10000 bytes but there's no frame data at all (just header)
+		var claimedSize = (uint)10000;
+		var data = CreateMinimalTag (version: 4, size: claimedSize);
+
+		var result = Id3v2Tag.Read (data);
+
+		// Should succeed with no frames (header-only is valid, just empty)
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsEmpty (result.Tag!.Frames);
+	}
+
 	#endregion
 
 	#region Helper Methods

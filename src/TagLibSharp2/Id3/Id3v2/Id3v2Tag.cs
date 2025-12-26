@@ -191,7 +191,11 @@ public sealed class Id3v2Tag : Tag
 
 		// Skip header and parse frames
 		var frameData = data.Slice (Id3v2Header.HeaderSize);
-		var remaining = (int)header.TagSize;
+
+		// Limit remaining to actual available data to handle truncated files gracefully.
+		// The header may claim a larger size than what's actually present in the data.
+		var availableData = data.Length - Id3v2Header.HeaderSize;
+		var remaining = (int)Math.Min (header.TagSize, (uint)availableData);
 
 		// Skip extended header if present
 		if (header.HasExtendedHeader && remaining >= 4) {
@@ -202,7 +206,7 @@ public sealed class Id3v2Tag : Tag
 			}
 		}
 
-		while (remaining >= FrameHeaderSize) {
+		while (remaining >= FrameHeaderSize && frameData.Length >= FrameHeaderSize) {
 			// Check for padding (zeros)
 			if (frameData[0] == 0)
 				break;
@@ -213,7 +217,9 @@ public sealed class Id3v2Tag : Tag
 				break;
 
 			var frameSize = GetFrameSize (frameData.Slice (4, 4), header.MajorVersion);
-			if (frameSize <= 0 || frameSize > remaining - FrameHeaderSize)
+			if (frameSize <= 0 ||
+			    frameSize > remaining - FrameHeaderSize ||
+			    frameSize > frameData.Length - FrameHeaderSize)
 				break;
 
 			// Parse frame content
