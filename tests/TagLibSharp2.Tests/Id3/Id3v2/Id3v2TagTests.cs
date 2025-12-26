@@ -332,6 +332,102 @@ public class Id3v2TagTests
 
 	#endregion
 
+	#region Extended Header Tests
+
+	[TestMethod]
+	public void Read_V24_WithExtendedHeader_SkipsExtendedHeader ()
+	{
+		// Create a v2.4 tag with extended header flag set
+		// Extended header format in v2.4: syncsafe size (includes size field)
+		var header = new byte[10];
+		header[0] = (byte)'I';
+		header[1] = (byte)'D';
+		header[2] = (byte)'3';
+		header[3] = 4; // v2.4
+		header[4] = 0; // revision
+		header[5] = 0x40; // Extended header flag
+
+		// Extended header: 6 bytes total (syncsafe size includes itself)
+		// Size = 6 in syncsafe = 0x00 0x00 0x00 0x06
+		var extHeader = new byte[6];
+		extHeader[0] = 0x00;
+		extHeader[1] = 0x00;
+		extHeader[2] = 0x00;
+		extHeader[3] = 0x06;
+		extHeader[4] = 0x01; // number of flag bytes
+		extHeader[5] = 0x00; // flags
+
+		// Frame: TIT2 with "Test"
+		var frame = CreateFrameBytes ("TIT2", "Test", version: 4);
+
+		// Tag size (syncsafe): extended header + frame = 6 + frame.Length
+		var tagSize = (uint)(extHeader.Length + frame.Length);
+		header[6] = (byte)((tagSize >> 21) & 0x7F);
+		header[7] = (byte)((tagSize >> 14) & 0x7F);
+		header[8] = (byte)((tagSize >> 7) & 0x7F);
+		header[9] = (byte)(tagSize & 0x7F);
+
+		var data = new byte[header.Length + extHeader.Length + frame.Length];
+		Array.Copy (header, data, header.Length);
+		Array.Copy (extHeader, 0, data, header.Length, extHeader.Length);
+		Array.Copy (frame, 0, data, header.Length + extHeader.Length, frame.Length);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Test", result.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Read_V23_WithExtendedHeader_SkipsExtendedHeader ()
+	{
+		// Create a v2.3 tag with extended header flag set
+		// Extended header format in v2.3: big-endian size (excludes size field) + 6 bytes min
+		var header = new byte[10];
+		header[0] = (byte)'I';
+		header[1] = (byte)'D';
+		header[2] = (byte)'3';
+		header[3] = 3; // v2.3
+		header[4] = 0; // revision
+		header[5] = 0x40; // Extended header flag
+
+		// Extended header: size(4) + flags(2) + padding(4) = 10 bytes
+		// Size field = 6 (excludes the 4-byte size field itself)
+		var extHeader = new byte[10];
+		extHeader[0] = 0x00;
+		extHeader[1] = 0x00;
+		extHeader[2] = 0x00;
+		extHeader[3] = 0x06; // 6 bytes after size field
+		extHeader[4] = 0x00; // flags byte 1
+		extHeader[5] = 0x00; // flags byte 2
+		extHeader[6] = 0x00; // padding size
+		extHeader[7] = 0x00;
+		extHeader[8] = 0x00;
+		extHeader[9] = 0x00;
+
+		// Frame: TIT2 with "Test"
+		var frame = CreateFrameBytes ("TIT2", "Test", version: 3);
+
+		// Tag size (syncsafe): extended header + frame
+		var tagSize = (uint)(extHeader.Length + frame.Length);
+		header[6] = (byte)((tagSize >> 21) & 0x7F);
+		header[7] = (byte)((tagSize >> 14) & 0x7F);
+		header[8] = (byte)((tagSize >> 7) & 0x7F);
+		header[9] = (byte)(tagSize & 0x7F);
+
+		var data = new byte[header.Length + extHeader.Length + frame.Length];
+		Array.Copy (header, data, header.Length);
+		Array.Copy (extHeader, 0, data, header.Length, extHeader.Length);
+		Array.Copy (frame, 0, data, header.Length + extHeader.Length, frame.Length);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Test", result.Tag!.Title);
+	}
+
+	#endregion
+
 	#region Frame Size Edge Cases
 
 	[TestMethod]

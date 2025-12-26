@@ -149,6 +149,15 @@ public sealed class Id3v2Tag : Tag
 		var frameData = data.Slice (Id3v2Header.HeaderSize);
 		var remaining = (int)header.TagSize;
 
+		// Skip extended header if present
+		if (header.HasExtendedHeader && remaining >= 4) {
+			var extHeaderSize = GetExtendedHeaderSize (frameData, header.MajorVersion);
+			if (extHeaderSize > 0 && extHeaderSize <= remaining) {
+				frameData = frameData.Slice (extHeaderSize);
+				remaining -= extHeaderSize;
+			}
+		}
+
 		while (remaining >= FrameHeaderSize) {
 			// Check for padding (zeros)
 			if (frameData[0] == 0)
@@ -390,6 +399,28 @@ public sealed class Id3v2Tag : Tag
 						 ((uint)data[1] << 16) |
 						 ((uint)data[2] << 8) |
 						 (uint)data[3]);
+		}
+	}
+
+	static int GetExtendedHeaderSize (ReadOnlySpan<byte> data, byte version)
+	{
+		if (data.Length < 4)
+			return 0;
+
+		if (version == 4) {
+			// v2.4: Size is syncsafe and INCLUDES the size field itself
+			return ((data[0] & 0x7F) << 21) |
+				   ((data[1] & 0x7F) << 14) |
+				   ((data[2] & 0x7F) << 7) |
+				   (data[3] & 0x7F);
+		} else {
+			// v2.3: Size is big-endian and EXCLUDES the size field
+			// Total size = 4 (size field) + extended header size
+			var extSize = (int)(((uint)data[0] << 24) |
+							    ((uint)data[1] << 16) |
+							    ((uint)data[2] << 8) |
+							    (uint)data[3]);
+			return extSize + 4;
 		}
 	}
 }
