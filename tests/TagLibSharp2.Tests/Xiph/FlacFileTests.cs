@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Core;
+using TagLibSharp2.Tests.Core;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Xiph;
@@ -261,6 +262,136 @@ public class FlacFileTests
 		Assert.AreEqual ("FLAC", result.File!.Properties.Codec);
 	}
 
+	[TestMethod]
+	public void Render_PreservesAudioData ()
+	{
+		// Build a minimal FLAC with some audio data
+		var originalData = BuildFlacWithAudioData (new byte[] { 0xAA, 0xBB, 0xCC, 0xDD });
+		var result = FlacFile.Read (originalData);
+		Assert.IsTrue (result.IsSuccess);
+
+		var rendered = result.File!.Render (originalData);
+
+		// Re-read and verify audio data is preserved after metadata
+		var reResult = FlacFile.Read (rendered.Span);
+		Assert.IsTrue (reResult.IsSuccess);
+
+		// Audio data should be after metadata
+		var audioStart = reResult.File!.MetadataSize;
+		var audioData = rendered.Span.Slice (audioStart);
+		CollectionAssert.AreEqual (new byte[] { 0xAA, 0xBB, 0xCC, 0xDD }, audioData.ToArray ());
+	}
+
+	[TestMethod]
+	public void Render_WritesVorbisComment ()
+	{
+		var data = BuildMinimalFlacFile ();
+		var result = FlacFile.Read (data);
+		var file = result.File!;
+
+		file.Title = "New Title";
+		file.Artist = "New Artist";
+
+		var rendered = file.Render (data);
+		var reResult = FlacFile.Read (rendered.Span);
+
+		Assert.IsTrue (reResult.IsSuccess);
+		Assert.AreEqual ("New Title", reResult.File!.Title);
+		Assert.AreEqual ("New Artist", reResult.File.Artist);
+	}
+
+	[TestMethod]
+	public void Render_WritesPictures ()
+	{
+		var data = BuildMinimalFlacFile ();
+		var result = FlacFile.Read (data);
+		var file = result.File!;
+
+		var pictureData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+		var picture = FlacPicture.FromBytes (pictureData);
+		file.AddPicture (picture);
+
+		var rendered = file.Render (data);
+		var reResult = FlacFile.Read (rendered.Span);
+
+		Assert.IsTrue (reResult.IsSuccess);
+		Assert.HasCount (1, reResult.File!.Pictures);
+	}
+
+	[TestMethod]
+	public void Render_RoundTrip_PreservesAllMetadata ()
+	{
+		var data = BuildFlacWithVorbisComment ("Original Title", "Original Artist");
+		var result = FlacFile.Read (data);
+		var file = result.File!;
+
+		// Modify
+		file.Title = "Modified Title";
+		file.Album = "New Album";
+
+		// Render and re-read
+		var rendered = file.Render (data);
+		var reResult = FlacFile.Read (rendered.Span);
+
+		Assert.IsTrue (reResult.IsSuccess);
+		Assert.AreEqual ("Modified Title", reResult.File!.Title);
+		Assert.AreEqual ("Original Artist", reResult.File.Artist);
+		Assert.AreEqual ("New Album", reResult.File.Album);
+	}
+
+	[TestMethod]
+	public void SaveToFile_WritesToFileSystem ()
+	{
+		var data = BuildMinimalFlacFile ();
+		var result = FlacFile.Read (data);
+		var file = result.File!;
+		file.Title = "Saved Title";
+
+		var fs = new MockFileSystem ();
+		var writeResult = file.SaveToFile ("/output.flac", data, fs);
+
+		Assert.IsTrue (writeResult.IsSuccess);
+		Assert.IsTrue (fs.FileExists ("/output.flac"));
+
+		// Verify saved content
+		var savedData = fs.ReadAllBytes ("/output.flac");
+		var reResult = FlacFile.Read (savedData);
+		Assert.IsTrue (reResult.IsSuccess);
+		Assert.AreEqual ("Saved Title", reResult.File!.Title);
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_WritesToFileSystem ()
+	{
+		var data = BuildMinimalFlacFile ();
+		var result = FlacFile.Read (data);
+		var file = result.File!;
+		file.Artist = "Async Artist";
+
+		var fs = new MockFileSystem ();
+		var writeResult = await file.SaveToFileAsync ("/output.flac", data, fs);
+
+		Assert.IsTrue (writeResult.IsSuccess);
+
+		var savedData = fs.ReadAllBytes ("/output.flac");
+		var reResult = FlacFile.Read (savedData);
+		Assert.IsTrue (reResult.IsSuccess);
+		Assert.AreEqual ("Async Artist", reResult.File!.Artist);
+	}
+
+	[TestMethod]
+	public void Render_IncludesPaddingBlock ()
+	{
+		var data = BuildMinimalFlacFile ();
+		var result = FlacFile.Read (data);
+		var file = result.File!;
+
+		var rendered = file.Render (data);
+
+		// Rendered size should be larger than original due to padding
+		Assert.IsGreaterThan (data.Length, rendered.Length);
+	}
+
 	#region Helper Methods
 
 	static byte[] BuildMinimalFlacFile ()
@@ -446,6 +577,29 @@ public class FlacFileTests
 
 		// MD5 signature (16 bytes - all zeros)
 		builder.AddZeros (16);
+
+		return builder.ToBinaryData ().ToArray ();
+	}
+
+	/// <summary>
+	/// Builds a FLAC file with audio data after the metadata.
+	/// </summary>
+	static byte[] BuildFlacWithAudioData (byte[] audioData)
+	{
+		using var builder = new BinaryDataBuilder ();
+
+		// Magic: "fLaC"
+		builder.Add (System.Text.Encoding.ASCII.GetBytes ("fLaC"));
+
+		// STREAMINFO block (last=true)
+		builder.Add (new byte[] { 0x80, 0x00, 0x00, 0x22 });
+		builder.Add (new byte[] { 0x10, 0x00, 0x10, 0x00 });
+		builder.Add (new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
+		builder.Add (new byte[] { 0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x00, 0x00, 0x00 });
+		builder.AddZeros (16);
+
+		// Audio data
+		builder.Add (audioData);
 
 		return builder.ToBinaryData ().ToArray ();
 	}

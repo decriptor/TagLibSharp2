@@ -289,6 +289,115 @@ public sealed class FlacFile
 	}
 
 	/// <summary>
+	/// Saves the file to the specified path using atomic write.
+	/// </summary>
+	/// <param name="path">The target file path.</param>
+	/// <param name="originalData">The original file data containing audio frames.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
+	{
+		var rendered = Render (originalData);
+		if (rendered.IsEmpty)
+			return FileWriteResult.Failure ("Failed to render FLAC file");
+
+		return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
+	}
+
+	/// <summary>
+	/// Asynchronously saves the file to the specified path using atomic write.
+	/// </summary>
+	/// <param name="path">The target file path.</param>
+	/// <param name="originalData">The original file data containing audio frames.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <param name="cancellationToken">A token to cancel the operation.</param>
+	/// <returns>A task containing a result indicating success or failure.</returns>
+	public Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		ReadOnlyMemory<byte> originalData,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		var rendered = Render (originalData.Span);
+		if (rendered.IsEmpty)
+			return Task.FromResult (FileWriteResult.Failure ("Failed to render FLAC file"));
+
+		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
+	/// Renders the complete FLAC file including metadata and audio frames.
+	/// </summary>
+	/// <param name="originalData">The original file data containing audio frames.</param>
+	/// <returns>The complete file data, or empty if rendering failed.</returns>
+	public BinaryData Render (ReadOnlySpan<byte> originalData)
+	{
+		// Validate that we have audio data to preserve
+		if (originalData.Length < MetadataSize)
+			return BinaryData.Empty;
+
+		var audioData = originalData.Slice (MetadataSize);
+
+		// Render metadata blocks
+		var vorbisCommentData = VorbisComment?.Render () ?? BinaryData.Empty;
+		var pictureDataList = new List<BinaryData> (_pictures.Count);
+		for (var i = 0; i < _pictures.Count; i++)
+			pictureDataList.Add (_pictures[i].RenderContent ());
+
+		// Calculate total metadata size
+		var totalMetadataSize = MagicSize
+			+ FlacMetadataBlockHeader.HeaderSize + StreamInfoData.Length; // STREAMINFO
+
+		if (!vorbisCommentData.IsEmpty)
+			totalMetadataSize += FlacMetadataBlockHeader.HeaderSize + vorbisCommentData.Length;
+
+		for (var i = 0; i < pictureDataList.Count; i++)
+			totalMetadataSize += FlacMetadataBlockHeader.HeaderSize + pictureDataList[i].Length;
+
+		// Add padding block (4K is common)
+		const int PaddingSize = 4096;
+		totalMetadataSize += FlacMetadataBlockHeader.HeaderSize + PaddingSize;
+
+		var totalSize = totalMetadataSize + audioData.Length;
+		using var builder = new BinaryDataBuilder (totalSize);
+
+		// Magic
+		builder.Add (FlacMagic);
+
+		// STREAMINFO (never last - we always have padding at minimum)
+		var streamInfoHeader = new FlacMetadataBlockHeader (
+			isLast: false,
+			FlacBlockType.StreamInfo,
+			StreamInfoData.Length);
+		builder.Add (streamInfoHeader.Render ());
+		builder.Add (StreamInfoData);
+
+		// VORBIS_COMMENT
+		if (!vorbisCommentData.IsEmpty) {
+			var commentHeader = new FlacMetadataBlockHeader (isLast: false, FlacBlockType.VorbisComment, vorbisCommentData.Length);
+			builder.Add (commentHeader.Render ());
+			builder.Add (vorbisCommentData);
+		}
+
+		// PICTURE blocks
+		for (var i = 0; i < pictureDataList.Count; i++) {
+			var pictureHeader = new FlacMetadataBlockHeader (isLast: false, FlacBlockType.Picture, pictureDataList[i].Length);
+			builder.Add (pictureHeader.Render ());
+			builder.Add (pictureDataList[i]);
+		}
+
+		// PADDING block (always last)
+		var paddingHeader = new FlacMetadataBlockHeader (isLast: true, FlacBlockType.Padding, PaddingSize);
+		builder.Add (paddingHeader.Render ());
+		builder.AddZeros (PaddingSize);
+
+		// Audio frames
+		builder.Add (audioData);
+
+		return builder.ToBinaryData ();
+	}
+
+	/// <summary>
 	/// Parses the STREAMINFO block to extract audio properties.
 	/// </summary>
 	/// <remarks>
