@@ -35,11 +35,13 @@ public sealed class DefaultFileSystem : IFileSystem
 	public async Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default)
 	{
 #if NETSTANDARD2_0
-		// File.ReadAllBytesAsync doesn't exist in netstandard2.0
+		// File.ReadAllBytesAsync doesn't exist in netstandard2.0.
+		// Use CopyToAsync instead of ReadAsync to ensure complete reads,
+		// as ReadAsync may return fewer bytes than requested (partial reads).
 		using var stream = File.OpenRead (path);
-		var bytes = new byte[stream.Length];
-		await stream.ReadAsync (bytes, 0, bytes.Length, cancellationToken).ConfigureAwait (false);
-		return bytes;
+		using var ms = new MemoryStream ();
+		await stream.CopyToAsync (ms, 81920, cancellationToken).ConfigureAwait (false);
+		return ms.ToArray ();
 #else
 		return await File.ReadAllBytesAsync (path, cancellationToken).ConfigureAwait (false);
 #endif
