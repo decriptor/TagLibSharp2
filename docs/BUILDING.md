@@ -223,6 +223,52 @@ The project is configured for CI with:
 - Full analyzer coverage
 - Multi-framework test runs
 
+## Releasing (Maintainers)
+
+### NuGet Trusted Publishing Setup
+
+This project uses [Trusted Publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing) - a secure, keyless way to publish to NuGet using OIDC tokens instead of long-lived API keys.
+
+**Configure on nuget.org:**
+
+1. Go to https://www.nuget.org → Sign in
+2. Click your username → **Trusted Publishing**
+3. Add a new policy:
+   - **Repository Owner**: `decriptor`
+   - **Repository**: `TagLibSharp2`
+   - **Workflow File**: `release.yml`
+   - **Environment**: `nuget`
+
+### GitHub Environment Setup
+
+The release workflow uses a protected environment:
+
+1. Go to **Settings → Environments**
+2. Create environment named `nuget`
+3. Optional: Add protection rules (reviewers, wait timers)
+
+### Creating a Release
+
+1. Update `CHANGELOG.md` with release notes
+2. Go to **Releases → Draft a new release**
+3. Create tag: `v0.1.0` (with `v` prefix)
+4. Title: `TagLibSharp2 0.1.0`
+5. Description: Copy from CHANGELOG.md
+6. Click **Publish release**
+
+The release workflow automatically:
+- Extracts version from tag (strips `v` prefix)
+- Runs full build and tests
+- Packs and publishes to NuGet.org
+
+### Manual Release (Emergency)
+
+Use workflow dispatch for manual releases:
+
+1. Go to **Actions → Release**
+2. Click **Run workflow**
+3. Enter version (e.g., `0.1.0`)
+
 ## Troubleshooting
 
 ### "SDK not found"

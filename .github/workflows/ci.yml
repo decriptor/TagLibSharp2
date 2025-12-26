@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -31,7 +33,6 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
-          dotnet-quality: 'ga'
 
       - name: Restore dependencies
         run: dotnet restore
@@ -40,7 +41,44 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Test
-        run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx" --collect:"XPlat Code Coverage"
+
+      - name: Test Summary
+        if: always() && matrix.os == 'ubuntu-latest'
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for trx in $(find . -name "*.trx" -type f); do
+            framework=$(echo "$trx" | grep -oE 'net[0-9]+\.[0-9]+' || echo "unknown")
+            passed=$(grep -oP 'passed="\K[0-9]+' "$trx" | head -1 || echo "0")
+            failed=$(grep -oP 'failed="\K[0-9]+' "$trx" | head -1 || echo "0")
+            total=$(grep -oP 'total="\K[0-9]+' "$trx" | head -1 || echo "0")
+            if [ "${failed:-0}" = "0" ]; then
+              echo "✅ **$framework**: $passed/$total passed" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ **$framework**: $passed/$total passed, $failed failed" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          exit 0
+
+      - name: Coverage Summary
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Code Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cov=$(find . -name "coverage.cobertura.xml" -type f | head -1)
+          if [ -n "$cov" ]; then
+            line_rate=$(grep -oP 'line-rate="\K[0-9.]+' "$cov" | head -1 || echo "0")
+            branch_rate=$(grep -oP 'branch-rate="\K[0-9.]+' "$cov" | head -1 || echo "0")
+            line_pct=$(echo "$line_rate * 100" | bc -l 2>/dev/null | xargs printf "%.1f" 2>/dev/null || echo "0.0")
+            branch_pct=$(echo "$branch_rate * 100" | bc -l 2>/dev/null | xargs printf "%.1f" 2>/dev/null || echo "0.0")
+            echo "| Metric | Coverage |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Lines | ${line_pct}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Branches | ${branch_pct}% |" >> $GITHUB_STEP_SUMMARY
+          fi
+          exit 0
 
       - name: Upload test results
         uses: actions/upload-artifact@v6
@@ -50,6 +88,22 @@ jobs:
           path: "**/TestResults/*.trx"
           retention-days: 7
 
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v6
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: coverage
+          path: "**/TestResults/**/coverage.cobertura.xml"
+          retention-days: 7
+
+      - name: Upload to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          files: "**/TestResults/**/coverage.cobertura.xml"
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   pack:
     name: Pack NuGet
     runs-on: ubuntu-latest
@@ -58,6 +112,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -77,7 +133,7 @@ jobs:
         with:
           name: nuget-package
           path: ./artifacts/*.nupkg
-          retention-days: 7
+          retention-days: 30
 
   format-check:
     name: Format Check
@@ -97,3 +153,27 @@ jobs:
 
       - name: Check formatting
         run: dotnet format --verify-no-changes --verbosity diagnostic
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Run security scan
+        run: |
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee vulnerabilities.txt
+          if grep -q "has the following vulnerable packages" vulnerabilities.txt; then
+            echo "::error::Vulnerable packages detected"
+            exit 1
+          fi

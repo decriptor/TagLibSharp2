@@ -1,17 +1,37 @@
 <Project>
 
 	<PropertyGroup>
-		<ReleaseVersion>0.1.0</ReleaseVersion>
+		<!-- Product Information -->
+		<Product>TagLibSharp2</Product>
+		<Authors>Stephen Shaw</Authors>
+		<Company>Stephen Shaw</Company>
+		<Copyright>Copyright (c) 2025 Stephen Shaw and contributors</Copyright>
+
+		<!-- Version: Set via CI or use default for local builds -->
+		<ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.1.0</ReleaseVersion>
+		<VersionSuffix Condition="'$(VersionSuffix)' == '' And '$(CI)' == ''">dev</VersionSuffix>
+
+		<!-- Repository Info -->
 		<RepositoryUrl>https://github.com/decriptor/tagsharp</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
+		<PublishRepositoryUrl>true</PublishRepositoryUrl>
 
+		<!-- Language Settings -->
 		<LangVersion>latest</LangVersion>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
+
+		<!-- Code Analysis -->
 		<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 		<EnableNETAnalyzers>true</EnableNETAnalyzers>
 		<AnalysisLevel>latest-all</AnalysisLevel>
+
+		<!-- Build Settings -->
 		<Deterministic>true</Deterministic>
+		<EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+		<!-- CI Configuration -->
+		<ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
 	</PropertyGroup>
 
 </Project>

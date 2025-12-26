@@ -2,17 +2,29 @@
 
 	<PropertyGroup>
 		<TargetFrameworks>netstandard2.0;netstandard2.1;net8.0;net10.0</TargetFrameworks>
+
+		<!-- Package Identity -->
 		<PackageId>TagLibSharp2</PackageId>
 		<Title>TagLibSharp2</Title>
-		<Description>A modern .NET library for reading and writing metadata in media files (audio, video, images)</Description>
-		<Authors>Stephen Shaw</Authors>
-		<Copyright>Copyright (c) 2025 Stephen Shaw and contributors</Copyright>
+		<Version>$(ReleaseVersion)</Version>
+
+		<!-- Package Metadata -->
+		<Description>A modern .NET library for reading and writing metadata in media files. Supports ID3v1, ID3v2, FLAC, and Ogg Vorbis tags with a clean, span-based API designed for performance.</Description>
+		<PackageTags>audio;video;image;metadata;id3;flac;vorbis;ogg;mp3;tags;taglib</PackageTags>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://github.com/decriptor/tagsharp</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
-		<PackageTags>audio;video;image;metadata;id3;flac;vorbis;mp3;tags</PackageTags>
+		<PackageReleaseNotes>See https://github.com/decriptor/tagsharp/blob/main/CHANGELOG.md</PackageReleaseNotes>
+
+		<!-- Build Configuration -->
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<DebugType>embedded</DebugType>
 	</PropertyGroup>
+
+	<!-- Package Content -->
+	<ItemGroup>
+		<None Include="..\..\README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
 
 	<!-- Polyfills for older frameworks -->
 	<ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0' Or '$(TargetFramework)' == 'netstandard2.1'">
