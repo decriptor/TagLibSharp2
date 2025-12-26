@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Core;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Ogg;
@@ -96,27 +97,16 @@ public sealed class OggVorbisFile
 	/// Attempts to read an Ogg Vorbis file from a file path.
 	/// </summary>
 	/// <param name="path">The path to the Ogg Vorbis file.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <returns>A result indicating success or failure.</returns>
 	/// <exception cref="ArgumentNullException">Thrown when <paramref name="path"/> is null.</exception>
-	public static OggVorbisFileReadResult ReadFromFile (string path)
+	public static OggVorbisFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
-#if NETSTANDARD2_0 || NETSTANDARD2_1
-		if (path is null)
-			throw new ArgumentNullException (nameof (path));
-#else
-		ArgumentNullException.ThrowIfNull (path);
-#endif
-		if (!System.IO.File.Exists (path))
-			return OggVorbisFileReadResult.Failure ($"File not found: {path}");
+		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
+		if (!readResult.IsSuccess)
+			return OggVorbisFileReadResult.Failure (readResult.Error!);
 
-		try {
-			var data = System.IO.File.ReadAllBytes (path);
-			return Read (data);
-		} catch (System.IO.IOException ex) {
-			return OggVorbisFileReadResult.Failure ($"Failed to read file: {ex.Message}");
-		} catch (UnauthorizedAccessException ex) {
-			return OggVorbisFileReadResult.Failure ($"Access denied: {ex.Message}");
-		}
+		return Read (readResult.Data!);
 	}
 
 	/// <summary>

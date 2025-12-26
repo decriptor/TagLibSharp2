@@ -161,27 +161,16 @@ public sealed class FlacFile
 	/// Attempts to read a FLAC file from a file path.
 	/// </summary>
 	/// <param name="path">The path to the FLAC file.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <returns>A result indicating success or failure.</returns>
 	/// <exception cref="ArgumentNullException">Thrown when <paramref name="path"/> is null.</exception>
-	public static FlacFileReadResult ReadFromFile (string path)
+	public static FlacFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
-#if NETSTANDARD2_0 || NETSTANDARD2_1
-		if (path is null)
-			throw new ArgumentNullException (nameof (path));
-#else
-		ArgumentNullException.ThrowIfNull (path);
-#endif
-		if (!System.IO.File.Exists (path))
-			return FlacFileReadResult.Failure ($"File not found: {path}");
+		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
+		if (!readResult.IsSuccess)
+			return FlacFileReadResult.Failure (readResult.Error!);
 
-		try {
-			var data = System.IO.File.ReadAllBytes (path);
-			return Read (data);
-		} catch (System.IO.IOException ex) {
-			return FlacFileReadResult.Failure ($"Failed to read file: {ex.Message}");
-		} catch (UnauthorizedAccessException ex) {
-			return FlacFileReadResult.Failure ($"Access denied: {ex.Message}");
-		}
+		return Read (readResult.Data!);
 	}
 
 	/// <summary>
