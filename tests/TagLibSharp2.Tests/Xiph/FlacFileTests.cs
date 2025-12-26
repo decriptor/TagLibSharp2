@@ -171,6 +171,96 @@ public class FlacFileTests
 		Assert.Contains ("STREAMINFO", result.Error!);
 	}
 
+	[TestMethod]
+	public void Properties_ParsesSampleRateFromStreamInfo ()
+	{
+		// Minimal file has 44100 Hz encoded in STREAMINFO
+		var data = BuildMinimalFlacFile ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (44100, result.File!.Properties.SampleRate);
+	}
+
+	[TestMethod]
+	public void Properties_ParsesChannelsFromStreamInfo ()
+	{
+		// Minimal file has 2 channels (stereo) encoded in STREAMINFO
+		var data = BuildMinimalFlacFile ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (2, result.File!.Properties.Channels);
+	}
+
+	[TestMethod]
+	public void Properties_ParsesBitsPerSampleFromStreamInfo ()
+	{
+		// Minimal file has 16 bits per sample encoded in STREAMINFO
+		var data = BuildMinimalFlacFile ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (16, result.File!.Properties.BitsPerSample);
+	}
+
+	[TestMethod]
+	public void Properties_MinimalFile_HasZeroDuration ()
+	{
+		// Minimal file has 0 total samples, so duration is zero
+		var data = BuildMinimalFlacFile ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (TimeSpan.Zero, result.File!.Properties.Duration);
+	}
+
+	[TestMethod]
+	public void Properties_WithSamples_CalculatesDuration ()
+	{
+		// Build file with 88200 samples at 44100 Hz = 2 seconds
+		var data = BuildFlacWithDuration (88200, 44100, 2, 16);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (TimeSpan.FromSeconds (2), result.File!.Properties.Duration);
+		Assert.AreEqual (44100, result.File.Properties.SampleRate);
+		Assert.AreEqual (2, result.File.Properties.Channels);
+		Assert.AreEqual (16, result.File.Properties.BitsPerSample);
+	}
+
+	[TestMethod]
+	public void Properties_HighResAudio_ParsesCorrectly ()
+	{
+		// 96kHz, 24-bit, stereo - 5 seconds
+		var totalSamples = 96000UL * 5; // 480000 samples
+		var data = BuildFlacWithDuration (totalSamples, 96000, 2, 24);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (96000, result.File!.Properties.SampleRate);
+		Assert.AreEqual (24, result.File.Properties.BitsPerSample);
+		Assert.AreEqual (2, result.File.Properties.Channels);
+		Assert.AreEqual (TimeSpan.FromSeconds (5), result.File.Properties.Duration);
+	}
+
+	[TestMethod]
+	public void Properties_CodecIsFlac ()
+	{
+		var data = BuildMinimalFlacFile ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("FLAC", result.File!.Properties.Codec);
+	}
+
 	#region Helper Methods
 
 	static byte[] BuildMinimalFlacFile ()
@@ -305,6 +395,57 @@ public class FlacFileTests
 
 		// Add the data (with whatever size was requested)
 		builder.AddZeros (size);
+
+		return builder.ToBinaryData ().ToArray ();
+	}
+
+	/// <summary>
+	/// Builds a FLAC file with specific audio properties encoded in STREAMINFO.
+	/// </summary>
+	/// <param name="totalSamples">Total number of audio samples.</param>
+	/// <param name="sampleRate">Sample rate in Hz (1-655350).</param>
+	/// <param name="channels">Number of channels (1-8).</param>
+	/// <param name="bitsPerSample">Bits per sample (4-32).</param>
+	static byte[] BuildFlacWithDuration (ulong totalSamples, int sampleRate, int channels, int bitsPerSample)
+	{
+		using var builder = new BinaryDataBuilder ();
+
+		// Magic: "fLaC"
+		builder.Add (System.Text.Encoding.ASCII.GetBytes ("fLaC"));
+
+		// STREAMINFO block header: last=true, type=0, size=34
+		builder.Add (new byte[] { 0x80, 0x00, 0x00, 0x22 });
+
+		// min/max block size: 4096
+		builder.Add (new byte[] { 0x10, 0x00, 0x10, 0x00 });
+		// min/max frame size: 0 (unknown)
+		builder.Add (new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
+
+		// Bytes 10-17: sample rate (20 bits), channels-1 (3 bits), bps-1 (5 bits), total samples (36 bits)
+		// Encode sample rate into bits 0-19 (big-endian, starting from bit 0 of byte 10)
+		var sr = sampleRate & 0xFFFFF; // 20 bits
+		var ch = (channels - 1) & 0x07; // 3 bits
+		var bps = (bitsPerSample - 1) & 0x1F; // 5 bits
+		var samplesUpper = (int)((totalSamples >> 32) & 0x0F); // upper 4 bits
+		var samplesLower = (uint)(totalSamples & 0xFFFFFFFF); // lower 32 bits
+
+		// Byte 10: sample rate bits 19-12
+		builder.Add ((byte)((sr >> 12) & 0xFF));
+		// Byte 11: sample rate bits 11-4
+		builder.Add ((byte)((sr >> 4) & 0xFF));
+		// Byte 12: sample rate bits 3-0, channels bits 2-0 shifted, bps bit 4
+		builder.Add ((byte)(((sr & 0x0F) << 4) | ((ch & 0x07) << 1) | ((bps >> 4) & 0x01)));
+		// Byte 13: bps bits 3-0, total samples upper 4 bits
+		builder.Add ((byte)(((bps & 0x0F) << 4) | (samplesUpper & 0x0F)));
+
+		// Bytes 14-17: total samples lower 32 bits (big-endian)
+		builder.Add ((byte)((samplesLower >> 24) & 0xFF));
+		builder.Add ((byte)((samplesLower >> 16) & 0xFF));
+		builder.Add ((byte)((samplesLower >> 8) & 0xFF));
+		builder.Add ((byte)(samplesLower & 0xFF));
+
+		// MD5 signature (16 bytes - all zeros)
+		builder.AddZeros (16);
 
 		return builder.ToBinaryData ().ToArray ();
 	}

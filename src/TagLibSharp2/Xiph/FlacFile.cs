@@ -120,9 +120,15 @@ public sealed class FlacFile
 		set => EnsureVorbisComment ().Comment = value;
 	}
 
-	FlacFile (BinaryData streamInfoData)
+	/// <summary>
+	/// Gets the audio properties (duration, bitrate, sample rate, etc.).
+	/// </summary>
+	public AudioProperties Properties { get; }
+
+	FlacFile (BinaryData streamInfoData, AudioProperties properties)
 	{
 		StreamInfoData = streamInfoData;
+		Properties = properties;
 	}
 
 	/// <summary>
@@ -232,10 +238,12 @@ public sealed class FlacFile
 		if (offset + headerResult.Header.DataLength > data.Length)
 			return FlacFileReadResult.Failure ("STREAMINFO data extends beyond file");
 
-		var streamInfoData = new BinaryData (data.Slice (offset, headerResult.Header.DataLength));
+		var streamInfoSlice = data.Slice (offset, headerResult.Header.DataLength);
+		var streamInfoData = new BinaryData (streamInfoSlice);
+		var properties = ParseStreamInfo (streamInfoSlice);
 		offset += headerResult.Header.DataLength;
 
-		var file = new FlacFile (streamInfoData);
+		var file = new FlacFile (streamInfoData, properties);
 		var lastBlock = headerResult.Header.IsLast;
 
 		// Read remaining metadata blocks
@@ -278,6 +286,42 @@ public sealed class FlacFile
 	{
 		VorbisComment ??= new VorbisComment ("TagLibSharp2");
 		return VorbisComment;
+	}
+
+	/// <summary>
+	/// Parses the STREAMINFO block to extract audio properties.
+	/// </summary>
+	/// <remarks>
+	/// STREAMINFO layout (34 bytes total):
+	/// <code>
+	/// Bytes 0-1:   Minimum block size (16 bits)
+	/// Bytes 2-3:   Maximum block size (16 bits)
+	/// Bytes 4-6:   Minimum frame size (24 bits)
+	/// Bytes 7-9:   Maximum frame size (24 bits)
+	/// Bytes 10-13: Sample rate (20 bits) | channels-1 (3 bits) | bits per sample-1 (5 bits) | total samples upper 4 bits
+	/// Bytes 14-17: Total samples lower 32 bits
+	/// Bytes 18-33: MD5 signature (128 bits)
+	/// </code>
+	/// </remarks>
+	static AudioProperties ParseStreamInfo (ReadOnlySpan<byte> data)
+	{
+		if (data.Length < 18) // Minimum needed for audio properties
+			return AudioProperties.Empty;
+
+		// Bytes 10-13 contain sample rate (20 bits), channels (3 bits), bps (5 bits), and upper 4 bits of total samples
+		// Big-endian: bytes 10-12 for sample rate, byte 12 also has channels, byte 13 has bps and upper samples
+		var sampleRate = ((data[10] << 12) | (data[11] << 4) | (data[12] >> 4)) & 0xFFFFF;
+
+		var channels = ((data[12] >> 1) & 0x07) + 1; // 3 bits, stored as channels-1
+
+		var bitsPerSample = (((data[12] & 0x01) << 4) | (data[13] >> 4)) + 1; // 5 bits, stored as bps-1
+
+		// Total samples: upper 4 bits from byte 13, lower 32 bits from bytes 14-17
+		var totalSamplesUpper = (ulong)(data[13] & 0x0F);
+		var totalSamplesLower = (ulong)((data[14] << 24) | (data[15] << 16) | (data[16] << 8) | data[17]);
+		var totalSamples = (totalSamplesUpper << 32) | totalSamplesLower;
+
+		return AudioProperties.FromFlac (totalSamples, sampleRate, bitsPerSample, channels);
 	}
 }
 
