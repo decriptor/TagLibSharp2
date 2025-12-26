@@ -1,0 +1,18 @@
+<Project>
+
+	<PropertyGroup>
+		<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- Polyfills for older frameworks -->
+		<PackageVersion Include="System.Memory" Version="4.6.3" />
+		<PackageVersion Include="Microsoft.Bcl.HashCode" Version="6.0.0" />
+		<PackageVersion Include="IndexRange" Version="1.1.0" />
+		<PackageVersion Include="Nullable" Version="1.3.1" />
+
+		<!-- Testing -->
+		<PackageVersion Include="MSTest" Version="4.0.2" />
+	</ItemGroup>
+
+</Project>

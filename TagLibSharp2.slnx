@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/TagLibSharp2/TagLibSharp2.csproj" />
+  <Project Path="tests/TagLibSharp2.Tests/TagLibSharp2.Tests.csproj" />
+</Solution>

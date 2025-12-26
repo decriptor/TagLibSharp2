@@ -1,0 +1,17 @@
+<Project>
+
+	<PropertyGroup>
+		<ReleaseVersion>0.1.0</ReleaseVersion>
+		<RepositoryUrl>https://github.com/decriptor/tagsharp</RepositoryUrl>
+		<RepositoryType>git</RepositoryType>
+
+		<LangVersion>latest</LangVersion>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+		<EnableNETAnalyzers>true</EnableNETAnalyzers>
+		<AnalysisLevel>latest-all</AnalysisLevel>
+		<Deterministic>true</Deterministic>
+	</PropertyGroup>
+
+</Project>
