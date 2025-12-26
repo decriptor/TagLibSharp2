@@ -140,6 +140,23 @@ public sealed class Id3v2Tag : Tag
 		set => SetTextFrame ("TPOS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
 
+	/// <inheritdoc/>
+	public override string? Composer {
+		get => GetTextFrame ("TCOM");
+		set => SetTextFrame ("TCOM", value);
+	}
+
+	/// <inheritdoc/>
+	public override uint? BeatsPerMinute {
+		get {
+			var bpmStr = GetTextFrame ("TBPM");
+			if (string.IsNullOrEmpty (bpmStr))
+				return null;
+			return uint.TryParse (bpmStr, out var bpm) ? bpm : null;
+		}
+		set => SetTextFrame ("TBPM", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+	}
+
 	/// <summary>
 	/// Initializes a new instance of the <see cref="Id3v2Tag"/> class.
 	/// </summary>

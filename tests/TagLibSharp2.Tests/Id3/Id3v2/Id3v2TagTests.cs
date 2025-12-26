@@ -390,6 +390,28 @@ public class Id3v2TagTests
 		Assert.IsNull (tag.GetTextFrame ("TPOS"));
 	}
 
+	[TestMethod]
+	public void Composer_GetSet_Works ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.Composer = "Johann Sebastian Bach";
+
+		Assert.AreEqual ("Johann Sebastian Bach", tag.Composer);
+		Assert.AreEqual ("Johann Sebastian Bach", tag.GetTextFrame ("TCOM"));
+	}
+
+	[TestMethod]
+	public void BeatsPerMinute_GetSet_Works ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.BeatsPerMinute = 120;
+
+		Assert.AreEqual (120u, tag.BeatsPerMinute);
+		Assert.AreEqual ("120", tag.GetTextFrame ("TBPM"));
+	}
+
 	#endregion
 
 	#region Extended Header Tests

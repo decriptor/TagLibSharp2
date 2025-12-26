@@ -61,6 +61,22 @@ public abstract class Tag
 	public virtual uint? DiscNumber { get => null; set { } }
 
 	/// <summary>
+	/// Gets or sets the composer.
+	/// </summary>
+	/// <remarks>
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? Composer { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the beats per minute (BPM) of the track.
+	/// </summary>
+	/// <remarks>
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual uint? BeatsPerMinute { get => null; set { } }
+
+	/// <summary>
 	/// Gets a value indicating whether all standard fields are empty or null.
 	/// </summary>
 	public virtual bool IsEmpty =>

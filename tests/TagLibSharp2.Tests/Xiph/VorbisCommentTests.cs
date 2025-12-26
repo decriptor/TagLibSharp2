@@ -412,6 +412,17 @@ public class VorbisCommentTests
 	}
 
 	[TestMethod]
+	public void BeatsPerMinute_GetSet_Works ()
+	{
+		var comment = new VorbisComment ();
+
+		comment.BeatsPerMinute = 140;
+
+		Assert.AreEqual (140u, comment.BeatsPerMinute);
+		Assert.AreEqual ("140", comment.GetValue ("BPM"));
+	}
+
+	[TestMethod]
 	public void TotalTracks_GetSet_Works ()
 	{
 		var comment = new VorbisComment ();

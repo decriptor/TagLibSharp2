@@ -143,6 +143,23 @@ public sealed class VorbisComment : Tag
 		set => SetValue ("DISCNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
 
+	/// <inheritdoc/>
+	public override string? Composer {
+		get => GetValue ("COMPOSER");
+		set => SetValue ("COMPOSER", value);
+	}
+
+	/// <inheritdoc/>
+	public override uint? BeatsPerMinute {
+		get {
+			var value = GetValue ("BPM");
+			if (string.IsNullOrEmpty (value))
+				return null;
+			return uint.TryParse (value, out var bpm) ? bpm : null;
+		}
+		set => SetValue ("BPM", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+	}
+
 	/// <summary>
 	/// Gets or sets the total number of tracks on the album.
 	/// </summary>
@@ -186,14 +203,6 @@ public sealed class VorbisComment : Tag
 			return !string.IsNullOrEmpty (value) && uint.TryParse (value, out var total) ? total : null;
 		}
 		set => SetValue ("TOTALDISCS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
-	}
-
-	/// <summary>
-	/// Gets or sets the composer.
-	/// </summary>
-	public string? Composer {
-		get => GetValue ("COMPOSER");
-		set => SetValue ("COMPOSER", value);
 	}
 
 	/// <summary>
