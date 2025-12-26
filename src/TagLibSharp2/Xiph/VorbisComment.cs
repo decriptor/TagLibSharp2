@@ -116,18 +116,14 @@ public sealed class VorbisComment : Tag
 		set => SetValue ("COMMENT", value);
 	}
 
-	/// <summary>
-	/// Gets or sets the album artist (for compilations/various artists albums).
-	/// </summary>
-	public string? AlbumArtist {
+	/// <inheritdoc/>
+	public override string? AlbumArtist {
 		get => GetValue ("ALBUMARTIST");
 		set => SetValue ("ALBUMARTIST", value);
 	}
 
-	/// <summary>
-	/// Gets or sets the disc number.
-	/// </summary>
-	public uint? DiscNumber {
+	/// <inheritdoc/>
+	public override uint? DiscNumber {
 		get {
 			var value = GetValue ("DISCNUMBER");
 			if (string.IsNullOrEmpty (value))

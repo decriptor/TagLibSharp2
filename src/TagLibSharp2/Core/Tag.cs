@@ -45,6 +45,22 @@ public abstract class Tag
 	public abstract uint? Track { get; set; }
 
 	/// <summary>
+	/// Gets or sets the album artist (for compilations/various artists albums).
+	/// </summary>
+	/// <remarks>
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? AlbumArtist { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the disc number.
+	/// </summary>
+	/// <remarks>
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual uint? DiscNumber { get => null; set { } }
+
+	/// <summary>
 	/// Gets a value indicating whether all standard fields are empty or null.
 	/// </summary>
 	public virtual bool IsEmpty =>

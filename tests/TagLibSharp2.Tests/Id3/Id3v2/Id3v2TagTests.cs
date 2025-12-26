@@ -332,6 +332,66 @@ public class Id3v2TagTests
 
 	#endregion
 
+	#region Album Artist and Disc Number Tests
+
+	[TestMethod]
+	public void AlbumArtist_GetSet_Works ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.AlbumArtist = "Various Artists";
+
+		Assert.AreEqual ("Various Artists", tag.AlbumArtist);
+		Assert.AreEqual ("Various Artists", tag.GetTextFrame ("TPE2"));
+	}
+
+	[TestMethod]
+	public void AlbumArtist_FromFile_ParsesCorrectly ()
+	{
+		var data = CreateTagWithTextFrame ("TPE2", "Compilation Artist", version: 4);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Compilation Artist", result.Tag!.AlbumArtist);
+	}
+
+	[TestMethod]
+	public void DiscNumber_GetSet_Works ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.DiscNumber = 2;
+
+		Assert.AreEqual (2u, tag.DiscNumber);
+		Assert.AreEqual ("2", tag.GetTextFrame ("TPOS"));
+	}
+
+	[TestMethod]
+	public void DiscNumber_WithSlashFormat_ParsesCorrectly ()
+	{
+		var data = CreateTagWithTextFrame ("TPOS", "2/3", version: 4);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (2u, result.Tag!.DiscNumber);
+	}
+
+	[TestMethod]
+	public void DiscNumber_SetNull_ClearsField ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+		tag.DiscNumber = 2;
+
+		tag.DiscNumber = null;
+
+		Assert.IsNull (tag.DiscNumber);
+		Assert.IsNull (tag.GetTextFrame ("TPOS"));
+	}
+
+	#endregion
+
 	#region Extended Header Tests
 
 	[TestMethod]
