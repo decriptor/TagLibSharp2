@@ -5,7 +5,7 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2025-12-26
 
 ### Added
 
@@ -60,15 +60,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FileHelper.SafeReadAllBytes` with consistent error handling
 - `FileHelper.SafeReadAllBytesAsync` with cancellation support
 - `FlacFile.ReadFromFileAsync` and `OggVorbisFile.ReadFromFileAsync`
+- `AtomicFileWriter` for safe file writes (temp file + rename pattern)
+- `FlacFile.SaveToFile` and `FlacFile.SaveToFileAsync` for FLAC writing
+
+#### Media Properties
+- `IMediaProperties` interface for audio duration and quality information
+- `AudioProperties` struct with Duration, Bitrate, SampleRate, Channels, BitsPerSample
+- FLAC media properties from STREAMINFO block
+- Ogg Vorbis media properties from identification header
+
+#### ID3v2 Comment Frame
+- COMM frame support for ID3v2 comments
+- Language code (ISO 639-2) and description support
+- Multiple encodings (Latin-1, UTF-8, UTF-16)
 
 #### Project Infrastructure
 - GitHub Actions CI workflow for cross-platform builds (Ubuntu, Windows, macOS)
 - Dependabot configuration for automated dependency updates
-- Comprehensive test suite (630+ tests)
+- Comprehensive test suite (720+ tests)
+- Malformed input test suite for security and robustness
 - Clean-room implementation (no TagLib# code)
 
 ### Changed
 - `BinaryData(byte[])` constructor now copies the array to ensure true immutability
 
-[Unreleased]: https://github.com/decriptor/TagLibSharp2/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.1.0
+[0.1.0]: https://github.com/decriptor/tagsharp/releases/tag/v0.1.0

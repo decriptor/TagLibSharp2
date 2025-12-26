@@ -16,10 +16,13 @@ A modern .NET library for reading and writing metadata in media files.
 
 ## Installation
 
-> **Note**: TagLibSharp2 is in active development. The NuGet package will be available with the first release.
+```bash
+dotnet add package TagLibSharp2
+```
+
+Or build from source:
 
 ```bash
-# Clone and build from source
 git clone https://github.com/decriptor/tagsharp.git
 cd tagsharp
 dotnet build
@@ -109,9 +112,13 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
 - [x] Async file I/O support with cancellation
 - [x] Extended metadata: Composer, BPM, AlbumArtist, DiscNumber
 
+### Phase 5: File Writing & Media Properties ✅
+- [x] FLAC file write operations with atomic saves
+- [x] Media properties (duration, bitrate, sample rate, channels)
+- [x] ID3v2 Comment (COMM) frame support
+
 ### Future
-- [ ] File write operations (in-memory rendering complete)
-- [ ] Media properties (duration, bitrate)
+- [ ] Ogg Vorbis/ID3 file write operations
 - [ ] Additional formats: WAV, MP4, MKV, EXIF
 
 ## Documentation
