@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Disable globalization analysis for examples - demo code uses literals -->
+    <NoWarn>$(NoWarn);CA1303;CA1304;CA1305;CA1307;CA1310;CA1311</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TagLibSharp2\TagLibSharp2.csproj" />
+  </ItemGroup>
+
+</Project>

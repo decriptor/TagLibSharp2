@@ -20,11 +20,53 @@ cd examples/BasicUsage
 dotnet run
 ```
 
-## Future Examples
+## TagOperations
 
-As TagLibSharp2 development progresses, additional examples will be added:
+Demonstrates all tag reading and writing features:
 
-- **Id3Reading** - Reading ID3v1 and ID3v2 tags from MP3 files
-- **Id3Writing** - Writing and modifying ID3 tags
-- **FlacMetadata** - Working with FLAC metadata and Vorbis comments
-- **BatchProcessing** - Processing multiple files efficiently
+- Creating ID3v2 tags from scratch
+- Extended metadata (Conductor, Copyright, Compilation, Track/Disc totals)
+- Lyrics (USLT frame) with multi-language support
+- MusicBrainz IDs (TXXX and UFID frames)
+- ReplayGain tags
+- Comments (COMM frames)
+- User-defined text (TXXX frames)
+- Tag rendering and parsing round-trips
+- Vorbis Comments for FLAC/Ogg
+- ID3v1 tags
+
+### Running
+
+```bash
+cd examples/TagOperations
+dotnet run
+```
+
+## File Operations
+
+For working with actual audio files, see the main README Quick Start section:
+
+```csharp
+// Read MP3 with unified ID3v1/ID3v2 access
+var mp3 = Mp3File.ReadFromFile("song.mp3");
+if (mp3.IsSuccess)
+{
+    Console.WriteLine($"Title: {mp3.File!.Title}");
+    mp3.File.Title = "New Title";
+    mp3.File.SaveToFile("song.mp3", File.ReadAllBytes("song.mp3"));
+}
+
+// Read FLAC
+var flac = FlacFile.ReadFromFile("song.flac");
+if (flac.IsSuccess)
+{
+    Console.WriteLine($"Title: {flac.File!.Title}");
+}
+
+// Read Ogg Vorbis
+var ogg = OggVorbisFile.ReadFromFile("song.ogg");
+if (ogg.IsSuccess)
+{
+    Console.WriteLine($"Title: {ogg.File!.Title}");
+}
+```

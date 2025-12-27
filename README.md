@@ -138,6 +138,9 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
 - [x] MusicBrainz ID support (ID3v2 and Vorbis Comments)
 - [x] Mp3File high-level API for unified ID3v1/ID3v2 access
 - [x] Ogg Vorbis file write operations
+- [x] Lyrics (USLT frame) with multi-language support
+- [x] UFID (Unique File Identifier) for MusicBrainz Recording IDs
+- [x] Extended properties: Conductor, Copyright, Compilation, TotalTracks/TotalDiscs
 
 ### Future
 - [ ] Additional formats: WAV, MP4, MKV, EXIF

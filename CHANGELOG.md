@@ -89,6 +89,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MusicBrainz ID support for Vorbis Comments
   - MUSICBRAINZ_TRACKID, MUSICBRAINZ_ALBUMID, MUSICBRAINZ_ARTISTID, MUSICBRAINZ_RELEASEGROUPID, MUSICBRAINZ_ALBUMARTISTID
 
+#### Lyrics & Additional Metadata
+- USLT (Unsynchronized Lyrics) frame support for ID3v2
+  - Multi-language support with ISO 639-2 language codes
+  - Description field for multiple lyrics per file
+  - Full encoding support (Latin-1, UTF-8, UTF-16)
+- UFID (Unique File Identifier) frame support for ID3v2
+  - MusicBrainz Recording ID via canonical UFID frame
+  - Binary and string identifier formats
+- Extended tag properties (ID3v2 and Vorbis Comments)
+  - Conductor (TPE3 frame)
+  - Copyright (TCOP frame)
+  - Compilation flag (TCMP frame)
+  - TotalTracks and TotalDiscs properties
+
 #### High-Level MP3 API
 - `Mp3File` class for unified ID3v1/ID3v2 access
 - Automatic ID3v2 preference with ID3v1 fallback
@@ -100,10 +114,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SaveToFile` and `SaveToFileAsync` for atomic file saves
 - Proper Ogg page segment table handling for multi-packet pages
 
+#### Examples
+- BasicUsage example demonstrating BinaryData operations
+- TagOperations example showing all tag reading/writing features
+
 #### Project Infrastructure
 - GitHub Actions CI workflow for cross-platform builds (Ubuntu, Windows, macOS)
 - Dependabot configuration for automated dependency updates
-- Comprehensive test suite (789 tests)
+- Comprehensive test suite (878 tests)
 - Malformed input test suite for security and robustness
 - Clean-room implementation (no TagLib# code)
 
