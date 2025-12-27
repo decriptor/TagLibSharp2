@@ -76,6 +76,95 @@ public abstract class Tag
 	/// </remarks>
 	public virtual uint? BeatsPerMinute { get => null; set { } }
 
+	#region ReplayGain
+
+	/// <summary>
+	/// Gets or sets the ReplayGain track gain value (e.g., "-6.50 dB").
+	/// </summary>
+	/// <remarks>
+	/// ReplayGain values are stored as strings including the "dB" suffix.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? ReplayGainTrackGain { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the ReplayGain track peak value (e.g., "0.988547").
+	/// </summary>
+	/// <remarks>
+	/// Peak values are stored as decimal strings between 0.0 and 1.0.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? ReplayGainTrackPeak { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the ReplayGain album gain value (e.g., "-6.50 dB").
+	/// </summary>
+	/// <remarks>
+	/// ReplayGain values are stored as strings including the "dB" suffix.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? ReplayGainAlbumGain { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the ReplayGain album peak value (e.g., "0.988547").
+	/// </summary>
+	/// <remarks>
+	/// Peak values are stored as decimal strings between 0.0 and 1.0.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? ReplayGainAlbumPeak { get => null; set { } }
+
+	#endregion
+
+	#region MusicBrainz IDs
+
+	/// <summary>
+	/// Gets or sets the MusicBrainz Track ID (Recording MBID).
+	/// </summary>
+	/// <remarks>
+	/// A UUID identifying this specific recording in the MusicBrainz database.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? MusicBrainzTrackId { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the MusicBrainz Release ID (Album MBID).
+	/// </summary>
+	/// <remarks>
+	/// A UUID identifying this specific release in the MusicBrainz database.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? MusicBrainzReleaseId { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the MusicBrainz Artist ID.
+	/// </summary>
+	/// <remarks>
+	/// A UUID identifying the primary artist in the MusicBrainz database.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? MusicBrainzArtistId { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the MusicBrainz Release Group ID.
+	/// </summary>
+	/// <remarks>
+	/// A UUID identifying the release group (album across all releases) in the MusicBrainz database.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? MusicBrainzReleaseGroupId { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the MusicBrainz Album Artist ID.
+	/// </summary>
+	/// <remarks>
+	/// A UUID identifying the album artist in the MusicBrainz database.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? MusicBrainzAlbumArtistId { get => null; set { } }
+
+	#endregion
+
 	/// <summary>
 	/// Gets a value indicating whether all standard fields are empty or null.
 	/// </summary>

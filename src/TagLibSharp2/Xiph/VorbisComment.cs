@@ -160,6 +160,68 @@ public sealed class VorbisComment : Tag
 		set => SetValue ("BPM", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
 
+	#region ReplayGain
+
+	/// <inheritdoc/>
+	public override string? ReplayGainTrackGain {
+		get => GetValue ("REPLAYGAIN_TRACK_GAIN");
+		set => SetValue ("REPLAYGAIN_TRACK_GAIN", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ReplayGainTrackPeak {
+		get => GetValue ("REPLAYGAIN_TRACK_PEAK");
+		set => SetValue ("REPLAYGAIN_TRACK_PEAK", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ReplayGainAlbumGain {
+		get => GetValue ("REPLAYGAIN_ALBUM_GAIN");
+		set => SetValue ("REPLAYGAIN_ALBUM_GAIN", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ReplayGainAlbumPeak {
+		get => GetValue ("REPLAYGAIN_ALBUM_PEAK");
+		set => SetValue ("REPLAYGAIN_ALBUM_PEAK", value);
+	}
+
+	#endregion
+
+	#region MusicBrainz IDs
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzTrackId {
+		get => GetValue ("MUSICBRAINZ_TRACKID");
+		set => SetValue ("MUSICBRAINZ_TRACKID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseId {
+		get => GetValue ("MUSICBRAINZ_ALBUMID");
+		set => SetValue ("MUSICBRAINZ_ALBUMID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzArtistId {
+		get => GetValue ("MUSICBRAINZ_ARTISTID");
+		set => SetValue ("MUSICBRAINZ_ARTISTID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseGroupId {
+		get => GetValue ("MUSICBRAINZ_RELEASEGROUPID");
+		set => SetValue ("MUSICBRAINZ_RELEASEGROUPID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzAlbumArtistId {
+		get => GetValue ("MUSICBRAINZ_ALBUMARTISTID");
+		set => SetValue ("MUSICBRAINZ_ALBUMARTISTID", value);
+	}
+
+	#endregion
+
 	/// <summary>
 	/// Gets or sets the total number of tracks on the album.
 	/// </summary>
