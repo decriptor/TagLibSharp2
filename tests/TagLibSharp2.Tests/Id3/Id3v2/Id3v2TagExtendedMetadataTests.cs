@@ -1243,6 +1243,112 @@ public class Id3v2TagExtendedMetadataTests
 		Assert.AreEqual ("GB", result.Tag!.MusicBrainzReleaseCountry);
 	}
 
+	// PerformersRole (TMCL frame) Tests
+
+	[TestMethod]
+	public void PerformersRole_GetSet_Works ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.PerformersRole = new[] { "lead vocals", "guitar" };
+
+		Assert.IsNotNull (tag.PerformersRole);
+		Assert.HasCount (2, tag.PerformersRole);
+		Assert.AreEqual ("lead vocals", tag.PerformersRole[0]);
+		Assert.AreEqual ("guitar", tag.PerformersRole[1]);
+	}
+
+	[TestMethod]
+	public void PerformersRole_SetNull_ClearsField ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+		tag.PerformersRole = new[] { "lead vocals" };
+
+		tag.PerformersRole = null;
+
+		Assert.IsTrue (tag.PerformersRole is null || tag.PerformersRole.Length == 0);
+	}
+
+	[TestMethod]
+	public void PerformersRole_SetEmpty_ClearsField ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+		tag.PerformersRole = new[] { "lead vocals" };
+
+		tag.PerformersRole = Array.Empty<string> ();
+
+		Assert.IsTrue (tag.PerformersRole is null || tag.PerformersRole.Length == 0);
+	}
+
+	[TestMethod]
+	public void PerformersRole_RoundTrip_PreservesValue ()
+	{
+		var original = new Id3v2Tag (Id3v2Version.V24);
+		original.PerformersRole = new[] { "lead vocals", "rhythm guitar", "bass" };
+
+		var rendered = original.Render ();
+		var result = Id3v2Tag.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.PerformersRole);
+		Assert.HasCount (3, result.Tag.PerformersRole);
+		Assert.AreEqual ("lead vocals", result.Tag.PerformersRole[0]);
+		Assert.AreEqual ("rhythm guitar", result.Tag.PerformersRole[1]);
+		Assert.AreEqual ("bass", result.Tag.PerformersRole[2]);
+	}
+
+	[TestMethod]
+	public void PerformersRole_WithArtists_MaintainsParallelArrays ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		// Set artists and their roles in parallel
+		var artists = new[] { "John Smith", "Jane Doe" };
+		tag.SetTextFrameValues ("TPE1", artists);
+		tag.PerformersRole = new[] { "vocals", "guitar" };
+
+		// Both arrays should have matching lengths
+		Assert.HasCount (2, tag.Artists);
+		Assert.HasCount (2, tag.PerformersRole!);
+		Assert.AreEqual ("John Smith", tag.Artists[0]);
+		Assert.AreEqual ("vocals", tag.PerformersRole[0]);
+		Assert.AreEqual ("Jane Doe", tag.Artists[1]);
+		Assert.AreEqual ("guitar", tag.PerformersRole[1]);
+	}
+
+	[TestMethod]
+	public void PerformersRole_UnicodeCharacters_PreservesText ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.PerformersRole = new[] { "ボーカル", "ギター" }; // Japanese: "vocals", "guitar"
+
+		var rendered = tag.Render ();
+		var result = Id3v2Tag.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.PerformersRole);
+		Assert.HasCount (2, result.Tag.PerformersRole);
+		Assert.AreEqual ("ボーカル", result.Tag.PerformersRole[0]);
+		Assert.AreEqual ("ギター", result.Tag.PerformersRole[1]);
+	}
+
+	[TestMethod]
+	public void PerformersRole_SingleValue_Works ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.PerformersRole = new[] { "all instruments" };
+
+		var rendered = tag.Render ();
+		var result = Id3v2Tag.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.PerformersRole);
+		Assert.HasCount (1, result.Tag.PerformersRole);
+		Assert.AreEqual ("all instruments", result.Tag.PerformersRole[0]);
+	}
+
 	// Helper Methods
 
 	static byte[] CreateTagWithTextFrame (string frameId, string text, byte version)

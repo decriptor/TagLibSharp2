@@ -20,6 +20,7 @@ public sealed class Id3v2Tag : Tag
 	readonly List<UserTextFrame> _userTextFrames = new (8);
 	readonly List<LyricsFrame> _lyricsFrames = new (2);
 	readonly List<UniqueFileIdFrame> _uniqueFileIdFrames = new (2);
+	readonly List<InvolvedPeopleFrame> _involvedPeopleFrames = new (2);
 
 	/// <summary>
 	/// Gets the ID3v2 version (2, 3, or 4).
@@ -507,6 +508,79 @@ public sealed class Id3v2Tag : Tag
 		set => SetUserText ("MusicIP PUID", value);
 	}
 
+	/// <inheritdoc/>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[]? PerformersRole {
+		get {
+			var tmcl = GetInvolvedPeopleFrame ("TMCL");
+			if (tmcl is null || tmcl.Count == 0)
+				return null;
+			return tmcl.GetRoles ().ToArray ();
+		}
+		set {
+			// Remove existing TMCL frames
+			_involvedPeopleFrames.RemoveAll (f => f.Id == "TMCL");
+
+			if (value is null || value.Length == 0)
+				return;
+
+			// Create new TMCL frame with roles
+			// Use placeholder names since PerformersRole only stores roles
+			var frame = new InvolvedPeopleFrame (InvolvedPeopleFrameType.MusicianCredits);
+			for (var i = 0; i < value.Length; i++)
+				frame.Add (value[i], "");
+
+			_involvedPeopleFrames.Add (frame);
+		}
+	}
+#pragma warning restore CA1819
+
+	/// <summary>
+	/// Gets the list of involved people frames (TIPL/TMCL) in this tag.
+	/// </summary>
+	public IReadOnlyList<InvolvedPeopleFrame> InvolvedPeopleFrames => _involvedPeopleFrames;
+
+	/// <summary>
+	/// Gets an involved people frame by ID.
+	/// </summary>
+	/// <param name="frameId">The frame ID (TIPL or TMCL).</param>
+	/// <returns>The frame, or null if not found.</returns>
+	public InvolvedPeopleFrame? GetInvolvedPeopleFrame (string frameId)
+	{
+		for (var i = 0; i < _involvedPeopleFrames.Count; i++) {
+			if (_involvedPeopleFrames[i].Id == frameId)
+				return _involvedPeopleFrames[i];
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Adds an involved people frame to the tag.
+	/// </summary>
+	/// <param name="frame">The frame to add.</param>
+	public void AddInvolvedPeopleFrame (InvolvedPeopleFrame frame)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (frame is null)
+			throw new ArgumentNullException (nameof (frame));
+#else
+		ArgumentNullException.ThrowIfNull (frame);
+#endif
+		_involvedPeopleFrames.Add (frame);
+	}
+
+	/// <summary>
+	/// Removes all involved people frames with the specified ID.
+	/// </summary>
+	/// <param name="frameId">The frame ID to remove (TIPL or TMCL), or null to remove all.</param>
+	public void RemoveInvolvedPeopleFrames (string? frameId = null)
+	{
+		if (frameId is null)
+			_involvedPeopleFrames.Clear ();
+		else
+			_involvedPeopleFrames.RemoveAll (f => f.Id == frameId);
+	}
+
 	/// <summary>
 	/// Gets or sets the MusicBrainz Recording ID from a UFID frame.
 	/// </summary>
@@ -591,8 +665,8 @@ public sealed class Id3v2Tag : Tag
 			// Parse frame content
 			var frameContent = frameData.Slice (FrameHeaderSize, frameSize);
 
-			// Handle text frames (T***)
-			if (frameId[0] == 'T' && frameId != "TXXX") {
+			// Handle text frames (T***) - exclude TXXX (user text) and TIPL/TMCL (involved people)
+			if (frameId[0] == 'T' && frameId != "TXXX" && frameId != "TIPL" && frameId != "TMCL") {
 				var frameResult = TextFrame.Read (frameId, frameContent, (Id3v2Version)header.MajorVersion);
 				if (frameResult.IsSuccess)
 					tag._frames.Add (frameResult.Frame!);
@@ -626,6 +700,12 @@ public sealed class Id3v2Tag : Tag
 				var ufidResult = UniqueFileIdFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
 				if (ufidResult.IsSuccess)
 					tag._uniqueFileIdFrames.Add (ufidResult.Frame!);
+			}
+			// Handle involved people frames (TIPL, TMCL, IPLS)
+			else if (frameId is "TIPL" or "TMCL" or "IPLS") {
+				var involvedResult = InvolvedPeopleFrame.Read (frameId, frameContent, (Id3v2Version)header.MajorVersion);
+				if (involvedResult.IsSuccess)
+					tag._involvedPeopleFrames.Add (involvedResult.Frame!);
 			}
 
 			// Move to next frame
@@ -904,6 +984,15 @@ public sealed class Id3v2Tag : Tag
 			framesSize += frameHeader.Length + content.Length;
 		}
 
+		// Render involved people frames (TIPL, TMCL)
+		for (var i = 0; i < _involvedPeopleFrames.Count; i++) {
+			var content = _involvedPeopleFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader (_involvedPeopleFrames[i].Id, content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
 		var totalSize = framesSize + paddingSize;
 
 		// Render header
@@ -953,6 +1042,7 @@ public sealed class Id3v2Tag : Tag
 		_userTextFrames.Clear ();
 		_lyricsFrames.Clear ();
 		_uniqueFileIdFrames.Clear ();
+		_involvedPeopleFrames.Clear ();
 	}
 
 	/// <summary>

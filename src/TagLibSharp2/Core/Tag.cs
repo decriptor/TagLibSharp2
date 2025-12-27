@@ -476,6 +476,19 @@ public abstract class Tag
 	public virtual string? MusicIpId { get => null; set { } }
 
 	/// <summary>
+	/// Gets or sets the roles of the performers.
+	/// </summary>
+	/// <remarks>
+	/// This is a parallel array to the performers (artists) list. Each element
+	/// describes the role of the corresponding performer at the same index.
+	/// For example, if Artists = ["John", "Jane"], PerformersRole might be ["vocals", "guitar"].
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public virtual string[]? PerformersRole { get => null; set { } }
+#pragma warning restore CA1819
+
+	/// <summary>
 	/// Gets a value indicating whether all standard fields are empty or null.
 	/// </summary>
 	public virtual bool IsEmpty =>

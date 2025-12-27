@@ -966,4 +966,89 @@ public class VorbisCommentExtendedMetadataTests
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual ("GB", result.Tag!.MusicBrainzReleaseCountry);
 	}
+
+	// PerformersRole Tests
+
+	[TestMethod]
+	public void PerformersRole_GetSet_Works ()
+	{
+		var comment = new VorbisComment ("test");
+
+		comment.PerformersRole = new[] { "lead vocals", "guitar" };
+
+		Assert.IsNotNull (comment.PerformersRole);
+		Assert.HasCount (2, comment.PerformersRole);
+		Assert.AreEqual ("lead vocals", comment.PerformersRole[0]);
+		Assert.AreEqual ("guitar", comment.PerformersRole[1]);
+	}
+
+	[TestMethod]
+	public void PerformersRole_SetNull_ClearsField ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.PerformersRole = new[] { "lead vocals" };
+
+		comment.PerformersRole = null;
+
+		Assert.IsTrue (comment.PerformersRole is null || comment.PerformersRole.Length == 0);
+	}
+
+	[TestMethod]
+	public void PerformersRole_SetEmpty_ClearsField ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.PerformersRole = new[] { "lead vocals" };
+
+		comment.PerformersRole = Array.Empty<string> ();
+
+		Assert.IsTrue (comment.PerformersRole is null || comment.PerformersRole.Length == 0);
+	}
+
+	[TestMethod]
+	public void PerformersRole_RoundTrip_PreservesValue ()
+	{
+		var original = new VorbisComment ("test");
+		original.PerformersRole = new[] { "lead vocals", "rhythm guitar", "bass" };
+
+		var rendered = original.Render ();
+		var result = VorbisComment.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.PerformersRole);
+		Assert.HasCount (3, result.Tag.PerformersRole);
+		Assert.AreEqual ("lead vocals", result.Tag.PerformersRole[0]);
+		Assert.AreEqual ("rhythm guitar", result.Tag.PerformersRole[1]);
+		Assert.AreEqual ("bass", result.Tag.PerformersRole[2]);
+	}
+
+	[TestMethod]
+	public void PerformersRole_UnicodeCharacters_PreservesText ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.PerformersRole = new[] { "ボーカル", "ギター" }; // Japanese: "vocals", "guitar"
+
+		var rendered = comment.Render ();
+		var result = VorbisComment.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.PerformersRole);
+		Assert.HasCount (2, result.Tag.PerformersRole);
+		Assert.AreEqual ("ボーカル", result.Tag.PerformersRole[0]);
+		Assert.AreEqual ("ギター", result.Tag.PerformersRole[1]);
+	}
+
+	[TestMethod]
+	public void PerformersRole_SingleValue_Works ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.PerformersRole = new[] { "all instruments" };
+
+		var rendered = comment.Render ();
+		var result = VorbisComment.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.PerformersRole);
+		Assert.HasCount (1, result.Tag.PerformersRole);
+		Assert.AreEqual ("all instruments", result.Tag.PerformersRole[0]);
+	}
 }

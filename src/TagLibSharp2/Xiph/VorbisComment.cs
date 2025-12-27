@@ -415,6 +415,24 @@ public sealed class VorbisComment : Tag
 		set => SetValue ("MUSICIP_PUID", value);
 	}
 
+	/// <inheritdoc/>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[]? PerformersRole {
+		get {
+			var values = GetValues ("PERFORMER_ROLE");
+			return values.Count > 0 ? values.ToArray () : null;
+		}
+		set {
+			RemoveAll ("PERFORMER_ROLE");
+			if (value is null || value.Length == 0)
+				return;
+
+			for (var i = 0; i < value.Length; i++)
+				AddField ("PERFORMER_ROLE", value[i]);
+		}
+	}
+#pragma warning restore CA1819
+
 	/// <summary>
 	/// Gets or sets the total number of tracks on the album.
 	/// </summary>

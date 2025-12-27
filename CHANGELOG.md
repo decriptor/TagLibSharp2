@@ -107,6 +107,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - InitialKey (TKEY / KEY), Mood (TMOO / MOOD), Language (TLAN / LANGUAGE)
   - MediaType (TMED / MEDIA), Barcode (TXXX:BARCODE / BARCODE), CatalogNumber (TXXX:CATALOGNUMBER / CATALOGNUMBER)
 
+#### Performer Role Support
+- PerformersRole property for musician credits
+  - ID3v2 TMCL (Musician Credits List) frame support
+  - ID3v2 TIPL (Involved People List) frame support
+  - ID3v2 IPLS (v2.3 Involved People) frame support
+  - Vorbis Comment PERFORMER_ROLE field support
+  - InvolvedPeopleFrame class for parsing/rendering role-person pairs
+
 #### Sort Fields & TagLib# Parity
 - ComposerSort (TSOC / COMPOSERSORT) - Sort order for composer names
 - DateTagged (TDTG / DATETAGGED) - ISO 8601 tagging timestamp (ID3v2.4 only)
