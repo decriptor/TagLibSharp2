@@ -74,10 +74,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Language code (ISO 639-2) and description support
 - Multiple encodings (Latin-1, UTF-8, UTF-16)
 
+#### ID3v2 User-Defined Text Frames
+- TXXX frame support for custom metadata fields
+- Multiple text encodings (Latin-1, UTF-8, UTF-16)
+- GetUserText/SetUserText API for named fields
+
+#### Extended Metadata Support
+- ReplayGain tag support for ID3v2 (via TXXX frames)
+  - Track gain/peak and album gain/peak
+- ReplayGain tag support for Vorbis Comments
+  - REPLAYGAIN_TRACK_GAIN, REPLAYGAIN_TRACK_PEAK, REPLAYGAIN_ALBUM_GAIN, REPLAYGAIN_ALBUM_PEAK
+- MusicBrainz ID support for ID3v2 (via TXXX frames)
+  - Track ID, Release ID, Artist ID, Release Group ID, Album Artist ID
+- MusicBrainz ID support for Vorbis Comments
+  - MUSICBRAINZ_TRACKID, MUSICBRAINZ_ALBUMID, MUSICBRAINZ_ARTISTID, MUSICBRAINZ_RELEASEGROUPID, MUSICBRAINZ_ALBUMARTISTID
+
+#### High-Level MP3 API
+- `Mp3File` class for unified ID3v1/ID3v2 access
+- Automatic ID3v2 preference with ID3v1 fallback
+- Read/write support with atomic file saves
+- Async file operations with cancellation support
+
+#### Ogg Vorbis Write Support
+- `OggVorbisFile.Render` for rebuilding files with updated metadata
+- `SaveToFile` and `SaveToFileAsync` for atomic file saves
+- Proper Ogg page segment table handling for multi-packet pages
+
 #### Project Infrastructure
 - GitHub Actions CI workflow for cross-platform builds (Ubuntu, Windows, macOS)
 - Dependabot configuration for automated dependency updates
-- Comprehensive test suite (720+ tests)
+- Comprehensive test suite (789 tests)
 - Malformed input test suite for security and robustness
 - Clean-room implementation (no TagLib# code)
 

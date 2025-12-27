@@ -32,6 +32,7 @@ dotnet build
 
 ```csharp
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Mpeg;
 using TagLibSharp2.Xiph;
 using TagLibSharp2.Ogg;
 
@@ -44,6 +45,20 @@ if (id3Result.IsSuccess)
     Console.WriteLine($"Title: {tag.Title}");
     Console.WriteLine($"Artist: {tag.Artist}");
     Console.WriteLine($"Album: {tag.Album}");
+}
+
+// High-level MP3 access (prefers ID3v2, falls back to ID3v1)
+var mp3Result = Mp3File.ReadFromFile("song.mp3");
+if (mp3Result.IsSuccess)
+{
+    var mp3 = mp3Result.File!;
+    Console.WriteLine($"Title: {mp3.Title}");
+    Console.WriteLine($"Artist: {mp3.Artist}");
+
+    // Modify and save
+    mp3.Title = "New Title";
+    var originalData = File.ReadAllBytes("song.mp3");
+    mp3.SaveToFile("song.mp3", originalData);
 }
 
 // Read FLAC metadata (sync)
@@ -117,8 +132,14 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
 - [x] Media properties (duration, bitrate, sample rate, channels)
 - [x] ID3v2 Comment (COMM) frame support
 
+### Phase 6: Extended Metadata & High-Level APIs ✅
+- [x] ID3v2 TXXX (user-defined text) frames for custom metadata
+- [x] ReplayGain tag support (ID3v2 and Vorbis Comments)
+- [x] MusicBrainz ID support (ID3v2 and Vorbis Comments)
+- [x] Mp3File high-level API for unified ID3v1/ID3v2 access
+- [x] Ogg Vorbis file write operations
+
 ### Future
-- [ ] Ogg Vorbis/ID3 file write operations
 - [ ] Additional formats: WAV, MP4, MKV, EXIF
 
 ## Documentation
