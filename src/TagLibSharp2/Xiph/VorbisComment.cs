@@ -84,6 +84,15 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Uses ORIGINALDATE field. Falls back to ORIGINALYEAR if ORIGINALDATE is not found.
+	/// </remarks>
+	public override string? OriginalReleaseDate {
+		get => GetValue ("ORIGINALDATE") ?? GetValue ("ORIGINALYEAR");
+		set => SetValue ("ORIGINALDATE", value);
+	}
+
+	/// <inheritdoc/>
 	public override string? Genre {
 		get => GetValue ("GENRE");
 		set => SetValue ("GENRE", value);

@@ -30,6 +30,16 @@ public abstract class Tag
 	public abstract string? Year { get; set; }
 
 	/// <summary>
+	/// Gets or sets the original release date.
+	/// </summary>
+	/// <remarks>
+	/// For reissues, remasters, or re-releases, this is the date of the original release.
+	/// Format is typically YYYY or YYYY-MM-DD depending on tag format support.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? OriginalReleaseDate { get => null; set { } }
+
+	/// <summary>
 	/// Gets or sets the comment/description.
 	/// </summary>
 	public abstract string? Comment { get; set; }

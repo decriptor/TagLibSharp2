@@ -84,6 +84,28 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// In ID3v2.4, uses the TDOR (Original Release Time) frame.
+	/// In ID3v2.3, uses the TORY (Original Release Year) frame.
+	/// When reading, falls back to the other version's frame if the primary is not found.
+	/// </remarks>
+	public override string? OriginalReleaseDate {
+		get {
+			// Try version-appropriate frame first, then fallback
+			if (Version == 4) {
+				return GetTextFrame ("TDOR") ?? GetTextFrame ("TORY");
+			}
+			return GetTextFrame ("TORY") ?? GetTextFrame ("TDOR");
+		}
+		set {
+			if (Version == 4)
+				SetTextFrame ("TDOR", value);
+			else
+				SetTextFrame ("TORY", value);
+		}
+	}
+
+	/// <inheritdoc/>
 	public override string? Comment {
 		get => GetComment ();
 		set => SetComment (value);

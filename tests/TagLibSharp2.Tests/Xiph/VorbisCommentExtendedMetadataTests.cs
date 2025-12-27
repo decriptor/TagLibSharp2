@@ -293,6 +293,64 @@ public class VorbisCommentExtendedMetadataTests
 		Assert.AreEqual ("Compilation Artists", result.Tag!.AlbumArtistSort);
 	}
 
+	// Original Release Date (ORIGINALDATE/ORIGINALYEAR) Tests
+
+	[TestMethod]
+	public void OriginalReleaseDate_GetSet_Works ()
+	{
+		var comment = new VorbisComment ("test");
+
+		comment.OriginalReleaseDate = "1969-09-26";
+
+		Assert.AreEqual ("1969-09-26", comment.OriginalReleaseDate);
+		Assert.AreEqual ("1969-09-26", comment.GetValue ("ORIGINALDATE"));
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_FallsBackToOriginalYear ()
+	{
+		var comment = new VorbisComment ("test");
+		// Only set ORIGINALYEAR
+		comment.AddField ("ORIGINALYEAR", "1969");
+
+		Assert.AreEqual ("1969", comment.OriginalReleaseDate);
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_PrefersOriginalDateOverYear ()
+	{
+		var comment = new VorbisComment ("test");
+		// Set both
+		comment.AddField ("ORIGINALDATE", "1969-09-26");
+		comment.AddField ("ORIGINALYEAR", "1969");
+
+		Assert.AreEqual ("1969-09-26", comment.OriginalReleaseDate);
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_SetNull_ClearsField ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.OriginalReleaseDate = "1969-09-26";
+
+		comment.OriginalReleaseDate = null;
+
+		Assert.IsNull (comment.OriginalReleaseDate);
+		Assert.IsNull (comment.GetValue ("ORIGINALDATE"));
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_RoundTrip_PreservesValue ()
+	{
+		var original = new VorbisComment ("test") { OriginalReleaseDate = "1969-09-26" };
+
+		var rendered = original.Render ();
+		var result = VorbisComment.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("1969-09-26", result.Tag!.OriginalReleaseDate);
+	}
+
 	// Lyrics Tests
 
 	[TestMethod]

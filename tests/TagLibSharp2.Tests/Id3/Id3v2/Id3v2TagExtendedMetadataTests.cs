@@ -489,6 +489,93 @@ public class Id3v2TagExtendedMetadataTests
 		Assert.AreEqual (4u, result.Tag.TotalDiscs);
 	}
 
+	// Original Release Date (TDOR/TORY) Tests
+
+	[TestMethod]
+	public void OriginalReleaseDate_V24_UseTDOR ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.OriginalReleaseDate = "1969-09-26";
+
+		Assert.AreEqual ("1969-09-26", tag.OriginalReleaseDate);
+		Assert.AreEqual ("1969-09-26", tag.GetTextFrame ("TDOR"));
+		Assert.IsNull (tag.GetTextFrame ("TORY"));
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_V23_UseTORY ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V23);
+
+		tag.OriginalReleaseDate = "1969";
+
+		Assert.AreEqual ("1969", tag.OriginalReleaseDate);
+		Assert.AreEqual ("1969", tag.GetTextFrame ("TORY"));
+		Assert.IsNull (tag.GetTextFrame ("TDOR"));
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_V24_FallsBackToTORY ()
+	{
+		// Create a V24 tag but manually set TORY (e.g., from a converted file)
+		var data = CreateTagWithTextFrame ("TORY", "1969", version: 4);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("1969", result.Tag!.OriginalReleaseDate);
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_V24_PrefersTDOROverTORY ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+		// Set OriginalReleaseDate (writes TDOR), then add TORY as well
+		tag.OriginalReleaseDate = "1969-09-26";
+		var toryValues = new List<string> { "1969" };
+		tag.SetTextFrameValues ("TORY", toryValues);
+
+		// Should prefer TDOR for v2.4
+		Assert.AreEqual ("1969-09-26", tag.OriginalReleaseDate);
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_SetNull_ClearsField ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+		tag.OriginalReleaseDate = "1969-09-26";
+
+		tag.OriginalReleaseDate = null;
+
+		Assert.IsNull (tag.OriginalReleaseDate);
+		Assert.IsNull (tag.GetTextFrame ("TDOR"));
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_RoundTrip_V24 ()
+	{
+		var original = new Id3v2Tag (Id3v2Version.V24) { OriginalReleaseDate = "1969-09-26" };
+
+		var rendered = original.Render ();
+		var result = Id3v2Tag.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("1969-09-26", result.Tag!.OriginalReleaseDate);
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_RoundTrip_V23 ()
+	{
+		var original = new Id3v2Tag (Id3v2Version.V23) { OriginalReleaseDate = "1969" };
+
+		var rendered = original.Render ();
+		var result = Id3v2Tag.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("1969", result.Tag!.OriginalReleaseDate);
+	}
+
 	// Multi-Value Tests
 
 	[TestMethod]
