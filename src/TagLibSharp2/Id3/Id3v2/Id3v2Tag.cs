@@ -17,6 +17,7 @@ public sealed class Id3v2Tag : Tag
 	readonly List<TextFrame> _frames = new (16);
 	readonly List<PictureFrame> _pictures = new (2);
 	readonly List<CommentFrame> _comments = new (2);
+	readonly List<UserTextFrame> _userTextFrames = new (8);
 
 	/// <summary>
 	/// Gets the ID3v2 version (2, 3, or 4).
@@ -90,6 +91,11 @@ public sealed class Id3v2Tag : Tag
 	/// Gets the list of comment frames in this tag.
 	/// </summary>
 	public IReadOnlyList<CommentFrame> Comments => _comments;
+
+	/// <summary>
+	/// Gets the list of user-defined text frames (TXXX) in this tag.
+	/// </summary>
+	public IReadOnlyList<UserTextFrame> UserTextFrames => _userTextFrames;
 
 	/// <inheritdoc/>
 	public override string? Genre {
@@ -248,6 +254,12 @@ public sealed class Id3v2Tag : Tag
 				if (commentResult.IsSuccess)
 					tag._comments.Add (commentResult.Frame!);
 			}
+			// Handle user-defined text frames (TXXX)
+			else if (frameId == "TXXX") {
+				var userTextResult = UserTextFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (userTextResult.IsSuccess)
+					tag._userTextFrames.Add (userTextResult.Frame!);
+			}
 
 			// Move to next frame
 			var totalFrameSize = FrameHeaderSize + frameSize;
@@ -391,6 +403,15 @@ public sealed class Id3v2Tag : Tag
 			framesSize += frameHeader.Length + content.Length;
 		}
 
+		// Render user-defined text frames (TXXX)
+		for (var i = 0; i < _userTextFrames.Count; i++) {
+			var content = _userTextFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("TXXX", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
 		var totalSize = framesSize + paddingSize;
 
 		// Render header
@@ -437,6 +458,7 @@ public sealed class Id3v2Tag : Tag
 		_frames.Clear ();
 		_pictures.Clear ();
 		_comments.Clear ();
+		_userTextFrames.Clear ();
 	}
 
 	/// <summary>
@@ -512,6 +534,61 @@ public sealed class Id3v2Tag : Tag
 				return c;
 		}
 		return null;
+	}
+
+	/// <summary>
+	/// Gets the value of a user-defined text frame (TXXX) by description.
+	/// </summary>
+	/// <param name="description">The description (key) of the TXXX frame.</param>
+	/// <returns>The value, or null if not found.</returns>
+	public string? GetUserText (string description)
+	{
+		for (var i = 0; i < _userTextFrames.Count; i++) {
+			if (string.Equals (_userTextFrames[i].Description, description, StringComparison.OrdinalIgnoreCase))
+				return _userTextFrames[i].Value;
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Sets or removes a user-defined text frame (TXXX) by description.
+	/// </summary>
+	/// <param name="description">The description (key) of the TXXX frame.</param>
+	/// <param name="value">The value to set, or null to remove the frame.</param>
+	public void SetUserText (string description, string? value)
+	{
+		// Remove existing frame with this description
+		_userTextFrames.RemoveAll (f =>
+			string.Equals (f.Description, description, StringComparison.OrdinalIgnoreCase));
+
+		// Add new frame if value is not empty
+		if (!string.IsNullOrEmpty (value))
+			_userTextFrames.Add (new UserTextFrame (description, value!, TextEncodingType.Utf8));
+	}
+
+	/// <summary>
+	/// Adds a user-defined text frame to the tag.
+	/// </summary>
+	/// <param name="frame">The TXXX frame to add.</param>
+	public void AddUserTextFrame (UserTextFrame frame)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (frame is null)
+			throw new ArgumentNullException (nameof (frame));
+#else
+		ArgumentNullException.ThrowIfNull (frame);
+#endif
+		_userTextFrames.Add (frame);
+	}
+
+	/// <summary>
+	/// Removes all user-defined text frames with the specified description.
+	/// </summary>
+	/// <param name="description">The description to match (case-insensitive).</param>
+	public void RemoveUserTextFrames (string description)
+	{
+		_userTextFrames.RemoveAll (f =>
+			string.Equals (f.Description, description, StringComparison.OrdinalIgnoreCase));
 	}
 
 	static string GetFrameId (ReadOnlySpan<byte> data)
