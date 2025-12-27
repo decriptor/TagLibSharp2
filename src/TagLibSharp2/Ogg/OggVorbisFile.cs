@@ -538,6 +538,314 @@ public sealed class OggVorbisFile
 		VorbisComment ??= new VorbisComment ("TagLibSharp2");
 		return VorbisComment;
 	}
+
+	/// <summary>
+	/// Renders the complete Ogg Vorbis file with updated metadata.
+	/// </summary>
+	/// <param name="originalData">The original file data.</param>
+	/// <returns>The rendered file data, or empty if rendering failed.</returns>
+	/// <remarks>
+	/// The Vorbis stream structure is preserved:
+	/// <list type="number">
+	/// <item>Identification header (unchanged)</item>
+	/// <item>Comment header (rebuilt with current VorbisComment)</item>
+	/// <item>Setup header (unchanged)</item>
+	/// <item>Audio data (unchanged)</item>
+	/// </list>
+	/// </remarks>
+	public BinaryData Render (ReadOnlySpan<byte> originalData)
+	{
+		// Parse original to extract header packets and find where audio starts
+		var headerInfo = ExtractHeaderInfo (originalData);
+		if (!headerInfo.IsSuccess)
+			return BinaryData.Empty;
+
+		// Build new comment packet
+		var commentData = EnsureVorbisComment ().Render ();
+		var commentPacket = new byte[7 + commentData.Length + 1];
+		commentPacket[0] = 3; // Type 3 = comment
+		commentPacket[1] = (byte)'v';
+		commentPacket[2] = (byte)'o';
+		commentPacket[3] = (byte)'r';
+		commentPacket[4] = (byte)'b';
+		commentPacket[5] = (byte)'i';
+		commentPacket[6] = (byte)'s';
+		commentData.Span.CopyTo (commentPacket.AsSpan (7));
+		commentPacket[commentPacket.Length - 1] = 1; // Framing bit
+
+		// Build the output
+		using var builder = new BinaryDataBuilder ();
+
+		// Page 1: Identification header (BOS)
+		var page1 = BuildOggPage (
+			[headerInfo.IdentificationPacket],
+			OggPageFlags.BeginOfStream,
+			0, // Granule position
+			headerInfo.SerialNumber,
+			0); // Sequence 0
+		builder.Add (page1);
+
+		// Page 2: Comment header + Setup header (with proper segment boundaries)
+		var page2 = BuildOggPage (
+			[commentPacket, headerInfo.SetupPacket],
+			OggPageFlags.None,
+			0, // Granule position (header pages have 0)
+			headerInfo.SerialNumber,
+			1); // Sequence 1
+		builder.Add (page2);
+
+		// Append remaining audio pages (unchanged)
+		if (headerInfo.AudioDataStart < originalData.Length) {
+			var audioPages = originalData.Slice (headerInfo.AudioDataStart);
+			builder.Add (audioPages);
+		}
+
+		return builder.ToBinaryData ();
+	}
+
+	/// <summary>
+	/// Saves the file to the specified path using atomic write.
+	/// </summary>
+	/// <param name="path">The target file path.</param>
+	/// <param name="originalData">The original file data.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
+	{
+		var rendered = Render (originalData);
+		if (rendered.IsEmpty)
+			return FileWriteResult.Failure ("Failed to render Ogg Vorbis file");
+
+		return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
+	}
+
+	/// <summary>
+	/// Asynchronously saves the file to the specified path using atomic write.
+	/// </summary>
+	/// <param name="path">The target file path.</param>
+	/// <param name="originalData">The original file data.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <param name="cancellationToken">A token to cancel the operation.</param>
+	/// <returns>A task containing a result indicating success or failure.</returns>
+	public Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		ReadOnlyMemory<byte> originalData,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		var rendered = Render (originalData.Span);
+		if (rendered.IsEmpty)
+			return Task.FromResult (FileWriteResult.Failure ("Failed to render Ogg Vorbis file"));
+
+		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
+	/// Header extraction result containing packets and position info.
+	/// </summary>
+	readonly struct HeaderInfo
+	{
+		public bool IsSuccess { get; }
+		public byte[] IdentificationPacket { get; }
+		public byte[] SetupPacket { get; }
+		public uint SerialNumber { get; }
+		public int AudioDataStart { get; }
+
+		public HeaderInfo (byte[] identPacket, byte[] setupPacket, uint serialNumber, int audioDataStart)
+		{
+			IsSuccess = true;
+			IdentificationPacket = identPacket;
+			SetupPacket = setupPacket;
+			SerialNumber = serialNumber;
+			AudioDataStart = audioDataStart;
+		}
+
+		public static HeaderInfo Failure () => new ();
+	}
+
+	/// <summary>
+	/// Extracts the header packets from the original file.
+	/// </summary>
+	static HeaderInfo ExtractHeaderInfo (ReadOnlySpan<byte> data)
+	{
+		byte[]? identPacket = null;
+		byte[]? setupPacket = null;
+		uint serialNumber = 0;
+		var offset = 0;
+		var pageCount = 0;
+		var packetBuffer = new List<byte> ();
+		var currentPacketIndex = 0; // 0=ident, 1=comment, 2=setup
+
+		while (offset < data.Length && pageCount < 50) {
+			var pageResult = ReadOggPageWithSegments (data.Slice (offset));
+			if (!pageResult.IsSuccess)
+				break;
+
+			var pageStart = offset;
+			offset += pageResult.BytesConsumed;
+			pageCount++;
+
+			if (pageCount == 1) {
+				serialNumber = pageResult.Page.SerialNumber;
+
+				if (pageResult.Segments.Count > 0 && IsVorbisIdentificationHeader (pageResult.Segments[0]))
+					identPacket = pageResult.Segments[0];
+				else
+					return HeaderInfo.Failure ();
+
+				currentPacketIndex = 1;
+
+				// Check for additional packets on first page
+				for (var i = 1; i < pageResult.Segments.Count; i++) {
+					if (pageResult.IsPacketComplete[i]) {
+						if (currentPacketIndex == 2 && IsVorbisSetupHeader (pageResult.Segments[i])) {
+							setupPacket = pageResult.Segments[i];
+							// Found all headers, next pages are audio
+							return new HeaderInfo (identPacket!, setupPacket, serialNumber, offset);
+						}
+						currentPacketIndex++;
+					} else {
+						packetBuffer.Clear ();
+						packetBuffer.AddRange (pageResult.Segments[i]);
+					}
+				}
+				continue;
+			}
+
+			// Process subsequent pages looking for setup header
+			var segmentIndex = 0;
+			if (pageResult.Page.IsContinuation && packetBuffer.Count > 0) {
+				if (pageResult.Segments.Count > 0) {
+					packetBuffer.AddRange (pageResult.Segments[0]);
+					if (pageResult.IsPacketComplete[0]) {
+						if (currentPacketIndex == 2) {
+							var packet = packetBuffer.ToArray ();
+							if (IsVorbisSetupHeader (packet)) {
+								setupPacket = packet;
+								return new HeaderInfo (identPacket!, setupPacket, serialNumber, offset);
+							}
+						}
+						currentPacketIndex++;
+						packetBuffer.Clear ();
+					}
+					segmentIndex = 1;
+				}
+			}
+
+			for (var i = segmentIndex; i < pageResult.Segments.Count; i++) {
+				if (pageResult.IsPacketComplete[i]) {
+					if (currentPacketIndex == 2 && IsVorbisSetupHeader (pageResult.Segments[i])) {
+						setupPacket = pageResult.Segments[i];
+						return new HeaderInfo (identPacket!, setupPacket, serialNumber, offset);
+					}
+					currentPacketIndex++;
+				} else {
+					packetBuffer.Clear ();
+					packetBuffer.AddRange (pageResult.Segments[i]);
+				}
+			}
+		}
+
+		// Reached page limit without finding all headers
+		return HeaderInfo.Failure ();
+	}
+
+	static bool IsVorbisSetupHeader (ReadOnlySpan<byte> data)
+	{
+		if (data.Length < MinVorbisHeaderSize)
+			return false;
+
+		// Packet type 5 + "vorbis"
+		return data[0] == 5 &&
+			data[1] == VorbisMagic[0] && data[2] == VorbisMagic[1] &&
+			data[3] == VorbisMagic[2] && data[4] == VorbisMagic[3] &&
+			data[5] == VorbisMagic[4] && data[6] == VorbisMagic[5];
+	}
+
+	static bool IsVorbisSetupHeader (byte[] data) =>
+		IsVorbisSetupHeader (data.AsSpan ());
+
+	/// <summary>
+	/// Builds an Ogg page from multiple packets with proper segment boundaries.
+	/// </summary>
+	static byte[] BuildOggPage (byte[][] packets, OggPageFlags flags, ulong granulePosition,
+		uint serialNumber, uint sequenceNumber)
+	{
+		// Build segment table - each packet needs proper segmentation
+		var segments = new List<byte> ();
+		var totalDataSize = 0;
+
+		foreach (var packet in packets) {
+			var remaining = packet.Length;
+			while (remaining >= 255) {
+				segments.Add (255);
+				remaining -= 255;
+			}
+			// Final segment < 255 marks end of this packet
+			segments.Add ((byte)remaining);
+			totalDataSize += packet.Length;
+		}
+
+		// Ensure at least one segment
+		if (segments.Count == 0)
+			segments.Add (0);
+
+		var headerSize = 27 + segments.Count;
+		var page = new byte[headerSize + totalDataSize];
+
+		// Magic "OggS"
+		page[0] = (byte)'O';
+		page[1] = (byte)'g';
+		page[2] = (byte)'g';
+		page[3] = (byte)'S';
+
+		// Version
+		page[4] = 0;
+
+		// Flags
+		page[5] = (byte)flags;
+
+		// Granule position (8 bytes LE)
+		for (var i = 0; i < 8; i++)
+			page[6 + i] = (byte)(granulePosition >> (i * 8));
+
+		// Serial number (4 bytes LE)
+		for (var i = 0; i < 4; i++)
+			page[14 + i] = (byte)(serialNumber >> (i * 8));
+
+		// Sequence number (4 bytes LE)
+		for (var i = 0; i < 4; i++)
+			page[18 + i] = (byte)(sequenceNumber >> (i * 8));
+
+		// CRC placeholder (will be calculated)
+		page[22] = 0;
+		page[23] = 0;
+		page[24] = 0;
+		page[25] = 0;
+
+		// Segment count
+		page[26] = (byte)segments.Count;
+
+		// Segment table
+		for (var i = 0; i < segments.Count; i++)
+			page[27 + i] = segments[i];
+
+		// Data - concatenate all packets
+		var dataOffset = headerSize;
+		foreach (var packet in packets) {
+			packet.CopyTo (page, dataOffset);
+			dataOffset += packet.Length;
+		}
+
+		// Calculate and set CRC
+		var crc = OggCrc.Calculate (page);
+		page[22] = (byte)(crc & 0xFF);
+		page[23] = (byte)((crc >> 8) & 0xFF);
+		page[24] = (byte)((crc >> 16) & 0xFF);
+		page[25] = (byte)((crc >> 24) & 0xFF);
+
+		return page;
+	}
 }
 
 /// <summary>
