@@ -40,6 +40,14 @@ public sealed class FlacFile
 	public int MetadataSize { get; private set; }
 
 	/// <summary>
+	/// Gets or sets the CUESHEET block containing CD table of contents data.
+	/// </summary>
+	/// <remarks>
+	/// May be null if the file has no CUESHEET block.
+	/// </remarks>
+	public FlacCueSheet? CueSheet { get; set; }
+
+	/// <summary>
 	/// Gets the raw STREAMINFO block data.
 	/// </summary>
 	/// <remarks>
@@ -274,7 +282,13 @@ public sealed class FlacFile
 						file._pictures.Add (pictureResult.Picture!);
 					break;
 
-					// Other block types (PADDING, APPLICATION, SEEKTABLE, CUESHEET) are skipped
+				case FlacBlockType.CueSheet:
+					var cueSheetResult = FlacCueSheet.Read (blockData);
+					if (cueSheetResult.IsSuccess)
+						file.CueSheet = cueSheetResult.CueSheet;
+					break;
+
+					// Other block types (PADDING, APPLICATION, SEEKTABLE) are skipped
 			}
 		}
 
@@ -340,6 +354,7 @@ public sealed class FlacFile
 
 		// Render metadata blocks
 		var vorbisCommentData = VorbisComment?.Render () ?? BinaryData.Empty;
+		var cueSheetData = CueSheet?.Render () ?? BinaryData.Empty;
 		var pictureDataList = new List<BinaryData> (_pictures.Count);
 		for (var i = 0; i < _pictures.Count; i++)
 			pictureDataList.Add (_pictures[i].RenderContent ());
@@ -350,6 +365,9 @@ public sealed class FlacFile
 
 		if (!vorbisCommentData.IsEmpty)
 			totalMetadataSize += FlacMetadataBlockHeader.HeaderSize + vorbisCommentData.Length;
+
+		if (!cueSheetData.IsEmpty)
+			totalMetadataSize += FlacMetadataBlockHeader.HeaderSize + cueSheetData.Length;
 
 		for (var i = 0; i < pictureDataList.Count; i++)
 			totalMetadataSize += FlacMetadataBlockHeader.HeaderSize + pictureDataList[i].Length;
@@ -377,6 +395,13 @@ public sealed class FlacFile
 			var commentHeader = new FlacMetadataBlockHeader (isLast: false, FlacBlockType.VorbisComment, vorbisCommentData.Length);
 			builder.Add (commentHeader.Render ());
 			builder.Add (vorbisCommentData);
+		}
+
+		// CUESHEET
+		if (!cueSheetData.IsEmpty) {
+			var cueSheetHeader = new FlacMetadataBlockHeader (isLast: false, FlacBlockType.CueSheet, cueSheetData.Length);
+			builder.Add (cueSheetHeader.Render ());
+			builder.Add (cueSheetData);
 		}
 
 		// PICTURE blocks
