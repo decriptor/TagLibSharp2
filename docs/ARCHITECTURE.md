@@ -37,6 +37,10 @@ tagsharp/
 │       │   ├── OggVorbisFile.cs   # Ogg Vorbis files
 │       │   ├── OggPage.cs         # Ogg page parsing
 │       │   └── OggCrc.cs          # CRC computation
+│       ├── Aiff/                  # AIFF container support
+│       │   ├── AiffFile.cs        # AIFF/AIFC container parser
+│       │   ├── AiffChunk.cs       # AIFF chunk (FourCC + data, big-endian)
+│       │   └── AiffAudioProperties.cs # COMM chunk parser
 │       └── Riff/                  # RIFF container support
 │           ├── RiffChunk.cs       # RIFF chunk (FourCC + data)
 │           ├── RiffFile.cs        # RIFF container parser
@@ -272,6 +276,36 @@ WavFile
         └── Id3v2Tag (richer metadata)
 
 Tag Priority: Id3v2Tag > RiffInfoTag
+```
+
+### AIFF Implementation
+
+```
+AiffFile (FORM container)
+├── Magic: "FORM" (4 bytes)
+├── Size (4 bytes, big-endian)
+├── FormType: "AIFF" or "AIFC" (4 bytes)
+└── Chunks[]
+    ├── FourCC (4 bytes)
+    ├── Size (4 bytes, big-endian)
+    └── Data (padded to even boundary)
+
+AiffFile
+├── FormType: "AIFF" (uncompressed) or "AIFC" (compressed)
+└── Chunks[]
+    ├── COMM (Common chunk, required)
+    │   ├── Channels (16-bit)
+    │   ├── SampleFrames (32-bit)
+    │   ├── BitsPerSample (16-bit)
+    │   └── SampleRate (80-bit extended float)
+    ├── SSND (Sound Data chunk, required)
+    │   ├── Offset (32-bit)
+    │   ├── BlockSize (32-bit)
+    │   └── Audio samples
+    └── ID3  (ID3v2 tag, optional)
+        └── Id3v2Tag (metadata)
+
+Note: AIFF uses big-endian byte order throughout (vs RIFF little-endian)
 ```
 
 ## Future Architecture

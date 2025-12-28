@@ -164,10 +164,10 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 ### AIFF
 | Feature | Status |
 |---------|--------|
-| FORM container | ❌ |
-| COMM chunk | ❌ |
-| Extended float parsing | ❌ |
-| ID3 chunk | ❌ |
+| FORM container | ✅ |
+| COMM chunk | ✅ |
+| Extended float parsing | ✅ |
+| ID3 chunk | ✅ |
 | Write | ❌ |
 
 ### AAC/ALAC (M4A/MP4)

@@ -8,10 +8,10 @@
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| **Tests Passing** | 1,376 | Solid foundation |
-| **Source Files** | 57 | Core + 4 formats |
-| **Formats Complete** | 4 of 22 | MP3, FLAC, OGG Vorbis, WAV |
-| **Format Coverage** | ~15% | Significant work remaining |
+| **Tests Passing** | 1,413 | Solid foundation |
+| **Source Files** | 60 | Core + 5 formats |
+| **Formats Complete** | 5 of 22 | MP3, FLAC, OGG Vorbis, WAV, AIFF |
+| **Format Coverage** | ~20% | Significant work remaining |
 | **Core Infrastructure** | ✅ 100% | Tag, BinaryData, IFileSystem, Picture |
 
 ---
@@ -27,7 +27,7 @@ Based on multi-perspective analysis, the original roadmap is reordered:
 | P0-7 VBR Headers | **P0-2 VBR Headers** | ⬆️ Moved UP | Broken MP3 duration = broken UX |
 | P0-6 APE Tag | **P0-4 APE Tag** | Same | Blocks WavPack/Musepack/Monkey's Audio |
 | P0-5 Opus | **P0-5 Opus** | Same | Modern streaming, growing fast |
-| P0-2 AIFF | **P0-6 AIFF** | ⬇️ Demoted | Smaller user base than expected |
+| P0-2 AIFF | **✅ COMPLETE** | AIFF | Full read with FORM container + COMM + ID3 |
 | P0-4 DSF | **P0-7 DSF** | ⬇️ Demoted | DSD is vocal minority, not market size |
 | P1 Musepack | **SKIP** | ❌ Remove | Dead format (last release 2009) |
 
