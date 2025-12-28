@@ -752,4 +752,293 @@ public abstract class Tag
 	/// Clears all tag data, resetting to an empty state.
 	/// </summary>
 	public abstract void Clear ();
+
+	/// <summary>
+	/// Validates the tag and returns a list of issues found.
+	/// </summary>
+	/// <returns>A validation result containing any issues found.</returns>
+	/// <remarks>
+	/// <para>
+	/// Common validations include:
+	/// </para>
+	/// <list type="bullet">
+	/// <item>Track number greater than total tracks</item>
+	/// <item>Disc number greater than total discs</item>
+	/// <item>Invalid ISRC format</item>
+	/// <item>Year outside reasonable range</item>
+	/// </list>
+	/// <para>
+	/// Derived classes should override this method to add format-specific validations.
+	/// </para>
+	/// </remarks>
+	public virtual ValidationResult Validate ()
+	{
+		var result = new ValidationResult ();
+
+		// Validate track/disc numbers
+		if (Track.HasValue && TotalTracks.HasValue && Track.Value > TotalTracks.Value)
+			result.AddWarning ("Track", $"Track number ({Track.Value}) exceeds total tracks ({TotalTracks.Value})", "Set TotalTracks to at least the track number");
+
+		if (DiscNumber.HasValue && TotalDiscs.HasValue && DiscNumber.Value > TotalDiscs.Value)
+			result.AddWarning ("DiscNumber", $"Disc number ({DiscNumber.Value}) exceeds total discs ({TotalDiscs.Value})", "Set TotalDiscs to at least the disc number");
+
+		// Validate year
+		if (!string.IsNullOrEmpty (Year)) {
+			var yearSpan = Year!.AsSpan ();
+			var yearPart = yearSpan.Slice (0, Math.Min (4, yearSpan.Length));
+#if NETSTANDARD2_0
+			if (int.TryParse (yearPart.ToString (), out var yearNum)) {
+#else
+			if (int.TryParse (yearPart, out var yearNum)) {
+#endif
+				if (yearNum < 1000 || yearNum > 2200)
+					result.AddWarning ("Year", $"Year ({Year}) is outside reasonable range (1000-2200)");
+			}
+		}
+
+		// Validate ISRC format (12 characters: CC-XXX-YY-NNNNN or CCXXXYYNNNNN)
+		if (!string.IsNullOrEmpty (Isrc)) {
+#if NETSTANDARD2_0
+			var isrc = Isrc!.Replace ("-", "").Trim ();
+#else
+			var isrc = Isrc!.Replace ("-", "", StringComparison.Ordinal).Trim ();
+#endif
+			if (isrc.Length != 12)
+				result.AddError ("ISRC", $"ISRC must be 12 characters (found {Isrc.Length})", "Format: CCXXXYYNNNNN");
+		}
+
+		// Validate BPM
+		if (BeatsPerMinute.HasValue && (BeatsPerMinute.Value < 20 || BeatsPerMinute.Value > 999))
+			result.AddWarning ("BeatsPerMinute", $"BPM ({BeatsPerMinute.Value}) is outside typical range (20-999)");
+
+		return result;
+	}
+
+	/// <summary>
+	/// Copies metadata from this tag to another tag.
+	/// </summary>
+	/// <param name="target">The target tag to copy metadata to.</param>
+	/// <param name="options">Options controlling what metadata to copy.</param>
+	/// <exception cref="ArgumentNullException">Thrown if target is null.</exception>
+	/// <remarks>
+	/// <para>
+	/// Only non-null values are copied. The target tag's existing values are overwritten
+	/// for any property that has a non-null value in the source.
+	/// </para>
+	/// <para>
+	/// This is useful for converting between tag formats or synchronizing metadata
+	/// between multiple tag types in the same file.
+	/// </para>
+	/// </remarks>
+	public void CopyTo (Tag target, TagCopyOptions options = TagCopyOptions.All)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (target is null)
+			throw new ArgumentNullException (nameof (target));
+#else
+		ArgumentNullException.ThrowIfNull (target);
+#endif
+
+		// Basic metadata (always copied unless explicitly excluded)
+		if ((options & TagCopyOptions.Basic) != 0) {
+			if (Title is not null)
+				target.Title = Title;
+			if (Artist is not null)
+				target.Artist = Artist;
+			if (Album is not null)
+				target.Album = Album;
+			if (Year is not null)
+				target.Year = Year;
+			if (Comment is not null)
+				target.Comment = Comment;
+			if (Genre is not null)
+				target.Genre = Genre;
+			if (Track.HasValue)
+				target.Track = Track;
+		}
+
+		// Extended metadata
+		if ((options & TagCopyOptions.Extended) != 0) {
+			// Arrays
+			if (Performers is { Length: > 0 })
+				target.Performers = Performers;
+			if (AlbumArtists is { Length: > 0 })
+				target.AlbumArtists = AlbumArtists;
+			if (Composers is { Length: > 0 })
+				target.Composers = Composers;
+			if (Genres is { Length: > 0 })
+				target.Genres = Genres;
+
+			// Extended single values
+			if (AlbumArtist is not null)
+				target.AlbumArtist = AlbumArtist;
+			if (Composer is not null)
+				target.Composer = Composer;
+			if (Conductor is not null)
+				target.Conductor = Conductor;
+			if (Copyright is not null)
+				target.Copyright = Copyright;
+			if (DiscNumber.HasValue)
+				target.DiscNumber = DiscNumber;
+			if (TotalDiscs.HasValue)
+				target.TotalDiscs = TotalDiscs;
+			if (TotalTracks.HasValue)
+				target.TotalTracks = TotalTracks;
+			if (BeatsPerMinute.HasValue)
+				target.BeatsPerMinute = BeatsPerMinute;
+			if (Lyrics is not null)
+				target.Lyrics = Lyrics;
+			if (Isrc is not null)
+				target.Isrc = Isrc;
+			if (Publisher is not null)
+				target.Publisher = Publisher;
+			if (EncodedBy is not null)
+				target.EncodedBy = EncodedBy;
+			if (EncoderSettings is not null)
+				target.EncoderSettings = EncoderSettings;
+			if (Grouping is not null)
+				target.Grouping = Grouping;
+			if (Subtitle is not null)
+				target.Subtitle = Subtitle;
+			if (Remixer is not null)
+				target.Remixer = Remixer;
+			if (InitialKey is not null)
+				target.InitialKey = InitialKey;
+			if (Mood is not null)
+				target.Mood = Mood;
+			if (MediaType is not null)
+				target.MediaType = MediaType;
+			if (Language is not null)
+				target.Language = Language;
+			if (Barcode is not null)
+				target.Barcode = Barcode;
+			if (CatalogNumber is not null)
+				target.CatalogNumber = CatalogNumber;
+			if (OriginalReleaseDate is not null)
+				target.OriginalReleaseDate = OriginalReleaseDate;
+			if (Description is not null)
+				target.Description = Description;
+			if (DateTagged is not null)
+				target.DateTagged = DateTagged;
+			if (AmazonId is not null)
+				target.AmazonId = AmazonId;
+			if (IsCompilation)
+				target.IsCompilation = true;
+
+			// Performers role
+			if (PerformersRole is { Length: > 0 })
+				target.PerformersRole = PerformersRole;
+		}
+
+		// Sort order
+		if ((options & TagCopyOptions.SortOrder) != 0) {
+			if (AlbumSort is not null)
+				target.AlbumSort = AlbumSort;
+			if (ArtistSort is not null)
+				target.ArtistSort = ArtistSort;
+			if (TitleSort is not null)
+				target.TitleSort = TitleSort;
+			if (AlbumArtistSort is not null)
+				target.AlbumArtistSort = AlbumArtistSort;
+			if (ComposerSort is not null)
+				target.ComposerSort = ComposerSort;
+			if (PerformersSort is { Length: > 0 })
+				target.PerformersSort = PerformersSort;
+			if (AlbumArtistsSort is { Length: > 0 })
+				target.AlbumArtistsSort = AlbumArtistsSort;
+			if (ComposersSort is { Length: > 0 })
+				target.ComposersSort = ComposersSort;
+		}
+
+		// ReplayGain
+		if ((options & TagCopyOptions.ReplayGain) != 0) {
+			if (ReplayGainTrackGain is not null)
+				target.ReplayGainTrackGain = ReplayGainTrackGain;
+			if (ReplayGainTrackPeak is not null)
+				target.ReplayGainTrackPeak = ReplayGainTrackPeak;
+			if (ReplayGainAlbumGain is not null)
+				target.ReplayGainAlbumGain = ReplayGainAlbumGain;
+			if (ReplayGainAlbumPeak is not null)
+				target.ReplayGainAlbumPeak = ReplayGainAlbumPeak;
+		}
+
+		// MusicBrainz IDs
+		if ((options & TagCopyOptions.MusicBrainz) != 0) {
+			if (MusicBrainzTrackId is not null)
+				target.MusicBrainzTrackId = MusicBrainzTrackId;
+			if (MusicBrainzReleaseId is not null)
+				target.MusicBrainzReleaseId = MusicBrainzReleaseId;
+			if (MusicBrainzArtistId is not null)
+				target.MusicBrainzArtistId = MusicBrainzArtistId;
+			if (MusicBrainzReleaseGroupId is not null)
+				target.MusicBrainzReleaseGroupId = MusicBrainzReleaseGroupId;
+			if (MusicBrainzAlbumArtistId is not null)
+				target.MusicBrainzAlbumArtistId = MusicBrainzAlbumArtistId;
+			if (MusicBrainzRecordingId is not null)
+				target.MusicBrainzRecordingId = MusicBrainzRecordingId;
+			if (MusicBrainzWorkId is not null)
+				target.MusicBrainzWorkId = MusicBrainzWorkId;
+			if (MusicBrainzDiscId is not null)
+				target.MusicBrainzDiscId = MusicBrainzDiscId;
+			if (MusicBrainzReleaseStatus is not null)
+				target.MusicBrainzReleaseStatus = MusicBrainzReleaseStatus;
+			if (MusicBrainzReleaseType is not null)
+				target.MusicBrainzReleaseType = MusicBrainzReleaseType;
+			if (MusicBrainzReleaseCountry is not null)
+				target.MusicBrainzReleaseCountry = MusicBrainzReleaseCountry;
+		}
+
+		// Pictures
+		if ((options & TagCopyOptions.Pictures) != 0) {
+			if (Pictures is { Length: > 0 })
+				target.Pictures = Pictures;
+		}
+	}
+}
+
+/// <summary>
+/// Options controlling what metadata to copy when using <see cref="Tag.CopyTo"/>.
+/// </summary>
+[Flags]
+public enum TagCopyOptions
+{
+	/// <summary>
+	/// Copy no metadata.
+	/// </summary>
+	None = 0,
+
+	/// <summary>
+	/// Copy basic metadata: Title, Artist, Album, Year, Comment, Genre, Track.
+	/// </summary>
+	Basic = 1 << 0,
+
+	/// <summary>
+	/// Copy extended metadata: Disc info, composers, conductors, publishers, etc.
+	/// </summary>
+	Extended = 1 << 1,
+
+	/// <summary>
+	/// Copy sort order fields.
+	/// </summary>
+	SortOrder = 1 << 2,
+
+	/// <summary>
+	/// Copy ReplayGain values.
+	/// </summary>
+	ReplayGain = 1 << 3,
+
+	/// <summary>
+	/// Copy MusicBrainz identifiers.
+	/// </summary>
+	MusicBrainz = 1 << 4,
+
+	/// <summary>
+	/// Copy embedded pictures/artwork.
+	/// </summary>
+	Pictures = 1 << 5,
+
+	/// <summary>
+	/// Copy all metadata (default).
+	/// </summary>
+	All = Basic | Extended | SortOrder | ReplayGain | MusicBrainz | Pictures
 }
