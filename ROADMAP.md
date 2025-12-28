@@ -25,7 +25,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | AtomicFileWriter | ✅ | Safe file writing |
 | Endian readers | 🔶 | In BinaryData, may need standalone EndianReader class |
 | Syncsafe integer utilities | 🔶 | In Id3v2Tag, could be extracted |
-| Extended float (80-bit) for AIFF | ❌ | Needed for AIFF sample rate |
+| Extended float (80-bit) for AIFF | ✅ | ExtendedFloat class with ToDouble/FromDouble |
 | ITagLibStream interface | ❌ | Stream abstraction from spec (alternative to IFileSystem) |
 | Format detection factory | ❌ | Magic byte detection per spec |
 

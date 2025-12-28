@@ -8,8 +8,8 @@
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| **Tests Passing** | 1,360 | Solid foundation |
-| **Source Files** | 56 | Core + 4 formats |
+| **Tests Passing** | 1,376 | Solid foundation |
+| **Source Files** | 57 | Core + 4 formats |
 | **Formats Complete** | 4 of 22 | MP3, FLAC, OGG Vorbis, WAV |
 | **Format Coverage** | ~15% | Significant work remaining |
 | **Core Infrastructure** | ✅ 100% | Tag, BinaryData, IFileSystem, Picture |
@@ -36,18 +36,18 @@ Based on multi-perspective analysis, the original roadmap is reordered:
 ## Milestone Map
 
 ### Milestone 1: Technical Debt & Infrastructure
-**Duration:** 1 week | **Status:** Not Started
+**Duration:** 1 week | **Status:** In Progress
 
 Fix blocking issues before new formats:
 
-| Task | Effort | Why |
-|------|--------|-----|
-| Extract `EndianReader.cs` static class | 2h | Used by 10+ formats |
-| Extract `SyncsafeInteger.cs` static class | 1h | Currently embedded in Id3v2Tag |
-| Create `ExtendedFloat.cs` (80-bit IEEE 754) | 4h | Blocks AIFF sample rate |
-| Fix DSD duration overflow (use double) | 1h | Known critical bug |
-| Format detection factory | 4h | Extensible magic byte detection |
-| Complete IDisposable pattern | 4h | Prevent resource leaks |
+| Task | Effort | Status |
+|------|--------|--------|
+| Extract `EndianReader.cs` static class | 2h | ❌ Not started |
+| Extract `SyncsafeInteger.cs` static class | 1h | ❌ Not started |
+| Create `ExtendedFloat.cs` (80-bit IEEE 754) | 4h | ✅ Complete |
+| Fix DSD duration overflow (use double) | 1h | ❌ Not started |
+| Format detection factory | 4h | ❌ Not started |
+| Complete IDisposable pattern | 4h | ❌ Not started |
 
 **Exit Criteria:**
 - All utility classes extracted and tested
