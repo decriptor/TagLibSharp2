@@ -62,7 +62,8 @@ jobs:
     needs: validate
     environment: nuget
     permissions:
-      id-token: write  # Required for OIDC token request
+      id-token: write   # Required for OIDC token request
+      contents: read    # Required to checkout private repo
 
     steps:
       - name: Checkout
