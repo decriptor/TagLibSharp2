@@ -6,7 +6,7 @@
 		<IsTestProject>true</IsTestProject>
 		<!-- Relax analysis for test projects -->
 		<AnalysisLevel>latest-recommended</AnalysisLevel>
-		<NoWarn>$(NoWarn);CA1707;CA1515;MSTEST0037;CA1310</NoWarn>
+		<NoWarn>$(NoWarn);CA1707;CA1515;MSTEST0037;CA1310;CA1806;MSTEST0032</NoWarn>
 	</PropertyGroup>
 
 	<ItemGroup>
