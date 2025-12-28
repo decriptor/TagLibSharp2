@@ -21,6 +21,14 @@ public sealed class Id3v2Tag : Tag
 	readonly List<LyricsFrame> _lyricsFrames = new (2);
 	readonly List<UniqueFileIdFrame> _uniqueFileIdFrames = new (2);
 	readonly List<InvolvedPeopleFrame> _involvedPeopleFrames = new (2);
+	readonly List<PopularimeterFrame> _popularimeterFrames = new (2);
+	readonly List<UrlFrame> _urlFrames = new (8);
+	readonly List<UserUrlFrame> _userUrlFrames = new (4);
+	readonly List<SyncLyricsFrame> _syncLyricsFrames = new (2);
+	readonly List<GeneralObjectFrame> _generalObjectFrames = new (2);
+	readonly List<PrivateFrame> _privateFrames = new (4);
+	readonly List<ChapterFrame> _chapterFrames = new (8);
+	readonly List<TableOfContentsFrame> _tableOfContentsFrames = new (2);
 
 	// Cache for PerformersRole to avoid recalculating on each access
 	string[]? _performersRoleCache;
@@ -156,6 +164,205 @@ public sealed class Id3v2Tag : Tag
 	/// Gets the list of unique file identifier frames (UFID) in this tag.
 	/// </summary>
 	public IReadOnlyList<UniqueFileIdFrame> UniqueFileIdFrames => _uniqueFileIdFrames;
+
+	/// <summary>
+	/// Gets the list of popularimeter frames (POPM) in this tag.
+	/// </summary>
+	public IReadOnlyList<PopularimeterFrame> PopularimeterFrames => _popularimeterFrames;
+
+	/// <summary>
+	/// Gets or sets the rating (0-255) for the default email identifier.
+	/// </summary>
+	/// <remarks>
+	/// Uses the first POPM frame if multiple exist.
+	/// Setting creates a new POPM frame with a default email if none exists.
+	/// </remarks>
+	public byte? Rating {
+		get => _popularimeterFrames.Count > 0 ? _popularimeterFrames[0].Rating : null;
+		set {
+			if (value is null) {
+				_popularimeterFrames.Clear ();
+				return;
+			}
+			if (_popularimeterFrames.Count == 0)
+				_popularimeterFrames.Add (new PopularimeterFrame ("no@email", value.Value, 0));
+			else
+				_popularimeterFrames[0].Rating = value.Value;
+		}
+	}
+
+	/// <summary>
+	/// Gets or sets the play count for the default email identifier.
+	/// </summary>
+	/// <remarks>
+	/// Uses the first POPM frame if multiple exist.
+	/// Setting creates a new POPM frame with a default email if none exists.
+	/// </remarks>
+	public ulong? PlayCount {
+		get => _popularimeterFrames.Count > 0 ? _popularimeterFrames[0].PlayCount : null;
+		set {
+			if (value is null) {
+				if (_popularimeterFrames.Count > 0)
+					_popularimeterFrames[0].PlayCount = 0;
+				return;
+			}
+			if (_popularimeterFrames.Count == 0)
+				_popularimeterFrames.Add (new PopularimeterFrame ("no@email", 0, value.Value));
+			else
+				_popularimeterFrames[0].PlayCount = value.Value;
+		}
+	}
+
+	/// <summary>
+	/// Gets the popularimeter frame for a specific email identifier.
+	/// </summary>
+	/// <param name="email">The email identifier.</param>
+	/// <returns>The popularimeter frame, or null if not found.</returns>
+	public PopularimeterFrame? GetPopularimeter (string email)
+	{
+		for (var i = 0; i < _popularimeterFrames.Count; i++) {
+			if (string.Equals (_popularimeterFrames[i].Email, email, StringComparison.OrdinalIgnoreCase))
+				return _popularimeterFrames[i];
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Sets or adds a popularimeter frame for a specific email identifier.
+	/// </summary>
+	/// <param name="email">The email identifier.</param>
+	/// <param name="rating">The rating value (0-255).</param>
+	/// <param name="playCount">The play count (optional).</param>
+	public void SetPopularimeter (string email, byte rating, ulong playCount = 0)
+	{
+		for (var i = 0; i < _popularimeterFrames.Count; i++) {
+			if (string.Equals (_popularimeterFrames[i].Email, email, StringComparison.OrdinalIgnoreCase)) {
+				_popularimeterFrames[i].Rating = rating;
+				_popularimeterFrames[i].PlayCount = playCount;
+				return;
+			}
+		}
+		_popularimeterFrames.Add (new PopularimeterFrame (email, rating, playCount));
+	}
+
+	/// <summary>
+	/// Gets the list of URL frames (W*** except WXXX) in this tag.
+	/// </summary>
+	public IReadOnlyList<UrlFrame> UrlFrames => _urlFrames;
+
+	/// <summary>
+	/// Gets the list of user-defined URL frames (WXXX) in this tag.
+	/// </summary>
+	public IReadOnlyList<UserUrlFrame> UserUrlFrames => _userUrlFrames;
+
+	/// <summary>
+	/// Gets the list of synchronized lyrics frames (SYLT) in this tag.
+	/// </summary>
+	public IReadOnlyList<SyncLyricsFrame> SyncLyricsFrames => _syncLyricsFrames;
+
+	/// <summary>
+	/// Gets the list of general encapsulated object frames (GEOB) in this tag.
+	/// </summary>
+	public IReadOnlyList<GeneralObjectFrame> GeneralObjectFrames => _generalObjectFrames;
+
+	/// <summary>
+	/// Gets the list of private frames (PRIV) in this tag.
+	/// </summary>
+	public IReadOnlyList<PrivateFrame> PrivateFrames => _privateFrames;
+
+	/// <summary>
+	/// Gets the list of chapter frames (CHAP) in this tag.
+	/// </summary>
+	/// <remarks>
+	/// CHAP frames define chapters within audio content, commonly used in podcasts and audiobooks.
+	/// Each chapter has a unique element ID, time range, and optional title.
+	/// </remarks>
+	public IReadOnlyList<ChapterFrame> ChapterFrames => _chapterFrames;
+
+	/// <summary>
+	/// Gets the list of table of contents frames (CTOC) in this tag.
+	/// </summary>
+	/// <remarks>
+	/// CTOC frames define the structure of chapters. A tag typically has one top-level CTOC
+	/// that references CHAP frames by their element IDs.
+	/// </remarks>
+	public IReadOnlyList<TableOfContentsFrame> TableOfContentsFrames => _tableOfContentsFrames;
+
+	/// <summary>
+	/// Gets the URL for a specific frame ID.
+	/// </summary>
+	/// <param name="frameId">The frame ID (e.g., "WOAR", "WPUB").</param>
+	/// <returns>The URL, or null if not found.</returns>
+#pragma warning disable CA1055 // URI return type - ID3v2 URLs may be malformed
+	public string? GetUrl (string frameId)
+#pragma warning restore CA1055
+	{
+		for (var i = 0; i < _urlFrames.Count; i++) {
+			if (_urlFrames[i].Id == frameId)
+				return _urlFrames[i].Url;
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Sets or adds a URL frame.
+	/// </summary>
+	/// <param name="frameId">The frame ID (e.g., "WOAR", "WPUB").</param>
+	/// <param name="url">The URL, or null to remove the frame.</param>
+#pragma warning disable CA1054 // URI parameter - ID3v2 URLs may be malformed
+	public void SetUrl (string frameId, string? url)
+#pragma warning restore CA1054
+	{
+		for (var i = 0; i < _urlFrames.Count; i++) {
+			if (_urlFrames[i].Id == frameId) {
+				if (url is null)
+					_urlFrames.RemoveAt (i);
+				else
+					_urlFrames[i].Url = url;
+				return;
+			}
+		}
+		if (url is not null)
+			_urlFrames.Add (new UrlFrame (frameId, url));
+	}
+
+	/// <summary>
+	/// Gets a user-defined URL by description.
+	/// </summary>
+	/// <param name="description">The URL description.</param>
+	/// <returns>The URL, or null if not found.</returns>
+#pragma warning disable CA1055 // URI return type - ID3v2 URLs may be malformed
+	public string? GetUserUrl (string description)
+#pragma warning restore CA1055
+	{
+		for (var i = 0; i < _userUrlFrames.Count; i++) {
+			if (string.Equals (_userUrlFrames[i].Description, description, StringComparison.OrdinalIgnoreCase))
+				return _userUrlFrames[i].Url;
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Sets or adds a user-defined URL.
+	/// </summary>
+	/// <param name="description">The URL description.</param>
+	/// <param name="url">The URL, or null to remove the frame.</param>
+#pragma warning disable CA1054 // URI parameter - ID3v2 URLs may be malformed
+	public void SetUserUrl (string description, string? url)
+#pragma warning restore CA1054
+	{
+		for (var i = 0; i < _userUrlFrames.Count; i++) {
+			if (string.Equals (_userUrlFrames[i].Description, description, StringComparison.OrdinalIgnoreCase)) {
+				if (url is null)
+					_userUrlFrames.RemoveAt (i);
+				else
+					_userUrlFrames[i].Url = url;
+				return;
+			}
+		}
+		if (url is not null)
+			_userUrlFrames.Add (new UserUrlFrame (url, description));
+	}
 
 	/// <inheritdoc/>
 	public override string? Genre {
@@ -827,6 +1034,54 @@ public sealed class Id3v2Tag : Tag
 				if (involvedResult.IsSuccess)
 					tag._involvedPeopleFrames.Add (involvedResult.Frame!);
 			}
+			// Handle popularimeter frames (POPM)
+			else if (frameId == "POPM") {
+				var popmResult = PopularimeterFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (popmResult.IsSuccess)
+					tag._popularimeterFrames.Add (popmResult.Frame!);
+			}
+			// Handle user URL frames (WXXX)
+			else if (frameId == "WXXX") {
+				var wxxxResult = UserUrlFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (wxxxResult.IsSuccess)
+					tag._userUrlFrames.Add (wxxxResult.Frame!);
+			}
+			// Handle standard URL frames (W*** except WXXX)
+			else if (UrlFrame.IsUrlFrameId (frameId)) {
+				var urlResult = UrlFrame.Read (frameId, frameContent, (Id3v2Version)header.MajorVersion);
+				if (urlResult.IsSuccess)
+					tag._urlFrames.Add (urlResult.Frame!);
+			}
+			// Handle synchronized lyrics frames (SYLT)
+			else if (frameId == "SYLT") {
+				var syltResult = SyncLyricsFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (syltResult.IsSuccess)
+					tag._syncLyricsFrames.Add (syltResult.Frame!);
+			}
+			// Handle general encapsulated object frames (GEOB)
+			else if (frameId == "GEOB") {
+				var geobResult = GeneralObjectFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (geobResult.IsSuccess)
+					tag._generalObjectFrames.Add (geobResult.Frame!);
+			}
+			// Handle private frames (PRIV)
+			else if (frameId == "PRIV") {
+				var privResult = PrivateFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (privResult.IsSuccess)
+					tag._privateFrames.Add (privResult.Frame!);
+			}
+			// Handle chapter frames (CHAP)
+			else if (frameId == "CHAP") {
+				var chapResult = ChapterFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (chapResult.IsSuccess)
+					tag._chapterFrames.Add (chapResult.Frame!);
+			}
+			// Handle table of contents frames (CTOC)
+			else if (frameId == "CTOC") {
+				var ctocResult = TableOfContentsFrame.Read (frameContent, (Id3v2Version)header.MajorVersion);
+				if (ctocResult.IsSuccess)
+					tag._tableOfContentsFrames.Add (ctocResult.Frame!);
+			}
 
 			// Move to next frame
 			var totalFrameSize = FrameHeaderSize + frameSize;
@@ -1167,6 +1422,78 @@ public sealed class Id3v2Tag : Tag
 			framesSize += frameHeader.Length + content.Length;
 		}
 
+		// Render popularimeter frames (POPM)
+		for (var i = 0; i < _popularimeterFrames.Count; i++) {
+			var content = _popularimeterFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("POPM", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
+		// Render URL frames (W*** except WXXX)
+		for (var i = 0; i < _urlFrames.Count; i++) {
+			var content = _urlFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader (_urlFrames[i].Id, content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
+		// Render user URL frames (WXXX)
+		for (var i = 0; i < _userUrlFrames.Count; i++) {
+			var content = _userUrlFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("WXXX", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
+		// Render synchronized lyrics frames (SYLT)
+		for (var i = 0; i < _syncLyricsFrames.Count; i++) {
+			var content = _syncLyricsFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("SYLT", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
+		// Render general encapsulated object frames (GEOB)
+		for (var i = 0; i < _generalObjectFrames.Count; i++) {
+			var content = _generalObjectFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("GEOB", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
+		// Render private frames (PRIV)
+		for (var i = 0; i < _privateFrames.Count; i++) {
+			var content = _privateFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("PRIV", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
+		// Render chapter frames (CHAP)
+		for (var i = 0; i < _chapterFrames.Count; i++) {
+			var content = _chapterFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("CHAP", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
+		// Render table of contents frames (CTOC)
+		for (var i = 0; i < _tableOfContentsFrames.Count; i++) {
+			var content = _tableOfContentsFrames[i].RenderContent ();
+			var frameHeader = RenderFrameHeader ("CTOC", content.Length);
+			frameDataList.Add (frameHeader);
+			frameDataList.Add (content);
+			framesSize += frameHeader.Length + content.Length;
+		}
+
 		var totalSize = framesSize + paddingSize;
 
 		// Render header
@@ -1217,6 +1544,14 @@ public sealed class Id3v2Tag : Tag
 		_lyricsFrames.Clear ();
 		_uniqueFileIdFrames.Clear ();
 		_involvedPeopleFrames.Clear ();
+		_popularimeterFrames.Clear ();
+		_urlFrames.Clear ();
+		_userUrlFrames.Clear ();
+		_syncLyricsFrames.Clear ();
+		_generalObjectFrames.Clear ();
+		_privateFrames.Clear ();
+		_chapterFrames.Clear ();
+		_tableOfContentsFrames.Clear ();
 		InvalidatePerformersRoleCache ();
 	}
 
@@ -1474,6 +1809,239 @@ public sealed class Id3v2Tag : Tag
 		else
 			_uniqueFileIdFrames.RemoveAll (f =>
 				string.Equals (f.Owner, owner, StringComparison.OrdinalIgnoreCase));
+	}
+
+	/// <summary>
+	/// Adds a synchronized lyrics frame to the tag.
+	/// </summary>
+	/// <param name="frame">The SYLT frame to add.</param>
+	public void AddSyncLyrics (SyncLyricsFrame frame)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (frame is null)
+			throw new ArgumentNullException (nameof (frame));
+#else
+		ArgumentNullException.ThrowIfNull (frame);
+#endif
+		_syncLyricsFrames.Add (frame);
+	}
+
+	/// <summary>
+	/// Gets the first synchronized lyrics frame matching the specified criteria.
+	/// </summary>
+	/// <param name="language">The language code to match (null matches any).</param>
+	/// <param name="description">The description to match (null matches any).</param>
+	/// <returns>The SYLT frame, or null if not found.</returns>
+	public SyncLyricsFrame? GetSyncLyrics (string? language = null, string? description = null)
+	{
+		for (var i = 0; i < _syncLyricsFrames.Count; i++) {
+			var frame = _syncLyricsFrames[i];
+			if ((language is null || frame.Language == language) &&
+				(description is null || frame.Description == description))
+				return frame;
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Removes all synchronized lyrics frames matching the specified criteria.
+	/// </summary>
+	/// <param name="language">The language code to match (null matches any).</param>
+	/// <param name="description">The description to match (null matches any).</param>
+	public void RemoveSyncLyrics (string? language = null, string? description = null)
+	{
+		if (language is null && description is null)
+			_syncLyricsFrames.Clear ();
+		else
+			_syncLyricsFrames.RemoveAll (f =>
+				(language is null || f.Language == language) &&
+				(description is null || f.Description == description));
+	}
+
+	/// <summary>
+	/// Adds a general encapsulated object frame to the tag.
+	/// </summary>
+	/// <param name="frame">The GEOB frame to add.</param>
+	public void AddGeneralObject (GeneralObjectFrame frame)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (frame is null)
+			throw new ArgumentNullException (nameof (frame));
+#else
+		ArgumentNullException.ThrowIfNull (frame);
+#endif
+		_generalObjectFrames.Add (frame);
+	}
+
+	/// <summary>
+	/// Gets the first general encapsulated object frame matching the specified criteria.
+	/// </summary>
+	/// <param name="description">The description to match (case-insensitive), or null to match any.</param>
+	/// <returns>The GEOB frame, or null if not found.</returns>
+	public GeneralObjectFrame? GetGeneralObject (string? description = null)
+	{
+		for (var i = 0; i < _generalObjectFrames.Count; i++) {
+			if (description is null ||
+				string.Equals (_generalObjectFrames[i].Description, description, StringComparison.OrdinalIgnoreCase))
+				return _generalObjectFrames[i];
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Removes all general encapsulated object frames matching the specified description.
+	/// </summary>
+	/// <param name="description">The description to match (case-insensitive), or null to remove all.</param>
+	public void RemoveGeneralObjects (string? description = null)
+	{
+		if (description is null)
+			_generalObjectFrames.Clear ();
+		else
+			_generalObjectFrames.RemoveAll (f =>
+				string.Equals (f.Description, description, StringComparison.OrdinalIgnoreCase));
+	}
+
+	/// <summary>
+	/// Adds a private frame to the tag.
+	/// </summary>
+	/// <param name="frame">The PRIV frame to add.</param>
+	public void AddPrivateFrame (PrivateFrame frame)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (frame is null)
+			throw new ArgumentNullException (nameof (frame));
+#else
+		ArgumentNullException.ThrowIfNull (frame);
+#endif
+		_privateFrames.Add (frame);
+	}
+
+	/// <summary>
+	/// Gets the first private frame with the specified owner ID.
+	/// </summary>
+	/// <param name="ownerId">The owner ID to match (case-insensitive), or null to match any.</param>
+	/// <returns>The PRIV frame, or null if not found.</returns>
+	public PrivateFrame? GetPrivateFrame (string? ownerId = null)
+	{
+		for (var i = 0; i < _privateFrames.Count; i++) {
+			if (ownerId is null ||
+				string.Equals (_privateFrames[i].OwnerId, ownerId, StringComparison.OrdinalIgnoreCase))
+				return _privateFrames[i];
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Removes all private frames with the specified owner ID.
+	/// </summary>
+	/// <param name="ownerId">The owner ID to match (case-insensitive), or null to remove all.</param>
+	public void RemovePrivateFrames (string? ownerId = null)
+	{
+		if (ownerId is null)
+			_privateFrames.Clear ();
+		else
+			_privateFrames.RemoveAll (f =>
+				string.Equals (f.OwnerId, ownerId, StringComparison.OrdinalIgnoreCase));
+	}
+
+	/// <summary>
+	/// Adds a chapter frame to the tag.
+	/// </summary>
+	/// <param name="frame">The CHAP frame to add.</param>
+	public void AddChapter (ChapterFrame frame)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (frame is null)
+			throw new ArgumentNullException (nameof (frame));
+#else
+		ArgumentNullException.ThrowIfNull (frame);
+#endif
+		_chapterFrames.Add (frame);
+	}
+
+	/// <summary>
+	/// Gets a chapter frame by element ID.
+	/// </summary>
+	/// <param name="elementId">The element ID to match (case-sensitive), or null to get the first chapter.</param>
+	/// <returns>The CHAP frame, or null if not found.</returns>
+	public ChapterFrame? GetChapter (string? elementId = null)
+	{
+		for (var i = 0; i < _chapterFrames.Count; i++) {
+			if (elementId is null || _chapterFrames[i].ElementId == elementId)
+				return _chapterFrames[i];
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Removes a chapter frame by element ID.
+	/// </summary>
+	/// <param name="elementId">The element ID to match (case-sensitive), or null to remove all chapters.</param>
+	public void RemoveChapters (string? elementId = null)
+	{
+		if (elementId is null)
+			_chapterFrames.Clear ();
+		else
+			_chapterFrames.RemoveAll (f => f.ElementId == elementId);
+	}
+
+	/// <summary>
+	/// Adds a table of contents frame to the tag.
+	/// </summary>
+	/// <param name="frame">The CTOC frame to add.</param>
+	public void AddTableOfContents (TableOfContentsFrame frame)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (frame is null)
+			throw new ArgumentNullException (nameof (frame));
+#else
+		ArgumentNullException.ThrowIfNull (frame);
+#endif
+		_tableOfContentsFrames.Add (frame);
+	}
+
+	/// <summary>
+	/// Gets the top-level table of contents frame, or the first one if none is marked top-level.
+	/// </summary>
+	/// <returns>The CTOC frame, or null if no table of contents exists.</returns>
+#pragma warning disable CA1024 // Method has business logic to find top-level TOC first
+	public TableOfContentsFrame? GetTableOfContents ()
+#pragma warning restore CA1024
+	{
+		// First try to find the top-level TOC
+		for (var i = 0; i < _tableOfContentsFrames.Count; i++) {
+			if (_tableOfContentsFrames[i].IsTopLevel)
+				return _tableOfContentsFrames[i];
+		}
+
+		// Fall back to first TOC if no top-level exists
+		return _tableOfContentsFrames.Count > 0 ? _tableOfContentsFrames[0] : null;
+	}
+
+	/// <summary>
+	/// Gets a table of contents frame by element ID.
+	/// </summary>
+	/// <param name="elementId">The element ID to match (case-sensitive).</param>
+	/// <returns>The CTOC frame, or null if not found.</returns>
+	public TableOfContentsFrame? GetTableOfContentsById (string elementId)
+	{
+		for (var i = 0; i < _tableOfContentsFrames.Count; i++) {
+			if (_tableOfContentsFrames[i].ElementId == elementId)
+				return _tableOfContentsFrames[i];
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Removes a table of contents frame by element ID.
+	/// </summary>
+	/// <param name="elementId">The element ID to match (case-sensitive), or null to remove all.</param>
+	public void RemoveTableOfContents (string? elementId = null)
+	{
+		if (elementId is null)
+			_tableOfContentsFrames.Clear ();
+		else
+			_tableOfContentsFrames.RemoveAll (f => f.ElementId == elementId);
 	}
 
 	static string GetFrameId (ReadOnlySpan<byte> data)
