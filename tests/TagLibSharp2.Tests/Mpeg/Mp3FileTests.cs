@@ -209,6 +209,89 @@ public sealed class Mp3FileTests
 
 	#endregion
 
+	#region Audio Properties Tests
+
+	[TestMethod]
+	public void Read_WithXingHeader_ParsesAudioProperties ()
+	{
+		// Create ID3v2 + MP3 frame with Xing header
+		var id3v2 = new Id3v2Tag ();
+		var v2Data = id3v2.Render ();
+
+		// Create MP3 frame header (MPEG1 Layer3, 128kbps, 44100Hz, stereo)
+		var frameData = new TagLibSharp2.Core.BinaryDataBuilder ();
+		frameData.Add (0xFF, 0xFB, 0x90, 0x00); // MPEG1 L3 128kbps 44100Hz stereo
+
+		// Side info (32 bytes for stereo)
+		frameData.Add (new byte[32]);
+
+		// Xing header with frame count
+		frameData.Add (0x58, 0x69, 0x6E, 0x67); // "Xing"
+		frameData.AddUInt32BE (0x03);            // Flags: frames + bytes
+		frameData.AddUInt32BE (4717);            // Frame count for ~107 seconds
+		frameData.AddUInt32BE (1710336);         // Byte count
+
+		// Pad to full frame size
+		while (frameData.Length < 417)
+			frameData.Add (0);
+
+		var fullData = new byte[v2Data.Length + frameData.Length];
+		v2Data.Span.CopyTo (fullData);
+		frameData.ToBinaryData ().Span.CopyTo (fullData.AsSpan (v2Data.Length));
+
+		var result = Mp3File.Read (fullData);
+
+		Assert.IsNotNull (result.File?.AudioProperties);
+		Assert.AreEqual (44100, result.File.AudioProperties.SampleRate);
+		Assert.AreEqual (2, result.File.AudioProperties.Channels);
+		Assert.IsTrue (result.File.AudioProperties.IsVbr);
+		Assert.IsTrue (result.File.Duration?.TotalSeconds > 100);
+	}
+
+	[TestMethod]
+	public void Read_CbrMp3_ParsesAudioProperties ()
+	{
+		// Create CBR MP3 (no Xing header)
+		var frameData = new TagLibSharp2.Core.BinaryDataBuilder ();
+		frameData.Add (0xFF, 0xFB, 0x90, 0x00); // MPEG1 L3 128kbps 44100Hz stereo
+
+		// Side info
+		frameData.Add (new byte[32]);
+
+		// No Xing header, just padding
+		while (frameData.Length < 417)
+			frameData.Add (0);
+
+		// Add more frames to simulate file size
+		while (frameData.Length < 50000)
+			frameData.Add (0);
+
+		var result = Mp3File.Read (frameData.ToArray ());
+
+		Assert.IsNotNull (result.File?.AudioProperties);
+		Assert.AreEqual (44100, result.File.AudioProperties.SampleRate);
+		Assert.AreEqual (128, result.File.AudioProperties.Bitrate);
+		Assert.IsFalse (result.File.AudioProperties.IsVbr);
+	}
+
+	[TestMethod]
+	public void Duration_DelegatesTo_AudioProperties ()
+	{
+		// Create minimal MP3 with frame
+		var frameData = new TagLibSharp2.Core.BinaryDataBuilder ();
+		frameData.Add (0xFF, 0xFB, 0x90, 0x00);
+		frameData.Add (new byte[32]);
+		while (frameData.Length < 50000)
+			frameData.Add (0);
+
+		var result = Mp3File.Read (frameData.ToArray ());
+
+		Assert.IsNotNull (result.File?.Duration);
+		Assert.AreEqual (result.File.AudioProperties!.Duration, result.File.Duration);
+	}
+
+	#endregion
+
 	#region Render Tests
 
 	[TestMethod]

@@ -51,6 +51,21 @@ public sealed class Mp3File
 	public int Id3v2Size { get; private set; }
 
 	/// <summary>
+	/// Gets the audio properties (duration, bitrate, sample rate, etc.).
+	/// </summary>
+	/// <remarks>
+	/// For VBR files with Xing or VBRI headers, duration is calculated accurately.
+	/// For CBR files, duration is estimated from file size.
+	/// May be null if audio properties could not be determined.
+	/// </remarks>
+	public MpegAudioProperties? AudioProperties { get; private set; }
+
+	/// <summary>
+	/// Gets the duration of the audio. Convenience property that delegates to AudioProperties.
+	/// </summary>
+	public TimeSpan? Duration => AudioProperties?.Duration;
+
+	/// <summary>
 	/// Gets a value indicating whether this file has an ID3v1 tag.
 	/// </summary>
 	public bool HasId3v1Tag => Id3v1Tag is not null;
@@ -270,6 +285,7 @@ public sealed class Mp3File
 			return Mp3FileReadResult.Failure ("Data too short for MP3 file");
 
 		var file = new Mp3File ();
+		var binaryData = new BinaryData (data);
 
 		// Try to read ID3v2 from the beginning
 		var id3v2Result = Id3v2Tag.Read (data);
@@ -285,6 +301,11 @@ public sealed class Mp3File
 			if (id3v1Result.IsSuccess)
 				file.Id3v1Tag = id3v1Result.Tag;
 		}
+
+		// Parse audio properties (duration, bitrate, etc.)
+		// Audio starts after ID3v2 tag
+		if (MpegAudioProperties.TryParse (binaryData, file.Id3v2Size, out var audioProps))
+			file.AudioProperties = audioProps;
 
 		return Mp3FileReadResult.Success (file);
 	}
