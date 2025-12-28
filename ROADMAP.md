@@ -114,19 +114,19 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 
 ## Phase 3: File Format Handlers (P0 - MVP)
 
-### MP3/MPEG
+### MP3/MPEG ✅ Complete (Read+Write)
 | Feature | Status |
 |---------|--------|
 | Basic read | ✅ |
 | ID3v2 at start | ✅ |
 | ID3v1 at end | ✅ |
-| MPEG frame header parsing | 🔶 |
-| Xing/VBRI VBR header | ❌ |
-| LAME tag info | ❌ |
-| Duration calculation (VBR) | ❌ |
-| Duration calculation (CBR) | 🔶 |
+| MPEG frame header parsing | ✅ |
+| Xing/VBRI VBR header | ✅ |
+| LAME tag info | 🔶 |
+| Duration calculation (VBR) | ✅ |
+| Duration calculation (CBR) | ✅ |
 | APE tag support | ❌ |
-| Write/save | ❌ |
+| Write/save | ✅ |
 
 ### FLAC
 | Feature | Status |

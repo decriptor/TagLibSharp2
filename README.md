@@ -167,7 +167,6 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
 - [ ] ASF/WMA format
 - [ ] APE tags for WavPack/Musepack
 - [ ] AIFF write support
-- [ ] VBR header parsing for accurate MP3 duration
 
 ## Documentation
 
