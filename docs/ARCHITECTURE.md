@@ -33,10 +33,16 @@ tagsharp/
 │       │   ├── FlacFile.cs        # FLAC container
 │       │   ├── VorbisComment.cs   # Vorbis comments
 │       │   └── FlacPicture.cs     # FLAC picture blocks
-│       └── Ogg/                   # Ogg container support
-│           ├── OggVorbisFile.cs   # Ogg Vorbis files
-│           ├── OggPage.cs         # Ogg page parsing
-│           └── OggCrc.cs          # CRC computation
+│       ├── Ogg/                   # Ogg container support
+│       │   ├── OggVorbisFile.cs   # Ogg Vorbis files
+│       │   ├── OggPage.cs         # Ogg page parsing
+│       │   └── OggCrc.cs          # CRC computation
+│       └── Riff/                  # RIFF container support
+│           ├── RiffChunk.cs       # RIFF chunk (FourCC + data)
+│           ├── RiffFile.cs        # RIFF container parser
+│           ├── RiffInfoTag.cs     # LIST INFO metadata
+│           ├── WavAudioProperties.cs # fmt chunk parser
+│           └── WavFile.cs         # WAV file handler
 ├── tests/
 │   └── TagLibSharp2.Tests/            # Unit tests mirror source structure
 └── docs/                          # Developer documentation
@@ -183,9 +189,9 @@ The abstract `Tag` base class provides common metadata properties:
 └─────────────────────────────────────────┘
            ▲
            │
-    ┌──────┼──────────┐
-    │      │          │
-Id3v1Tag Id3v2Tag VorbisComment
+    ┌──────┼──────────┬─────────────┐
+    │      │          │             │
+Id3v1Tag Id3v2Tag VorbisComment RiffInfoTag
 ```
 
 ### ID3 Implementation
@@ -234,6 +240,38 @@ OggVorbisFile
     ├── Identification header
     ├── Comment header (VorbisComment)
     └── Setup header
+```
+
+### RIFF/WAV Implementation
+
+```
+RiffFile (RIFF container)
+├── Magic: "RIFF" (4 bytes)
+├── Size (4 bytes, little-endian)
+├── FormType: "WAVE", "AVI ", etc. (4 bytes)
+└── Chunks[]
+    ├── FourCC (4 bytes)
+    ├── Size (4 bytes, little-endian)
+    └── Data (padded to even boundary)
+
+WavFile
+├── RiffFile (FormType="WAVE")
+└── Chunks[]
+    ├── fmt  (audio format, required)
+    │   ├── FormatCode (1=PCM, 3=float)
+    │   ├── Channels, SampleRate
+    │   └── BitsPerSample
+    ├── data (audio samples, required)
+    ├── LIST INFO (native metadata, optional)
+    │   └── RiffInfoTag
+    │       ├── INAM (title)
+    │       ├── IART (artist)
+    │       ├── IPRD (album)
+    │       └── ICRD, ITRK, IGNR, etc.
+    └── id3  (ID3v2 tag, optional)
+        └── Id3v2Tag (richer metadata)
+
+Tag Priority: Id3v2Tag > RiffInfoTag
 ```
 
 ## Future Architecture
