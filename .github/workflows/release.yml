@@ -84,25 +84,16 @@ jobs:
       - name: Pack
         run: dotnet pack --configuration Release -p:ReleaseVersion=${{ needs.validate.outputs.version }} --output ./artifacts
 
-      - name: Get NuGet API key (Trusted Publishing)
-        id: nuget-auth
-        run: |
-          # Request OIDC token from GitHub
-          OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r '.value')
-
-          # Exchange for NuGet API key
-          API_KEY=$(curl -s -X POST https://api.nuget.org/v3/trusted-publish/token \
-            -H "Content-Type: application/json" \
-            -d "{\"oidcToken\": \"$OIDC_TOKEN\"}" | jq -r '.apiKey')
-
-          echo "::add-mask::$API_KEY"
-          echo "api-key=$API_KEY" >> $GITHUB_OUTPUT
+      - name: NuGet login (Trusted Publishing)
+        uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ secrets.NUGET_USER }}
 
       - name: Push to NuGet
         run: |
           dotnet nuget push ./artifacts/*.nupkg \
-            --api-key ${{ steps.nuget-auth.outputs.api-key }} \
+            --api-key ${{ steps.nuget-login.outputs.nuget-api-key }} \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
 
