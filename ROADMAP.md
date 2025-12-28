@@ -25,7 +25,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | AtomicFileWriter | ✅ | Safe file writing |
 | Endian readers | 🔶 | In BinaryData, may need standalone EndianReader class |
 | Syncsafe integer utilities | 🔶 | In Id3v2Tag, could be extracted |
-| Extended float (80-bit) for AIFF | ✅ | ExtendedFloat class with ToDouble/FromDouble |
+| Extended float (80-bit) for AIFF | ✅ | ExtendedFloat class with full ToDouble/FromDouble/ToBytes support |
 | ITagLibStream interface | ❌ | Stream abstraction from spec (alternative to IFileSystem) |
 | Format detection factory | ❌ | Magic byte detection per spec |
 
@@ -151,7 +151,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Write | ✅ |
 | Duration from granule | 🔶 |
 
-### WAV
+### WAV ✅ Complete
 | Feature | Status |
 |---------|--------|
 | RIFF container | ✅ |
@@ -161,13 +161,14 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | ID3v2 chunk | ✅ |
 | Write | ✅ |
 
-### AIFF
+### AIFF ✅ Complete (Read)
 | Feature | Status |
 |---------|--------|
 | FORM container | ✅ |
 | COMM chunk | ✅ |
 | Extended float parsing | ✅ |
 | ID3 chunk | ✅ |
+| AIFC format detection | ✅ |
 | Write | ❌ |
 
 ### AAC/ALAC (M4A/MP4)

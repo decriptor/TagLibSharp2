@@ -13,7 +13,7 @@ A modern .NET library for reading and writing metadata in media files.
 - Result-based error handling (no exceptions)
 
 **Choose TagLib# if you need:**
-- MP4/M4A, ASF/WMA, APE, or AIFF support (not yet implemented here)
+- MP4/M4A, ASF/WMA, or APE support (not yet implemented here)
 - A battle-tested library used in production for years
 
 See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison.
@@ -25,8 +25,8 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Performance-First**: Zero-allocation parsing with `Span<T>` and `ArrayPool<T>`
 - **Multi-Target**: Supports .NET Standard 2.0/2.1, .NET 8.0, and .NET 10.0
 - **Format Support**:
-  - Audio: MP3 (ID3v1/ID3v2), FLAC, OGG Vorbis
-  - Planned: WAV, MP4, MKV, JPEG/PNG/TIFF (EXIF/XMP)
+  - Audio: MP3 (ID3v1/ID3v2), FLAC, OGG Vorbis, WAV (RIFF INFO/ID3v2), AIFF (read)
+  - Planned: MP4/M4A, ASF/WMA, APE, Opus, DSF
 
 ## Installation
 
@@ -48,6 +48,8 @@ dotnet build
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Xiph;
 using TagLibSharp2.Ogg;
+using TagLibSharp2.Riff;
+using TagLibSharp2.Aiff;
 
 // Read MP3 tags (prefers ID3v2, falls back to ID3v1)
 var result = Mp3File.ReadFromFile("song.mp3");
@@ -64,6 +66,14 @@ if (result.IsSuccess)
 // FLAC and Ogg Vorbis work the same way
 var flac = FlacFile.ReadFromFile("song.flac").File;
 var ogg = OggVorbisFile.ReadFromFile("song.ogg").File;
+
+// WAV files support both RIFF INFO and ID3v2 tags
+WavFile.TryParse(new BinaryData(File.ReadAllBytes("song.wav")), out var wav);
+Console.WriteLine($"WAV: {wav.Title} - {wav.AudioProperties?.Duration}");
+
+// AIFF files (read-only, includes audio properties)
+AiffFile.TryParse(new BinaryData(File.ReadAllBytes("song.aiff")), out var aiff);
+Console.WriteLine($"AIFF: {aiff.AudioProperties?.SampleRate}Hz");
 
 // Async support for high-throughput scenarios
 var asyncResult = await Mp3File.ReadFromFileAsync("song.mp3");
@@ -135,8 +145,29 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
 - [x] Array properties: Performers[], AlbumArtists[], Composers[], Genres[]
 - [x] IPicture interface and Pictures[] property on base Tag class
 
+### Phase 7: RIFF/WAV Support ✅
+- [x] RIFF container parsing with chunk navigation
+- [x] WAV format chunk (fmt) for audio properties
+- [x] RIFF INFO tags (INAM, IART, IPRD, etc.)
+- [x] ID3v2 chunk support in WAV files
+- [x] WAV file write operations
+
+### Phase 8: AIFF Support ✅
+- [x] FORM container parsing (IFF-style, big-endian)
+- [x] COMM chunk with 80-bit extended float sample rate
+- [x] SSND chunk detection
+- [x] ID3 chunk support for metadata
+- [x] AIFC (compressed) format detection
+- [x] ExtendedFloat utility for 80-bit IEEE 754
+
 ### Future
-- [ ] Additional formats: WAV, MP4, MKV, EXIF
+- [ ] MP4/M4A (AAC/ALAC) with iTunes atoms
+- [ ] Opus audio format
+- [ ] DSF (DSD) format
+- [ ] ASF/WMA format
+- [ ] APE tags for WavPack/Musepack
+- [ ] AIFF write support
+- [ ] VBR header parsing for accurate MP3 duration
 
 ## Documentation
 
