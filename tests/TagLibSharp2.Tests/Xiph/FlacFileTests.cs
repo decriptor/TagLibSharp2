@@ -456,4 +456,96 @@ public class FlacFileTests
 		Assert.IsTrue (reResult.IsSuccess);
 		Assert.HasCount (2, reResult.File!.PreservedBlocks);
 	}
+
+	// ===========================================================================
+	// MD5 Signature Tests
+	// ===========================================================================
+
+	[TestMethod]
+	public void AudioMd5Signature_WithZeroMd5_ReturnsZeros ()
+	{
+		var data = TestBuilders.Flac.CreateWithMd5 ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		var md5 = result.File!.AudioMd5Signature;
+		Assert.AreEqual (16, md5.Length);
+		for (var i = 0; i < 16; i++)
+			Assert.AreEqual (0, md5[i]);
+	}
+
+	[TestMethod]
+	public void AudioMd5Signature_WithNonZeroMd5_ReturnsCorrectBytes ()
+	{
+		var expectedMd5 = new byte[] { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10 };
+		var data = TestBuilders.Flac.CreateWithMd5 (expectedMd5);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		var md5 = result.File!.AudioMd5Signature;
+		Assert.AreEqual (16, md5.Length);
+		for (var i = 0; i < 16; i++)
+			Assert.AreEqual (expectedMd5[i], md5[i]);
+	}
+
+	[TestMethod]
+	public void AudioMd5SignatureHex_WithZeroMd5_ReturnsZeroString ()
+	{
+		var data = TestBuilders.Flac.CreateWithMd5 ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("00000000000000000000000000000000", result.File!.AudioMd5SignatureHex);
+	}
+
+	[TestMethod]
+	public void AudioMd5SignatureHex_WithNonZeroMd5_ReturnsCorrectHexString ()
+	{
+		var md5 = new byte[] { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10 };
+		var data = TestBuilders.Flac.CreateWithMd5 (md5);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("0123456789abcdeffedcba9876543210", result.File!.AudioMd5SignatureHex);
+	}
+
+	[TestMethod]
+	public void HasAudioMd5Signature_WithZeroMd5_ReturnsFalse ()
+	{
+		var data = TestBuilders.Flac.CreateWithMd5 ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsFalse (result.File!.HasAudioMd5Signature);
+	}
+
+	[TestMethod]
+	public void HasAudioMd5Signature_WithNonZeroMd5_ReturnsTrue ()
+	{
+		var md5 = new byte[] { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10 };
+		var data = TestBuilders.Flac.CreateWithMd5 (md5);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsTrue (result.File!.HasAudioMd5Signature);
+	}
+
+	[TestMethod]
+	public void HasAudioMd5Signature_WithSingleNonZeroByte_ReturnsTrue ()
+	{
+		// MD5 with only the last byte non-zero
+		var md5 = new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01 };
+		var data = TestBuilders.Flac.CreateWithMd5 (md5);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsTrue (result.File!.HasAudioMd5Signature);
+	}
 }

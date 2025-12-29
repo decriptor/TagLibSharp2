@@ -57,6 +57,54 @@ public sealed class FlacFile
 	public BinaryData StreamInfoData { get; }
 
 	/// <summary>
+	/// Gets the MD5 signature of the unencoded audio data from the STREAMINFO block.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// The MD5 signature is a 128-bit (16-byte) hash of the original unencoded audio data.
+	/// This can be used to verify that decoded audio matches the original recording.
+	/// </para>
+	/// <para>
+	/// A value of all zeros indicates the MD5 was not computed when the file was encoded
+	/// (some encoders skip this for performance).
+	/// </para>
+	/// </remarks>
+	public ReadOnlySpan<byte> AudioMd5Signature => StreamInfoData.Span.Length >= 34
+		? StreamInfoData.Span.Slice (18, 16)
+		: ReadOnlySpan<byte>.Empty;
+
+	/// <summary>
+	/// Gets the MD5 signature as a lowercase hexadecimal string.
+	/// </summary>
+	/// <returns>
+	/// A 32-character lowercase hex string, or null if STREAMINFO is invalid.
+	/// Returns "00000000000000000000000000000000" if MD5 was not computed during encoding.
+	/// </returns>
+	public string? AudioMd5SignatureHex => StreamInfoData.Length >= 34
+		? StreamInfoData.Slice (18, 16).ToHexString ()
+		: null;
+
+	/// <summary>
+	/// Gets a value indicating whether the audio MD5 signature was computed.
+	/// </summary>
+	/// <remarks>
+	/// Returns false if the MD5 signature is all zeros, which indicates the encoder
+	/// did not compute it (e.g., for faster encoding).
+	/// </remarks>
+	public bool HasAudioMd5Signature {
+		get {
+			if (StreamInfoData.Span.Length < 34)
+				return false;
+			var md5 = StreamInfoData.Span.Slice (18, 16);
+			for (var i = 0; i < 16; i++) {
+				if (md5[i] != 0)
+					return true;
+			}
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// Gets or sets the Vorbis Comment block containing metadata tags.
 	/// </summary>
 	/// <remarks>
