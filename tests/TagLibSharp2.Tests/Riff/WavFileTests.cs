@@ -368,4 +368,137 @@ public class WavFileTests
 
 		return builder.ToBinaryData ();
 	}
+
+	[TestMethod]
+	[TestCategory ("BWF")]
+	public void ReadFromData_WithBextChunk_ParsesBextTag ()
+	{
+		var wav = WavFile.ReadFromData (CreateWavWithBextChunk ());
+
+		Assert.IsNotNull (wav);
+		Assert.IsNotNull (wav.BextTag);
+		Assert.AreEqual ("Test Description", wav.BextTag.Description);
+		Assert.AreEqual ("TestOriginator", wav.BextTag.Originator);
+	}
+
+	[TestMethod]
+	[TestCategory ("BWF")]
+	public void Render_WithBextTag_RoundTrips ()
+	{
+		var wav = WavFile.ReadFromData (CreateMinimalWav ());
+		Assert.IsNotNull (wav);
+
+		wav.BextTag = new BextTag {
+			Description = "Broadcast Description",
+			Originator = "ProTools",
+			OriginationDate = "2025-12-28",
+			OriginationTime = "10:30:00",
+			TimeReference = 48000
+		};
+
+		var rendered = wav.Render ();
+		var roundTripped = WavFile.ReadFromData (rendered);
+
+		Assert.IsNotNull (roundTripped?.BextTag);
+		Assert.AreEqual ("Broadcast Description", roundTripped.BextTag.Description);
+		Assert.AreEqual ("ProTools", roundTripped.BextTag.Originator);
+		Assert.AreEqual ("2025-12-28", roundTripped.BextTag.OriginationDate);
+		Assert.AreEqual (48000UL, roundTripped.BextTag.TimeReference);
+	}
+
+	[TestMethod]
+	[TestCategory ("WAVEFORMATEXTENSIBLE")]
+	public void ReadFromData_WithExtensibleFormat_ParsesExtendedProperties ()
+	{
+		var wav = WavFile.ReadFromData (CreateWavWithExtensibleFormat ());
+
+		Assert.IsNotNull (wav);
+		Assert.IsNotNull (wav.ExtendedProperties);
+		Assert.AreEqual (6, wav.ExtendedProperties.Value.Channels);
+		Assert.AreEqual (WavSubFormat.Pcm, wav.ExtendedProperties.Value.SubFormat);
+		Assert.AreEqual (0x3Fu, wav.ExtendedProperties.Value.ChannelMask);
+	}
+
+	[TestMethod]
+	[TestCategory ("WAVEFORMATEXTENSIBLE")]
+	public void ReadFromData_StandardFormat_NoExtendedProperties ()
+	{
+		var wav = WavFile.ReadFromData (CreateMinimalWav ());
+
+		Assert.IsNotNull (wav);
+		Assert.IsNull (wav.ExtendedProperties);
+	}
+
+	static BinaryData CreateWavWithBextChunk ()
+	{
+		using var builder = new BinaryDataBuilder (1024);
+
+		var bextData = new byte[BextTag.MinimumSize];
+		// Write description at offset 0
+		var desc = System.Text.Encoding.ASCII.GetBytes ("Test Description");
+		Array.Copy (desc, bextData, desc.Length);
+		// Write originator at offset 256
+		var orig = System.Text.Encoding.ASCII.GetBytes ("TestOriginator");
+		Array.Copy (orig, 0, bextData, 256, orig.Length);
+
+		var bextSize = BextTag.MinimumSize;
+		var riffSize = 4 + 24 + 8 + bextSize + 8;
+
+		builder.AddStringLatin1 ("RIFF");
+		builder.AddUInt32LE ((uint)riffSize);
+		builder.AddStringLatin1 ("WAVE");
+
+		// fmt chunk
+		builder.AddStringLatin1 ("fmt ");
+		builder.AddUInt32LE (16);
+		builder.AddUInt16LE (1);
+		builder.AddUInt16LE (2);
+		builder.AddUInt32LE (44100);
+		builder.AddUInt32LE (176400);
+		builder.AddUInt16LE (4);
+		builder.AddUInt16LE (16);
+
+		// bext chunk
+		builder.AddStringLatin1 ("bext");
+		builder.AddUInt32LE ((uint)bextSize);
+		builder.Add (bextData);
+
+		// data chunk
+		builder.AddStringLatin1 ("data");
+		builder.AddUInt32LE (0);
+
+		return builder.ToBinaryData ();
+	}
+
+	static BinaryData CreateWavWithExtensibleFormat ()
+	{
+		using var builder = new BinaryDataBuilder (512);
+
+		builder.AddStringLatin1 ("RIFF");
+		builder.AddUInt32LE (60);
+		builder.AddStringLatin1 ("WAVE");
+
+		// fmt chunk (40 bytes for WAVEFORMATEXTENSIBLE)
+		builder.AddStringLatin1 ("fmt ");
+		builder.AddUInt32LE (40);
+		builder.AddUInt16LE (0xFFFE); // Extensible
+		builder.AddUInt16LE (6);      // 6 channels (5.1)
+		builder.AddUInt32LE (48000);  // Sample rate
+		builder.AddUInt32LE (576000); // Byte rate (48000 * 6 * 2)
+		builder.AddUInt16LE (12);     // Block align (6 * 2)
+		builder.AddUInt16LE (16);     // Bits per sample
+		builder.AddUInt16LE (22);     // cbSize
+		builder.AddUInt16LE (16);     // Valid bits per sample
+		builder.AddUInt32LE (0x3F);   // Channel mask (5.1: FL|FR|FC|LFE|BL|BR)
+		// SubFormat GUID for PCM
+		byte[] subFormat = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+			0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71];
+		builder.Add (subFormat);
+
+		// data chunk
+		builder.AddStringLatin1 ("data");
+		builder.AddUInt32LE (0);
+
+		return builder.ToBinaryData ();
+	}
 }

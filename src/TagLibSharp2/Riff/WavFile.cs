@@ -44,6 +44,11 @@ public sealed class WavFile
 	/// </summary>
 	public const string Id3ChunkId = "id3 ";
 
+	/// <summary>
+	/// FourCC for the BWF bext chunk.
+	/// </summary>
+	public const string BextChunkId = "bext";
+
 	readonly RiffFile _riff;
 
 	/// <summary>
@@ -63,6 +68,26 @@ public sealed class WavFile
 	/// May be null if no id3 chunk is present.
 	/// </remarks>
 	public Id3v2Tag? Id3v2Tag { get; set; }
+
+	/// <summary>
+	/// Gets or sets the BWF bext tag (Broadcast Wave Extension).
+	/// </summary>
+	/// <remarks>
+	/// The bext chunk contains broadcast metadata including description,
+	/// originator, timestamps, and time reference. Commonly used in
+	/// professional audio production.
+	/// May be null if no bext chunk is present.
+	/// </remarks>
+	public BextTag? BextTag { get; set; }
+
+	/// <summary>
+	/// Gets the extended audio properties from WAVEFORMATEXTENSIBLE.
+	/// </summary>
+	/// <remarks>
+	/// Only populated if the file uses WAVEFORMATEXTENSIBLE format (0xFFFE).
+	/// Contains speaker channel mapping and actual sub-format.
+	/// </remarks>
+	public WavExtendedProperties? ExtendedProperties { get; private set; }
 
 	/// <summary>
 	/// Gets the audio properties.
@@ -140,6 +165,9 @@ public sealed class WavFile
 		if (fmtChunk.HasValue) {
 			var dataSize = dataChunk?.DataSize ?? 0;
 			wav.Properties = WavAudioPropertiesParser.Parse (fmtChunk.Value.Data, dataSize);
+
+			// Parse WAVEFORMATEXTENSIBLE if present
+			wav.ExtendedProperties = WavAudioPropertiesParser.ParseExtended (fmtChunk.Value.Data);
 		}
 
 		// Parse LIST INFO chunk
@@ -161,6 +189,11 @@ public sealed class WavFile
 			if (id3Result.IsSuccess)
 				wav.Id3v2Tag = id3Result.Tag;
 		}
+
+		// Parse bext chunk (BWF Broadcast Extension)
+		var bextChunk = riff.GetChunk (BextChunkId);
+		if (bextChunk.HasValue && bextChunk.Value.Data.Length >= BextTag.MinimumSize)
+			wav.BextTag = Riff.BextTag.Parse (bextChunk.Value.Data);
 
 		return wav;
 	}
@@ -217,10 +250,17 @@ public sealed class WavFile
 		// Copy all chunks from original, except metadata chunks we'll update
 		foreach (var chunk in _riff.AllChunks) {
 			// Skip chunks we'll replace with updated versions
-			if (chunk.FourCC == ListChunkId || chunk.FourCC == Id3ChunkId)
+			if (chunk.FourCC == ListChunkId || chunk.FourCC == Id3ChunkId || chunk.FourCC == BextChunkId)
 				continue;
 
 			riff.SetChunk (chunk);
+		}
+
+		// Add bext tag if present
+		if (BextTag is not null && !BextTag.IsEmpty) {
+			var bextData = BextTag.Render ();
+			if (bextData.Length > 0)
+				riff.SetChunk (new RiffChunk (BextChunkId, bextData));
 		}
 
 		// Add INFO tag if present
