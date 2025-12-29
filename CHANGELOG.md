@@ -23,8 +23,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WAV: Preserve all unknown chunks (fact, cue, smpl, etc.) during render
   - Only LIST INFO and id3 chunks are replaced; all others preserved
 
+#### AIFC Compression Support
+- `AiffAudioProperties.CompressionType` for AIFC compression type (e.g., "NONE", "sowt")
+- `AiffAudioProperties.CompressionName` for human-readable compression description
+- Standard AIFF files return null for compression properties
+
+#### Documentation
+- Format support matrix in README showing feature coverage per format
+- Dedicated NuGet README with quick start guide
+
+#### BWF (Broadcast Wave Format) Support
+- `BextTag` class for parsing and writing bext chunks
+  - Description, Originator, OriginatorReference fields
+  - OriginationDate and OriginationTime for timestamps
+  - TimeReference for sample-accurate synchronization
+  - UMID (Unique Material Identifier) for Version 1+
+  - CodingHistory for production chain tracking
+- `WavFile.BextTag` property for accessing bext metadata
+
+#### WAVEFORMATEXTENSIBLE Support
+- `WavAudioPropertiesParser.ParseExtended` for parsing extensible fmt chunks
+- `WavExtendedProperties` struct with:
+  - ValidBitsPerSample for actual signal precision
+  - ChannelMask for surround sound speaker positions
+  - SubFormat for actual audio format (PCM, IEEE Float, A-Law, mu-Law)
+- `WavChannelMask` constants for speaker positions (5.1, 7.1, etc.)
+- `WavSubFormat` enum for format identification
+- `WavFile.ExtendedProperties` property for accessing extended audio info
+
+#### Ogg CRC Validation
+- Optional `validateCrc` parameter on `OggVorbisFile.Read`, `ReadFromFile`, `ReadFromFileAsync`
+- When enabled, validates CRC-32 checksums on each Ogg page
+- Disabled by default for performance (existing behavior)
+- Useful for detecting file corruption in critical applications
+
+#### Security
+- Integer overflow protection for malformed chunk sizes
+  - AIFF/AIFC: Reject chunks claiming sizes > int.MaxValue
+  - RIFF/WAV: Reject chunks and INFO fields claiming sizes > int.MaxValue
+  - Defense-in-depth checks added to AiffChunk, RiffChunk, and RiffInfoTag
+
 ### Changed
-- Test count increased from 1512 to 1528
+- Test count increased from 1528 to 1564
 
 ## [0.1.0] - 2025-12-26
 

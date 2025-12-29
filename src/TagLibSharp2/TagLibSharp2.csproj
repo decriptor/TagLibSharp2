@@ -9,8 +9,8 @@
 		<Version>$(ReleaseVersion)</Version>
 
 		<!-- Package Metadata -->
-		<Description>A modern .NET library for reading and writing metadata in media files. Supports ID3v1, ID3v2, FLAC, and Ogg Vorbis tags with a clean, span-based API designed for performance.</Description>
-		<PackageTags>audio;video;image;metadata;id3;flac;vorbis;ogg;mp3;tags;taglib</PackageTags>
+		<Description>A modern .NET library for reading and writing metadata in media files. Supports MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, WAV, and AIFF with a clean, span-based API designed for performance. MIT licensed alternative to TagLib#.</Description>
+		<PackageTags>audio;metadata;id3;flac;vorbis;ogg;mp3;wav;aiff;tags;taglib;music;album-art;replaygain;musicbrainz</PackageTags>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://github.com/decriptor/TagLibSharp2</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
@@ -23,7 +23,7 @@
 
 	<!-- Package Content -->
 	<ItemGroup>
-		<None Include="..\..\README.md" Pack="true" PackagePath="\" />
+		<None Include="README.md" Pack="true" PackagePath="\" />
 	</ItemGroup>
 
 	<!-- Polyfills for older frameworks -->

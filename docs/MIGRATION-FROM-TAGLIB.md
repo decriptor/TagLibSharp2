@@ -112,6 +112,52 @@ var originalData = File.ReadAllBytes("song.mp3");
 mp3.SaveToFile("song.mp3", originalData);
 ```
 
+#### Why SaveToFile Requires Original Bytes
+
+This design is intentional and provides several benefits:
+
+1. **Memory efficiency**: Audio files can be gigabytes. TagLibSharp2 only parses metadata, not audio data. The audio content stays on disk until you're ready to write.
+
+2. **Explicit data flow**: You control when and how the original file is read. This enables:
+   - Reading from one location, writing to another
+   - Processing files from streams or memory buffers
+   - Avoiding double-reads when you already have the bytes
+
+3. **Atomic saves**: The original bytes are combined with updated metadata and written atomically (temp file + rename), ensuring you never lose data on failure.
+
+4. **Format preservation**: Unknown chunks (FLAC APPLICATION blocks, WAV metadata) are preserved from the original bytes.
+
+**Common patterns:**
+
+```csharp
+// Pattern 1: Modify in-place (like TagLib#)
+var result = Mp3File.ReadFromFile("song.mp3");
+var mp3 = result.File!;
+mp3.Title = "New Title";
+mp3.SaveToFile("song.mp3", File.ReadAllBytes("song.mp3"));
+
+// Pattern 2: Read once, modify, save (more efficient)
+var bytes = File.ReadAllBytes("song.mp3");
+var result = Mp3File.Read(bytes);
+var mp3 = result.File!;
+mp3.Title = "New Title";
+mp3.SaveToFile("song.mp3", bytes);
+
+// Pattern 3: Copy with modifications
+var bytes = File.ReadAllBytes("source.mp3");
+var result = Mp3File.Read(bytes);
+var mp3 = result.File!;
+mp3.Title = "Modified Copy";
+mp3.SaveToFile("destination.mp3", bytes);
+
+// Pattern 4: Async with cancellation
+var bytes = await File.ReadAllBytesAsync("song.mp3", cancellationToken);
+var result = await Mp3File.ReadFromFileAsync("song.mp3", ct: cancellationToken);
+var mp3 = result.File!;
+mp3.Title = "New Title";
+await mp3.SaveToFileAsync("song.mp3", bytes, cancellationToken);
+```
+
 ### 4. Async Support
 
 **TagLib#** is synchronous only:
@@ -417,7 +463,7 @@ async Task<string?> GetTitleAsync(string path, CancellationToken ct = default)
 
 TagLibSharp2 is under active development. These TagLib# features are planned but not yet implemented:
 
-- **Formats**: WAV, MP4/M4A, ASF/WMA, APE, AIFF
+- **Formats**: MP4/M4A, ASF/WMA, APE, Opus, DSF
 
 ## New Features Not in TagLib#
 

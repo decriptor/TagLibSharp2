@@ -28,6 +28,36 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
   - Audio: MP3 (ID3v1/ID3v2), FLAC, OGG Vorbis, WAV (RIFF INFO/ID3v2), AIFF (ID3v2)
   - Planned: MP4/M4A, ASF/WMA, APE, Opus, DSF
 
+## Format Support Matrix
+
+| Feature | MP3 | FLAC | Ogg Vorbis | WAV | AIFF |
+|---------|:---:|:----:|:----------:|:---:|:----:|
+| **Read metadata** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Write metadata** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Audio properties** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Async I/O** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Album art** | ✅ | ✅ | ✅ | ✅¹ | ✅¹ |
+| **ReplayGain** | ✅ | ✅ | ✅ | ✅¹ | ✅¹ |
+| **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅¹ | ✅¹ |
+| **Lyrics** | ✅ | ✅² | ✅² | ✅¹ | ✅¹ |
+| **Performer roles** | ✅ | ✅ | ✅ | ✅¹ | ✅¹ |
+| **BWF broadcast metadata** | — | — | — | ✅ | — |
+| **Surround sound info** | — | — | — | ✅³ | — |
+
+¹ Via embedded ID3v2 tag
+² Via Vorbis Comment LYRICS field
+³ Via WAVEFORMATEXTENSIBLE (channel mask, valid bits per sample)
+
+### Tag Format by Container
+
+| Container | Native Tag | Alternative Tags | Priority |
+|-----------|------------|------------------|----------|
+| MP3 | ID3v2 | ID3v1 | ID3v2 preferred |
+| FLAC | Vorbis Comment | — | Native only |
+| Ogg Vorbis | Vorbis Comment | — | Native only |
+| WAV | RIFF INFO | ID3v2, bext (BWF) | ID3v2 preferred |
+| AIFF | ID3 chunk | — | Native only |
+
 ## Installation
 
 ```bash
