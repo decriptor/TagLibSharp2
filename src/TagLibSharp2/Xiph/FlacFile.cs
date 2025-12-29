@@ -36,6 +36,17 @@ public sealed class FlacFile
 	readonly List<FlacPreservedBlock> _preservedBlocks = new (2);
 
 	/// <summary>
+	/// Gets the source file path if the file was read from disk.
+	/// </summary>
+	/// <remarks>
+	/// This is set when using <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// It is null when the file was read from binary data using <see cref="Read"/>.
+	/// </remarks>
+	public string? SourcePath { get; private set; }
+
+	IFileSystem? _sourceFileSystem;
+
+	/// <summary>
 	/// Gets the size of the metadata section in bytes (magic + all metadata blocks).
 	/// </summary>
 	public int MetadataSize { get; private set; }
@@ -242,7 +253,12 @@ public sealed class FlacFile
 		if (!readResult.IsSuccess)
 			return FlacFileReadResult.Failure (readResult.Error!);
 
-		return Read (readResult.Data!);
+		var result = Read (readResult.Data!);
+		if (result.IsSuccess) {
+			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fileSystem;
+		}
+		return result;
 	}
 
 	/// <summary>
@@ -263,7 +279,12 @@ public sealed class FlacFile
 		if (!readResult.IsSuccess)
 			return FlacFileReadResult.Failure (readResult.Error!);
 
-		return Read (readResult.Data!);
+		var result = Read (readResult.Data!);
+		if (result.IsSuccess) {
+			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fileSystem;
+		}
+		return result;
 	}
 
 	/// <summary>
@@ -403,6 +424,48 @@ public sealed class FlacFile
 			return Task.FromResult (FileWriteResult.Failure ("Failed to render FLAC file"));
 
 		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
+	/// Saves the file to the specified path, re-reading from the source file.
+	/// </summary>
+	/// <remarks>
+	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
+	/// and saves to the specified path. Requires that the file was read using
+	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// </remarks>
+	/// <param name="path">The target file path.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var fs = fileSystem ?? _sourceFileSystem;
+		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
+		if (!readResult.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+
+		return SaveToFile (path, readResult.Data!, fileSystem);
+	}
+
+	/// <summary>
+	/// Saves the file back to its source path.
+	/// </summary>
+	/// <remarks>
+	/// This convenience method saves the file back to the path it was read from.
+	/// Requires that the file was read using <see cref="ReadFromFile"/> or
+	/// <see cref="ReadFromFileAsync"/>.
+	/// </remarks>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	public FileWriteResult SaveToFile (IFileSystem? fileSystem = null)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		return SaveToFile (SourcePath!, fileSystem);
 	}
 
 	/// <summary>
