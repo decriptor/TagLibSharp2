@@ -21,7 +21,6 @@ public class Id3v1TagTests
 	// 97      30    Comment (or 28 + null + track in v1.1)
 	// 127     1     Genre ID
 
-	#region Reading Tests
 
 	[TestMethod]
 	public void Read_ValidTag_ParsesAllFields ()
@@ -150,9 +149,7 @@ public class Id3v1TagTests
 		Assert.IsNull (result.Tag!.Track);
 	}
 
-	#endregion
 
-	#region Rendering Tests
 
 	[TestMethod]
 	public void Render_BasicTag_Creates128Bytes ()
@@ -221,9 +218,7 @@ public class Id3v1TagTests
 		Assert.AreEqual (255, data[127]); // Undefined
 	}
 
-	#endregion
 
-	#region Round-Trip Tests
 
 	[TestMethod]
 	public void RoundTrip_AllFields_PreservesData ()
@@ -278,9 +273,7 @@ public class Id3v1TagTests
 		Assert.IsTrue (result.Tag!.IsEmpty);
 	}
 
-	#endregion
 
-	#region Genre Tests
 
 	[TestMethod]
 	public void GenreIndex_StandardGenres_MapCorrectly ()
@@ -325,9 +318,7 @@ public class Id3v1TagTests
 		Assert.AreEqual (255, Id3v1Genre.GetIndex (""));
 	}
 
-	#endregion
 
-	#region Clear and IsEmpty Tests
 
 	[TestMethod]
 	public void Clear_ResetsAllFields ()
@@ -356,9 +347,7 @@ public class Id3v1TagTests
 		Assert.IsFalse (tag.IsEmpty);
 	}
 
-	#endregion
 
-	#region Helper Methods
 
 	static byte[] CreateId3v1Tag (string title, string artist, string album,
 		string year, string comment, byte genre)
@@ -402,5 +391,4 @@ public class Id3v1TagTests
 		Array.Copy (bytes, 0, data, offset, length);
 	}
 
-	#endregion
 }

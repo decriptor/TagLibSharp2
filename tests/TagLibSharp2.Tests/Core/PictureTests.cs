@@ -10,7 +10,6 @@ namespace TagLibSharp2.Tests.Core;
 [TestCategory ("Core")]
 public class PictureTests
 {
-	#region DetectMimeType Tests
 
 	[TestMethod]
 	public void DetectMimeType_Jpeg_ReturnsCorrectType ()
@@ -69,9 +68,7 @@ public class PictureTests
 		Assert.AreEqual ("application/octet-stream", Picture.DetectMimeType ([]));
 	}
 
-	#endregion
 
-	#region SaveToFile and ToStream Tests
 
 	[TestMethod]
 	public void SaveToFile_WritesCorrectData ()
@@ -110,9 +107,7 @@ public class PictureTests
 		Assert.IsFalse (stream.CanWrite);
 	}
 
-	#endregion
 
-	#region Test Helper
 
 	/// <summary>
 	/// Concrete implementation for testing the abstract Picture class.
@@ -133,5 +128,4 @@ public class PictureTests
 		public override BinaryData PictureData { get; }
 	}
 
-	#endregion
 }

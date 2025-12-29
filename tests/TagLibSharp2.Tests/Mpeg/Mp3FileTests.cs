@@ -14,7 +14,6 @@ namespace TagLibSharp2.Tests.Mpeg;
 [TestCategory ("Unit")]
 public sealed class Mp3FileTests
 {
-	#region Parsing Tests
 
 	[TestMethod]
 	public void Read_EmptyData_ReturnsFailure ()
@@ -111,9 +110,7 @@ public sealed class Mp3FileTests
 		Assert.AreEqual ("V1 Title", result.File.Id3v1Tag.Title);
 	}
 
-	#endregion
 
-	#region Tag Property Tests
 
 	[TestMethod]
 	public void Title_WithId3v2_ReturnsId3v2Value ()
@@ -207,9 +204,7 @@ public sealed class Mp3FileTests
 		Assert.AreEqual ("f4e7c9d8-1234-5678-9abc-def012345678", result.File.Id3v2Tag!.MusicBrainzTrackId);
 	}
 
-	#endregion
 
-	#region Audio Properties Tests
 
 	[TestMethod]
 	public void Read_WithXingHeader_ParsesAudioProperties ()
@@ -290,9 +285,7 @@ public sealed class Mp3FileTests
 		Assert.AreEqual (result.File.AudioProperties!.Duration, result.File.Duration);
 	}
 
-	#endregion
 
-	#region Render Tests
 
 	[TestMethod]
 	public void Render_WithId3v2_PreservesTags ()
@@ -320,5 +313,4 @@ public sealed class Mp3FileTests
 		Assert.AreEqual ("Modified Title", reRead.File!.Title);
 	}
 
-	#endregion
 }

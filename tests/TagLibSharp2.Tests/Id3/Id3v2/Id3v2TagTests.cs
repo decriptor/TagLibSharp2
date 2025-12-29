@@ -25,7 +25,6 @@ public class Id3v2TagTests
 	// 8       2     Flags
 	// 10+     n     Frame data
 
-	#region Reading Tests
 
 	[TestMethod]
 	public void Read_ValidV24Tag_ParsesHeader ()
@@ -167,9 +166,7 @@ public class Id3v2TagTests
 		Assert.AreEqual ("Title", result.Tag!.Title);
 	}
 
-	#endregion
 
-	#region V2.3 vs V2.4 Size Tests
 
 	[TestMethod]
 	public void Read_V23_UsesBigEndianFrameSize ()
@@ -193,9 +190,7 @@ public class Id3v2TagTests
 		Assert.AreEqual ("Test", result.Tag!.Title);
 	}
 
-	#endregion
 
-	#region Frame Collection Tests
 
 	[TestMethod]
 	public void Frames_ReturnsAllFrames ()
@@ -230,9 +225,7 @@ public class Id3v2TagTests
 		Assert.IsNull (result.Tag!.GetTextFrame ("TIT2"));
 	}
 
-	#endregion
 
-	#region Property Tests
 
 	[TestMethod]
 	public void Title_SetValue_CreatesOrUpdatesFrame ()
@@ -285,9 +278,7 @@ public class Id3v2TagTests
 		Assert.IsFalse (tag.IsEmpty);
 	}
 
-	#endregion
 
-	#region Rendering Tests
 
 	[TestMethod]
 	public void Render_EmptyTag_CreatesValidHeader ()
@@ -330,9 +321,7 @@ public class Id3v2TagTests
 		Assert.IsGreaterThan (100, data.Length);
 	}
 
-	#endregion
 
-	#region Album Artist and Disc Number Tests
 
 	[TestMethod]
 	public void AlbumArtist_GetSet_Works ()
@@ -412,9 +401,7 @@ public class Id3v2TagTests
 		Assert.AreEqual ("120", tag.GetTextFrame ("TBPM"));
 	}
 
-	#endregion
 
-	#region Extended Header Tests
 
 	[TestMethod]
 	public void Read_V24_WithExtendedHeader_SkipsExtendedHeader ()
@@ -508,9 +495,7 @@ public class Id3v2TagTests
 		Assert.AreEqual ("Test", result.Tag!.Title);
 	}
 
-	#endregion
 
-	#region Frame Size Edge Cases
 
 	[TestMethod]
 	public void Read_V23_FrameSizeWithHighByte0x80_DoesNotOverflow ()
@@ -671,9 +656,7 @@ public class Id3v2TagTests
 		Assert.IsEmpty (result.Tag!.Frames);
 	}
 
-	#endregion
 
-	#region Helper Methods
 
 	static byte[] CreateMinimalTag (byte version, uint size)
 	{
@@ -810,5 +793,4 @@ public class Id3v2TagTests
 		return frame;
 	}
 
-	#endregion
 }

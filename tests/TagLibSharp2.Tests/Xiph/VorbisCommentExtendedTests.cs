@@ -12,7 +12,6 @@ namespace TagLibSharp2.Tests.Xiph;
 [TestCategory ("Unit")]
 public sealed class VorbisCommentExtendedTests
 {
-	#region ReplayGain Tests
 
 	[TestMethod]
 	public void ReplayGainTrackGain_GetSet_RoundTrips ()
@@ -89,9 +88,7 @@ public sealed class VorbisCommentExtendedTests
 		Assert.AreEqual ("1.000000", readResult.Tag.ReplayGainAlbumPeak);
 	}
 
-	#endregion
 
-	#region MusicBrainz ID Tests
 
 	[TestMethod]
 	public void MusicBrainzTrackId_GetSet_RoundTrips ()
@@ -186,9 +183,7 @@ public sealed class VorbisCommentExtendedTests
 		Assert.AreEqual ("fedcba98-7654-3210-fedc-ba9876543210", readResult.Tag.MusicBrainzAlbumArtistId);
 	}
 
-	#endregion
 
-	#region Combined Tests
 
 	[TestMethod]
 	public void AllExtendedFields_WithStandardFields_RenderAndReadBack ()
@@ -228,5 +223,4 @@ public sealed class VorbisCommentExtendedTests
 		Assert.AreEqual ("a1b2c3d4-5678-90ab-cdef-1234567890ab", read.MusicBrainzReleaseId);
 	}
 
-	#endregion
 }

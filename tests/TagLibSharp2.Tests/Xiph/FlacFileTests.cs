@@ -473,7 +473,6 @@ public class FlacFileTests
 		Assert.HasCount (2, reResult.File!.PreservedBlocks);
 	}
 
-	#region Helper Methods
 
 	static byte[] BuildMinimalFlacFile ()
 	{
@@ -790,5 +789,4 @@ public class FlacFileTests
 		return builder.ToBinaryData ().ToArray ();
 	}
 
-	#endregion
 }

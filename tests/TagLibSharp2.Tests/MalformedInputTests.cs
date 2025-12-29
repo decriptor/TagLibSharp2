@@ -18,7 +18,6 @@ namespace TagLibSharp2.Tests;
 [TestCategory ("Security")]
 public class MalformedInputTests
 {
-	#region Empty and Minimal Input
 
 	[TestMethod]
 	public void FlacFile_EmptyInput_ReturnsFailure ()
@@ -55,9 +54,7 @@ public class MalformedInputTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region Truncated Headers
 
 	[TestMethod]
 	public void FlacFile_TruncatedMagic_ReturnsFailure ()
@@ -108,9 +105,7 @@ public class MalformedInputTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region Invalid Magic/Signatures
 
 	[TestMethod]
 	public void FlacFile_WrongMagic_ReturnsFailure ()
@@ -147,9 +142,7 @@ public class MalformedInputTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region Invalid Sizes and Lengths
 
 	[TestMethod]
 	public void VorbisComment_VendorLengthOverflow_ReturnsFailure ()
@@ -209,9 +202,7 @@ public class MalformedInputTests
 		_ = result.IsSuccess; // Access result to ensure it was computed
 	}
 
-	#endregion
 
-	#region All Zeros Input
 
 	[TestMethod]
 	public void FlacFile_AllZeros_ReturnsFailure ()
@@ -237,9 +228,7 @@ public class MalformedInputTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region All 0xFF Input
 
 	[TestMethod]
 	public void FlacFile_AllOnes_ReturnsFailure ()
@@ -268,9 +257,7 @@ public class MalformedInputTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region Random Data
 
 	[TestMethod]
 	public void FlacFile_RandomData_DoesNotCrash ()
@@ -318,9 +305,7 @@ public class MalformedInputTests
 		_ = result.IsSuccess; // Access result to ensure it was computed
 	}
 
-	#endregion
 
-	#region Boundary Conditions
 
 	[TestMethod]
 	public void FlacFile_ExactlyMinimumSize_DoesNotCrash ()
@@ -364,9 +349,7 @@ public class MalformedInputTests
 		Assert.AreEqual ("", result.Tag!.VendorString);
 	}
 
-	#endregion
 
-	#region Recursive/Circular References
 
 	[TestMethod]
 	public void FlacFile_MetadataBlockPointsToItself_DoesNotHang ()
@@ -383,9 +366,7 @@ public class MalformedInputTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region Invalid UTF-8
 
 	[TestMethod]
 	public void VorbisComment_InvalidUtf8InVendor_DoesNotCrash ()
@@ -419,5 +400,4 @@ public class MalformedInputTests
 		_ = result.IsSuccess;
 	}
 
-	#endregion
 }

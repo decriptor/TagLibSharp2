@@ -18,7 +18,6 @@ namespace TagLibSharp2.Tests.Id3.Id3v2.Frames;
 [TestCategory ("Id3v2")]
 public class UniqueFileIdFrameTests
 {
-	#region Construction Tests
 
 	[TestMethod]
 	public void Constructor_WithBinaryData_SetsProperties ()
@@ -83,9 +82,7 @@ public class UniqueFileIdFrameTests
 		Assert.IsTrue (owner.Contains ("musicbrainz", StringComparison.OrdinalIgnoreCase));
 	}
 
-	#endregion
 
-	#region IdentifierString Tests
 
 	[TestMethod]
 	public void IdentifierString_AsciiBytes_ReturnsString ()
@@ -119,9 +116,7 @@ public class UniqueFileIdFrameTests
 		Assert.IsNull (frame.IdentifierString);
 	}
 
-	#endregion
 
-	#region Read Tests
 
 	[TestMethod]
 	public void Read_ValidFrame_ParsesCorrectly ()
@@ -191,9 +186,7 @@ public class UniqueFileIdFrameTests
 		Assert.IsNotNull (result.Error);
 	}
 
-	#endregion
 
-	#region RoundTrip Tests
 
 	[TestMethod]
 	public void RenderContent_MusicBrainzId_RoundTrips ()
@@ -237,9 +230,7 @@ public class UniqueFileIdFrameTests
 		Assert.IsTrue (result.Frame.Identifier.IsEmpty);
 	}
 
-	#endregion
 
-	#region Id3v2Tag Integration Tests
 
 	[TestMethod]
 	public void Id3v2Tag_MusicBrainzRecordingId_GetSet_Works ()
@@ -371,9 +362,7 @@ public class UniqueFileIdFrameTests
 		Assert.IsNotNull (result.Tag.GetUniqueFileId ("http://cddb.com"));
 	}
 
-	#endregion
 
-	#region Helper Methods
 
 	static byte[] BuildFrame (string owner, byte[] identifier)
 	{
@@ -387,5 +376,4 @@ public class UniqueFileIdFrameTests
 		return result;
 	}
 
-	#endregion
 }

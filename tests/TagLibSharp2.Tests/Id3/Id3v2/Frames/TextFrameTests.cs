@@ -17,7 +17,6 @@ public class TextFrameTests
 	// 0       1     Text encoding (0=Latin-1, 1=UTF-16 w/BOM, 2=UTF-16BE, 3=UTF-8)
 	// 1       n     Text content (may be null-terminated)
 
-	#region Encoding Tests
 
 	[TestMethod]
 	public void Read_Latin1Encoding_ParsesCorrectly ()
@@ -84,9 +83,7 @@ public class TextFrameTests
 		Assert.IsNotNull (result.Error);
 	}
 
-	#endregion
 
-	#region Standard Frame Tests
 
 	[TestMethod]
 	public void Read_TIT2_ParsesTitle ()
@@ -185,9 +182,7 @@ public class TextFrameTests
 		Assert.AreEqual ("5/12", result.Frame.Text);
 	}
 
-	#endregion
 
-	#region Edge Case Tests
 
 	[TestMethod]
 	public void Read_EmptyText_ReturnsEmptyString ()
@@ -237,9 +232,7 @@ public class TextFrameTests
 		Assert.AreEqual ("A\0B", result.Frame!.Text);
 	}
 
-	#endregion
 
-	#region Rendering Tests
 
 	[TestMethod]
 	public void Render_Latin1_CreatesCorrectData ()
@@ -291,9 +284,7 @@ public class TextFrameTests
 		Assert.AreEqual (original.Text, result.Frame!.Text);
 	}
 
-	#endregion
 
-	#region Helper Methods
 
 	static byte[] CreateTextFrameData (TextEncodingType encoding, string text)
 	{
@@ -319,5 +310,4 @@ public class TextFrameTests
 		return bytes.ToArray ();
 	}
 
-	#endregion
 }

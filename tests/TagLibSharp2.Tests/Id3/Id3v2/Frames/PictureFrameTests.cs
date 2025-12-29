@@ -21,7 +21,6 @@ public class PictureFrameTests
 	// n+2     m     Description (null-terminated in encoding)
 	// n+m+2   rest  Picture data
 
-	#region Reading Tests
 
 	[TestMethod]
 	public void Read_JpegFrontCover_ParsesCorrectly ()
@@ -119,9 +118,7 @@ public class PictureFrameTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region Picture Type Tests
 
 	[TestMethod]
 	[DataRow (PictureType.Other, (byte)0x00)]
@@ -156,9 +153,7 @@ public class PictureFrameTests
 		Assert.AreEqual (expectedType, result.Frame!.PictureType);
 	}
 
-	#endregion
 
-	#region Rendering Tests
 
 	[TestMethod]
 	public void Render_BasicFrame_CreatesCorrectData ()
@@ -216,9 +211,7 @@ public class PictureFrameTests
 		Assert.AreEqual ("", result.Frame!.Description);
 	}
 
-	#endregion
 
-	#region Encoding Tests
 
 	[TestMethod]
 	public void Read_Utf8Description_ParsesCorrectly ()
@@ -309,9 +302,7 @@ public class PictureFrameTests
 		Assert.AreEqual ("Cover", result.Frame!.Description);
 	}
 
-	#endregion
 
-	#region Edge Case Tests
 
 	[TestMethod]
 	public void Read_ZeroLengthImage_ParsesCorrectly ()
@@ -371,9 +362,7 @@ public class PictureFrameTests
 		Assert.AreEqual ("image/", result.Frame!.MimeType);
 	}
 
-	#endregion
 
-	#region MIME Type Detection Tests
 
 	[TestMethod]
 	public void DetectMimeType_Jpeg_ReturnsCorrectType ()
@@ -426,9 +415,7 @@ public class PictureFrameTests
 		Assert.AreEqual ("image/tiff", PictureFrame.DetectMimeType (unknownData, "image.tiff"));
 	}
 
-	#endregion
 
-	#region Convenience Method Tests
 
 	[TestMethod]
 	public void FromBytes_DetectsMimeType ()
@@ -452,9 +439,7 @@ public class PictureFrameTests
 		Assert.AreEqual ("Back cover", frame.Description);
 	}
 
-	#endregion
 
-	#region Helper Methods
 
 	static byte[] CreateApicFrameWithEncoding (TextEncodingType encoding, string mimeType,
 		PictureType pictureType, string description, byte[] imageData)
@@ -549,5 +534,4 @@ public class PictureFrameTests
 		return false;
 	}
 
-	#endregion
 }

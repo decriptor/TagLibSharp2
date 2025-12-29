@@ -13,7 +13,6 @@ namespace TagLibSharp2.Tests.Id3.Id3v2.Frames;
 [TestCategory ("Unit")]
 public sealed class UserTextFrameTests
 {
-	#region Constructor Tests
 
 	[TestMethod]
 	public void Constructor_WithDescriptionAndValue_SetsProperties ()
@@ -33,9 +32,7 @@ public sealed class UserTextFrameTests
 		Assert.AreEqual (TextEncodingType.Latin1, frame.Encoding);
 	}
 
-	#endregion
 
-	#region Read Tests
 
 	[TestMethod]
 	public void Read_Latin1Encoding_ReadsCorrectly ()
@@ -115,9 +112,7 @@ public sealed class UserTextFrameTests
 		Assert.AreEqual ("VAL", result.Frame.Value);
 	}
 
-	#endregion
 
-	#region Render Tests
 
 	[TestMethod]
 	public void RenderContent_Latin1_RendersCorrectly ()
@@ -160,9 +155,7 @@ public sealed class UserTextFrameTests
 		Assert.AreEqual (original.Value, readResult.Frame.Value);
 	}
 
-	#endregion
 
-	#region Edge Cases
 
 	[TestMethod]
 	public void EmptyDescription_WorksCorrectly ()
@@ -202,5 +195,4 @@ public sealed class UserTextFrameTests
 		Assert.AreEqual ("Test with unicode: \u00e9\u00e8\u00ea", readResult.Frame!.Value);
 	}
 
-	#endregion
 }

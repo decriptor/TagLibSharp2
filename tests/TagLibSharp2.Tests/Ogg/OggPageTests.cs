@@ -154,7 +154,6 @@ public class OggPageTests
 		Assert.AreEqual (31, result.BytesConsumed);
 	}
 
-	#region Helper Methods
 
 	static byte[] BuildSimpleOggPage (OggPageFlags flags, ulong granulePosition, uint serialNumber,
 		uint sequenceNumber, byte[] segmentData)
@@ -321,5 +320,4 @@ public class OggPageTests
 		return pageData;
 	}
 
-	#endregion
 }

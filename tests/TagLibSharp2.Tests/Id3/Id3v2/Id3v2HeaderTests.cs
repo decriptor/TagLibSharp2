@@ -19,7 +19,6 @@ public class Id3v2HeaderTests
 	// 5       1     Flags
 	// 6       4     Size (syncsafe integer)
 
-	#region Parsing Tests
 
 	[TestMethod]
 	public void Read_ValidV24Header_ParsesCorrectly ()
@@ -92,9 +91,7 @@ public class Id3v2HeaderTests
 		Assert.IsNotNull (result.Error);
 	}
 
-	#endregion
 
-	#region Flag Tests
 
 	[TestMethod]
 	public void Read_UnsyncFlag_DetectedCorrectly ()
@@ -146,9 +143,7 @@ public class Id3v2HeaderTests
 		Assert.IsTrue (result.Header.HasFooter);
 	}
 
-	#endregion
 
-	#region Size Calculation Tests
 
 	[TestMethod]
 	public void TotalSize_WithoutFooter_IncludesHeaderOnly ()
@@ -182,9 +177,7 @@ public class Id3v2HeaderTests
 		Assert.AreEqual (10, result.BytesConsumed);
 	}
 
-	#endregion
 
-	#region Syncsafe Integer Tests
 
 	[TestMethod]
 	[DataRow (0u, new byte[] { 0, 0, 0, 0 })]
@@ -210,9 +203,7 @@ public class Id3v2HeaderTests
 		Assert.AreEqual (expectedSize, result.Header.TagSize);
 	}
 
-	#endregion
 
-	#region Rendering Tests
 
 	[TestMethod]
 	public void Render_ValidHeader_Creates10Bytes ()
@@ -239,9 +230,7 @@ public class Id3v2HeaderTests
 		Assert.AreEqual (original.Flags, result.Header.Flags);
 	}
 
-	#endregion
 
-	#region Helper Methods
 
 	static byte[] CreateHeader (byte version, byte revision, byte flags, uint size)
 	{
@@ -262,5 +251,4 @@ public class Id3v2HeaderTests
 		return data;
 	}
 
-	#endregion
 }

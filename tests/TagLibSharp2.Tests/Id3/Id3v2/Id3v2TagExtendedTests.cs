@@ -12,7 +12,6 @@ namespace TagLibSharp2.Tests.Id3.Id3v2;
 [TestCategory ("Unit")]
 public sealed class Id3v2TagExtendedTests
 {
-	#region ReplayGain Tests
 
 	[TestMethod]
 	public void ReplayGainTrackGain_GetSet_RoundTrips ()
@@ -89,9 +88,7 @@ public sealed class Id3v2TagExtendedTests
 		Assert.AreEqual ("1.000000", readResult.Tag.ReplayGainAlbumPeak);
 	}
 
-	#endregion
 
-	#region MusicBrainz ID Tests
 
 	[TestMethod]
 	public void MusicBrainzTrackId_GetSet_RoundTrips ()
@@ -186,9 +183,7 @@ public sealed class Id3v2TagExtendedTests
 		Assert.AreEqual ("fedcba98-7654-3210-fedc-ba9876543210", readResult.Tag.MusicBrainzAlbumArtistId);
 	}
 
-	#endregion
 
-	#region R128 Loudness Tests
 
 	[TestMethod]
 	public void R128TrackGain_GetSet_RoundTrips ()
@@ -229,9 +224,7 @@ public sealed class Id3v2TagExtendedTests
 		Assert.AreEqual ("256", readResult.Tag.R128AlbumGain);
 	}
 
-	#endregion
 
-	#region AcoustID Tests
 
 	[TestMethod]
 	public void AcoustIdId_GetSet_RoundTrips ()
@@ -284,9 +277,7 @@ public sealed class Id3v2TagExtendedTests
 		Assert.AreEqual ("AQADtNQyRUkSRZEGAAAAAA", readResult.Tag.AcoustIdFingerprint);
 	}
 
-	#endregion
 
-	#region Combined Tests
 
 	[TestMethod]
 	public void AllExtendedFields_WithStandardFields_RenderAndReadBack ()
@@ -326,5 +317,4 @@ public sealed class Id3v2TagExtendedTests
 		Assert.AreEqual ("a1b2c3d4-5678-90ab-cdef-1234567890ab", read.MusicBrainzReleaseId);
 	}
 
-	#endregion
 }

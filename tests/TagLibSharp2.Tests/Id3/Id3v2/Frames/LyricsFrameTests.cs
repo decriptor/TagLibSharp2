@@ -15,7 +15,6 @@ namespace TagLibSharp2.Tests.Id3.Id3v2.Frames;
 [TestCategory ("Id3v2")]
 public class LyricsFrameTests
 {
-	#region Construction Tests
 
 	[TestMethod]
 	public void Constructor_SetsProperties ()
@@ -44,9 +43,7 @@ public class LyricsFrameTests
 		Assert.AreEqual ("USLT", LyricsFrame.FrameId);
 	}
 
-	#endregion
 
-	#region Read Tests
 
 	[TestMethod]
 	public void Read_ValidLatin1Frame_ParsesCorrectly ()
@@ -110,9 +107,7 @@ public class LyricsFrameTests
 		Assert.IsFalse (result.IsSuccess);
 	}
 
-	#endregion
 
-	#region RoundTrip Tests
 
 	[TestMethod]
 	public void RenderContent_Latin1_RoundTrips ()
@@ -190,9 +185,7 @@ public class LyricsFrameTests
 		Assert.AreEqual (lyrics, result.Frame!.Text);
 	}
 
-	#endregion
 
-	#region Id3v2Tag Integration Tests
 
 	[TestMethod]
 	public void Id3v2Tag_Lyrics_GetSet_Works ()
@@ -296,9 +289,7 @@ public class LyricsFrameTests
 		Assert.IsEmpty (tag.LyricsFrames);
 	}
 
-	#endregion
 
-	#region Helper Methods
 
 	static byte[] BuildFrame (TextEncodingType encoding, string language, string description, string text)
 	{
@@ -345,5 +336,4 @@ public class LyricsFrameTests
 		}
 	}
 
-	#endregion
 }

@@ -273,7 +273,6 @@ public sealed class OggVorbisFileWriteTests
 		return page;
 	}
 
-	#region Read Back Tests
 
 	[TestMethod]
 	public void CreateMinimalOggVorbis_CanBeRead ()
@@ -288,9 +287,7 @@ public sealed class OggVorbisFileWriteTests
 		Assert.AreEqual ("Test Artist", result.File.VorbisComment.Artist);
 	}
 
-	#endregion
 
-	#region Render Tests
 
 	[TestMethod]
 	public void Render_ModifyTitle_PreservesChange ()
@@ -362,5 +359,4 @@ public sealed class OggVorbisFileWriteTests
 		Assert.IsNull (reRead.File.Artist);
 	}
 
-	#endregion
 }
