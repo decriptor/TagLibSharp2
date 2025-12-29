@@ -2,6 +2,7 @@
 
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Id3.Id3v2.Frames;
 
 namespace TagLibSharp2.Riff;
 
@@ -142,6 +143,31 @@ public sealed class WavFile
 #pragma warning disable CA1819 // Properties should not return arrays - API compatibility
 	public string[]? Genres => Id3v2Tag?.Genres ?? InfoTag?.Genres;
 #pragma warning restore CA1819
+
+	/// <summary>
+	/// Gets a value indicating whether this file has embedded pictures.
+	/// </summary>
+	public bool HasPictures => Id3v2Tag?.HasPictures ?? false;
+
+	/// <summary>
+	/// Gets the embedded pictures from the ID3v2 tag.
+	/// </summary>
+	/// <remarks>
+	/// Pictures are only available when an ID3v2 tag is present.
+	/// Returns an empty array if no ID3v2 tag exists.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - API compatibility
+	public IPicture[] Pictures => Id3v2Tag?.Pictures ?? [];
+#pragma warning restore CA1819
+
+	/// <summary>
+	/// Gets the front cover art from the ID3v2 tag.
+	/// </summary>
+	/// <remarks>
+	/// Returns the first picture with type <see cref="PictureType.FrontCover"/>,
+	/// or null if no front cover exists or no ID3v2 tag is present.
+	/// </remarks>
+	public PictureFrame? CoverArt => Id3v2Tag?.CoverArt;
 
 	/// <summary>
 	/// Reads a WAV file from binary data.
