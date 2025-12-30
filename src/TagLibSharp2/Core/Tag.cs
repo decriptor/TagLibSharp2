@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Globalization;
+
 namespace TagLibSharp2.Core;
 
 /// <summary>
@@ -631,6 +633,60 @@ public abstract class Tag
 	/// </para>
 	/// </remarks>
 	public virtual string? R128AlbumGain { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the R128 track gain value in decibels.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// This is a convenience property that converts the Q7.8 fixed-point integer value
+	/// stored in <see cref="R128TrackGain"/> to/from decibels as a double.
+	/// </para>
+	/// <para>
+	/// The conversion formula is: dB = stored_value / 256.0
+	/// For example, a stored value of "256" represents +1 dB.
+	/// </para>
+	/// </remarks>
+	public double? R128TrackGainDb {
+		get {
+			var value = R128TrackGain;
+			if (value is null || !short.TryParse (value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var q78))
+				return null;
+			return q78 / 256.0;
+		}
+		set {
+			R128TrackGain = value.HasValue
+				? ((short)Math.Round (value.Value * 256.0)).ToString (CultureInfo.InvariantCulture)
+				: null;
+		}
+	}
+
+	/// <summary>
+	/// Gets or sets the R128 album gain value in decibels.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// This is a convenience property that converts the Q7.8 fixed-point integer value
+	/// stored in <see cref="R128AlbumGain"/> to/from decibels as a double.
+	/// </para>
+	/// <para>
+	/// The conversion formula is: dB = stored_value / 256.0
+	/// For example, a stored value of "-512" represents -2 dB.
+	/// </para>
+	/// </remarks>
+	public double? R128AlbumGainDb {
+		get {
+			var value = R128AlbumGain;
+			if (value is null || !short.TryParse (value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var q78))
+				return null;
+			return q78 / 256.0;
+		}
+		set {
+			R128AlbumGain = value.HasValue
+				? ((short)Math.Round (value.Value * 256.0)).ToString (CultureInfo.InvariantCulture)
+				: null;
+		}
+	}
 
 	// MusicBrainz IDs
 

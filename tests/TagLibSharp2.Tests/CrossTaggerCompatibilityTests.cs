@@ -228,6 +228,67 @@ public sealed class CrossTaggerCompatibilityTests
 	}
 
 	/// <summary>
+	/// Tests that R128 dB convenience properties correctly convert Q7.8 values.
+	/// </summary>
+	[TestMethod]
+	public void R128GainDb_ConvertsQ78ToDecibels ()
+	{
+		var tag = new Id3v2Tag ();
+
+		// Test positive value: 256 in Q7.8 = +1.0 dB
+		tag.R128TrackGain = "256";
+		Assert.IsNotNull (tag.R128TrackGainDb);
+		Assert.AreEqual (1.0, tag.R128TrackGainDb.Value, 0.001);
+
+		// Test negative value: -512 in Q7.8 = -2.0 dB
+		tag.R128AlbumGain = "-512";
+		Assert.IsNotNull (tag.R128AlbumGainDb);
+		Assert.AreEqual (-2.0, tag.R128AlbumGainDb.Value, 0.001);
+
+		// Test zero: 0 in Q7.8 = 0.0 dB
+		tag.R128TrackGain = "0";
+		Assert.IsNotNull (tag.R128TrackGainDb);
+		Assert.AreEqual (0.0, tag.R128TrackGainDb.Value, 0.001);
+
+		// Test null returns null
+		tag.R128TrackGain = null;
+		Assert.IsNull (tag.R128TrackGainDb);
+
+		// Test invalid string returns null
+		tag.R128TrackGain = "not a number";
+		Assert.IsNull (tag.R128TrackGainDb);
+	}
+
+	/// <summary>
+	/// Tests that R128 dB convenience properties correctly set Q7.8 values.
+	/// </summary>
+	[TestMethod]
+	public void R128GainDb_SetsQ78FromDecibels ()
+	{
+		var tag = new Id3v2Tag ();
+
+		// Test setting +1.0 dB stores "256"
+		tag.R128TrackGainDb = 1.0;
+		Assert.AreEqual ("256", tag.R128TrackGain);
+
+		// Test setting -2.0 dB stores "-512"
+		tag.R128AlbumGainDb = -2.0;
+		Assert.AreEqual ("-512", tag.R128AlbumGain);
+
+		// Test setting 0.0 dB stores "0"
+		tag.R128TrackGainDb = 0.0;
+		Assert.AreEqual ("0", tag.R128TrackGain);
+
+		// Test setting null clears the value
+		tag.R128TrackGainDb = null;
+		Assert.IsNull (tag.R128TrackGain);
+
+		// Test rounding: 1.5 dB = 384 (1.5 * 256)
+		tag.R128TrackGainDb = 1.5;
+		Assert.AreEqual ("384", tag.R128TrackGain);
+	}
+
+	/// <summary>
 	/// Tests that standard text frames use the correct frame IDs.
 	/// These are critical for basic compatibility with all taggers.
 	/// </summary>
