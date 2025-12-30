@@ -450,8 +450,17 @@ public sealed class OggOpusFile
 			// RFC 7845 §5.1.1.2: Family 0 only allows 1 or 2 channels
 			if (channels > 2)
 				return OpusHeadResult.Failure ($"Invalid channel count {channels} for mapping family 0. Per RFC 7845, only 1 or 2 channels are allowed");
+		} else if (channelMappingFamily == 1) {
+			// RFC 7845 §5.1.1.2: Family 1 (Vorbis order) allows 1-8 channels
+			if (channels < 1 || channels > 8)
+				return OpusHeadResult.Failure ($"Invalid channel count {channels} for mapping family 1. Per RFC 7845, family 1 allows 1-8 channels");
+			// Validate mapping table is present: stream count + coupled count + channel mapping
+			var expectedSize = 19 + 2 + channels; // header + stream counts + mapping
+			if (data.Length < expectedSize)
+				return OpusHeadResult.Failure ("OpusHead too short for channel mapping table");
 		} else {
-			// Validate mapping table is present for families 1, 255, etc.
+			// Families 2-254 are reserved, family 255 is discrete channels
+			// Validate mapping table is present for all other families
 			var expectedSize = 19 + 2 + channels; // header + stream counts + mapping
 			if (data.Length < expectedSize)
 				return OpusHeadResult.Failure ("OpusHead too short for channel mapping table");
@@ -535,19 +544,20 @@ public sealed class OggOpusFile
 			0); // Sequence 0
 		builder.Add (page1);
 
-		// Page 2: OpusTags (comment header)
-		var page2 = OggPageHelper.BuildOggPage (
-			[tagsPacket],
+		// Page 2+: OpusTags (comment header) - may span multiple pages for large metadata
+		var (tagsPages, nextSequence) = OggPageHelper.BuildMultiPagePacket (
+			tagsPacket,
 			OggPageFlags.None,
 			0, // Granule position (header pages have 0)
 			headerInfo.SerialNumber,
-			1); // Sequence 1
-		builder.Add (page2);
+			1); // Start at sequence 1
+		foreach (var page in tagsPages)
+			builder.Add (page);
 
 		// Renumber and fix audio pages (sequence numbers + EOS flag)
 		if (headerInfo.AudioDataStart < originalData.Length) {
 			var audioPages = originalData.Slice (headerInfo.AudioDataStart);
-			var fixedAudio = OggPageHelper.RenumberAudioPages (audioPages, headerInfo.SerialNumber, startSequence: 2);
+			var fixedAudio = OggPageHelper.RenumberAudioPages (audioPages, headerInfo.SerialNumber, startSequence: nextSequence);
 			builder.Add (fixedAudio);
 		}
 

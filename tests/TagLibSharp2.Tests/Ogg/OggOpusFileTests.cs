@@ -715,6 +715,64 @@ public class OggOpusFileTests
 	}
 
 	// ==========================================================================
+	// RFC 7845 Compliance: OpusHead validation
+	// ==========================================================================
+
+	[TestMethod]
+	public void Read_OpusHeadTooShort_ReturnsFailure ()
+	{
+		// RFC 7845 §5.1.1: OpusHead must be at least 19 bytes
+		// Create OpusHead with only 18 bytes (missing channel mapping family)
+		var builder = new BinaryDataBuilder ();
+		builder.Add (TestConstants.Magic.OpusHead); // 8 bytes
+		builder.Add ((byte)1); // Version
+		builder.Add ((byte)2); // Channels
+		builder.AddUInt16LE (312); // Pre-skip
+		builder.AddUInt32LE (48000); // Input sample rate
+		builder.AddUInt16LE (0); // Output gain
+		// Missing channel mapping family byte at position 18
+
+		var page = TestBuilders.Ogg.CreatePage (builder.ToArray (), 0, OggPageFlags.BeginOfStream);
+		var result = OggOpusFile.Read (page);
+
+		Assert.IsFalse (result.IsSuccess);
+		StringAssert.Contains (result.Error!, "short", StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public void Read_ChannelMappingFamily1_MoreThan8Channels_ReturnsFailure ()
+	{
+		// RFC 7845 §5.1.1.2: Family 1 (Vorbis order) only allows 1-8 channels
+		var data = TestBuilders.Opus.CreateFileWithChannelMapping (channels: 9, mappingFamily: 1);
+
+		var result = OggOpusFile.Read (data);
+
+		Assert.IsFalse (result.IsSuccess);
+		StringAssert.Contains (result.Error!, "channel", StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public void Read_ChannelMappingFamily1_MissingMappingTable_ReturnsFailure ()
+	{
+		// RFC 7845 §5.1.1.2: Mapping table REQUIRED for family > 0
+		var builder = new BinaryDataBuilder ();
+		builder.Add (TestConstants.Magic.OpusHead);
+		builder.Add ((byte)1); // Version
+		builder.Add ((byte)4); // 4 channels
+		builder.AddUInt16LE (312);
+		builder.AddUInt32LE (48000);
+		builder.AddUInt16LE (0);
+		builder.Add ((byte)1); // Mapping family 1 (requires table)
+		// Missing: stream count, coupled count, and 4-byte mapping table
+
+		var page = TestBuilders.Ogg.CreatePage (builder.ToArray (), 0, OggPageFlags.BeginOfStream);
+		var result = OggOpusFile.Read (page);
+
+		Assert.IsFalse (result.IsSuccess);
+		StringAssert.Contains (result.Error!, "short", StringComparison.OrdinalIgnoreCase);
+	}
+
+	// ==========================================================================
 	// Error Path Tests
 	// ==========================================================================
 
@@ -778,6 +836,113 @@ public class OggOpusFileTests
 		} finally {
 			File.Delete (tempPath);
 		}
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_NoSourcePath_ReturnsFailure ()
+	{
+		var data = TestBuilders.Opus.CreateMinimalFile ();
+		var result = OggOpusFile.Read (data);
+		// File was read from byte array, not from disk, so SourcePath is null
+
+		var saveResult = await result.File!.SaveToFileAsync ();
+
+		Assert.IsFalse (saveResult.IsSuccess);
+		StringAssert.Contains (saveResult.Error!, "source path", StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_WithSourcePath_SavesBack ()
+	{
+		var tempPath = Path.GetTempFileName ();
+		var data = TestBuilders.Opus.CreateMinimalFile ("Original", "Artist");
+		await File.WriteAllBytesAsync (tempPath, data);
+
+		try {
+			var result = await OggOpusFile.ReadFromFileAsync (tempPath);
+			result.File!.Title = "Async Updated";
+
+			// Use the convenience overload that saves back to SourcePath
+			var saveResult = await result.File.SaveToFileAsync ();
+
+			Assert.IsTrue (saveResult.IsSuccess, $"Save failed: {saveResult.Error}");
+
+			var reread = await OggOpusFile.ReadFromFileAsync (tempPath);
+			Assert.AreEqual ("Async Updated", reread.File!.Title);
+		} finally {
+			File.Delete (tempPath);
+		}
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_ToNewPath_SavesCorrectly ()
+	{
+		var originalPath = Path.GetTempFileName ();
+		var newPath = Path.GetTempFileName ();
+		var data = TestBuilders.Opus.CreateMinimalFile ("Original", "Artist");
+		await File.WriteAllBytesAsync (originalPath, data);
+
+		try {
+			var result = await OggOpusFile.ReadFromFileAsync (originalPath);
+			result.File!.Title = "Saved To New Path";
+
+			// Use SaveToFileAsync with explicit path
+			var saveResult = await result.File.SaveToFileAsync (newPath);
+
+			Assert.IsTrue (saveResult.IsSuccess, $"Save failed: {saveResult.Error}");
+			Assert.IsTrue (File.Exists (newPath));
+
+			var reread = await OggOpusFile.ReadFromFileAsync (newPath);
+			Assert.AreEqual ("Saved To New Path", reread.File!.Title);
+		} finally {
+			File.Delete (originalPath);
+			File.Delete (newPath);
+		}
+	}
+
+	// ==========================================================================
+	// Large Multi-Page OpusTags Tests
+	// ==========================================================================
+
+	[TestMethod]
+	public void Read_LargeMultiPageOpusTags_ParsesCorrectly ()
+	{
+		// Test with truly large OpusTags that span multiple pages (>65KB)
+		// A typical Ogg page can hold ~65025 bytes (255 segments × 255 bytes)
+		var data = TestBuilders.Opus.CreateFileWithMultiPageOpusTags (
+			"Large Multi-Page Title",
+			"Large Multi-Page Artist",
+			paddingSize: 70000); // 70KB of padding to force multi-page
+
+		var result = OggOpusFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, $"Failed to parse large multi-page OpusTags: {result.Error}");
+		Assert.IsNotNull (result.File);
+		Assert.AreEqual ("Large Multi-Page Title", result.File!.Title);
+		Assert.AreEqual ("Large Multi-Page Artist", result.File.Artist);
+	}
+
+	[TestMethod]
+	public void Render_LargeMultiPageOpusTags_RoundTripsCorrectly ()
+	{
+		// Create file with large OpusTags, modify, render, and re-read
+		var data = TestBuilders.Opus.CreateFileWithMultiPageOpusTags (
+			"Original Title",
+			"Original Artist",
+			paddingSize: 70000);
+
+		var result = OggOpusFile.Read (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		result.File!.Title = "Modified Title After Large Padding";
+		var rendered = result.File.Render (data);
+
+		Assert.IsFalse (rendered.IsEmpty);
+
+		var reread = OggOpusFile.Read (rendered.Span);
+		Assert.IsTrue (reread.IsSuccess, $"Failed to re-read rendered file: {reread.Error}");
+		Assert.AreEqual ("Modified Title After Large Padding", reread.File!.Title);
+		Assert.AreEqual ("Original Artist", reread.File.Artist);
 	}
 
 	// ==========================================================================

@@ -359,4 +359,71 @@ public sealed class OggVorbisFileWriteTests
 		Assert.IsNull (reRead.File.Artist);
 	}
 
+	[TestMethod]
+	public async Task SaveToFileAsync_NoSourcePath_ReturnsFailure ()
+	{
+		var data = CreateMinimalOggVorbis ();
+		var result = OggVorbisFile.Read (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		var saveResult = await result.File!.SaveToFileAsync ();
+
+		Assert.IsFalse (saveResult.IsSuccess);
+		Assert.IsTrue (saveResult.Error!.Contains ("No source path"));
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_WithSourcePath_SavesBack ()
+	{
+		var originalData = CreateMinimalOggVorbis ("Original", "Artist");
+		var tempPath = Path.Combine (Path.GetTempPath (), $"test_{Guid.NewGuid ()}.ogg");
+
+		try {
+			File.WriteAllBytes (tempPath, originalData);
+			var result = await OggVorbisFile.ReadFromFileAsync (tempPath);
+			Assert.IsTrue (result.IsSuccess);
+
+			result.File!.Title = "Modified";
+			var saveResult = await result.File.SaveToFileAsync ();
+
+			Assert.IsTrue (saveResult.IsSuccess, $"Save failed: {saveResult.Error}");
+
+			var reRead = await OggVorbisFile.ReadFromFileAsync (tempPath);
+			Assert.IsTrue (reRead.IsSuccess);
+			Assert.AreEqual ("Modified", reRead.File!.Title);
+		} finally {
+			if (File.Exists (tempPath))
+				File.Delete (tempPath);
+		}
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_ToNewPath_SavesCorrectly ()
+	{
+		var originalData = CreateMinimalOggVorbis ("Original", "Artist");
+		var sourcePath = Path.Combine (Path.GetTempPath (), $"source_{Guid.NewGuid ()}.ogg");
+		var newPath = Path.Combine (Path.GetTempPath (), $"dest_{Guid.NewGuid ()}.ogg");
+
+		try {
+			File.WriteAllBytes (sourcePath, originalData);
+			var result = await OggVorbisFile.ReadFromFileAsync (sourcePath);
+			Assert.IsTrue (result.IsSuccess);
+
+			result.File!.Title = "Modified";
+			var saveResult = await result.File.SaveToFileAsync (newPath);
+
+			Assert.IsTrue (saveResult.IsSuccess, $"Save failed: {saveResult.Error}");
+			Assert.IsTrue (File.Exists (newPath));
+
+			var reRead = await OggVorbisFile.ReadFromFileAsync (newPath);
+			Assert.IsTrue (reRead.IsSuccess);
+			Assert.AreEqual ("Modified", reRead.File!.Title);
+		} finally {
+			if (File.Exists (sourcePath))
+				File.Delete (sourcePath);
+			if (File.Exists (newPath))
+				File.Delete (newPath);
+		}
+	}
+
 }

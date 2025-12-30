@@ -26,7 +26,7 @@ namespace TagLibSharp2.Ogg;
 public sealed class OggVorbisFile
 {
 	const int MinVorbisHeaderSize = 7; // 1 byte type + 6 bytes "vorbis"
-	static readonly byte[] VorbisMagic = { 0x76, 0x6F, 0x72, 0x62, 0x69, 0x73 }; // "vorbis"
+	static readonly byte[] VorbisMagic = [(byte)'v', (byte)'o', (byte)'r', (byte)'b', (byte)'i', (byte)'s'];
 
 	/// <summary>
 	/// Gets the source file path if the file was read from disk.
@@ -190,7 +190,7 @@ public sealed class OggVorbisFile
 
 		// Read Ogg pages until we find the Vorbis comment header
 		while (offset < data.Length && pageCount < 50) { // Limit to prevent infinite loop
-			var pageResult = ReadOggPageWithSegments (data.Slice (offset), validateCrc);
+			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset), validateCrc);
 			if (!pageResult.IsSuccess) {
 				if (pageCount == 0)
 					return OggVorbisFileReadResult.Failure ($"Invalid Ogg file: {pageResult.Error}");
@@ -304,7 +304,8 @@ public sealed class OggVorbisFile
 			return OggVorbisFileReadResult.Failure ("No Vorbis identification header found");
 
 		// Find the last page to get total samples from granule position
-		var totalSamples = FindLastGranulePosition (data);
+		// Use shared helper which properly finds EOS page per RFC 3533
+		var totalSamples = OggPageHelper.FindLastGranulePosition (data);
 
 		// Create audio properties
 		var properties = AudioProperties.FromVorbis (totalSamples, sampleRate, channels, bitrateNominal);
@@ -338,107 +339,6 @@ public sealed class OggVorbisFile
 
 	static VorbisCommentReadResult TryParseCommentPacket (byte[] packet) =>
 		TryParseCommentPacket (packet.AsSpan ());
-
-	/// <summary>
-	/// Result of reading an Ogg page with segment information.
-	/// </summary>
-	readonly struct OggPageWithSegmentsResult
-	{
-		public OggPage Page { get; }
-		public bool IsSuccess { get; }
-		public string? Error { get; }
-		public int BytesConsumed { get; }
-		public List<byte[]> Segments { get; }
-		public List<bool> IsPacketComplete { get; }
-
-		public OggPageWithSegmentsResult (OggPage page, bool isSuccess, string? error, int bytesConsumed,
-			List<byte[]> segments, List<bool> isPacketComplete)
-		{
-			Page = page;
-			IsSuccess = isSuccess;
-			Error = error;
-			BytesConsumed = bytesConsumed;
-			Segments = segments;
-			IsPacketComplete = isPacketComplete;
-		}
-
-		public static OggPageWithSegmentsResult Success (OggPage page, int bytesConsumed,
-			List<byte[]> segments, List<bool> isPacketComplete) =>
-			new (page, true, null, bytesConsumed, segments, isPacketComplete);
-
-		public static OggPageWithSegmentsResult Failure (string error) =>
-			new (default, false, error, 0, new List<byte[]> (), new List<bool> ());
-	}
-
-	/// <summary>
-	/// Reads an Ogg page and extracts individual packets based on segment table.
-	/// </summary>
-	static OggPageWithSegmentsResult ReadOggPageWithSegments (ReadOnlySpan<byte> data, bool validateCrc = false)
-	{
-		const int minHeaderSize = 27;
-
-		if (data.Length < minHeaderSize)
-			return OggPageWithSegmentsResult.Failure ("Data too short");
-
-		// Read basic page structure
-		var pageResult = OggPage.Read (data, validateCrc);
-		if (!pageResult.IsSuccess)
-			return OggPageWithSegmentsResult.Failure (pageResult.Error ?? "Unknown error");
-
-		// Now re-parse to get segment table info
-		if (data[0] != 'O' || data[1] != 'g' || data[2] != 'g' || data[3] != 'S')
-			return OggPageWithSegmentsResult.Failure ("Invalid Ogg magic");
-
-		var segmentCount = data[26];
-		if (data.Length < 27 + segmentCount)
-			return OggPageWithSegmentsResult.Failure ("Data too short for segment table");
-
-		var segmentTable = data.Slice (27, segmentCount);
-
-		// Extract packets from segments
-		// A segment of 255 bytes means the packet continues
-		// A segment < 255 bytes ends the packet
-		var segments = new List<byte[]> ();
-		var isPacketComplete = new List<bool> ();
-		var currentPacket = new List<byte> ();
-		var pageDataOffset = 0;
-
-		for (var i = 0; i < segmentCount; i++) {
-			var segmentSize = segmentTable[i];
-			if (pageDataOffset + segmentSize > pageResult.Page.Data.Length)
-				break;
-
-			// Add segment to current packet using efficient batch copy
-			var segmentData = pageResult.Page.Data.Span.Slice (pageDataOffset, segmentSize);
-#if NET8_0_OR_GREATER
-			// Use CollectionsMarshal for zero-copy append on modern .NET
-			// SetCount requires capacity >= new count, so ensure capacity first
-			var oldCount = currentPacket.Count;
-			currentPacket.EnsureCapacity (oldCount + segmentSize);
-			System.Runtime.InteropServices.CollectionsMarshal.SetCount (currentPacket, oldCount + segmentSize);
-			segmentData.CopyTo (System.Runtime.InteropServices.CollectionsMarshal.AsSpan (currentPacket).Slice (oldCount));
-#else
-			currentPacket.AddRange (segmentData.ToArray ());
-#endif
-
-			pageDataOffset += segmentSize;
-
-			// If segment < 255, packet is complete
-			if (segmentSize < 255) {
-				segments.Add (currentPacket.ToArray ());
-				isPacketComplete.Add (true);
-				currentPacket.Clear ();
-			}
-		}
-
-		// If there's remaining data in currentPacket, it continues to next page
-		if (currentPacket.Count > 0) {
-			segments.Add (currentPacket.ToArray ());
-			isPacketComplete.Add (false);
-		}
-
-		return OggPageWithSegmentsResult.Success (pageResult.Page, pageResult.BytesConsumed, segments, isPacketComplete);
-	}
 
 	static bool IsVorbisIdentificationHeader (ReadOnlySpan<byte> data)
 	{
@@ -503,63 +403,6 @@ public sealed class OggVorbisFile
 		return (sampleRate, channels, bitrateNominal);
 	}
 
-	/// <summary>
-	/// Finds the granule position from the last Ogg page to calculate total samples.
-	/// </summary>
-	/// <remarks>
-	/// Scans backwards from the end of the file to find the last valid Ogg page.
-	/// The granule position on this page represents the total number of audio samples.
-	/// </remarks>
-	static ulong FindLastGranulePosition (ReadOnlySpan<byte> data)
-	{
-		// Scan backwards from the end to find the last page
-		// Ogg pages start with "OggS" magic
-		// We look for the pattern and validate the page structure
-
-		// Start scanning from near the end (last 64KB should be enough)
-		var searchStart = Math.Max (0, data.Length - 65536);
-
-		ulong lastGranulePosition = 0;
-		var offset = searchStart;
-
-		while (offset < data.Length - 27) {
-			// Look for "OggS" magic
-			if (data[offset] == 'O' && data[offset + 1] == 'g' &&
-				data[offset + 2] == 'g' && data[offset + 3] == 'S') {
-
-				// Read granule position (8 bytes little-endian at offset 6)
-				var granule = (ulong)data[offset + 6] |
-					((ulong)data[offset + 7] << 8) |
-					((ulong)data[offset + 8] << 16) |
-					((ulong)data[offset + 9] << 24) |
-					((ulong)data[offset + 10] << 32) |
-					((ulong)data[offset + 11] << 40) |
-					((ulong)data[offset + 12] << 48) |
-					((ulong)data[offset + 13] << 56);
-
-				// Only update if this looks like a valid granule position
-				// (not -1 which is used for non-audio pages)
-				if (granule != 0xFFFFFFFFFFFFFFFF)
-					lastGranulePosition = granule;
-
-				// Skip to after this page header to find next page
-				var segmentCount = data[offset + 26];
-				if (offset + 27 + segmentCount < data.Length) {
-					var pageSize = 27 + segmentCount;
-					for (var i = 0; i < segmentCount && offset + 27 + i < data.Length; i++)
-						pageSize += data[offset + 27 + i];
-
-					offset += pageSize;
-					continue;
-				}
-			}
-
-			offset++;
-		}
-
-		return lastGranulePosition;
-	}
-
 	VorbisComment EnsureVorbisComment ()
 	{
 		VorbisComment ??= new VorbisComment ("TagLibSharp2");
@@ -604,27 +447,56 @@ public sealed class OggVorbisFile
 		using var builder = new BinaryDataBuilder ();
 
 		// Page 1: Identification header (BOS)
-		var page1 = BuildOggPage (
-			[headerInfo.IdentificationPacket],
+		// Uses shared OggPageHelper which validates segment table limits per RFC 3533
+		var page1 = OggPageHelper.BuildOggPage (
+			new[] { headerInfo.IdentificationPacket },
 			OggPageFlags.BeginOfStream,
 			0, // Granule position
 			headerInfo.SerialNumber,
 			0); // Sequence 0
 		builder.Add (page1);
 
-		// Page 2: Comment header + Setup header (with proper segment boundaries)
-		var page2 = BuildOggPage (
-			[commentPacket, headerInfo.SetupPacket],
-			OggPageFlags.None,
-			0, // Granule position (header pages have 0)
-			headerInfo.SerialNumber,
-			1); // Sequence 1
-		builder.Add (page2);
+		// Pages 2+: Comment header (may span multiple pages) + Setup header
+		// Try to fit comment and setup on one page; if comment is too large, split across pages
+		var combinedSegments = CalculateSegmentsNeeded (commentPacket.Length) + CalculateSegmentsNeeded (headerInfo.SetupPacket.Length);
+		uint nextSequence;
+
+		if (combinedSegments <= 255) {
+			// Both packets fit on one page
+			var page2 = OggPageHelper.BuildOggPage (
+				new[] { commentPacket, headerInfo.SetupPacket },
+				OggPageFlags.None,
+				0, // Granule position (header pages have 0)
+				headerInfo.SerialNumber,
+				1); // Sequence 1
+			builder.Add (page2);
+			nextSequence = 2;
+		} else {
+			// Comment is too large - split it, then add setup on its own page
+			var (commentPages, seqAfterComment) = OggPageHelper.BuildMultiPagePacket (
+				commentPacket,
+				OggPageFlags.None,
+				0,
+				headerInfo.SerialNumber,
+				1);
+			foreach (var page in commentPages)
+				builder.Add (page);
+
+			// Setup packet on its own page
+			var setupPage = OggPageHelper.BuildOggPage (
+				new[] { headerInfo.SetupPacket },
+				OggPageFlags.None,
+				0,
+				headerInfo.SerialNumber,
+				seqAfterComment);
+			builder.Add (setupPage);
+			nextSequence = seqAfterComment + 1;
+		}
 
 		// Renumber and fix audio pages (sequence numbers + EOS flag)
 		if (headerInfo.AudioDataStart < originalData.Length) {
 			var audioPages = originalData.Slice (headerInfo.AudioDataStart);
-			var fixedAudio = OggPageHelper.RenumberAudioPages (audioPages, headerInfo.SerialNumber, startSequence: 2);
+			var fixedAudio = OggPageHelper.RenumberAudioPages (audioPages, headerInfo.SerialNumber, startSequence: nextSequence);
 			builder.Add (fixedAudio);
 		}
 
@@ -711,6 +583,62 @@ public sealed class OggVorbisFile
 	}
 
 	/// <summary>
+	/// Asynchronously saves the file to the specified path, re-reading from the source file.
+	/// </summary>
+	/// <param name="path">The target file path.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <param name="cancellationToken">A token to cancel the operation.</param>
+	/// <returns>A task containing a result indicating success or failure.</returns>
+	public async Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var fs = fileSystem ?? _sourceFileSystem;
+		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken)
+			.ConfigureAwait (false);
+		if (!readResult.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+
+		return await SaveToFileAsync (path, readResult.Data!, fileSystem, cancellationToken)
+			.ConfigureAwait (false);
+	}
+
+	/// <summary>
+	/// Asynchronously saves the file back to its source path.
+	/// </summary>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <param name="cancellationToken">A token to cancel the operation.</param>
+	/// <returns>A task containing a result indicating success or failure.</returns>
+	public Task<FileWriteResult> SaveToFileAsync (
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
+
+		return SaveToFileAsync (SourcePath!, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
+	/// Calculates the number of Ogg segments needed for a packet of the given size.
+	/// </summary>
+	static int CalculateSegmentsNeeded (int packetLength)
+	{
+		if (packetLength == 0)
+			return 1; // Empty packet needs one 0-byte segment
+
+		var segments = packetLength / 255;
+		var remainder = packetLength % 255;
+
+		// If exactly divisible by 255, need extra 0-byte segment to mark end
+		return remainder == 0 ? segments + 1 : segments + 1;
+	}
+
+	/// <summary>
 	/// Header extraction result containing packets and position info.
 	/// </summary>
 	readonly struct HeaderInfo
@@ -747,7 +675,7 @@ public sealed class OggVorbisFile
 		var currentPacketIndex = 0; // 0=ident, 1=comment, 2=setup
 
 		while (offset < data.Length && pageCount < 50) {
-			var pageResult = ReadOggPageWithSegments (data.Slice (offset));
+			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset));
 			if (!pageResult.IsSuccess)
 				break;
 
@@ -834,88 +762,6 @@ public sealed class OggVorbisFile
 
 	static bool IsVorbisSetupHeader (byte[] data) =>
 		IsVorbisSetupHeader (data.AsSpan ());
-
-	/// <summary>
-	/// Builds an Ogg page from multiple packets with proper segment boundaries.
-	/// </summary>
-	static byte[] BuildOggPage (byte[][] packets, OggPageFlags flags, ulong granulePosition,
-		uint serialNumber, uint sequenceNumber)
-	{
-		// Build segment table - each packet needs proper segmentation
-		var segments = new List<byte> ();
-		var totalDataSize = 0;
-
-		foreach (var packet in packets) {
-			var remaining = packet.Length;
-			while (remaining >= 255) {
-				segments.Add (255);
-				remaining -= 255;
-			}
-			// Final segment < 255 marks end of this packet
-			segments.Add ((byte)remaining);
-			totalDataSize += packet.Length;
-		}
-
-		// Ensure at least one segment
-		if (segments.Count == 0)
-			segments.Add (0);
-
-		var headerSize = 27 + segments.Count;
-		var page = new byte[headerSize + totalDataSize];
-
-		// Magic "OggS"
-		page[0] = (byte)'O';
-		page[1] = (byte)'g';
-		page[2] = (byte)'g';
-		page[3] = (byte)'S';
-
-		// Version
-		page[4] = 0;
-
-		// Flags
-		page[5] = (byte)flags;
-
-		// Granule position (8 bytes LE)
-		for (var i = 0; i < 8; i++)
-			page[6 + i] = (byte)(granulePosition >> (i * 8));
-
-		// Serial number (4 bytes LE)
-		for (var i = 0; i < 4; i++)
-			page[14 + i] = (byte)(serialNumber >> (i * 8));
-
-		// Sequence number (4 bytes LE)
-		for (var i = 0; i < 4; i++)
-			page[18 + i] = (byte)(sequenceNumber >> (i * 8));
-
-		// CRC placeholder (will be calculated)
-		page[22] = 0;
-		page[23] = 0;
-		page[24] = 0;
-		page[25] = 0;
-
-		// Segment count
-		page[26] = (byte)segments.Count;
-
-		// Segment table
-		for (var i = 0; i < segments.Count; i++)
-			page[27 + i] = segments[i];
-
-		// Data - concatenate all packets
-		var dataOffset = headerSize;
-		foreach (var packet in packets) {
-			packet.CopyTo (page, dataOffset);
-			dataOffset += packet.Length;
-		}
-
-		// Calculate and set CRC
-		var crc = OggCrc.Calculate (page);
-		page[22] = (byte)(crc & 0xFF);
-		page[23] = (byte)((crc >> 8) & 0xFF);
-		page[24] = (byte)((crc >> 16) & 0xFF);
-		page[25] = (byte)((crc >> 24) & 0xFF);
-
-		return page;
-	}
 }
 
 /// <summary>
