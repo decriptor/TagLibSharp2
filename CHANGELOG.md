@@ -5,6 +5,33 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2025-12-29
+
+### Added
+
+#### Ogg Opus Format Support
+- `OggOpusFile` class for reading and writing Opus audio files
+- OpusHead identification header parsing (RFC 7845)
+  - Version, channels, pre-skip, input sample rate, output gain
+  - Channel mapping family support
+- OpusTags (Vorbis Comment) metadata support (no framing bit, per RFC 7845)
+- `OggOpusFileReadResult` result type with error context
+- Full read/write round-trip support with atomic file saves
+
+#### Audio Properties for Opus
+- `AudioProperties.FromOpus()` factory method
+- Duration calculation from granule position (always 48kHz output)
+- Pre-skip compensation for accurate duration
+- Bitrate calculation from file size
+
+#### MediaFile Factory Updates
+- `MediaFormat.Opus` enum value
+- Automatic Opus vs Vorbis detection by inspecting first Ogg packet
+- `.opus` file extension support
+
+### Changed
+- Test count increased from 1939 to 1964 (+25 tests)
+
 ## [0.2.1] - 2025-12-29
 
 ### Added
@@ -293,6 +320,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `BinaryData(byte[])` constructor now copies the array to ensure true immutability
 
+[0.3.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.3.0
 [0.2.1]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.2.1
 [0.2.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.2.0
 [0.1.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.1.0

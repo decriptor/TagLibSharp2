@@ -8,7 +8,7 @@
 		<Copyright>Copyright (c) 2025 Stephen Shaw and contributors</Copyright>
 
 		<!-- Version: Set via CI or use default for local builds -->
-		<ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.2.1</ReleaseVersion>
+		<ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.3.0</ReleaseVersion>
 		<VersionSuffix Condition="'$(VersionSuffix)' == '' And '$(CI)' == ''">dev</VersionSuffix>
 
 		<!-- Repository Info -->

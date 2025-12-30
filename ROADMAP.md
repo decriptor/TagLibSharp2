@@ -202,13 +202,14 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Audio properties | ❌ |
 | Write | ❌ |
 
-### Opus
+### Opus ✅ Complete
 | Feature | Status |
 |---------|--------|
-| OpusHead parsing | ❌ |
-| OpusTags parsing | ❌ |
-| Pre-skip handling | ❌ |
-| Duration (48kHz output) | ❌ |
+| OpusHead parsing | ✅ |
+| OpusTags parsing | ✅ |
+| Pre-skip handling | ✅ |
+| Duration (48kHz output) | ✅ |
+| Write/save | ✅ |
 
 ---
 
@@ -262,7 +263,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
    - DSD/fmt chunk parsing
    - ID3v2 at offset
 
-5. **Opus** - Modern streaming format
+5. **Opus** ✅ - Modern streaming format
    - OpusHead/OpusTags
    - 48kHz output rate
 
@@ -335,10 +336,10 @@ Consider adding compatibility shim for TagLib# consumers:
 | VBR Headers | ✅ | ✅ | Complete with Xing/VBRI parsing |
 | MP4/M4A | 6-8 | High | Complex atom tree navigation |
 | DSF | 3-4 | Low | Simple chunk format |
-| Opus | 2-3 | Low | Similar to Vorbis |
+| Opus | ✅ | ✅ | Complete with OpusHead + OpusTags |
 | APE Tags | 2-3 | Medium | Needed for multiple formats |
 | ASF/WMA | 5-6 | High | GUID-based, complex |
 
 ---
 
-*Last Updated: 2025-12-29 (v0.2.1)*
+*Last Updated: 2025-12-29 (v0.3.0)*

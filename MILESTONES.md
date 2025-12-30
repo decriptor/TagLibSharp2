@@ -8,10 +8,10 @@
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| **Tests Passing** | 1,939 | Solid foundation |
-| **Source Files** | 70+ | Core + 5 formats |
-| **Formats Complete** | 5 of 22 | MP3, FLAC, OGG Vorbis, WAV, AIFF (all read+write) |
-| **Format Coverage** | ~23% | Significant work remaining |
+| **Tests Passing** | 1,964 | Solid foundation |
+| **Source Files** | 70+ | Core + 6 formats |
+| **Formats Complete** | 6 of 22 | MP3, FLAC, OGG Vorbis, Opus, WAV, AIFF (all read+write) |
+| **Format Coverage** | ~27% | Significant work remaining |
 | **Core Infrastructure** | ✅ 100% | Tag, BinaryData, IFileSystem, Picture |
 
 ---
@@ -26,7 +26,7 @@ Based on multi-perspective analysis, the original roadmap is reordered:
 | P0-3 MP4/M4A | **P0-1 MP4/M4A** | ⬆️ Moved UP | Apple ecosystem is massive; 25% of lossless libraries |
 | P0-7 VBR Headers | **✅ COMPLETE** | VBR | Xing/VBRI header parsing for accurate MP3 duration |
 | P0-6 APE Tag | **P0-3 APE Tag** | Same | Blocks WavPack/Musepack/Monkey's Audio |
-| P0-5 Opus | **P0-4 Opus** | Same | Modern streaming, growing fast |
+| P0-5 Opus | **✅ COMPLETE** | Opus | Full read/write with OpusHead + OpusTags |
 | P0-2 AIFF | **✅ COMPLETE** | AIFF | Full read/write with FORM container + COMM + ID3 |
 | P0-4 DSF | **P0-5 DSF** | ⬇️ Demoted | DSD is vocal minority, not market size |
 | P1 Musepack | **SKIP** | ❌ Remove | Dead format (last release 2009) |
@@ -160,23 +160,23 @@ Studio format + shared container:
 ---
 
 ### Milestone 5: Opus & APE Tag
-**Duration:** 1 week | **Status:** Not Started
+**Duration:** 1 week | **Status:** Opus ✅ Complete, APE Tag Not Started
 
 Modern lossy + infrastructure for P1 formats:
 
 | Task | Effort | Notes |
 |------|--------|-------|
-| Opus OpusHead parsing | 1d | Similar to Vorbis |
-| Opus OpusTags parsing | 1d | Vorbis Comment variant |
-| Opus R128 gain handling | 0.5d | Different from ReplayGain |
-| APE Tag v2 format | 3d | Binary items, cover art |
-| APE tag in MP3 | 1d | End of file detection |
-| Round-trip tests | 1d | |
+| Opus OpusHead parsing | 1d | ✅ Complete |
+| Opus OpusTags parsing | 1d | ✅ Complete |
+| Opus R128 gain handling | 0.5d | ❌ Not started (OutputGain field available) |
+| APE Tag v2 format | 3d | ❌ Not started |
+| APE tag in MP3 | 1d | ❌ Not started |
+| Round-trip tests | 1d | ✅ Opus complete |
 
 **Exit Criteria:**
-- Opus files read correctly
-- APE tags read/write in isolation
-- MP3 with APE+ID3v2+ID3v1 handled correctly
+- ✅ Opus files read correctly
+- ❌ APE tags read/write in isolation
+- ❌ MP3 with APE+ID3v2+ID3v1 handled correctly
 
 ---
 
