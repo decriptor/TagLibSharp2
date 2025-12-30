@@ -30,7 +30,7 @@ namespace TagLibSharp2.Xiph;
 public sealed class FlacFile
 {
 	const int MagicSize = 4;
-	static readonly byte[] FlacMagic = { 0x66, 0x4C, 0x61, 0x43 }; // "fLaC"
+	static readonly byte[] FlacMagic = [(byte)'f', (byte)'L', (byte)'a', (byte)'C'];
 
 	readonly List<FlacPicture> _pictures = new (2);
 	readonly List<FlacPreservedBlock> _preservedBlocks = new (2);

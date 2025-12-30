@@ -32,7 +32,7 @@ public readonly struct OggPage : IEquatable<OggPage>
 	/// </summary>
 	public const int MinHeaderSize = 27;
 
-	static readonly byte[] OggMagic = { 0x4F, 0x67, 0x67, 0x53 }; // "OggS"
+	static readonly byte[] OggMagic = [(byte)'O', (byte)'g', (byte)'g', (byte)'S'];
 
 	/// <summary>
 	/// Gets the Ogg version (always 0).

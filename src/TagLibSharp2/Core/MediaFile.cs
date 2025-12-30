@@ -38,16 +38,16 @@ namespace TagLibSharp2.Core;
 public static class MediaFile
 {
 	// Magic bytes for format detection
-	static readonly byte[] FlacMagic = { 0x66, 0x4C, 0x61, 0x43 }; // "fLaC"
-	static readonly byte[] OggMagic = { 0x4F, 0x67, 0x67, 0x53 }; // "OggS"
-	static readonly byte[] Id3Magic = { 0x49, 0x44, 0x33 }; // "ID3"
-	static readonly byte[] RiffMagic = { 0x52, 0x49, 0x46, 0x46 }; // "RIFF"
-	static readonly byte[] WaveId = { 0x57, 0x41, 0x56, 0x45 }; // "WAVE"
-	static readonly byte[] FormMagic = { 0x46, 0x4F, 0x52, 0x4D }; // "FORM"
-	static readonly byte[] AiffId = { 0x41, 0x49, 0x46, 0x46 }; // "AIFF"
-	static readonly byte[] AifcId = { 0x41, 0x49, 0x46, 0x43 }; // "AIFC"
-	static readonly byte[] OpusHeadMagic = { 0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64 }; // "OpusHead"
-	static readonly byte[] VorbisMagic = { 0x76, 0x6F, 0x72, 0x62, 0x69, 0x73 }; // "vorbis"
+	static readonly byte[] FlacMagic = [(byte)'f', (byte)'L', (byte)'a', (byte)'C'];
+	static readonly byte[] OggMagic = [(byte)'O', (byte)'g', (byte)'g', (byte)'S'];
+	static readonly byte[] Id3Magic = [(byte)'I', (byte)'D', (byte)'3'];
+	static readonly byte[] RiffMagic = [(byte)'R', (byte)'I', (byte)'F', (byte)'F'];
+	static readonly byte[] WaveId = [(byte)'W', (byte)'A', (byte)'V', (byte)'E'];
+	static readonly byte[] FormMagic = [(byte)'F', (byte)'O', (byte)'R', (byte)'M'];
+	static readonly byte[] AiffId = [(byte)'A', (byte)'I', (byte)'F', (byte)'F'];
+	static readonly byte[] AifcId = [(byte)'A', (byte)'I', (byte)'F', (byte)'C'];
+	static readonly byte[] OpusHeadMagic = [(byte)'O', (byte)'p', (byte)'u', (byte)'s', (byte)'H', (byte)'e', (byte)'a', (byte)'d'];
+	static readonly byte[] VorbisMagic = [(byte)'v', (byte)'o', (byte)'r', (byte)'b', (byte)'i', (byte)'s'];
 
 	/// <summary>
 	/// Opens a media file and returns a unified result.
