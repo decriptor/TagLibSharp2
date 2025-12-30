@@ -412,7 +412,9 @@ public sealed class OggVorbisFile
 			var segmentData = pageResult.Page.Data.Span.Slice (pageDataOffset, segmentSize);
 #if NET8_0_OR_GREATER
 			// Use CollectionsMarshal for zero-copy append on modern .NET
+			// SetCount requires capacity >= new count, so ensure capacity first
 			var oldCount = currentPacket.Count;
+			currentPacket.EnsureCapacity (oldCount + segmentSize);
 			System.Runtime.InteropServices.CollectionsMarshal.SetCount (currentPacket, oldCount + segmentSize);
 			segmentData.CopyTo (System.Runtime.InteropServices.CollectionsMarshal.AsSpan (currentPacket).Slice (oldCount));
 #else
@@ -619,10 +621,11 @@ public sealed class OggVorbisFile
 			1); // Sequence 1
 		builder.Add (page2);
 
-		// Append remaining audio pages (unchanged)
+		// Renumber and fix audio pages (sequence numbers + EOS flag)
 		if (headerInfo.AudioDataStart < originalData.Length) {
 			var audioPages = originalData.Slice (headerInfo.AudioDataStart);
-			builder.Add (audioPages);
+			var fixedAudio = OggPageHelper.RenumberAudioPages (audioPages, headerInfo.SerialNumber, startSequence: 2);
+			builder.Add (fixedAudio);
 		}
 
 		return builder.ToBinaryData ();
