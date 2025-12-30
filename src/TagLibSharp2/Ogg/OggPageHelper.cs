@@ -13,6 +13,15 @@ namespace TagLibSharp2.Ogg;
 internal static class OggPageHelper
 {
 	/// <summary>
+	/// Maximum number of segments per Ogg page.
+	/// </summary>
+	/// <remarks>
+	/// Per RFC 3533 Section 6, the segment count field is a single byte (0-255).
+	/// Each segment can hold up to 255 bytes, so the maximum page payload is 65,025 bytes.
+	/// Packets larger than this must be split across multiple pages using continuation.
+	/// </remarks>
+	const int MaxSegmentsPerPage = 255;
+	/// <summary>
 	/// Reads an Ogg page and extracts individual packets based on segment table.
 	/// </summary>
 	/// <param name="data">The binary data to parse.</param>
@@ -25,15 +34,12 @@ internal static class OggPageHelper
 		if (data.Length < minHeaderSize)
 			return OggPageWithSegmentsResult.Failure ("Data too short");
 
-		// Read basic page structure
+		// Read basic page structure (validates magic and CRC if requested)
 		var pageResult = OggPage.Read (data, validateCrc);
 		if (!pageResult.IsSuccess)
 			return OggPageWithSegmentsResult.Failure (pageResult.Error ?? "Unknown error");
 
-		// Now re-parse to get segment table info
-		if (data[0] != 'O' || data[1] != 'g' || data[2] != 'g' || data[3] != 'S')
-			return OggPageWithSegmentsResult.Failure ("Invalid Ogg magic");
-
+		// Extract segment table info - magic already validated by OggPage.Read
 		var segmentCount = data[26];
 		if (data.Length < 27 + segmentCount)
 			return OggPageWithSegmentsResult.Failure ("Data too short for segment table");
@@ -55,7 +61,7 @@ internal static class OggPageHelper
 
 			// Add segment to current packet using efficient batch copy
 			var segmentData = pageResult.Page.Data.Span.Slice (pageDataOffset, segmentSize);
-#if NET8_0_OR_GREATER
+#if NET5_0_OR_GREATER
 			// Use CollectionsMarshal for zero-copy append on modern .NET
 			// SetCount requires capacity >= new count, so ensure capacity first
 			var oldCount = currentPacket.Count;
@@ -137,12 +143,17 @@ internal static class OggPageHelper
 
 				// Skip to after this page to find next page
 				var segmentCount = data[offset + 26];
-				if (offset + 27 + segmentCount < data.Length) {
-					var pageSize = 27 + segmentCount;
-					for (var i = 0; i < segmentCount && offset + 27 + i < data.Length; i++)
-						pageSize += data[offset + 27 + i];
+				if (offset + 27 + segmentCount <= data.Length) {
+					var pageDataSize = 0;
+					for (var i = 0; i < segmentCount; i++)
+						pageDataSize += data[offset + 27 + i];
 
-					offset += pageSize;
+					var totalPageSize = 27 + segmentCount + pageDataSize;
+					// Verify the entire page fits in the data (handles truncated files)
+					if (offset + totalPageSize > data.Length)
+						break;
+
+					offset += totalPageSize;
 					continue;
 				}
 			}
@@ -163,6 +174,11 @@ internal static class OggPageHelper
 	/// <param name="serialNumber">The stream serial number.</param>
 	/// <param name="sequenceNumber">The page sequence number.</param>
 	/// <returns>The built Ogg page as a byte array.</returns>
+	/// <exception cref="ArgumentException">
+	/// Thrown when packets require more than 255 segments. Per RFC 3533, the segment
+	/// count field is a single byte, limiting each page to 255 segments maximum.
+	/// Large packets must be split across multiple pages.
+	/// </exception>
 	public static byte[] BuildOggPage (byte[][] packets, OggPageFlags flags, ulong granulePosition,
 		uint serialNumber, uint sequenceNumber)
 	{
@@ -184,6 +200,12 @@ internal static class OggPageHelper
 		// Ensure at least one segment
 		if (segments.Count == 0)
 			segments.Add (0);
+
+		// RFC 3533: Segment count is a single byte, max 255 segments per page
+		if (segments.Count > MaxSegmentsPerPage)
+			throw new ArgumentException (
+				$"Packets require {segments.Count} segments, but Ogg pages support at most {MaxSegmentsPerPage}. " +
+				"Large packets must be split across multiple pages.", nameof (packets));
 
 		var headerSize = 27 + segments.Count;
 		var page = new byte[headerSize + totalDataSize];
@@ -243,6 +265,140 @@ internal static class OggPageHelper
 	}
 
 	/// <summary>
+	/// Builds multiple Ogg pages for a large packet that exceeds the single-page segment limit.
+	/// </summary>
+	/// <remarks>
+	/// Per RFC 3533, a single Ogg page can have at most 255 segments. For packets larger than
+	/// 65025 bytes (255 × 255), the packet must be split across multiple pages. The first page
+	/// contains the specified flags, and continuation pages have the continuation flag set.
+	/// </remarks>
+	/// <param name="packet">The packet data to split across pages.</param>
+	/// <param name="firstPageFlags">Flags for the first page (subsequent pages use Continuation).</param>
+	/// <param name="granulePosition">The granule position (typically 0 for header pages).</param>
+	/// <param name="serialNumber">The stream serial number.</param>
+	/// <param name="startSequence">The starting sequence number.</param>
+	/// <returns>Array of Ogg pages containing the packet, and the next sequence number to use.</returns>
+	public static (byte[][] Pages, uint NextSequence) BuildMultiPagePacket (
+		byte[] packet,
+		OggPageFlags firstPageFlags,
+		ulong granulePosition,
+		uint serialNumber,
+		uint startSequence)
+	{
+		const int maxSegmentsPerPage = 255;
+		const int maxBytesPerSegment = 255;
+		const int maxBytesPerPage = maxSegmentsPerPage * maxBytesPerSegment; // 65025
+
+		// If packet fits in one page, use BuildOggPage
+		var segmentsNeeded = (packet.Length / maxBytesPerSegment) + (packet.Length % maxBytesPerSegment != 0 ? 1 : 0);
+		if (packet.Length % maxBytesPerSegment == 0 && packet.Length > 0)
+			segmentsNeeded++; // Need a 0-byte terminator segment
+
+		if (segmentsNeeded <= maxSegmentsPerPage) {
+			var page = BuildOggPage ([packet], firstPageFlags, granulePosition, serialNumber, startSequence);
+			return ([page], startSequence + 1);
+		}
+
+		// Split packet across multiple pages
+		var pages = new List<byte[]> ();
+		var packetOffset = 0;
+		var sequenceNumber = startSequence;
+
+		while (packetOffset < packet.Length) {
+			var isFirstPage = packetOffset == 0;
+			var remaining = packet.Length - packetOffset;
+			var pageDataSize = Math.Min (remaining, maxBytesPerPage);
+
+			// Build segment table for this page
+			var segments = new List<byte> ();
+			var bytesInPage = pageDataSize;
+			while (bytesInPage >= maxBytesPerSegment) {
+				segments.Add (maxBytesPerSegment);
+				bytesInPage -= maxBytesPerSegment;
+			}
+
+			// Check if packet ends on this page
+			var isLastPage = packetOffset + pageDataSize >= packet.Length;
+			if (isLastPage) {
+				// Packet ends here - add final segment (< 255 bytes)
+				segments.Add ((byte)bytesInPage);
+			} else {
+				// Packet continues to next page - all segments must be 255
+				// (we've already filled with 255s, just need to ensure no partial)
+				if (bytesInPage > 0) {
+					// Should not happen with our chunking logic
+					segments.Add ((byte)bytesInPage);
+				}
+			}
+
+			// Build page header
+			var pageFlags = isFirstPage ? firstPageFlags : OggPageFlags.Continuation;
+			var headerSize = 27 + segments.Count;
+			var page = new byte[headerSize + pageDataSize];
+
+			// Magic "OggS"
+			page[0] = (byte)'O';
+			page[1] = (byte)'g';
+			page[2] = (byte)'g';
+			page[3] = (byte)'S';
+
+			// Version
+			page[4] = 0;
+
+			// Flags
+			page[5] = (byte)pageFlags;
+
+			// Granule position (8 bytes little-endian) - 0 for header pages
+			var gp = granulePosition;
+			for (var i = 0; i < 8; i++) {
+				page[6 + i] = (byte)(gp & 0xFF);
+				gp >>= 8;
+			}
+
+			// Serial number (4 bytes little-endian)
+			page[14] = (byte)(serialNumber & 0xFF);
+			page[15] = (byte)((serialNumber >> 8) & 0xFF);
+			page[16] = (byte)((serialNumber >> 16) & 0xFF);
+			page[17] = (byte)((serialNumber >> 24) & 0xFF);
+
+			// Sequence number (4 bytes little-endian)
+			page[18] = (byte)(sequenceNumber & 0xFF);
+			page[19] = (byte)((sequenceNumber >> 8) & 0xFF);
+			page[20] = (byte)((sequenceNumber >> 16) & 0xFF);
+			page[21] = (byte)((sequenceNumber >> 24) & 0xFF);
+
+			// CRC placeholder (will be calculated below)
+			page[22] = 0;
+			page[23] = 0;
+			page[24] = 0;
+			page[25] = 0;
+
+			// Segment count
+			page[26] = (byte)segments.Count;
+
+			// Segment table
+			for (var i = 0; i < segments.Count; i++)
+				page[27 + i] = segments[i];
+
+			// Copy packet data for this page
+			Array.Copy (packet, packetOffset, page, headerSize, pageDataSize);
+
+			// Calculate CRC
+			var crc = OggCrc.Calculate (page);
+			page[22] = (byte)(crc & 0xFF);
+			page[23] = (byte)((crc >> 8) & 0xFF);
+			page[24] = (byte)((crc >> 16) & 0xFF);
+			page[25] = (byte)((crc >> 24) & 0xFF);
+
+			pages.Add (page);
+			packetOffset += pageDataSize;
+			sequenceNumber++;
+		}
+
+		return (pages.ToArray (), sequenceNumber);
+	}
+
+	/// <summary>
 	/// Renumbers audio pages with sequential sequence numbers and ensures EOS flag on last page.
 	/// </summary>
 	/// <param name="audioData">The raw audio page data.</param>
@@ -278,7 +434,7 @@ internal static class OggPageHelper
 		}
 
 		if (pages.Count == 0)
-			return [];
+			return Array.Empty<byte> ();
 
 		// Second pass: copy pages with renumbering and EOS fix
 		var result = new byte[offset];
@@ -335,11 +491,11 @@ internal readonly struct OggPageWithSegmentsResult
 	public bool IsSuccess { get; }
 	public string? Error { get; }
 	public int BytesConsumed { get; }
-	public List<byte[]> Segments { get; }
-	public List<bool> IsPacketComplete { get; }
+	public IReadOnlyList<byte[]> Segments { get; }
+	public IReadOnlyList<bool> IsPacketComplete { get; }
 
 	OggPageWithSegmentsResult (OggPage page, bool isSuccess, string? error, int bytesConsumed,
-		List<byte[]> segments, List<bool> isPacketComplete)
+		IReadOnlyList<byte[]> segments, IReadOnlyList<bool> isPacketComplete)
 	{
 		Page = page;
 		IsSuccess = isSuccess;
@@ -354,5 +510,5 @@ internal readonly struct OggPageWithSegmentsResult
 		new (page, true, null, bytesConsumed, segments, isPacketComplete);
 
 	public static OggPageWithSegmentsResult Failure (string error) =>
-		new (default, false, error, 0, [], []);
+		new (default, false, error, 0, Array.Empty<byte[]> (), Array.Empty<bool> ());
 }

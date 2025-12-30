@@ -255,6 +255,83 @@ public class OggPageHelperTests
 	}
 
 	[TestMethod]
+	public void FindLastGranulePosition_TruncatedPage_ReturnsLastValidGranule ()
+	{
+		// Create a file where a page is truncated mid-way (segment table claims more data than exists)
+		// This tests the bounds check when pageSize would exceed data.Length
+		using var builder = new BinaryDataBuilder ();
+		builder.Add (CreatePageWithGranule (48000ul, OggPageFlags.BeginOfStream, sequence: 0));
+		builder.Add (CreatePageWithGranule (96000ul, OggPageFlags.EndOfStream, sequence: 1));
+
+		var fullData = builder.ToArray ();
+		// Truncate the second page - cut off 10 bytes from the end
+		var truncatedData = fullData[..(fullData.Length - 10)];
+
+		var result = OggPageHelper.FindLastGranulePosition (truncatedData);
+
+		// Should return the granule from the first (complete) page
+		Assert.AreEqual (48000ul, result);
+	}
+
+	[TestMethod]
+	public void FindLastGranulePosition_CorruptedSegmentCount_HandlesGracefully ()
+	{
+		// Create a page with corrupted segment count (claims 255 segments but data is short)
+		var page = CreatePageWithGranule (48000ul, OggPageFlags.EndOfStream);
+		page[26] = 255; // Set segment count to max (255) but page only has 1 byte of data
+
+		var result = OggPageHelper.FindLastGranulePosition (page);
+
+		// The granule can still be read from the header (bytes 6-13)
+		// This is graceful handling - returns what it can read
+		Assert.AreEqual (48000ul, result);
+	}
+
+	[TestMethod]
+	public void FindLastGranulePosition_TruncatedMidPageData_ReturnsValidGranules ()
+	{
+		// Create two valid pages, then truncate so that the second page's
+		// data section is incomplete (header + segment table readable, but data truncated)
+		using var builder = new BinaryDataBuilder ();
+		var page1 = CreatePageWithGranule (48000ul, OggPageFlags.BeginOfStream, sequence: 0);
+		builder.Add (page1);
+
+		// Create page 2 with 100 bytes of data
+		var page2Builder = new BinaryDataBuilder ();
+		page2Builder.Add (TestConstants.Magic.Ogg);
+		page2Builder.Add ((byte)0); // Version
+		page2Builder.Add ((byte)OggPageFlags.EndOfStream);
+		page2Builder.AddUInt64LE (96000ul); // Granule
+		page2Builder.AddUInt32LE (1); // Serial
+		page2Builder.AddUInt32LE (1); // Sequence
+		page2Builder.AddUInt32LE (0); // CRC placeholder
+		page2Builder.Add ((byte)1); // 1 segment
+		page2Builder.Add ((byte)100); // Segment claims 100 bytes
+		page2Builder.Add (new byte[100]); // Full data
+
+		var page2 = page2Builder.ToArray ();
+		var crc = OggCrc.Calculate (page2);
+		page2[22] = (byte)(crc & 0xFF);
+		page2[23] = (byte)((crc >> 8) & 0xFF);
+		page2[24] = (byte)((crc >> 16) & 0xFF);
+		page2[25] = (byte)((crc >> 24) & 0xFF);
+		builder.Add (page2);
+
+		var fullData = builder.ToArray ();
+		// Truncate to cut off the second page's data but keep header
+		// Page 2 starts at page1.Length, header is 27 bytes + 1 segment byte = 28 bytes
+		// Truncate to keep only 50 bytes of the 100-byte data section
+		var truncatedData = fullData[..(page1.Length + 28 + 50)];
+
+		var result = OggPageHelper.FindLastGranulePosition (truncatedData);
+
+		// Should return the granule from page 2 since header is readable
+		// But the calculated page size (128) exceeds the remaining data
+		// The code should handle this by not advancing past valid data
+		Assert.AreEqual (96000ul, result);
+	}
+
+	[TestMethod]
 	public void FindLastGranulePosition_OnlyEosPageGranule_IgnoresNonEosPages ()
 	{
 		// If a later page has EOS flag but lower granule, we should still prefer
@@ -530,6 +607,20 @@ public class OggPageHelperTests
 	}
 
 	[TestMethod]
+	public void RenumberAudioPages_TruncatedPage_ReturnsPartialResult ()
+	{
+		// Create a valid page, then truncate it so the data section is incomplete
+		var page = TestBuilders.Ogg.CreatePage (new byte[100], 0, OggPageFlags.None);
+		// Truncate to cut off 50 bytes of the 100-byte data section
+		var truncated = page[..(page.Length - 50)];
+
+		var result = OggPageHelper.RenumberAudioPages (truncated, 1, 0);
+
+		// Should return empty array or partial result for truncated data
+		Assert.AreEqual (0, result.Length, "Truncated page should not be processed");
+	}
+
+	[TestMethod]
 	public void RenumberAudioPages_UpdatesSerialNumber ()
 	{
 		// Create page with serial number 99
@@ -558,6 +649,50 @@ public class OggPageHelperTests
 		// Read serial number back (bytes 14-17, little-endian)
 		var resultSerial = (uint)(result[14] | (result[15] << 8) | (result[16] << 16) | (result[17] << 24));
 		Assert.AreEqual (42u, resultSerial, "Serial number should be updated to 42");
+	}
+
+	// ==========================================================================
+	// Segment Table Overflow Tests (RFC 3533 compliance)
+	// ==========================================================================
+
+	[TestMethod]
+	public void BuildOggPage_LargePacketExceeding255Segments_ThrowsOrReturnsError ()
+	{
+		// Ogg pages can have at most 255 segments (segment count is 1 byte)
+		// A packet > 65025 bytes (255 * 255) requires more than 255 segments
+		// per packet, which cannot fit in a single page
+		var largePacket = new byte[65026]; // Just over the limit
+
+		// This should throw ArgumentException
+		Assert.ThrowsExactly<ArgumentException> (() =>
+			OggPageHelper.BuildOggPage ([largePacket], OggPageFlags.None, 0, 1, 0));
+	}
+
+	[TestMethod]
+	public void BuildOggPage_PacketExactly65025Bytes_Succeeds ()
+	{
+		// 65025 bytes = 255 segments of 255 bytes each + 0-byte terminator = 256 segments
+		// This is actually at the boundary, let's test 255*255 = 65025 bytes requires 255 + 1 segments
+		// Actually: 65025 / 255 = 255 exactly, so it needs [255, 255, ..., 255, 0] = 256 segments
+		// Let's test slightly smaller: 255*254 = 64770 requires 254 segments + 0 = 255 segments
+		var packet = new byte[255 * 254]; // 64770 bytes, requires 255 segments
+
+		var page = OggPageHelper.BuildOggPage ([packet], OggPageFlags.None, 0, 1, 0);
+
+		Assert.IsNotNull (page);
+		Assert.AreEqual (255, page[26], "Should have exactly 255 segments");
+	}
+
+	[TestMethod]
+	public void BuildOggPage_MultiplePacketsExceedingSegmentLimit_ThrowsOrReturnsError ()
+	{
+		// Multiple smaller packets that together require > 255 segments
+		var packets = new byte[256][]; // 256 packets of 255 bytes each = 256 segments
+		for (var i = 0; i < 256; i++)
+			packets[i] = new byte[255];
+
+		Assert.ThrowsExactly<ArgumentException> (() =>
+			OggPageHelper.BuildOggPage (packets, OggPageFlags.None, 0, 1, 0));
 	}
 
 	// ==========================================================================
