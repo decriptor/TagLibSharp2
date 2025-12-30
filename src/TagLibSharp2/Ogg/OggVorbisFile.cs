@@ -626,16 +626,23 @@ public sealed class OggVorbisFile
 	/// <summary>
 	/// Calculates the number of Ogg segments needed for a packet of the given size.
 	/// </summary>
+	/// <remarks>
+	/// Per the Ogg specification, segment values of 255 signal continuation.
+	/// A segment &lt; 255 bytes signals packet end. Therefore:
+	/// - A 254-byte packet needs 1 segment (value 254)
+	/// - A 255-byte packet needs 2 segments (255, then 0 to signal end)
+	/// - A 256-byte packet needs 2 segments (255, then 1)
+	/// The formula works out to (length / 255) + 1 for all non-zero lengths.
+	/// </remarks>
 	static int CalculateSegmentsNeeded (int packetLength)
 	{
 		if (packetLength == 0)
 			return 1; // Empty packet needs one 0-byte segment
 
-		var segments = packetLength / 255;
-		var remainder = packetLength % 255;
-
-		// If exactly divisible by 255, need extra 0-byte segment to mark end
-		return remainder == 0 ? segments + 1 : segments + 1;
+		// Both cases (remainder == 0 and remainder != 0) require segments + 1:
+		// - remainder == 0: need extra 0-byte segment to signal packet end
+		// - remainder != 0: need one more segment for the remaining bytes
+		return (packetLength / 255) + 1;
 	}
 
 	/// <summary>

@@ -61,16 +61,7 @@ internal static class OggPageHelper
 
 			// Add segment to current packet using efficient batch copy
 			var segmentData = pageResult.Page.Data.Span.Slice (pageDataOffset, segmentSize);
-#if NET5_0_OR_GREATER
-			// Use CollectionsMarshal for zero-copy append on modern .NET
-			// SetCount requires capacity >= new count, so ensure capacity first
-			var oldCount = currentPacket.Count;
-			currentPacket.EnsureCapacity (oldCount + segmentSize);
-			System.Runtime.InteropServices.CollectionsMarshal.SetCount (currentPacket, oldCount + segmentSize);
-			segmentData.CopyTo (System.Runtime.InteropServices.CollectionsMarshal.AsSpan (currentPacket).Slice (oldCount));
-#else
-			currentPacket.AddRange (segmentData.ToArray ());
-#endif
+			AppendSpanToList (currentPacket, segmentData);
 
 			pageDataOffset += segmentSize;
 
@@ -480,6 +471,114 @@ internal static class OggPageHelper
 
 		return result;
 	}
+
+	/// <summary>
+	/// Extracts header packets from an Ogg stream.
+	/// </summary>
+	/// <param name="data">The binary data to parse.</param>
+	/// <param name="maxPackets">Maximum number of packets to extract.</param>
+	/// <param name="validateCrc">Whether to validate CRC checksums.</param>
+	/// <returns>A result containing the extracted packets, or an error.</returns>
+	/// <remarks>
+	/// This method reads Ogg pages and reassembles packets that may span multiple pages.
+	/// It handles continuation flags and multi-page packets correctly.
+	/// </remarks>
+	public static HeaderPacketsResult ExtractHeaderPackets (
+		ReadOnlySpan<byte> data,
+		int maxPackets,
+		bool validateCrc = false)
+	{
+		var packets = new List<byte[]> ();
+		var packetBuffer = new List<byte> ();
+		var offset = 0;
+		var pageCount = 0;
+		uint serialNumber = 0;
+		var isFirstPage = true;
+
+		while (offset < data.Length && packets.Count < maxPackets && pageCount < 50) {
+			var pageResult = ReadOggPageWithSegments (data.Slice (offset), validateCrc);
+			if (!pageResult.IsSuccess) {
+				if (pageCount == 0)
+					return HeaderPacketsResult.Failure ($"Invalid Ogg file: {pageResult.Error}");
+				break;
+			}
+
+			offset += pageResult.BytesConsumed;
+			pageCount++;
+
+			// First page must have BOS flag
+			if (isFirstPage) {
+				if (!pageResult.Page.IsBeginOfStream)
+					return HeaderPacketsResult.Failure ("First page must have BOS flag");
+				serialNumber = pageResult.Page.SerialNumber;
+				isFirstPage = false;
+			}
+
+			// Handle continuation from previous page
+			var segmentIndex = 0;
+			if (pageResult.Page.IsContinuation && packetBuffer.Count > 0) {
+				if (pageResult.Segments.Count > 0) {
+					packetBuffer.AddRange (pageResult.Segments[0]);
+					if (pageResult.IsPacketComplete[0]) {
+						packets.Add (packetBuffer.ToArray ());
+						packetBuffer.Clear ();
+					}
+					segmentIndex = 1;
+				}
+			}
+
+			// Process remaining segments
+			for (var i = segmentIndex; i < pageResult.Segments.Count && packets.Count < maxPackets; i++) {
+				if (pageResult.IsPacketComplete[i]) {
+					if (packetBuffer.Count > 0) {
+						// Shouldn't happen if continuation logic is correct, but handle it
+						packetBuffer.AddRange (pageResult.Segments[i]);
+						packets.Add (packetBuffer.ToArray ());
+						packetBuffer.Clear ();
+					} else {
+						packets.Add (pageResult.Segments[i]);
+					}
+				} else {
+					packetBuffer.Clear ();
+					packetBuffer.AddRange (pageResult.Segments[i]);
+				}
+			}
+		}
+
+		return HeaderPacketsResult.Success (packets, serialNumber);
+	}
+
+	/// <summary>
+	/// Efficiently appends a span to a list without unnecessary allocations.
+	/// </summary>
+	/// <param name="list">The target list.</param>
+	/// <param name="span">The span to append.</param>
+	/// <remarks>
+	/// On .NET 5+, uses CollectionsMarshal for zero-copy append.
+	/// On older frameworks, pre-allocates capacity and adds bytes individually to avoid
+	/// the allocation that would occur from calling span.ToArray().
+	/// </remarks>
+	internal static void AppendSpanToList (List<byte> list, ReadOnlySpan<byte> span)
+	{
+		if (span.IsEmpty)
+			return;
+
+#if NET5_0_OR_GREATER
+		var oldCount = list.Count;
+		list.EnsureCapacity (oldCount + span.Length);
+		System.Runtime.InteropServices.CollectionsMarshal.SetCount (list, oldCount + span.Length);
+		span.CopyTo (System.Runtime.InteropServices.CollectionsMarshal.AsSpan (list).Slice (oldCount));
+#else
+		// Pre-allocate to avoid multiple resizes during the loop
+		var requiredCapacity = list.Count + span.Length;
+		if (list.Capacity < requiredCapacity)
+			list.Capacity = requiredCapacity;
+
+		// Add bytes individually (avoids span.ToArray() allocation)
+		foreach (var b in span)
+			list.Add (b);
+#endif
+	}
 }
 
 /// <summary>
@@ -511,4 +610,44 @@ internal readonly struct OggPageWithSegmentsResult
 
 	public static OggPageWithSegmentsResult Failure (string error) =>
 		new (default, false, error, 0, Array.Empty<byte[]> (), Array.Empty<bool> ());
+}
+
+/// <summary>
+/// Result of extracting header packets from an Ogg stream.
+/// </summary>
+internal readonly struct HeaderPacketsResult
+{
+	/// <summary>
+	/// Gets a value indicating whether the extraction was successful.
+	/// </summary>
+	public bool IsSuccess { get; }
+
+	/// <summary>
+	/// Gets the error message if extraction failed.
+	/// </summary>
+	public string? Error { get; }
+
+	/// <summary>
+	/// Gets the extracted packets.
+	/// </summary>
+	public IReadOnlyList<byte[]> Packets { get; }
+
+	/// <summary>
+	/// Gets the serial number from the first page.
+	/// </summary>
+	public uint SerialNumber { get; }
+
+	HeaderPacketsResult (bool isSuccess, string? error, IReadOnlyList<byte[]> packets, uint serialNumber)
+	{
+		IsSuccess = isSuccess;
+		Error = error;
+		Packets = packets;
+		SerialNumber = serialNumber;
+	}
+
+	public static HeaderPacketsResult Success (List<byte[]> packets, uint serialNumber) =>
+		new (true, null, packets, serialNumber);
+
+	public static HeaderPacketsResult Failure (string error) =>
+		new (false, error, Array.Empty<byte[]> (), 0);
 }

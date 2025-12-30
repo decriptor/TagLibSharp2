@@ -1,7 +1,9 @@
 // Copyright (c) 2025 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Core;
 using TagLibSharp2.Ogg;
+using TagLibSharp2.Tests.Core;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Ogg;
@@ -424,6 +426,42 @@ public sealed class OggVorbisFileWriteTests
 			if (File.Exists (newPath))
 				File.Delete (newPath);
 		}
+	}
+
+	// ==========================================================================
+	// Cancellation Token Tests
+	// ==========================================================================
+
+	[TestMethod]
+	public async Task ReadFromFileAsync_Cancellation_ReturnsFailure ()
+	{
+		var data = CreateMinimalOggVorbis ("Test", "Artist");
+		var mockFs = new MockFileSystem ();
+		mockFs.AddFile ("/test.ogg", data);
+		var cts = new CancellationTokenSource ();
+		cts.Cancel ();
+
+		var result = await OggVorbisFile.ReadFromFileAsync ("/test.ogg", mockFs, cancellationToken: cts.Token);
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNotNull (result.Error);
+		StringAssert.Contains (result.Error, "cancel", StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_Cancellation_ReturnsFailure ()
+	{
+		var originalData = CreateMinimalOggVorbis ("Test", "Artist");
+		var result = OggVorbisFile.Read (originalData);
+		var mockFs = new MockFileSystem ();
+		var cts = new CancellationTokenSource ();
+		cts.Cancel ();
+
+		var saveResult = await result.File!.SaveToFileAsync ("/test.ogg", originalData, mockFs, cts.Token);
+
+		Assert.IsFalse (saveResult.IsSuccess);
+		Assert.IsNotNull (saveResult.Error);
+		StringAssert.Contains (saveResult.Error, "cancel", StringComparison.OrdinalIgnoreCase);
 	}
 
 }

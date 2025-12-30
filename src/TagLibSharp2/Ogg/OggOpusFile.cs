@@ -458,12 +458,16 @@ public sealed class OggOpusFile
 			var expectedSize = 19 + 2 + channels; // header + stream counts + mapping
 			if (data.Length < expectedSize)
 				return OpusHeadResult.Failure ("OpusHead too short for channel mapping table");
-		} else {
-			// Families 2-254 are reserved, family 255 is discrete channels
-			// Validate mapping table is present for all other families
+		} else if (channelMappingFamily == 255) {
+			// RFC 7845 §5.1.1.2: Family 255 allows discrete channels with no defined order
+			// Validate mapping table is present: stream count + coupled count + channel mapping
 			var expectedSize = 19 + 2 + channels; // header + stream counts + mapping
 			if (data.Length < expectedSize)
 				return OpusHeadResult.Failure ("OpusHead too short for channel mapping table");
+		} else {
+			// RFC 7845 §5.1.1.2: Families 2-254 are reserved and SHOULD NOT be used
+			// Reject these to ensure forward compatibility and spec compliance
+			return OpusHeadResult.Failure ($"Unsupported channel mapping family {channelMappingFamily}. RFC 7845 reserves families 2-254.");
 		}
 
 		return OpusHeadResult.Success (channels, preSkip, inputSampleRate, outputGain);

@@ -3,6 +3,7 @@
 
 using TagLibSharp2.Core;
 using TagLibSharp2.Ogg;
+using TagLibSharp2.Tests.Core;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Ogg;
@@ -475,6 +476,21 @@ public class OggOpusFileTests
 		Assert.AreEqual (16, result.File!.Properties.Channels);
 	}
 
+	[TestMethod]
+	[DataRow (2)]
+	[DataRow (100)]
+	[DataRow (254)]
+	public void Read_ReservedChannelMappingFamily_FailsWithError (int mappingFamily)
+	{
+		// RFC 7845 §5.1.1.2: Families 2-254 are reserved and SHOULD NOT be used
+		var data = TestBuilders.Opus.CreateFileWithChannelMapping (channels: 4, mappingFamily: (byte)mappingFamily);
+
+		var result = OggOpusFile.Read (data);
+
+		Assert.IsFalse (result.IsSuccess);
+		StringAssert.Contains (result.Error, "reserves families 2-254");
+	}
+
 	// ==========================================================================
 	// Tag Property Tests (Album, Year, Genre, Track, Comment)
 	// ==========================================================================
@@ -669,6 +685,42 @@ public class OggOpusFileTests
 		} finally {
 			File.Delete (tempPath);
 		}
+	}
+
+	// ==========================================================================
+	// Cancellation Token Tests
+	// ==========================================================================
+
+	[TestMethod]
+	public async Task ReadFromFileAsync_Cancellation_ReturnsFailure ()
+	{
+		var data = TestBuilders.Opus.CreateMinimalFile ("Test", "Artist");
+		var mockFs = new MockFileSystem ();
+		mockFs.AddFile ("/test.opus", data);
+		var cts = new CancellationTokenSource ();
+		cts.Cancel ();
+
+		var result = await OggOpusFile.ReadFromFileAsync ("/test.opus", mockFs, cancellationToken: cts.Token);
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNotNull (result.Error);
+		StringAssert.Contains (result.Error, "cancel", StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_Cancellation_ReturnsFailure ()
+	{
+		var originalData = TestBuilders.Opus.CreateMinimalFile ("Test", "Artist");
+		var result = OggOpusFile.Read (originalData);
+		var mockFs = new MockFileSystem ();
+		var cts = new CancellationTokenSource ();
+		cts.Cancel ();
+
+		var saveResult = await result.File!.SaveToFileAsync ("/test.opus", originalData, mockFs, cts.Token);
+
+		Assert.IsFalse (saveResult.IsSuccess);
+		Assert.IsNotNull (saveResult.Error);
+		StringAssert.Contains (saveResult.Error, "cancel", StringComparison.OrdinalIgnoreCase);
 	}
 
 	// ==========================================================================
