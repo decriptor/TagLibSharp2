@@ -218,144 +218,39 @@ public sealed class OggOpusFile
 	/// <returns>A result indicating success or failure.</returns>
 	public static OggOpusFileReadResult Read (ReadOnlySpan<byte> data, bool validateCrc = false)
 	{
-		var offset = 0;
-		var pageCount = 0;
-		var foundIdentification = false;
-		var foundComment = false;
+		// Extract the first 2 header packets (OpusHead and OpusTags)
+		var packetsResult = OggPageHelper.ExtractHeaderPackets (data, maxPackets: 2, validateCrc);
+		if (!packetsResult.IsSuccess)
+			return OggOpusFileReadResult.Failure (packetsResult.Error!);
 
-		// Audio properties from OpusHead
-		var channels = 0;
-		ushort preSkip = 0;
-		uint inputSampleRate = 0;
-		short outputGain = 0;
+		if (packetsResult.Packets.Count < 1)
+			return OggOpusFileReadResult.Failure ("No packets found in Ogg stream");
 
-		// For packet reassembly across pages
-		var packetBuffer = new List<byte> ();
-		var currentPacketIndex = 0; // 0=OpusHead, 1=OpusTags
+		// Packet 0: OpusHead identification header
+		var opusHeadPacket = packetsResult.Packets[0];
+		if (!IsOpusHead (opusHeadPacket))
+			return OggOpusFileReadResult.Failure ("Not an Opus stream (expected OpusHead)");
 
+		var headResult = ParseOpusHead (opusHeadPacket);
+		if (!headResult.IsSuccess)
+			return OggOpusFileReadResult.Failure (headResult.Error!);
+
+		var channels = headResult.Channels;
+		var preSkip = headResult.PreSkip;
+		var inputSampleRate = headResult.InputSampleRate;
+		var outputGain = headResult.OutputGain;
+
+		// Packet 1: OpusTags (Vorbis Comment)
 		VorbisComment? vorbisComment = null;
-
-		// Read Ogg pages until we find the OpusTags header
-		while (offset < data.Length && pageCount < 50) { // Limit to prevent infinite loop
-			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset), validateCrc);
-			if (!pageResult.IsSuccess) {
-				if (pageCount == 0)
-					return OggOpusFileReadResult.Failure ($"Invalid Ogg file: {pageResult.Error}");
-				break; // No more valid pages
-			}
-
-			offset += pageResult.BytesConsumed;
-			pageCount++;
-
-			// First page must be BOS with OpusHead identification header
-			if (pageCount == 1) {
-				if (!pageResult.Page.IsBeginOfStream)
-					return OggOpusFileReadResult.Failure ("First page must have BOS flag");
-
-				// First packet should be OpusHead identification header
-				if (pageResult.Segments.Count == 0)
-					return OggOpusFileReadResult.Failure ("First page has no segments");
-
-				var firstPacket = pageResult.Segments[0];
-				if (!IsOpusHead (firstPacket))
-					return OggOpusFileReadResult.Failure ("Not an Opus stream (expected OpusHead)");
-
-				// Parse OpusHead for audio properties
-				var headResult = ParseOpusHead (firstPacket);
-				if (!headResult.IsSuccess)
-					return OggOpusFileReadResult.Failure (headResult.Error!);
-
-				channels = headResult.Channels;
-				preSkip = headResult.PreSkip;
-				inputSampleRate = headResult.InputSampleRate;
-				outputGain = headResult.OutputGain;
-
-				foundIdentification = true;
-				currentPacketIndex = 1; // Next packet will be OpusTags
-
-				// Check if there are more complete packets on this page
-				for (var i = 1; i < pageResult.Segments.Count; i++) {
-					if (pageResult.IsPacketComplete[i]) {
-						// Complete packet on first page - rare but possible
-						if (currentPacketIndex == 1) {
-							var commentResult = TryParseOpusTags (pageResult.Segments[i]);
-							if (commentResult.IsSuccess) {
-								vorbisComment = commentResult.Tag;
-								foundComment = true;
-							} else if (IsOpusTags (pageResult.Segments[i])) {
-								// It's OpusTags but parsing failed
-								return OggOpusFileReadResult.Failure (commentResult.Error ?? "Failed to parse OpusTags header");
-							}
-							currentPacketIndex = 2;
-						}
-					} else {
-						// Packet continues to next page
-						packetBuffer.AddRange (pageResult.Segments[i]);
-					}
-				}
-
-				continue;
-			}
-
-			// Process subsequent pages
-			if (foundIdentification && !foundComment) {
-				// Handle continuation from previous page
-				var segmentIndex = 0;
-				if (pageResult.Page.IsContinuation && packetBuffer.Count > 0) {
-					// Continuation of previous packet
-					if (pageResult.Segments.Count > 0) {
-						packetBuffer.AddRange (pageResult.Segments[0]);
-						if (pageResult.IsPacketComplete[0]) {
-							// Packet is now complete
-							if (currentPacketIndex == 1) {
-								var packet = packetBuffer.ToArray ();
-								var commentResult = TryParseOpusTags (packet);
-								if (commentResult.IsSuccess) {
-									vorbisComment = commentResult.Tag;
-									foundComment = true;
-								} else if (IsOpusTags (packet)) {
-									// It's OpusTags but parsing failed
-									return OggOpusFileReadResult.Failure (commentResult.Error ?? "Failed to parse OpusTags header");
-								}
-								currentPacketIndex = 2;
-							}
-							packetBuffer.Clear ();
-						}
-						segmentIndex = 1;
-					}
-				}
-
-				// Process remaining segments on this page
-				for (var i = segmentIndex; i < pageResult.Segments.Count && !foundComment; i++) {
-					if (pageResult.IsPacketComplete[i]) {
-						// Complete packet
-						if (currentPacketIndex == 1) {
-							var commentResult = TryParseOpusTags (pageResult.Segments[i]);
-							if (commentResult.IsSuccess) {
-								vorbisComment = commentResult.Tag;
-								foundComment = true;
-							} else if (IsOpusTags (pageResult.Segments[i])) {
-								// It's OpusTags but parsing failed
-								return OggOpusFileReadResult.Failure (commentResult.Error ?? "Failed to parse OpusTags header");
-							}
-							currentPacketIndex = 2;
-						} else {
-							currentPacketIndex++;
-						}
-					} else {
-						// Packet continues to next page
-						packetBuffer.Clear ();
-						packetBuffer.AddRange (pageResult.Segments[i]);
-					}
-				}
-
-				if (foundComment)
-					break;
+		if (packetsResult.Packets.Count >= 2) {
+			var opusTagsPacket = packetsResult.Packets[1];
+			if (IsOpusTags (opusTagsPacket)) {
+				var commentResult = TryParseOpusTags (opusTagsPacket);
+				if (!commentResult.IsSuccess)
+					return OggOpusFileReadResult.Failure (commentResult.Error ?? "Failed to parse OpusTags header");
+				vorbisComment = commentResult.Tag;
 			}
 		}
-
-		if (!foundIdentification)
-			return OggOpusFileReadResult.Failure ("No OpusHead header found");
 
 		// Find the last page to get total samples from granule position
 		var granulePosition = OggPageHelper.FindLastGranulePosition (data);
@@ -372,7 +267,7 @@ public sealed class OggOpusFile
 			_fileSize = data.Length
 		};
 
-		return OggOpusFileReadResult.Success (file, offset);
+		return OggOpusFileReadResult.Success (file, data.Length);
 	}
 
 	/// <summary>
@@ -715,88 +610,23 @@ public sealed class OggOpusFile
 	/// <summary>
 	/// Extracts the header packets from the original file.
 	/// </summary>
+	/// <remarks>
+	/// Uses the shared <see cref="OggPageHelper.ExtractHeaderPackets"/> for packet reassembly.
+	/// Audio data starts after the page containing OpusTags (packet 1).
+	/// </remarks>
 	static HeaderInfo ExtractHeaderInfo (ReadOnlySpan<byte> data)
 	{
-		byte[]? opusHeadPacket = null;
-		uint serialNumber = 0;
-		var offset = 0;
-		var pageCount = 0;
-		var packetBuffer = new List<byte> ();
-		var currentPacketIndex = 0; // 0=OpusHead, 1=OpusTags
+		// Extract OpusHead (packet 0) and OpusTags (packet 1)
+		// BytesConsumed gives us where audio data starts
+		var packetsResult = OggPageHelper.ExtractHeaderPackets (data, maxPackets: 2);
+		if (!packetsResult.IsSuccess || packetsResult.Packets.Count < 1)
+			return HeaderInfo.Failure ();
 
-		while (offset < data.Length && pageCount < 50) {
-			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset));
-			if (!pageResult.IsSuccess)
-				break;
+		var opusHeadPacket = packetsResult.Packets[0];
+		if (!IsOpusHead (opusHeadPacket))
+			return HeaderInfo.Failure ();
 
-			offset += pageResult.BytesConsumed;
-			pageCount++;
-
-			if (pageCount == 1) {
-				serialNumber = pageResult.Page.SerialNumber;
-
-				if (pageResult.Segments.Count > 0 && IsOpusHead (pageResult.Segments[0]))
-					opusHeadPacket = pageResult.Segments[0];
-				else
-					return HeaderInfo.Failure ();
-
-				currentPacketIndex = 1;
-
-				// Check for OpusTags on first page (rare but possible)
-				for (var i = 1; i < pageResult.Segments.Count; i++) {
-					if (pageResult.IsPacketComplete[i]) {
-						if (currentPacketIndex == 1 && IsOpusTags (pageResult.Segments[i])) {
-							// Found OpusTags, audio starts after this page
-							return HeaderInfo.Success (opusHeadPacket!, serialNumber, offset);
-						}
-						currentPacketIndex++;
-					} else {
-						packetBuffer.Clear ();
-						packetBuffer.AddRange (pageResult.Segments[i]);
-					}
-				}
-				continue;
-			}
-
-			// Process subsequent pages looking for end of OpusTags
-			var segmentIndex = 0;
-			if (pageResult.Page.IsContinuation && packetBuffer.Count > 0) {
-				if (pageResult.Segments.Count > 0) {
-					packetBuffer.AddRange (pageResult.Segments[0]);
-					if (pageResult.IsPacketComplete[0]) {
-						if (currentPacketIndex == 1) {
-							var packet = packetBuffer.ToArray ();
-							if (IsOpusTags (packet)) {
-								// Found complete OpusTags, audio starts after this
-								return HeaderInfo.Success (opusHeadPacket!, serialNumber, offset);
-							}
-						}
-						currentPacketIndex++;
-						packetBuffer.Clear ();
-					}
-					segmentIndex = 1;
-				}
-			}
-
-			for (var i = segmentIndex; i < pageResult.Segments.Count; i++) {
-				if (pageResult.IsPacketComplete[i]) {
-					if (currentPacketIndex == 1 && IsOpusTags (pageResult.Segments[i])) {
-						// Found OpusTags, audio starts after this page
-						return HeaderInfo.Success (opusHeadPacket!, serialNumber, offset);
-					}
-					currentPacketIndex++;
-				} else {
-					packetBuffer.Clear ();
-					packetBuffer.AddRange (pageResult.Segments[i]);
-				}
-			}
-		}
-
-		// Reached page limit without finding OpusTags - audio might start immediately
-		if (opusHeadPacket is not null)
-			return HeaderInfo.Success (opusHeadPacket, serialNumber, offset);
-
-		return HeaderInfo.Failure ();
+		return HeaderInfo.Success (opusHeadPacket, packetsResult.SerialNumber, packetsResult.BytesConsumed);
 	}
 }
 

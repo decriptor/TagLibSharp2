@@ -545,7 +545,7 @@ internal static class OggPageHelper
 			}
 		}
 
-		return HeaderPacketsResult.Success (packets, serialNumber);
+		return HeaderPacketsResult.Success (packets, serialNumber, offset);
 	}
 
 	/// <summary>
@@ -637,17 +637,27 @@ internal readonly struct HeaderPacketsResult
 	/// </summary>
 	public uint SerialNumber { get; }
 
-	HeaderPacketsResult (bool isSuccess, string? error, IReadOnlyList<byte[]> packets, uint serialNumber)
+	/// <summary>
+	/// Gets the number of bytes consumed from the input.
+	/// </summary>
+	/// <remarks>
+	/// This indicates where the last extracted packet ends, which is useful
+	/// for determining where audio data starts after header packets.
+	/// </remarks>
+	public int BytesConsumed { get; }
+
+	HeaderPacketsResult (bool isSuccess, string? error, IReadOnlyList<byte[]> packets, uint serialNumber, int bytesConsumed)
 	{
 		IsSuccess = isSuccess;
 		Error = error;
 		Packets = packets;
 		SerialNumber = serialNumber;
+		BytesConsumed = bytesConsumed;
 	}
 
-	public static HeaderPacketsResult Success (List<byte[]> packets, uint serialNumber) =>
-		new (true, null, packets, serialNumber);
+	public static HeaderPacketsResult Success (List<byte[]> packets, uint serialNumber, int bytesConsumed) =>
+		new (true, null, packets, serialNumber, bytesConsumed);
 
 	public static HeaderPacketsResult Failure (string error) =>
-		new (false, error, Array.Empty<byte[]> (), 0);
+		new (false, error, Array.Empty<byte[]> (), 0, 0);
 }

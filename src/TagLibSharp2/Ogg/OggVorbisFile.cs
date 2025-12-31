@@ -172,136 +172,33 @@ public sealed class OggVorbisFile
 	/// <returns>A result indicating success or failure.</returns>
 	public static OggVorbisFileReadResult Read (ReadOnlySpan<byte> data, bool validateCrc = false)
 	{
-		var offset = 0;
-		var pageCount = 0;
-		var foundIdentification = false;
-		var foundComment = false;
+		// Extract the first 2 header packets (identification and comment)
+		// We don't need setup header for metadata reading
+		var packetsResult = OggPageHelper.ExtractHeaderPackets (data, maxPackets: 2, validateCrc);
+		if (!packetsResult.IsSuccess)
+			return OggVorbisFileReadResult.Failure (packetsResult.Error!);
 
-		// Audio properties from identification header
-		var sampleRate = 0;
-		var channels = 0;
-		var bitrateNominal = 0;
+		if (packetsResult.Packets.Count < 1)
+			return OggVorbisFileReadResult.Failure ("No packets found in Ogg stream");
 
-		// For packet reassembly across pages
-		var packetBuffer = new List<byte> ();
-		var currentPacketIndex = 0; // 0=ident, 1=comment, 2=setup
+		// Packet 0: Vorbis identification header
+		var identPacket = packetsResult.Packets[0];
+		if (!IsVorbisIdentificationHeader (identPacket))
+			return OggVorbisFileReadResult.Failure ("Not a Vorbis stream (expected identification header)");
 
+		var (sampleRate, channels, bitrateNominal) = ParseIdentificationHeader (identPacket);
+
+		// Packet 1: Vorbis comment header
 		VorbisComment? vorbisComment = null;
-
-		// Read Ogg pages until we find the Vorbis comment header
-		while (offset < data.Length && pageCount < 50) { // Limit to prevent infinite loop
-			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset), validateCrc);
-			if (!pageResult.IsSuccess) {
-				if (pageCount == 0)
-					return OggVorbisFileReadResult.Failure ($"Invalid Ogg file: {pageResult.Error}");
-				break; // No more valid pages
-			}
-
-			offset += pageResult.BytesConsumed;
-			pageCount++;
-
-			// First page must be BOS with Vorbis identification header
-			if (pageCount == 1) {
-				if (!pageResult.Page.IsBeginOfStream)
-					return OggVorbisFileReadResult.Failure ("First page must have BOS flag");
-
-				// First packet should be identification header
-				if (pageResult.Segments.Count == 0)
-					return OggVorbisFileReadResult.Failure ("First page has no segments");
-
-				var firstPacket = pageResult.Segments[0];
-				if (!IsVorbisIdentificationHeader (firstPacket))
-					return OggVorbisFileReadResult.Failure ("Not a Vorbis stream (expected identification header)");
-
-				// Parse identification header for audio properties
-				(sampleRate, channels, bitrateNominal) = ParseIdentificationHeader (firstPacket);
-
-				foundIdentification = true;
-				currentPacketIndex = 1; // Next packet will be comment
-
-				// Check if there are more complete packets on this page
-				for (var i = 1; i < pageResult.Segments.Count; i++) {
-					if (pageResult.IsPacketComplete[i]) {
-						// Complete packet on first page - rare but possible
-						if (currentPacketIndex == 1) {
-							var commentResult = TryParseCommentPacket (pageResult.Segments[i]);
-							if (commentResult.IsSuccess) {
-								vorbisComment = commentResult.Tag;
-								foundComment = true;
-							} else if (IsVorbisCommentHeader (pageResult.Segments[i])) {
-								// It's a comment header but parsing failed (e.g., invalid framing bit)
-								return OggVorbisFileReadResult.Failure (commentResult.Error ?? "Failed to parse comment header");
-							}
-							currentPacketIndex = 2;
-						}
-					} else {
-						// Packet continues to next page
-						packetBuffer.AddRange (pageResult.Segments[i]);
-					}
-				}
-
-				continue;
-			}
-
-			// Process subsequent pages
-			if (foundIdentification && !foundComment) {
-				// Handle continuation from previous page
-				var segmentIndex = 0;
-				if (pageResult.Page.IsContinuation && packetBuffer.Count > 0) {
-					// Continuation of previous packet
-					if (pageResult.Segments.Count > 0) {
-						packetBuffer.AddRange (pageResult.Segments[0]);
-						if (pageResult.IsPacketComplete[0]) {
-							// Packet is now complete
-							if (currentPacketIndex == 1) {
-								var packet = packetBuffer.ToArray ();
-								var commentResult = TryParseCommentPacket (packet);
-								if (commentResult.IsSuccess) {
-									vorbisComment = commentResult.Tag;
-									foundComment = true;
-								} else if (IsVorbisCommentHeader (packet)) {
-									// It's a comment header but parsing failed
-									return OggVorbisFileReadResult.Failure (commentResult.Error ?? "Failed to parse comment header");
-								}
-								currentPacketIndex = 2;
-							}
-							packetBuffer.Clear ();
-						}
-						segmentIndex = 1;
-					}
-				}
-
-				// Process remaining segments on this page
-				for (var i = segmentIndex; i < pageResult.Segments.Count && !foundComment; i++) {
-					if (pageResult.IsPacketComplete[i]) {
-						// Complete packet
-						if (currentPacketIndex == 1) {
-							var commentResult = TryParseCommentPacket (pageResult.Segments[i]);
-							if (commentResult.IsSuccess) {
-								vorbisComment = commentResult.Tag;
-								foundComment = true;
-							} else if (IsVorbisCommentHeader (pageResult.Segments[i])) {
-								// It's a comment header but parsing failed
-								return OggVorbisFileReadResult.Failure (commentResult.Error ?? "Failed to parse comment header");
-							}
-							currentPacketIndex = 2;
-						} else {
-							currentPacketIndex++;
-						}
-					} else {
-						// Packet continues to next page
-						packetBuffer.Clear ();
-						packetBuffer.AddRange (pageResult.Segments[i]);
-					}
-				}
-
-				if (foundComment)
-					break;
+		if (packetsResult.Packets.Count >= 2) {
+			var commentPacket = packetsResult.Packets[1];
+			if (IsVorbisCommentHeader (commentPacket)) {
+				var commentResult = TryParseCommentPacket (commentPacket);
+				if (!commentResult.IsSuccess)
+					return OggVorbisFileReadResult.Failure (commentResult.Error ?? "Failed to parse comment header");
+				vorbisComment = commentResult.Tag;
 			}
 		}
-
-		if (!foundIdentification)
-			return OggVorbisFileReadResult.Failure ("No Vorbis identification header found");
 
 		// Find the last page to get total samples from granule position
 		// Use shared helper which properly finds EOS page per RFC 3533
@@ -311,10 +208,11 @@ public sealed class OggVorbisFile
 		var properties = AudioProperties.FromVorbis (totalSamples, sampleRate, channels, bitrateNominal);
 
 		// Create the file and set properties
-		var file = new OggVorbisFile (properties);
-		file.VorbisComment = vorbisComment;
+		var file = new OggVorbisFile (properties) {
+			VorbisComment = vorbisComment
+		};
 
-		return OggVorbisFileReadResult.Success (file, offset);
+		return OggVorbisFileReadResult.Success (file, data.Length);
 	}
 
 	static VorbisCommentReadResult TryParseCommentPacket (ReadOnlySpan<byte> packet)
@@ -671,88 +569,29 @@ public sealed class OggVorbisFile
 	/// <summary>
 	/// Extracts the header packets from the original file.
 	/// </summary>
+	/// <remarks>
+	/// Uses the shared <see cref="OggPageHelper.ExtractHeaderPackets"/> for packet reassembly.
+	/// Vorbis has 3 header packets: identification (0), comment (1), setup (2).
+	/// Audio data starts after the page containing the setup header.
+	/// </remarks>
 	static HeaderInfo ExtractHeaderInfo (ReadOnlySpan<byte> data)
 	{
-		byte[]? identPacket = null;
-		byte[]? setupPacket = null;
-		uint serialNumber = 0;
-		var offset = 0;
-		var pageCount = 0;
-		var packetBuffer = new List<byte> ();
-		var currentPacketIndex = 0; // 0=ident, 1=comment, 2=setup
+		// Extract all 3 header packets: identification, comment, setup
+		// BytesConsumed gives us where audio data starts
+		var packetsResult = OggPageHelper.ExtractHeaderPackets (data, maxPackets: 3);
+		if (!packetsResult.IsSuccess || packetsResult.Packets.Count < 3)
+			return HeaderInfo.Failure ();
 
-		while (offset < data.Length && pageCount < 50) {
-			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset));
-			if (!pageResult.IsSuccess)
-				break;
+		var identPacket = packetsResult.Packets[0];
+		if (!IsVorbisIdentificationHeader (identPacket))
+			return HeaderInfo.Failure ();
 
-			var pageStart = offset;
-			offset += pageResult.BytesConsumed;
-			pageCount++;
+		// Skip packet 1 (comment) - we rebuild it
+		var setupPacket = packetsResult.Packets[2];
+		if (!IsVorbisSetupHeader (setupPacket))
+			return HeaderInfo.Failure ();
 
-			if (pageCount == 1) {
-				serialNumber = pageResult.Page.SerialNumber;
-
-				if (pageResult.Segments.Count > 0 && IsVorbisIdentificationHeader (pageResult.Segments[0]))
-					identPacket = pageResult.Segments[0];
-				else
-					return HeaderInfo.Failure ();
-
-				currentPacketIndex = 1;
-
-				// Check for additional packets on first page
-				for (var i = 1; i < pageResult.Segments.Count; i++) {
-					if (pageResult.IsPacketComplete[i]) {
-						if (currentPacketIndex == 2 && IsVorbisSetupHeader (pageResult.Segments[i])) {
-							setupPacket = pageResult.Segments[i];
-							// Found all headers, next pages are audio
-							return new HeaderInfo (identPacket!, setupPacket, serialNumber, offset);
-						}
-						currentPacketIndex++;
-					} else {
-						packetBuffer.Clear ();
-						packetBuffer.AddRange (pageResult.Segments[i]);
-					}
-				}
-				continue;
-			}
-
-			// Process subsequent pages looking for setup header
-			var segmentIndex = 0;
-			if (pageResult.Page.IsContinuation && packetBuffer.Count > 0) {
-				if (pageResult.Segments.Count > 0) {
-					packetBuffer.AddRange (pageResult.Segments[0]);
-					if (pageResult.IsPacketComplete[0]) {
-						if (currentPacketIndex == 2) {
-							var packet = packetBuffer.ToArray ();
-							if (IsVorbisSetupHeader (packet)) {
-								setupPacket = packet;
-								return new HeaderInfo (identPacket!, setupPacket, serialNumber, offset);
-							}
-						}
-						currentPacketIndex++;
-						packetBuffer.Clear ();
-					}
-					segmentIndex = 1;
-				}
-			}
-
-			for (var i = segmentIndex; i < pageResult.Segments.Count; i++) {
-				if (pageResult.IsPacketComplete[i]) {
-					if (currentPacketIndex == 2 && IsVorbisSetupHeader (pageResult.Segments[i])) {
-						setupPacket = pageResult.Segments[i];
-						return new HeaderInfo (identPacket!, setupPacket, serialNumber, offset);
-					}
-					currentPacketIndex++;
-				} else {
-					packetBuffer.Clear ();
-					packetBuffer.AddRange (pageResult.Segments[i]);
-				}
-			}
-		}
-
-		// Reached page limit without finding all headers
-		return HeaderInfo.Failure ();
+		return new HeaderInfo (identPacket, setupPacket, packetsResult.SerialNumber, packetsResult.BytesConsumed);
 	}
 
 	static bool IsVorbisSetupHeader (ReadOnlySpan<byte> data)
