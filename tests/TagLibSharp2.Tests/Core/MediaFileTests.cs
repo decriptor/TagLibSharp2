@@ -3,6 +3,8 @@
 
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Core;
+using TagLibSharp2.Dff;
+using TagLibSharp2.Dsf;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Riff;
@@ -102,6 +104,32 @@ public class MediaFileTests
 	}
 
 	[TestMethod]
+	public void DetectFormat_DsfMagic_ReturnsDsf ()
+	{
+		// DSF: starts with "DSD "
+		var data = new byte[28]; // DSF DSD chunk minimum
+		TestConstants.Magic.Dsf.CopyTo (data, 0);
+
+		var format = MediaFile.DetectFormat (data);
+
+		Assert.AreEqual (MediaFormat.Dsf, format);
+	}
+
+	[TestMethod]
+	public void DetectFormat_DffMagic_ReturnsDff ()
+	{
+		// DFF: starts with "FRM8" + 8 bytes size + "DSD "
+		var data = new byte[16];
+		TestConstants.Magic.Frm8.CopyTo (data, 0);
+		// bytes 4-11: 64-bit size (zeros ok)
+		TestConstants.Magic.DsdType.CopyTo (data, 12);
+
+		var format = MediaFile.DetectFormat (data);
+
+		Assert.AreEqual (MediaFormat.Dff, format);
+	}
+
+	[TestMethod]
 	public void DetectFormat_UnknownMagic_UsesExtension ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00 };
@@ -112,6 +140,8 @@ public class MediaFileTests
 		Assert.AreEqual (MediaFormat.Wav, MediaFile.DetectFormat (data, "song.wav"));
 		Assert.AreEqual (MediaFormat.Aiff, MediaFile.DetectFormat (data, "song.aiff"));
 		Assert.AreEqual (MediaFormat.Aiff, MediaFile.DetectFormat (data, "song.aif"));
+		Assert.AreEqual (MediaFormat.Dsf, MediaFile.DetectFormat (data, "song.dsf"));
+		Assert.AreEqual (MediaFormat.Dff, MediaFile.DetectFormat (data, "song.dff"));
 	}
 
 	[TestMethod]
@@ -255,5 +285,204 @@ public class MediaFileTests
 		data[9] = 0x00;
 
 		return data;
+	}
+
+	[TestMethod]
+	public void OpenFromData_ValidDsf_ReturnsDsfFile ()
+	{
+		var data = CreateMinimalDsf ();
+
+		var result = MediaFile.OpenFromData (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.Dsf, result.Format);
+		Assert.IsNotNull (result.File);
+		Assert.IsInstanceOfType<DsfFile> (result.File);
+	}
+
+	[TestMethod]
+	public void OpenFromData_ValidDff_ReturnsDffFile ()
+	{
+		var data = CreateMinimalDff ();
+
+		var result = MediaFile.OpenFromData (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.Dff, result.Format);
+		Assert.IsNotNull (result.File);
+		Assert.IsInstanceOfType<DffFile> (result.File);
+	}
+
+	[TestMethod]
+	public void GetFileAs_DsfFile_ReturnsCorrectType ()
+	{
+		var data = CreateMinimalDsf ();
+		var result = MediaFile.OpenFromData (data);
+
+		var dsfFile = result.GetFileAs<DsfFile> ();
+
+		Assert.IsNotNull (dsfFile);
+	}
+
+	[TestMethod]
+	public void GetFileAs_DffFile_ReturnsCorrectType ()
+	{
+		var data = CreateMinimalDff ();
+		var result = MediaFile.OpenFromData (data);
+
+		var dffFile = result.GetFileAs<DffFile> ();
+
+		Assert.IsNotNull (dffFile);
+	}
+
+	static byte[] CreateMinimalDsf ()
+	{
+		// DSF structure matches DsfFileTests.CreateMinimalDsfFile
+		// DSD chunk (28) + fmt chunk (52) + data chunk (12 header + 88 audio = 100)
+		// Total: 28 + 52 + 100 = 180 bytes
+
+		// Build DSD chunk (28 bytes)
+		var dsd = new byte[28];
+		dsd[0] = (byte)'D';
+		dsd[1] = (byte)'S';
+		dsd[2] = (byte)'D';
+		dsd[3] = (byte)' ';
+		BitConverter.GetBytes (28UL).CopyTo (dsd, 4);  // chunk size
+		BitConverter.GetBytes (180UL).CopyTo (dsd, 12); // file size
+		BitConverter.GetBytes (0UL).CopyTo (dsd, 20);  // metadata offset (none)
+
+		// Build fmt chunk (52 bytes)
+		var fmt = new byte[52];
+		fmt[0] = (byte)'f';
+		fmt[1] = (byte)'m';
+		fmt[2] = (byte)'t';
+		fmt[3] = (byte)' ';
+		BitConverter.GetBytes (52UL).CopyTo (fmt, 4);  // chunk size
+		BitConverter.GetBytes (1U).CopyTo (fmt, 12);   // format version
+		BitConverter.GetBytes (0U).CopyTo (fmt, 16);   // format id (DSD raw)
+		BitConverter.GetBytes (2U).CopyTo (fmt, 20);   // channel type (stereo)
+		BitConverter.GetBytes (2U).CopyTo (fmt, 24);   // channel count
+		BitConverter.GetBytes (2822400U).CopyTo (fmt, 28); // sample rate (DSD64)
+		BitConverter.GetBytes (1U).CopyTo (fmt, 32);   // bits per sample
+		BitConverter.GetBytes (2822400UL).CopyTo (fmt, 36); // sample count
+		BitConverter.GetBytes (4096U).CopyTo (fmt, 44); // block size per channel
+														// reserved 4 bytes at end are already 0
+
+		// Build data chunk header (12 bytes) + audio data (88 bytes) = 100 bytes
+		var dataHeader = new byte[12];
+		dataHeader[0] = (byte)'d';
+		dataHeader[1] = (byte)'a';
+		dataHeader[2] = (byte)'t';
+		dataHeader[3] = (byte)'a';
+		BitConverter.GetBytes (100UL).CopyTo (dataHeader, 4); // chunk size (header + data)
+
+		var audioData = new byte[88]; // padding to make data chunk 100 bytes total
+
+		// Combine all parts
+		var result = new byte[180];
+		dsd.CopyTo (result, 0);
+		fmt.CopyTo (result, 28);
+		dataHeader.CopyTo (result, 80);
+		audioData.CopyTo (result, 92);
+
+		return result;
+	}
+
+	static byte[] CreateMinimalDff ()
+	{
+		// DFF (DSDIFF) structure: FRM8 + FVER + PROP + DSD
+		using var ms = new MemoryStream ();
+
+		// FRM8 container header
+		ms.Write (TestConstants.Magic.Frm8, 0, 4); // "FRM8"
+		var sizePos = ms.Position;
+		WriteUInt64BE (ms, 0); // placeholder for size
+		ms.Write (TestConstants.Magic.DsdType, 0, 4); // "DSD "
+
+		// FVER chunk
+		var fver = new byte[] { 0x46, 0x56, 0x45, 0x52 }; // "FVER"
+		ms.Write (fver, 0, 4);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 0x01050000); // Version 1.5
+
+		// PROP chunk
+		var prop = new byte[] { 0x50, 0x52, 0x4F, 0x50 }; // "PROP"
+		ms.Write (prop, 0, 4);
+		var propSizePos = ms.Position;
+		WriteUInt64BE (ms, 0); // placeholder
+		var snd = new byte[] { 0x53, 0x4E, 0x44, 0x20 }; // "SND "
+		ms.Write (snd, 0, 4);
+
+		// FS sub-chunk
+		var fs = new byte[] { 0x46, 0x53, 0x20, 0x20 }; // "FS  "
+		ms.Write (fs, 0, 4);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 2822400); // DSD64
+
+		// CHNL sub-chunk
+		var chnl = new byte[] { 0x43, 0x48, 0x4E, 0x4C }; // "CHNL"
+		ms.Write (chnl, 0, 4);
+		WriteUInt64BE (ms, 10); // 2 + 2*4
+		WriteUInt16BE (ms, 2);  // channel count
+		var slft = new byte[] { 0x53, 0x4C, 0x46, 0x54 }; // "SLFT"
+		var srgt = new byte[] { 0x53, 0x52, 0x47, 0x54 }; // "SRGT"
+		ms.Write (slft, 0, 4);
+		ms.Write (srgt, 0, 4);
+
+		// CMPR sub-chunk
+		var cmpr = new byte[] { 0x43, 0x4D, 0x50, 0x52 }; // "CMPR"
+		ms.Write (cmpr, 0, 4);
+		WriteUInt64BE (ms, 14); // 4 + 1 + 9
+		ms.Write (TestConstants.Magic.DsdType, 0, 4); // "DSD "
+		ms.WriteByte (9); // compressionName length
+		var notCompressed = System.Text.Encoding.ASCII.GetBytes ("not compr");
+		ms.Write (notCompressed, 0, 9);
+
+		// Update PROP size
+		var propSize = ms.Position - propSizePos - 8;
+		var currentPos = ms.Position;
+		ms.Position = propSizePos;
+		WriteUInt64BE (ms, (ulong)propSize);
+		ms.Position = currentPos;
+
+		// DSD chunk (audio data)
+		var dsd = new byte[] { 0x44, 0x53, 0x44, 0x20 }; // "DSD "
+		ms.Write (dsd, 0, 4);
+		WriteUInt64BE (ms, 100); // chunk size
+		var audioData = new byte[100];
+		ms.Write (audioData, 0, audioData.Length);
+
+		// Update FRM8 size
+		var frm8Size = ms.Length - 12; // excludes "FRM8" and size field
+		currentPos = ms.Position;
+		ms.Position = sizePos;
+		WriteUInt64BE (ms, (ulong)frm8Size);
+		ms.Position = currentPos;
+
+		return ms.ToArray ();
+	}
+
+	static void WriteUInt64BE (Stream s, ulong value)
+	{
+		var bytes = BitConverter.GetBytes (value);
+		if (BitConverter.IsLittleEndian)
+			Array.Reverse (bytes);
+		s.Write (bytes, 0, 8);
+	}
+
+	static void WriteUInt32BE (Stream s, uint value)
+	{
+		var bytes = BitConverter.GetBytes (value);
+		if (BitConverter.IsLittleEndian)
+			Array.Reverse (bytes);
+		s.Write (bytes, 0, 4);
+	}
+
+	static void WriteUInt16BE (Stream s, ushort value)
+	{
+		var bytes = BitConverter.GetBytes (value);
+		if (BitConverter.IsLittleEndian)
+			Array.Reverse (bytes);
+		s.Write (bytes, 0, 2);
 	}
 }

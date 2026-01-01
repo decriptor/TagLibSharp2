@@ -2,6 +2,8 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Aiff;
+using TagLibSharp2.Dff;
+using TagLibSharp2.Dsf;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Ogg;
@@ -26,6 +28,8 @@ namespace TagLibSharp2.Core;
 /// <item>WAV (RIFF INFO, ID3v2)</item>
 /// <item>AIFF (ID3 chunk)</item>
 /// <item>MP4/M4A (iTunes metadata)</item>
+/// <item>DSF (DSD Stream File - ID3v2 metadata)</item>
+/// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// </list>
 /// </remarks>
 /// <example>
@@ -51,6 +55,8 @@ public static class MediaFile
 	static readonly byte[] OpusHeadMagic = [(byte)'O', (byte)'p', (byte)'u', (byte)'s', (byte)'H', (byte)'e', (byte)'a', (byte)'d'];
 	static readonly byte[] VorbisMagic = [(byte)'v', (byte)'o', (byte)'r', (byte)'b', (byte)'i', (byte)'s'];
 	static readonly byte[] FtypMagic = [(byte)'f', (byte)'t', (byte)'y', (byte)'p'];
+	static readonly byte[] DsfMagic = [(byte)'D', (byte)'S', (byte)'D', (byte)' '];
+	static readonly byte[] Frm8Magic = [(byte)'F', (byte)'R', (byte)'M', (byte)'8'];
 
 	/// <summary>
 	/// Opens a media file and returns a unified result.
@@ -119,6 +125,8 @@ public static class MediaFile
 			MediaFormat.Wav => OpenWav (data),
 			MediaFormat.Aiff => OpenAiff (data),
 			MediaFormat.Mp4 => OpenMp4 (data),
+			MediaFormat.Dsf => OpenDsf (data),
+			MediaFormat.Dff => OpenDff (data),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 	}
@@ -166,6 +174,19 @@ public static class MediaFile
 				data[4] == FtypMagic[0] && data[5] == FtypMagic[1] &&
 				data[6] == FtypMagic[2] && data[7] == FtypMagic[3])
 				return MediaFormat.Mp4;
+
+			// DSF: starts with "DSD "
+			if (data[0] == DsfMagic[0] && data[1] == DsfMagic[1] &&
+				data[2] == DsfMagic[2] && data[3] == DsfMagic[3])
+				return MediaFormat.Dsf;
+
+			// DFF (DSDIFF): starts with "FRM8" + 8 bytes size + "DSD "
+			if (data.Length >= 16 &&
+				data[0] == Frm8Magic[0] && data[1] == Frm8Magic[1] &&
+				data[2] == Frm8Magic[2] && data[3] == Frm8Magic[3] &&
+				data[12] == DsfMagic[0] && data[13] == DsfMagic[1] &&
+				data[14] == DsfMagic[2] && data[15] == DsfMagic[3])
+				return MediaFormat.Dff;
 		}
 
 		if (data.Length >= 3) {
@@ -189,6 +210,8 @@ public static class MediaFile
 				".WAV" => MediaFormat.Wav,
 				".AIF" or ".AIFF" or ".AIFC" => MediaFormat.Aiff,
 				".M4A" or ".M4B" or ".M4P" or ".M4V" or ".MP4" => MediaFormat.Mp4,
+				".DSF" => MediaFormat.Dsf,
+				".DFF" => MediaFormat.Dff,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -315,6 +338,24 @@ public static class MediaFile
 
 		return MediaFileResult.Success (result.File!, result.File!.Tag, MediaFormat.Mp4);
 	}
+
+	static MediaFileResult OpenDsf (ReadOnlyMemory<byte> data)
+	{
+		var result = DsfFile.Parse (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.File!, result.File!.Tag, MediaFormat.Dsf);
+	}
+
+	static MediaFileResult OpenDff (ReadOnlyMemory<byte> data)
+	{
+		var result = DffFile.Parse (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.File!, result.File!.Id3v2Tag, MediaFormat.Dff);
+	}
 }
 
 /// <summary>
@@ -419,5 +460,15 @@ public enum MediaFormat
 	/// <summary>
 	/// MP4/M4A audio format (MPEG-4 container).
 	/// </summary>
-	Mp4
+	Mp4,
+
+	/// <summary>
+	/// DSF audio format (DSD Stream File - Sony's DSD container).
+	/// </summary>
+	Dsf,
+
+	/// <summary>
+	/// DFF audio format (DSDIFF - Philips' DSD Interchange File Format).
+	/// </summary>
+	Dff
 }

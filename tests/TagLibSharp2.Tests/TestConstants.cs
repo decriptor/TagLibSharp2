@@ -49,6 +49,15 @@ public static class TestConstants
 
 		/// <summary>Opus comment header signature "OpusTags" (8 bytes).</summary>
 		public static readonly byte[] OpusTags = [0x4F, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73];
+
+		/// <summary>DSF format signature "DSD " (0x44 0x53 0x44 0x20).</summary>
+		public static readonly byte[] Dsf = [0x44, 0x53, 0x44, 0x20];
+
+		/// <summary>DFF/DSDIFF container signature "FRM8" (0x46 0x52 0x4D 0x38).</summary>
+		public static readonly byte[] Frm8 = [0x46, 0x52, 0x4D, 0x38];
+
+		/// <summary>DFF/DSDIFF type identifier "DSD " at offset 12 (0x44 0x53 0x44 0x20).</summary>
+		public static readonly byte[] DsdType = [0x44, 0x53, 0x44, 0x20];
 	}
 
 	/// <summary>
