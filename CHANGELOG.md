@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Result types: `DsfDsdChunkParseResult`, `DsfFmtChunkParseResult`, `DsfDataChunkParseResult`, `DsfFileParseResult`
 - Channel type detection: Mono, Stereo, 3-channel, Quad, 4-channel, 5-channel, 5.1 surround
 
+#### DFF (DSDIFF) Format Support
+- `DffFile` class for reading DFF audio files (Philips DSDIFF format)
+- IFF-based FRM8 container with big-endian byte order
+- FVER chunk parsing for format version detection (DSDIFF 1.5)
+- PROP chunk parsing with SND properties: FS (sample rate), CHNL (channels), CMPR (compression)
+- DSD and DST compression type detection
+- `DffAudioProperties` with DSD-specific information
+- ID3v2 tag support as unofficial extension
+- Result type: `DffFileParseResult`
+- Full read/write round-trip support for metadata
+
 #### IDisposable Pattern
 - `BinaryDataBuilder` now implements `IDisposable` for proper resource cleanup
 - Automatic return of ArrayPool buffers on dispose
@@ -41,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test coverage for large file scenarios
 
 ### Changed
-- Test count increased from 2272 to 2560 (+288 tests)
+- Test count increased from 2272 to 2606 (+334 tests)
 - Code coverage: 90.2% line coverage, 77.2% branch coverage
 
 ## [0.4.0] - 2025-12-31
