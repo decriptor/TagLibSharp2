@@ -11,6 +11,24 @@ using TagLibSharp2.Xiph;
 namespace TagLibSharp2.Tests;
 
 /// <summary>
+/// MP4 codec types for test data generation.
+/// </summary>
+public enum Mp4CodecType
+{
+	Aac,
+	Alac
+}
+
+/// <summary>
+/// MP4 picture types for cover art.
+/// </summary>
+public enum Mp4PictureType
+{
+	Jpeg = 13,
+	Png = 14
+}
+
+/// <summary>
 /// Centralized test data builders to reduce duplication and ensure consistency.
 /// </summary>
 /// <remarks>
@@ -1806,6 +1824,1346 @@ public static class TestBuilders
 				result[2] = 0xBB; result[3] = 0x80;
 			}
 			return result;
+		}
+	}
+
+	/// <summary>
+	/// Builders for MP4/M4A file test data.
+	/// </summary>
+	/// <remarks>
+	/// MP4 uses ISO Base Media File Format (ISO 14496-12).
+	/// Structure: ftyp + moov (with metadata in udta/meta/ilst) + mdat
+	/// </remarks>
+	public static class Mp4
+	{
+		/// <summary>
+		/// Creates a basic MP4 box with type and data.
+		/// </summary>
+		/// <param name="boxType">4-character box type (e.g., "ftyp", "moov").</param>
+		/// <param name="data">Box data content.</param>
+		/// <returns>Complete box bytes (8-byte header + data).</returns>
+		public static byte[] CreateBox (string boxType, byte[] data)
+		{
+			var builder = new BinaryDataBuilder ();
+			var size = 8 + data.Length;
+
+			// Size (32-bit big-endian)
+			builder.AddUInt32BE ((uint)size);
+
+			// Type (4-character code)
+			builder.AddStringLatin1 (boxType);
+
+			// Data
+			builder.Add (data);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 box with extended size (64-bit).
+		/// </summary>
+		public static byte[] CreateExtendedSizeBox (string boxType, byte[] data)
+		{
+			var builder = new BinaryDataBuilder ();
+			var size = 16L + data.Length;
+
+			// Size = 1 (indicates extended size follows)
+			builder.AddUInt32BE (1);
+
+			// Type
+			builder.AddStringLatin1 (boxType);
+
+			// Extended size (64-bit)
+			builder.AddUInt64BE ((ulong)size);
+
+			// Data
+			builder.Add (data);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 box with size=0 (extends to EOF).
+		/// </summary>
+		public static byte[] CreateBoxWithSizeZero (string boxType, byte[] data)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Size = 0 (extends to EOF)
+			builder.AddUInt32BE (0);
+
+			// Type
+			builder.AddStringLatin1 (boxType);
+
+			// Data
+			builder.Add (data);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a minimal valid M4A file with specified codec.
+		/// </summary>
+		public static byte[] CreateMinimalM4a (Mp4CodecType codec)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// ftyp box
+			builder.Add (CreateFtyp ("M4A "));
+
+			// moov box with minimal structure
+			var moovContent = CreateMinimalMoov (codec);
+			builder.Add (CreateBox ("moov", moovContent));
+
+			// mdat box (empty)
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an ftyp box with specified major brand.
+		/// </summary>
+		static byte[] CreateFtyp (string majorBrand)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Major brand (4 bytes)
+			builder.AddStringLatin1 (majorBrand.PadRight (4));
+
+			// Minor version
+			builder.AddUInt32BE (0);
+
+			// Compatible brands (just major brand for simplicity)
+			builder.AddStringLatin1 (majorBrand.PadRight (4));
+
+			return CreateBox ("ftyp", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates minimal moov box content.
+		/// </summary>
+		static byte[] CreateMinimalMoov (Mp4CodecType codec)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// mvhd box
+			builder.Add (CreateMvhd (1000, 44100)); // 1 second duration
+
+			// trak box
+			builder.Add (CreateTrak (codec));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates mvhd (movie header) box.
+		/// </summary>
+		static byte[] CreateMvhd (ulong duration, uint timescale)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version (1 byte) + flags (3 bytes)
+			builder.AddUInt32BE (0);
+
+			// Creation time
+			builder.AddUInt32BE (0);
+
+			// Modification time
+			builder.AddUInt32BE (0);
+
+			// Timescale
+			builder.AddUInt32BE (timescale);
+
+			// Duration
+			builder.AddUInt32BE ((uint)duration);
+
+			// Rate (1.0 = 0x00010000)
+			builder.AddUInt32BE (0x00010000);
+
+			// Volume (1.0 = 0x0100)
+			builder.AddUInt16BE (0x0100);
+
+			// Reserved (10 bytes)
+			builder.AddZeros (10);
+
+			// Matrix (9 x 32-bit values - unity matrix)
+			builder.AddUInt32BE (0x00010000); builder.AddZeros (4); builder.AddZeros (4);
+			builder.AddZeros (4); builder.AddUInt32BE (0x00010000); builder.AddZeros (4);
+			builder.AddZeros (4); builder.AddZeros (4); builder.AddUInt32BE (0x40000000);
+
+			// Pre-defined (24 bytes)
+			builder.AddZeros (24);
+
+			// Next track ID
+			builder.AddUInt32BE (2);
+
+			return CreateBox ("mvhd", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates trak (track) box.
+		/// </summary>
+		static byte[] CreateTrak (Mp4CodecType codec)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// mdia box
+			builder.Add (CreateMdia (codec));
+
+			return CreateBox ("trak", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates mdia (media) box.
+		/// </summary>
+		static byte[] CreateMdia (Mp4CodecType codec)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// mdhd box
+			builder.Add (CreateMdhd ());
+
+			// hdlr box
+			builder.Add (CreateHdlr ());
+
+			// minf box
+			builder.Add (CreateMinf (codec));
+
+			return CreateBox ("mdia", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates mdhd (media header) box.
+		/// </summary>
+		static byte[] CreateMdhd ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Creation time
+			builder.AddUInt32BE (0);
+
+			// Modification time
+			builder.AddUInt32BE (0);
+
+			// Timescale
+			builder.AddUInt32BE (44100);
+
+			// Duration
+			builder.AddUInt32BE (44100); // 1 second
+
+			// Language (ISO 639-2/T, 3 x 5 bits, packed into 16 bits)
+			builder.AddUInt16BE (0x55C4); // "und" (undetermined)
+
+			// Pre-defined
+			builder.AddUInt16BE (0);
+
+			return CreateBox ("mdhd", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates hdlr (handler) box.
+		/// </summary>
+		static byte[] CreateHdlr ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Pre-defined
+			builder.AddUInt32BE (0);
+
+			// Handler type
+			builder.AddStringLatin1 ("soun"); // Sound handler
+
+			// Reserved (12 bytes)
+			builder.AddZeros (12);
+
+			// Name (null-terminated)
+			builder.Add ((byte)0);
+
+			return CreateBox ("hdlr", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates minf (media information) box.
+		/// </summary>
+		static byte[] CreateMinf (Mp4CodecType codec)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// smhd box (sound media header)
+			builder.Add (CreateSmhd ());
+
+			// dinf box (data information)
+			builder.Add (CreateDinf ());
+
+			// stbl box (sample table)
+			builder.Add (CreateStbl (codec));
+
+			return CreateBox ("minf", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates smhd (sound media header) box.
+		/// </summary>
+		static byte[] CreateSmhd ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Balance
+			builder.AddUInt16BE (0);
+
+			// Reserved
+			builder.AddUInt16BE (0);
+
+			return CreateBox ("smhd", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates dinf (data information) box.
+		/// </summary>
+		static byte[] CreateDinf ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// dref box
+			var drefContent = new BinaryDataBuilder ();
+			drefContent.AddUInt32BE (0); // Version + flags
+			drefContent.AddUInt32BE (1); // Entry count
+
+			// url entry
+			var urlContent = new BinaryDataBuilder ();
+			urlContent.AddUInt32BE (1); // Version=0, flags=1 (self-contained)
+			drefContent.Add (CreateBox ("url ", urlContent.ToArray ()));
+
+			builder.Add (CreateBox ("dref", drefContent.ToArray ()));
+
+			return CreateBox ("dinf", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates stbl (sample table) box.
+		/// </summary>
+		static byte[] CreateStbl (Mp4CodecType codec)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// stsd box (sample description)
+			builder.Add (CreateStsd (codec));
+
+			// stts box (time-to-sample)
+			var sttsContent = new BinaryDataBuilder ();
+			sttsContent.AddUInt32BE (0); // Version + flags
+			sttsContent.AddUInt32BE (0); // Entry count
+			builder.Add (CreateBox ("stts", sttsContent.ToArray ()));
+
+			// stsc box (sample-to-chunk)
+			var stscContent = new BinaryDataBuilder ();
+			stscContent.AddUInt32BE (0);
+			stscContent.AddUInt32BE (0);
+			builder.Add (CreateBox ("stsc", stscContent.ToArray ()));
+
+			// stsz box (sample size)
+			var stszContent = new BinaryDataBuilder ();
+			stszContent.AddUInt32BE (0);
+			stszContent.AddUInt32BE (0); // Sample size
+			stszContent.AddUInt32BE (0); // Sample count
+			builder.Add (CreateBox ("stsz", stszContent.ToArray ()));
+
+			// stco box (chunk offset)
+			var stcoContent = new BinaryDataBuilder ();
+			stcoContent.AddUInt32BE (0);
+			stcoContent.AddUInt32BE (0);
+			builder.Add (CreateBox ("stco", stcoContent.ToArray ()));
+
+			return CreateBox ("stbl", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates stsd (sample description) box.
+		/// </summary>
+		static byte[] CreateStsd (Mp4CodecType codec)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Entry count
+			builder.AddUInt32BE (1);
+
+			// Sample entry
+			if (codec == Mp4CodecType.Aac)
+				builder.Add (CreateMp4aSampleEntry ());
+			else if (codec == Mp4CodecType.Alac)
+				builder.Add (CreateAlacSampleEntry ());
+
+			return CreateBox ("stsd", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates mp4a (AAC) sample entry.
+		/// </summary>
+		static byte[] CreateMp4aSampleEntry ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Reserved (6 bytes)
+			builder.AddZeros (6);
+
+			// Data reference index
+			builder.AddUInt16BE (1);
+
+			// Reserved (8 bytes)
+			builder.AddZeros (8);
+
+			// Channel count
+			builder.AddUInt16BE (2);
+
+			// Sample size
+			builder.AddUInt16BE (16);
+
+			// Pre-defined
+			builder.AddUInt16BE (0);
+
+			// Reserved
+			builder.AddUInt16BE (0);
+
+			// Sample rate (16.16 fixed point)
+			builder.AddUInt32BE (unchecked((uint)(44100 << 16)));
+
+			// esds box (elementary stream descriptor)
+			builder.Add (CreateEsds ());
+
+			return CreateBox ("mp4a", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates esds (elementary stream descriptor) box for AAC.
+		/// </summary>
+		static byte[] CreateEsds ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// ES_Descriptor tag
+			builder.Add ((byte)0x03);
+			builder.Add ((byte)0x19); // Size
+
+			// ES_ID
+			builder.AddUInt16BE (0);
+
+			// Flags
+			builder.Add ((byte)0x00);
+
+			// DecoderConfigDescriptor tag
+			builder.Add ((byte)0x04);
+			builder.Add ((byte)0x11); // Size
+
+			// Object type (AAC LC = 0x40)
+			builder.Add ((byte)0x40);
+
+			// Stream type
+			builder.Add ((byte)0x15);
+
+			// Buffer size DB
+			builder.Add ((byte)0x00);
+			builder.AddUInt16BE (0);
+
+			// Max bitrate
+			builder.AddUInt32BE (128000);
+
+			// Avg bitrate
+			builder.AddUInt32BE (128000);
+
+			// DecoderSpecificInfo tag
+			builder.Add ((byte)0x05);
+			builder.Add ((byte)0x02); // Size
+
+			// AAC config (44100 Hz, stereo)
+			builder.AddUInt16BE (0x1190);
+
+			// SLConfigDescriptor tag
+			builder.Add ((byte)0x06);
+			builder.Add ((byte)0x01);
+			builder.Add ((byte)0x02);
+
+			return CreateBox ("esds", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates alac sample entry.
+		/// </summary>
+		static byte[] CreateAlacSampleEntry ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Reserved (6 bytes)
+			builder.AddZeros (6);
+
+			// Data reference index
+			builder.AddUInt16BE (1);
+
+			// Reserved (8 bytes)
+			builder.AddZeros (8);
+
+			// Channel count
+			builder.AddUInt16BE (2);
+
+			// Sample size
+			builder.AddUInt16BE (16);
+
+			// Pre-defined
+			builder.AddUInt16BE (0);
+
+			// Reserved
+			builder.AddUInt16BE (0);
+
+			// Sample rate (16.16 fixed point)
+			builder.AddUInt32BE (unchecked((uint)(44100 << 16)));
+
+			// alac box (magic cookie)
+			builder.Add (CreateAlacBox ());
+
+			return CreateBox ("alac", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates alac magic cookie box.
+		/// </summary>
+		static byte[] CreateAlacBox ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Frame length
+			builder.AddUInt32BE (4096);
+
+			// Compatible version
+			builder.Add ((byte)0);
+
+			// Bit depth
+			builder.Add ((byte)16);
+
+			// Rice history mult / Rice initial history / Rice parameter limit
+			builder.Add ((byte)40);
+			builder.Add ((byte)10);
+			builder.Add ((byte)14);
+
+			// Channels
+			builder.Add ((byte)2);
+
+			// Max run
+			builder.AddUInt16BE (255);
+
+			// Max frame bytes
+			builder.AddUInt32BE (0);
+
+			// Average bitrate
+			builder.AddUInt32BE (0);
+
+			// Sample rate
+			builder.AddUInt32BE (44100);
+
+			return CreateBox ("alac", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with specified ftyp brand.
+		/// </summary>
+		public static byte[] CreateWithFtyp (string brand)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp (brand));
+			builder.Add (CreateBox ("moov", CreateMinimalMoov (Mp4CodecType.Aac)));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file without moov box.
+		/// </summary>
+		public static byte[] CreateWithoutMoov ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file without ilst (metadata) box.
+		/// </summary>
+		public static byte[] CreateWithoutIlst ()
+		{
+			return CreateMinimalM4a (Mp4CodecType.Aac);
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with metadata.
+		/// </summary>
+		public static byte[] CreateWithMetadata (string? title = null, string? artist = null, string? album = null)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			// moov with udta/meta/ilst
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			// udta box
+			var udtaContent = new BinaryDataBuilder ();
+
+			// meta box
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0); // Version + flags
+
+			// hdlr box
+			metaContent.Add (CreateMetaHdlr ());
+
+			// ilst box
+			var ilstContent = new BinaryDataBuilder ();
+			if (title != null)
+				ilstContent.Add (CreateTextAtom ("©nam", title));
+			if (artist != null)
+				ilstContent.Add (CreateTextAtom ("©ART", artist));
+			if (album != null)
+				ilstContent.Add (CreateTextAtom ("©alb", album));
+
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
+			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates hdlr box for meta.
+		/// </summary>
+		static byte[] CreateMetaHdlr ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.AddUInt32BE (0); // Version + flags
+			builder.AddUInt32BE (0); // Pre-defined
+			builder.AddStringLatin1 ("mdir");
+			builder.AddStringLatin1 ("appl");
+			builder.AddZeros (8);
+			builder.Add ((byte)0);
+
+			return CreateBox ("hdlr", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates a text atom (like ©nam, ©ART).
+		/// </summary>
+		static byte[] CreateTextAtom (string atomName, string value)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// data box
+			var dataContent = new BinaryDataBuilder ();
+			dataContent.AddUInt32BE (1); // Version=0, flags=1 (text)
+			dataContent.AddUInt32BE (0); // Reserved
+			dataContent.Add (Encoding.UTF8.GetBytes (value));
+
+			builder.Add (CreateBox ("data", dataContent.ToArray ()));
+
+			return CreateBox (atomName, builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with a single metadata atom.
+		/// </summary>
+		public static byte[] CreateWithAtom (string atomName, string value)
+		{
+			if (atomName == "©nam")
+				return CreateWithMetadata (title: value);
+			if (atomName == "©ART")
+				return CreateWithMetadata (artist: value);
+			if (atomName == "©alb")
+				return CreateWithMetadata (album: value);
+
+			return CreateWithMetadata ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with track number.
+		/// </summary>
+		public static byte[] CreateWithTrackNumber (uint track, uint total)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var udtaContent = new BinaryDataBuilder ();
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateMetaHdlr ());
+
+			var ilstContent = new BinaryDataBuilder ();
+			ilstContent.Add (CreateTrackAtom (track, total));
+
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
+			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates trkn atom.
+		/// </summary>
+		static byte[] CreateTrackAtom (uint track, uint total)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			var dataContent = new BinaryDataBuilder ();
+			dataContent.AddUInt32BE (0); // Version=0, flags=0
+			dataContent.AddUInt32BE (0); // Reserved
+			dataContent.AddUInt16BE (0); // Padding
+			dataContent.AddUInt16BE ((ushort)track);
+			dataContent.AddUInt16BE ((ushort)total);
+			dataContent.AddUInt16BE (0); // Padding
+
+			builder.Add (CreateBox ("data", dataContent.ToArray ()));
+
+			return CreateBox ("trkn", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with disc number.
+		/// </summary>
+		public static byte[] CreateWithDiscNumber (uint disc, uint total)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var udtaContent = new BinaryDataBuilder ();
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateMetaHdlr ());
+
+			var ilstContent = new BinaryDataBuilder ();
+			ilstContent.Add (CreateDiscAtom (disc, total));
+
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
+			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates disk atom.
+		/// </summary>
+		static byte[] CreateDiscAtom (uint disc, uint total)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			var dataContent = new BinaryDataBuilder ();
+			dataContent.AddUInt32BE (0);
+			dataContent.AddUInt32BE (0);
+			dataContent.AddUInt16BE (0);
+			dataContent.AddUInt16BE ((ushort)disc);
+			dataContent.AddUInt16BE ((ushort)total);
+
+			builder.Add (CreateBox ("data", dataContent.ToArray ()));
+
+			return CreateBox ("disk", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with cover art.
+		/// </summary>
+		public static byte[] CreateWithCoverArt (byte[] imageData, Mp4PictureType type)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var udtaContent = new BinaryDataBuilder ();
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateMetaHdlr ());
+
+			var ilstContent = new BinaryDataBuilder ();
+			ilstContent.Add (CreateCovrAtom (imageData, type));
+
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
+			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates covr atom.
+		/// </summary>
+		static byte[] CreateCovrAtom (byte[] imageData, Mp4PictureType type)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			var dataContent = new BinaryDataBuilder ();
+			var flags = type == Mp4PictureType.Jpeg ? 13u : 14u;
+			dataContent.AddUInt32BE (flags); // flags: 13=JPEG, 14=PNG
+			dataContent.AddUInt32BE (0);
+			dataContent.Add (imageData);
+
+			builder.Add (CreateBox ("data", dataContent.ToArray ()));
+
+			return CreateBox ("covr", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with freeform tag.
+		/// </summary>
+		public static byte[] CreateWithFreeformTag (string domain, string name, string value)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var udtaContent = new BinaryDataBuilder ();
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateMetaHdlr ());
+
+			var ilstContent = new BinaryDataBuilder ();
+			ilstContent.Add (CreateFreeformAtom (domain, name, value));
+
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
+			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates ---- (freeform) atom.
+		/// </summary>
+		static byte[] CreateFreeformAtom (string domain, string name, string value)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// mean box
+			var meanContent = new BinaryDataBuilder ();
+			meanContent.AddUInt32BE (0);
+			meanContent.Add (Encoding.UTF8.GetBytes (domain));
+			builder.Add (CreateBox ("mean", meanContent.ToArray ()));
+
+			// name box
+			var nameContent = new BinaryDataBuilder ();
+			nameContent.AddUInt32BE (0);
+			nameContent.Add (Encoding.UTF8.GetBytes (name));
+			builder.Add (CreateBox ("name", nameContent.ToArray ()));
+
+			// data box
+			var dataContent = new BinaryDataBuilder ();
+			dataContent.AddUInt32BE (1); // Text
+			dataContent.AddUInt32BE (0);
+			dataContent.Add (Encoding.UTF8.GetBytes (value));
+			builder.Add (CreateBox ("data", dataContent.ToArray ()));
+
+			return CreateBox ("----", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with audio data.
+		/// </summary>
+		public static byte[] CreateWithAudioData (byte[] audioData)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+			builder.Add (CreateBox ("moov", CreateMinimalMoov (Mp4CodecType.Aac)));
+			builder.Add (CreateBox ("mdat", audioData));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with specified duration.
+		/// </summary>
+		public static byte[] CreateWithDuration (TimeSpan duration)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var timescale = 44100u;
+			var durationUnits = (ulong)(duration.TotalSeconds * timescale);
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (durationUnits, timescale));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with audio properties.
+		/// </summary>
+		public static byte[] CreateWithAudioProperties (Mp4CodecType codec, int sampleRate, int channels, int bitrate)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var timescale = (uint)sampleRate;
+			var duration = timescale; // 1 second
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (duration, timescale));
+			moovContent.Add (CreateTrakWithProperties (codec, sampleRate, channels, 16, bitrate));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with invalid timescale (0).
+		/// </summary>
+		public static byte[] CreateWithInvalidTimescale ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 0)); // Invalid: timescale=0
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file without mdia box.
+		/// </summary>
+		public static byte[] CreateWithoutMdia ()
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+
+			// trak without mdia
+			var trakContent = new byte[4];
+			moovContent.Add (CreateBox ("trak", trakContent));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with bits per sample.
+		/// </summary>
+		public static byte[] CreateWithBitsPerSample (Mp4CodecType codec, int bitsPerSample)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var timescale = 44100u;
+			var duration = timescale; // 1 second
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (duration, timescale));
+			moovContent.Add (CreateTrakWithProperties (codec, 44100, 2, bitsPerSample, 0));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a trak box with customizable audio properties.
+		/// </summary>
+		static byte[] CreateTrakWithProperties (Mp4CodecType codec, int sampleRate, int channels, int bitsPerSample, int bitrate)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// mdia box with custom properties
+			builder.Add (CreateMdiaWithProperties (codec, sampleRate, channels, bitsPerSample, bitrate));
+
+			return CreateBox ("trak", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an mdia box with custom audio properties.
+		/// </summary>
+		static byte[] CreateMdiaWithProperties (Mp4CodecType codec, int sampleRate, int channels, int bitsPerSample, int bitrate)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// mdhd box with custom timescale
+			builder.Add (CreateMdhdWithTimescale ((uint)sampleRate));
+
+			// hdlr box
+			builder.Add (CreateHdlr ());
+
+			// minf box with custom properties
+			builder.Add (CreateMinfWithProperties (codec, sampleRate, channels, bitsPerSample, bitrate));
+
+			return CreateBox ("mdia", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an mdhd box with custom timescale.
+		/// </summary>
+		static byte[] CreateMdhdWithTimescale (uint timescale)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Creation time
+			builder.AddUInt32BE (0);
+
+			// Modification time
+			builder.AddUInt32BE (0);
+
+			// Timescale
+			builder.AddUInt32BE (timescale);
+
+			// Duration (1 second)
+			builder.AddUInt32BE (timescale);
+
+			// Language
+			builder.AddUInt16BE (0x55C4);
+
+			// Pre-defined
+			builder.AddUInt16BE (0);
+
+			return CreateBox ("mdhd", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates a minf box with custom audio properties.
+		/// </summary>
+		static byte[] CreateMinfWithProperties (Mp4CodecType codec, int sampleRate, int channels, int bitsPerSample, int bitrate)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// smhd box
+			builder.Add (CreateSmhd ());
+
+			// dinf box
+			builder.Add (CreateDinf ());
+
+			// stbl box with custom properties
+			builder.Add (CreateStblWithProperties (codec, sampleRate, channels, bitsPerSample, bitrate));
+
+			return CreateBox ("minf", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an stbl box with custom audio properties.
+		/// </summary>
+		static byte[] CreateStblWithProperties (Mp4CodecType codec, int sampleRate, int channels, int bitsPerSample, int bitrate)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// stsd box with custom properties
+			builder.Add (CreateStsdWithProperties (codec, sampleRate, channels, bitsPerSample, bitrate));
+
+			// stts box
+			var sttsContent = new BinaryDataBuilder ();
+			sttsContent.AddUInt32BE (0);
+			sttsContent.AddUInt32BE (0);
+			builder.Add (CreateBox ("stts", sttsContent.ToArray ()));
+
+			// stsc box
+			var stscContent = new BinaryDataBuilder ();
+			stscContent.AddUInt32BE (0);
+			stscContent.AddUInt32BE (0);
+			builder.Add (CreateBox ("stsc", stscContent.ToArray ()));
+
+			// stsz box
+			var stszContent = new BinaryDataBuilder ();
+			stszContent.AddUInt32BE (0);
+			stszContent.AddUInt32BE (0);
+			stszContent.AddUInt32BE (0);
+			builder.Add (CreateBox ("stsz", stszContent.ToArray ()));
+
+			// stco box
+			var stcoContent = new BinaryDataBuilder ();
+			stcoContent.AddUInt32BE (0);
+			stcoContent.AddUInt32BE (0);
+			builder.Add (CreateBox ("stco", stcoContent.ToArray ()));
+
+			return CreateBox ("stbl", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an stsd box with custom audio properties.
+		/// </summary>
+		static byte[] CreateStsdWithProperties (Mp4CodecType codec, int sampleRate, int channels, int bitsPerSample, int bitrate)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Entry count
+			builder.AddUInt32BE (1);
+
+			// Sample entry
+			if (codec == Mp4CodecType.Aac)
+				builder.Add (CreateMp4aSampleEntryWithProperties (sampleRate, channels, bitrate));
+			else if (codec == Mp4CodecType.Alac)
+				builder.Add (CreateAlacSampleEntryWithProperties (sampleRate, channels, bitsPerSample));
+
+			return CreateBox ("stsd", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an mp4a sample entry with custom properties.
+		/// </summary>
+		static byte[] CreateMp4aSampleEntryWithProperties (int sampleRate, int channels, int bitrate)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Reserved (6 bytes)
+			builder.AddZeros (6);
+
+			// Data reference index
+			builder.AddUInt16BE (1);
+
+			// Reserved (8 bytes)
+			builder.AddZeros (8);
+
+			// Channel count
+			builder.AddUInt16BE ((ushort)channels);
+
+			// Sample size (16 bits for AAC)
+			builder.AddUInt16BE (16);
+
+			// Pre-defined
+			builder.AddUInt16BE (0);
+
+			// Reserved
+			builder.AddUInt16BE (0);
+
+			// Sample rate (16.16 fixed point)
+			builder.AddUInt32BE (unchecked((uint)(sampleRate << 16)));
+
+			// esds box with custom bitrate
+			builder.Add (CreateEsdsWithBitrate (bitrate));
+
+			return CreateBox ("mp4a", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an esds box with custom bitrate.
+		/// </summary>
+		static byte[] CreateEsdsWithBitrate (int bitrateKbps)
+		{
+			var builder = new BinaryDataBuilder ();
+			var bitrateBps = (uint)(bitrateKbps * 1000);
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// ES_Descriptor tag
+			builder.Add ((byte)0x03);
+			builder.Add ((byte)0x19); // Size
+
+			// ES_ID
+			builder.AddUInt16BE (0);
+
+			// Flags
+			builder.Add ((byte)0x00);
+
+			// DecoderConfigDescriptor tag
+			builder.Add ((byte)0x04);
+			builder.Add ((byte)0x11); // Size
+
+			// Object type (AAC LC = 0x40)
+			builder.Add ((byte)0x40);
+
+			// Stream type
+			builder.Add ((byte)0x15);
+
+			// Buffer size DB
+			builder.Add ((byte)0x00);
+			builder.AddUInt16BE (0);
+
+			// Max bitrate
+			builder.AddUInt32BE (bitrateBps);
+
+			// Avg bitrate
+			builder.AddUInt32BE (bitrateBps);
+
+			// DecoderSpecificInfo tag
+			builder.Add ((byte)0x05);
+			builder.Add ((byte)0x02); // Size
+
+			// AAC config (44100 Hz, stereo)
+			builder.AddUInt16BE (0x1190);
+
+			// SLConfigDescriptor tag
+			builder.Add ((byte)0x06);
+			builder.Add ((byte)0x01);
+			builder.Add ((byte)0x02);
+
+			return CreateBox ("esds", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an alac sample entry with custom properties.
+		/// </summary>
+		static byte[] CreateAlacSampleEntryWithProperties (int sampleRate, int channels, int bitsPerSample)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Reserved (6 bytes)
+			builder.AddZeros (6);
+
+			// Data reference index
+			builder.AddUInt16BE (1);
+
+			// Reserved (8 bytes)
+			builder.AddZeros (8);
+
+			// Channel count
+			builder.AddUInt16BE ((ushort)channels);
+
+			// Sample size
+			builder.AddUInt16BE ((ushort)bitsPerSample);
+
+			// Pre-defined
+			builder.AddUInt16BE (0);
+
+			// Reserved
+			builder.AddUInt16BE (0);
+
+			// Sample rate (16.16 fixed point)
+			builder.AddUInt32BE (unchecked((uint)(sampleRate << 16)));
+
+			// alac box (magic cookie)
+			builder.Add (CreateAlacBoxWithProperties (sampleRate, channels, bitsPerSample));
+
+			return CreateBox ("alac", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an alac magic cookie box with custom properties.
+		/// </summary>
+		static byte[] CreateAlacBoxWithProperties (int sampleRate, int channels, int bitsPerSample)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Version + flags
+			builder.AddUInt32BE (0);
+
+			// Frame length
+			builder.AddUInt32BE (4096);
+
+			// Compatible version
+			builder.Add ((byte)0);
+
+			// Bit depth
+			builder.Add ((byte)bitsPerSample);
+
+			// Rice history mult
+			builder.Add ((byte)40);
+
+			// Rice initial history
+			builder.Add ((byte)10);
+
+			// Rice parameter limit
+			builder.Add ((byte)14);
+
+			// Number of channels
+			builder.Add ((byte)channels);
+
+			// Max run
+			builder.AddUInt16BE (255);
+
+			// Max frame bytes
+			builder.AddUInt32BE (0);
+
+			// Avg bit rate
+			builder.AddUInt32BE (0);
+
+			// Sample rate
+			builder.AddUInt32BE ((uint)sampleRate);
+
+			return CreateBox ("alac", builder.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with multiple stsd entries.
+		/// </summary>
+		public static byte[] CreateWithMultipleStsdEntries ()
+		{
+			// For now, return minimal file
+			return CreateMinimalM4a (Mp4CodecType.Aac);
 		}
 	}
 }

@@ -428,4 +428,106 @@ public static class TestConstants
 		/// <summary>PNG signature for tests.</summary>
 		public static readonly byte[] PngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 	}
+
+	/// <summary>
+	/// MP4/M4A format constants.
+	/// </summary>
+	public static class Mp4
+	{
+		/// <summary>Minimum box size (4-byte size + 4-byte type).</summary>
+		public const int MinBoxSize = 8;
+
+		/// <summary>Extended size marker (size field = 1 indicates 64-bit size follows).</summary>
+		public const uint ExtendedSizeMarker = 1;
+
+		/// <summary>Size to end of file marker (size field = 0).</summary>
+		public const uint SizeToEndOfFile = 0;
+
+		/// <summary>M4A brand identifier.</summary>
+		public const string BrandM4A = "M4A ";
+
+		/// <summary>ISO base media brand identifier.</summary>
+		public const string BrandIsom = "isom";
+
+		/// <summary>MP4 version 2 brand identifier.</summary>
+		public const string BrandMp42 = "mp42";
+
+		/// <summary>Protected AAC brand identifier.</summary>
+		public const string BrandM4P = "M4P ";
+	}
+
+	/// <summary>
+	/// MP4 metadata atom identifiers.
+	/// </summary>
+	public static class Mp4Atoms
+	{
+		/// <summary>Title.</summary>
+		public const string Title = "©nam";
+
+		/// <summary>Artist.</summary>
+		public const string Artist = "©ART";
+
+		/// <summary>Album artist.</summary>
+		public const string AlbumArtist = "aART";
+
+		/// <summary>Album.</summary>
+		public const string Album = "©alb";
+
+		/// <summary>Year/Date.</summary>
+		public const string Date = "©day";
+
+		/// <summary>Genre (text).</summary>
+		public const string Genre = "©gen";
+
+		/// <summary>Genre (binary ID3v1 code).</summary>
+		public const string GenreBinary = "gnre";
+
+		/// <summary>Track number (binary).</summary>
+		public const string TrackNumber = "trkn";
+
+		/// <summary>Disc number (binary).</summary>
+		public const string DiscNumber = "disk";
+
+		/// <summary>Composer.</summary>
+		public const string Composer = "©wrt";
+
+		/// <summary>Comment.</summary>
+		public const string Comment = "©cmt";
+
+		/// <summary>Lyrics.</summary>
+		public const string Lyrics = "©lyr";
+
+		/// <summary>Cover art.</summary>
+		public const string CoverArt = "covr";
+
+		/// <summary>BPM (binary).</summary>
+		public const string Bpm = "tmpo";
+
+		/// <summary>Compilation flag (binary boolean).</summary>
+		public const string Compilation = "cpil";
+
+		/// <summary>Grouping.</summary>
+		public const string Grouping = "©grp";
+
+		/// <summary>Encoding tool.</summary>
+		public const string EncodingTool = "©too";
+
+		/// <summary>Copyright.</summary>
+		public const string Copyright = "cprt";
+	}
+
+	/// <summary>
+	/// MP4 cover art type codes.
+	/// </summary>
+	public static class Mp4CoverArtTypes
+	{
+		/// <summary>JPEG image type code.</summary>
+		public const uint Jpeg = 0x0D;
+
+		/// <summary>PNG image type code.</summary>
+		public const uint Png = 0x0E;
+
+		/// <summary>BMP image type code.</summary>
+		public const uint Bmp = 0x1B;
+	}
 }
