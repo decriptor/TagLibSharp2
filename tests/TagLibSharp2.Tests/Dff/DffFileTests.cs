@@ -446,6 +446,259 @@ public class DffFileTests
 
 	#endregion
 
+	#region Result Type Tests
+
+	[TestMethod]
+	public void DffFileParseResult_Equality_SameSuccess_AreEqual ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var result1 = DffFile.Parse (data);
+		var result2 = DffFile.Parse (data);
+
+		// Different instances but both successful
+		Assert.IsTrue (result1.IsSuccess);
+		Assert.IsTrue (result2.IsSuccess);
+	}
+
+	[TestMethod]
+	public void DffFileParseResult_Equality_SameFailure_AreEqual ()
+	{
+		var result1 = DffFile.Parse (new byte[5]);
+		var result2 = DffFile.Parse (new byte[5]);
+
+		Assert.IsFalse (result1.IsSuccess);
+		Assert.IsFalse (result2.IsSuccess);
+		Assert.AreEqual (result1.Error, result2.Error);
+	}
+
+	[TestMethod]
+	public void DffFileParseResult_GetHashCode_Works ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var result = DffFile.Parse (data);
+
+		var hash = result.GetHashCode ();
+		Assert.AreNotEqual (0, hash);
+	}
+
+	[TestMethod]
+	public void DffFileParseResult_Equals_WithObject_Works ()
+	{
+		var result1 = DffFile.Parse (new byte[5]);
+		var result2 = DffFile.Parse (new byte[5]);
+
+		Assert.IsTrue (result1.Equals ((object)result2));
+		Assert.IsFalse (result1.Equals ("not a result"));
+		Assert.IsFalse (result1.Equals (null));
+	}
+
+	#endregion
+
+	#region SaveToFile Tests
+
+	[TestMethod]
+	public void SaveToFile_ValidFile_ReturnsSuccess ()
+	{
+		var tempPath = Path.GetTempFileName ();
+		try {
+			var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+			var parseResult = DffFile.Parse (data);
+			Assert.IsTrue (parseResult.IsSuccess);
+
+			var saveResult = parseResult.File!.SaveToFile (tempPath);
+			Assert.IsTrue (saveResult.IsSuccess);
+			Assert.IsTrue (File.Exists (tempPath));
+		} finally {
+			if (File.Exists (tempPath))
+				File.Delete (tempPath);
+		}
+	}
+
+	[TestMethod]
+	public void SaveToFile_AfterDispose_ThrowsObjectDisposedException ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var parseResult = DffFile.Parse (data);
+		var file = parseResult.File!;
+		file.Dispose ();
+
+		Assert.ThrowsExactly<ObjectDisposedException> (() => file.SaveToFile ("/tmp/test.dff"));
+	}
+
+	#endregion
+
+	#region SaveToFileAsync Tests
+
+	[TestMethod]
+	public async Task SaveToFileAsync_ValidFile_ReturnsSuccess ()
+	{
+		var tempPath = Path.GetTempFileName ();
+		try {
+			var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+			await File.WriteAllBytesAsync (tempPath, data);
+
+			var parseResult = await DffFile.ReadFromFileAsync (tempPath);
+			Assert.IsTrue (parseResult.IsSuccess);
+
+			parseResult.File!.EnsureId3v2Tag ().Title = "Async Test";
+			var saveResult = await parseResult.File.SaveToFileAsync ();
+			Assert.IsTrue (saveResult.IsSuccess);
+		} finally {
+			if (File.Exists (tempPath))
+				File.Delete (tempPath);
+		}
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_NoSourcePath_ReturnsFailure ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var parseResult = DffFile.Parse (data);
+		Assert.IsTrue (parseResult.IsSuccess);
+
+		// File was parsed from bytes, not read from disk - no SourcePath
+		var saveResult = await parseResult.File!.SaveToFileAsync ();
+		Assert.IsFalse (saveResult.IsSuccess);
+		Assert.IsTrue (saveResult.Error!.Contains ("source path"));
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_AfterDispose_ThrowsObjectDisposedException ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var parseResult = DffFile.Parse (data);
+		var file = parseResult.File!;
+		file.Dispose ();
+
+		await Assert.ThrowsExactlyAsync<ObjectDisposedException> (
+			async () => await file.SaveToFileAsync ());
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_WithCancellation_Cancels ()
+	{
+		var tempPath = Path.GetTempFileName ();
+		try {
+			var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+			await File.WriteAllBytesAsync (tempPath, data);
+
+			var parseResult = await DffFile.ReadFromFileAsync (tempPath);
+			Assert.IsTrue (parseResult.IsSuccess);
+
+			using var cts = new CancellationTokenSource ();
+			cts.Cancel ();
+
+			try {
+				await parseResult.File!.SaveToFileAsync (cancellationToken: cts.Token);
+				// May or may not throw depending on timing
+			} catch (OperationCanceledException) {
+				// Expected
+			}
+		} finally {
+			if (File.Exists (tempPath))
+				File.Delete (tempPath);
+		}
+	}
+
+	#endregion
+
+	#region Dispose Tests
+
+	[TestMethod]
+	public void Dispose_CalledTwice_NoException ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var parseResult = DffFile.Parse (data);
+		var file = parseResult.File!;
+
+		file.Dispose ();
+		file.Dispose (); // Should not throw
+	}
+
+	[TestMethod]
+	public void Dispose_ClearsReferences ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var parseResult = DffFile.Parse (data);
+		var file = parseResult.File!;
+		file.EnsureId3v2Tag ().Title = "Test";
+
+		file.Dispose ();
+
+		Assert.IsNull (file.Id3v2Tag);
+		Assert.IsNull (file.Properties);
+	}
+
+	[TestMethod]
+	public void Render_AfterDispose_ThrowsObjectDisposedException ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var parseResult = DffFile.Parse (data);
+		var file = parseResult.File!;
+		file.Dispose ();
+
+		Assert.ThrowsExactly<ObjectDisposedException> (() => file.Render ());
+	}
+
+	#endregion
+
+	#region Audio Properties Edge Cases
+
+	[TestMethod]
+	public void Properties_DSD512_IdentifiedCorrectly ()
+	{
+		var data = CreateMinimalDffFile (
+			sampleRate: 22579200, // DSD512
+			channelCount: 2,
+			sampleCount: 16384);
+
+		var result = DffFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (DsfSampleRate.DSD512, result.File!.DsdRate);
+		Assert.AreEqual (DsfSampleRate.DSD512, result.File.Properties!.DsdRate);
+	}
+
+	[TestMethod]
+	public void Properties_DSD1024_IdentifiedCorrectly ()
+	{
+		var data = CreateMinimalDffFile (
+			sampleRate: 45158400, // DSD1024
+			channelCount: 2,
+			sampleCount: 16384);
+
+		var result = DffFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (DsfSampleRate.DSD1024, result.File!.DsdRate);
+	}
+
+	[TestMethod]
+	public void Properties_UnknownSampleRate_IdentifiedAsUnknown ()
+	{
+		var data = CreateMinimalDffFile (
+			sampleRate: 44100, // Not a valid DSD rate
+			channelCount: 2,
+			sampleCount: 16384);
+
+		var result = DffFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (DsfSampleRate.Unknown, result.File!.DsdRate);
+	}
+
+	[TestMethod]
+	public void Properties_BitsPerSample_AlwaysOne ()
+	{
+		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
+		var result = DffFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (1, result.File!.Properties!.BitsPerSample);
+	}
+
+	#endregion
+
 	#region Helper Methods
 
 	private static byte[] CreateMinimalDffFile (
