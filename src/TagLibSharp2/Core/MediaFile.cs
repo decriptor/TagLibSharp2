@@ -345,7 +345,7 @@ public static class MediaFile
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
-		return MediaFileResult.Success (result.File!, result.File!.Tag, MediaFormat.Dsf);
+		return MediaFileResult.Success (result.File!, result.File!.Id3v2Tag, MediaFormat.Dsf);
 	}
 
 	static MediaFileResult OpenDff (ReadOnlyMemory<byte> data)

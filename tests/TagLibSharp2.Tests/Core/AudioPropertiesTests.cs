@@ -163,4 +163,98 @@ public class AudioPropertiesTests
 		// Bitrate: (691200000 * 24 * 2) / 7200 / 1000 = 4608 kbps
 		Assert.AreEqual (4608, props.Bitrate);
 	}
+
+	#region DSD Format Tests
+
+	[TestMethod]
+	public void FromDsf_DSD64Stereo_CalculatesCorrectBitrate ()
+	{
+		// DSD64 = 2.8224 MHz sample rate, 1 bit per sample
+		// Bitrate = 2822400 * 2 / 1000 = 5644 kbps
+		var props = AudioProperties.FromDsf (
+			TimeSpan.FromMinutes (5),
+			sampleRate: 2822400,
+			channels: 2);
+
+		Assert.AreEqual (5644, props.Bitrate);
+		Assert.AreEqual (2822400, props.SampleRate);
+		Assert.AreEqual (1, props.BitsPerSample);
+		Assert.AreEqual (2, props.Channels);
+		Assert.AreEqual ("DSD", props.Codec);
+	}
+
+	[TestMethod]
+	public void FromDsf_DSD1024With6Channels_NoOverflow ()
+	{
+		// DSD1024 = 45.1584 MHz sample rate
+		// With 6 channels: 45158400 * 6 = 270,950,400 (fits in int)
+		// Bitrate = 45158400 * 6 / 1000 = 270,950 kbps
+		// This tests potential integer overflow in multiplication before division
+		var props = AudioProperties.FromDsf (
+			TimeSpan.FromMinutes (3),
+			sampleRate: 45158400,
+			channels: 6);
+
+		// Without overflow protection, 45158400 * 6 = 270,950,400 which fits
+		// But if we had 8 channels: 45158400 * 8 = 361,267,200 (still fits)
+		// The concern is order of operations. Let's verify correct result.
+		Assert.AreEqual (270950, props.Bitrate);
+		Assert.AreEqual (45158400, props.SampleRate);
+		Assert.AreEqual (6, props.Channels);
+		Assert.IsTrue (props.IsValid);
+	}
+
+	[TestMethod]
+	public void FromDsf_ZeroSampleRate_ReturnsZeroBitrate ()
+	{
+		var props = AudioProperties.FromDsf (
+			TimeSpan.FromMinutes (5),
+			sampleRate: 0,
+			channels: 2);
+
+		Assert.AreEqual (0, props.Bitrate);
+	}
+
+	[TestMethod]
+	public void FromDff_DSD128_CalculatesCorrectBitrate ()
+	{
+		// DSD128 = 5.6448 MHz sample rate
+		// Bitrate = 5644800 * 2 / 1000 = 11289 kbps
+		var props = AudioProperties.FromDff (
+			TimeSpan.FromMinutes (4),
+			sampleRate: 5644800,
+			channels: 2,
+			isDst: false);
+
+		Assert.AreEqual (11289, props.Bitrate);
+		Assert.AreEqual ("DSD", props.Codec);
+	}
+
+	[TestMethod]
+	public void FromDff_WithDstCompression_UsesDstCodec ()
+	{
+		var props = AudioProperties.FromDff (
+			TimeSpan.FromMinutes (4),
+			sampleRate: 2822400,
+			channels: 2,
+			isDst: true);
+
+		Assert.AreEqual ("DST", props.Codec);
+	}
+
+	[TestMethod]
+	public void FromDff_DSD1024With6Channels_NoOverflow ()
+	{
+		// Same test as DSF - verify no overflow in bitrate calculation
+		var props = AudioProperties.FromDff (
+			TimeSpan.FromMinutes (3),
+			sampleRate: 45158400,
+			channels: 6,
+			isDst: false);
+
+		Assert.AreEqual (270950, props.Bitrate);
+		Assert.IsTrue (props.IsValid);
+	}
+
+	#endregion
 }

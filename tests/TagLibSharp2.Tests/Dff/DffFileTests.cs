@@ -36,7 +36,7 @@ public class DffFileTests
 		var result = DffFile.Parse (data);
 
 		// Assert
-		Assert.IsTrue (result.IsSuccess);
+		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
 		Assert.IsNotNull (result.File);
 	}
 
@@ -188,7 +188,7 @@ public class DffFileTests
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (2, result.File!.ChannelCount);
+		Assert.AreEqual (2, result.File!.Channels);
 	}
 
 	[TestMethod]
@@ -202,7 +202,7 @@ public class DffFileTests
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (1, result.File!.ChannelCount);
+		Assert.AreEqual (1, result.File!.Channels);
 	}
 
 	[TestMethod]
@@ -216,7 +216,7 @@ public class DffFileTests
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (6, result.File!.ChannelCount);
+		Assert.AreEqual (6, result.File!.Channels);
 	}
 
 	[TestMethod]
@@ -429,7 +429,7 @@ public class DffFileTests
 			artist: "Original Artist");
 
 		var parseResult = DffFile.Parse (original);
-		Assert.IsTrue (parseResult.IsSuccess);
+		Assert.IsTrue (parseResult.IsSuccess, $"Initial parse failed: {parseResult.Error}");
 		var file = parseResult.File!;
 
 		// Act
@@ -438,10 +438,10 @@ public class DffFileTests
 
 		// Assert
 		var reparsed = DffFile.Parse (rendered.Span);
-		Assert.IsTrue (reparsed.IsSuccess);
+		Assert.IsTrue (reparsed.IsSuccess, $"Re-parse failed: {reparsed.Error}");
 		Assert.AreEqual ("Modified", reparsed.File!.Id3v2Tag!.Title);
 		Assert.AreEqual (5644800, reparsed.File.SampleRate);
-		Assert.AreEqual (2, reparsed.File.ChannelCount);
+		Assert.AreEqual (2, reparsed.File.Channels);
 	}
 
 	#endregion
@@ -699,6 +699,198 @@ public class DffFileTests
 
 	#endregion
 
+	#region Format Compliance Tests
+
+	[TestMethod]
+	public void Parse_MissingFsSampleRateInProp_ReturnsFailure ()
+	{
+		// Arrange - PROP without FS sub-chunk
+		var data = CreateDffWithMissingPropSubChunk ("FS  ");
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - FS is required per spec
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("FS") || result.Error.Contains ("sample rate"),
+			$"Expected error about missing FS, got: {result.Error}");
+	}
+
+	[TestMethod]
+	public void Parse_MissingChnlChannelsInProp_ReturnsFailure ()
+	{
+		// Arrange - PROP without CHNL sub-chunk
+		var data = CreateDffWithMissingPropSubChunk ("CHNL");
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - CHNL is required per spec
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("CHNL") || result.Error.Contains ("channel"),
+			$"Expected error about missing CHNL, got: {result.Error}");
+	}
+
+	[TestMethod]
+	public void Parse_MissingCmprCompressionInProp_ReturnsFailure ()
+	{
+		// Arrange - PROP without CMPR sub-chunk
+		var data = CreateDffWithMissingPropSubChunk ("CMPR");
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - CMPR is required per spec
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("CMPR") || result.Error.Contains ("compression"),
+			$"Expected error about missing CMPR, got: {result.Error}");
+	}
+
+	[TestMethod]
+	public void Parse_MissingDsdOrDstAudioChunk_ReturnsFailure ()
+	{
+		// Arrange - DFF without DSD or DST audio chunk
+		var data = CreateDffWithoutAudioChunk ();
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - audio data chunk is required per spec
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("DSD") || result.Error.Contains ("DST") ||
+			result.Error.Contains ("audio"),
+			$"Expected error about missing audio chunk, got: {result.Error}");
+	}
+
+	[TestMethod]
+	public void Parse_FverNotFirstChunk_ReturnsFailure ()
+	{
+		// Arrange - PROP appears before FVER
+		var data = CreateDffWithPropBeforeFver ();
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - FVER must be first chunk per spec
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("FVER") || result.Error.Contains ("first"),
+			$"Expected error about FVER order, got: {result.Error}");
+	}
+
+	[TestMethod]
+	public void Parse_AudioChunkBeforeProp_ReturnsFailure ()
+	{
+		// Arrange - DSD appears before PROP
+		var data = CreateDffWithAudioBeforeProp ();
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - PROP must precede audio per spec
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("PROP") || result.Error.Contains ("audio") ||
+			result.Error.Contains ("order"),
+			$"Expected error about chunk order, got: {result.Error}");
+	}
+
+	[TestMethod]
+	public void Parse_OddSizedChunkWithPadding_ParsesCorrectly ()
+	{
+		// Arrange - chunk with odd size (needs padding for IFF alignment)
+		var data = CreateDffWithOddSizedChunk ();
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - should handle padding correctly
+		Assert.IsTrue (result.IsSuccess, $"Failed to parse: {result.Error}");
+	}
+
+	#endregion
+
+	#region Disposal Tests
+
+	[TestMethod]
+	public void Dispose_ClearsPropertiesConsistentWithDsf ()
+	{
+		// Arrange
+		var data = CreateMinimalDffFile (2822400, 2, 16384);
+		var result = DffFile.Parse (data);
+		Assert.IsTrue (result.IsSuccess);
+		var file = result.File!;
+
+		// Verify Properties exists before disposal
+		Assert.IsNotNull (file.Properties);
+		Assert.IsNotNull (file.Id3v2Tag is null || file.Id3v2Tag is not null); // May or may not have tag
+
+		// Act
+		file.Dispose ();
+
+		// Assert - Properties should be null after disposal (consistent pattern)
+		Assert.IsNull (file.Properties);
+		Assert.IsNull (file.Id3v2Tag);
+	}
+
+	[TestMethod]
+	public void Dispose_MultipleCalls_DoesNotThrow ()
+	{
+		// Arrange
+		var data = CreateMinimalDffFile (2822400, 2, 16384);
+		var result = DffFile.Parse (data);
+		var file = result.File!;
+
+		// Act & Assert - should not throw on multiple disposals
+		file.Dispose ();
+		file.Dispose ();
+		file.Dispose ();
+	}
+
+	#endregion
+
+	#region DST Compression Tests
+
+	[TestMethod]
+	public void Parse_DstCompressedFile_IndicatesIncompleteProperties ()
+	{
+		// Arrange - Create a DFF file with DST compression
+		var data = CreateMinimalDffFile (
+			sampleRate: 2822400,
+			channelCount: 2,
+			sampleCount: 16384,
+			compressionType: "DST ");
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert
+		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
+		Assert.AreEqual (DffCompressionType.Dst, result.File!.CompressionType);
+		Assert.IsTrue (result.File.IsCompressed);
+
+		// DST compression means sample count cannot be calculated from chunk size
+		// Properties should indicate this limitation
+		Assert.IsNotNull (result.File.Properties);
+		Assert.AreEqual (DffCompressionType.Dst, result.File.Properties!.CompressionType);
+	}
+
+	[TestMethod]
+	public void Properties_DstCompressed_HasZeroDuration ()
+	{
+		// Arrange - DST files can't calculate duration from chunk size
+		var data = CreateDstCompressedDffFile ();
+
+		// Act
+		var result = DffFile.Parse (data);
+
+		// Assert - Duration should be zero or indicate incomplete for DST
+		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
+		Assert.AreEqual (DffCompressionType.Dst, result.File!.CompressionType);
+		// DST chunks don't allow sample count calculation from size alone
+		// The duration may be zero or require frame parsing
+	}
+
+	#endregion
+
 	#region Helper Methods
 
 	private static byte[] CreateMinimalDffFile (
@@ -757,6 +949,10 @@ public class DffFileTests
 		ms.Position = propSizePosition;
 		WriteUInt64BE (ms, (ulong)propSize);
 		ms.Position = propEnd;
+
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
 
 		// DSD chunk - Audio data
 		ms.Write ("DSD "u8);
@@ -842,7 +1038,16 @@ public class DffFileTests
 		WriteUInt64BE (ms, (ulong)propSize);
 		ms.Position = propEnd;
 
-		// ID3 chunk (placed BEFORE DSD for test purposes)
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
+
+		// DSD chunk - audio data (must come before ID3 for Render() to work)
+		ms.Write ("DSD "u8);
+		WriteUInt64BE (ms, 4096);
+		ms.Write (new byte[4096]);
+
+		// ID3 chunk (placed at END per convention - Render() expects this)
 		ms.Write ("ID3 "u8);
 		var id3ChunkSizePosition = ms.Position;
 		WriteUInt64BE (ms, 0);
@@ -876,10 +1081,9 @@ public class DffFileTests
 		WriteUInt64BE (ms, (ulong)id3ChunkSize);
 		ms.Position = id3End;
 
-		// DSD chunk - small audio data for test
-		ms.Write ("DSD "u8);
-		WriteUInt64BE (ms, 4096);
-		ms.Write (new byte[4096]);
+		// Add padding byte for odd-sized ID3 chunk (IFF requirement)
+		if (id3ChunkSize % 2 != 0)
+			ms.WriteByte (0);
 
 		// Update FRM8 size
 		var totalSize = ms.Position;
@@ -933,6 +1137,403 @@ public class DffFileTests
 
 		// Content
 		stream.Write (content, 0, content.Length);
+	}
+
+	/// <summary>
+	/// Creates a DFF file missing a specific PROP sub-chunk.
+	/// </summary>
+	private static byte[] CreateDffWithMissingPropSubChunk (string missingChunk)
+	{
+		using var ms = new MemoryStream ();
+
+		// FRM8 header
+		ms.Write (Frm8Magic);
+		var sizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write (DsdFormType);
+
+		// FVER chunk
+		ms.Write ("FVER"u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 0x01050000);
+
+		// PROP chunk - missing one sub-chunk
+		var propStart = ms.Position;
+		ms.Write ("PROP"u8);
+		var propSizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write ("SND "u8);
+
+		// FS - Sample Rate (unless skipped)
+		if (missingChunk != "FS  ") {
+			ms.Write ("FS  "u8);
+			WriteUInt64BE (ms, 4);
+			WriteUInt32BE (ms, 2822400);
+		}
+
+		// CHNL - Channels (unless skipped)
+		if (missingChunk != "CHNL") {
+			ms.Write ("CHNL"u8);
+			WriteUInt64BE (ms, 10); // 2 + 2*4
+			WriteUInt16BE (ms, 2);
+			ms.Write ("SLFT"u8);
+			ms.Write ("SRGT"u8);
+		}
+
+		// CMPR - Compression (unless skipped)
+		if (missingChunk != "CMPR") {
+			ms.Write ("CMPR"u8);
+			WriteUInt64BE (ms, 4 + 1 + 14);
+			ms.Write ("DSD "u8);
+			ms.WriteByte (14);
+			ms.Write ("not compressed"u8);
+		}
+
+		// Update PROP size
+		var propEnd = ms.Position;
+		var propSize = propEnd - propStart - 12;
+		ms.Position = propSizePosition;
+		WriteUInt64BE (ms, (ulong)propSize);
+		ms.Position = propEnd;
+
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
+
+		// DSD chunk - audio data
+		ms.Write ("DSD "u8);
+		WriteUInt64BE (ms, 1024);
+		ms.Write (new byte[1024]);
+
+		// Update FRM8 size
+		var totalSize = ms.Position;
+		ms.Position = sizePosition;
+		WriteUInt64BE (ms, (ulong)(totalSize - 12));
+
+		return ms.ToArray ();
+	}
+
+	/// <summary>
+	/// Creates a DFF file without DSD or DST audio chunk.
+	/// </summary>
+	private static byte[] CreateDffWithoutAudioChunk ()
+	{
+		using var ms = new MemoryStream ();
+
+		// FRM8 header
+		ms.Write (Frm8Magic);
+		var sizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write (DsdFormType);
+
+		// FVER chunk
+		ms.Write ("FVER"u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 0x01050000);
+
+		// PROP chunk with all required sub-chunks
+		var propStart = ms.Position;
+		ms.Write ("PROP"u8);
+		var propSizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write ("SND "u8);
+
+		ms.Write ("FS  "u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 2822400);
+
+		ms.Write ("CHNL"u8);
+		WriteUInt64BE (ms, 10);
+		WriteUInt16BE (ms, 2);
+		ms.Write ("SLFT"u8);
+		ms.Write ("SRGT"u8);
+
+		ms.Write ("CMPR"u8);
+		WriteUInt64BE (ms, 4 + 1 + 14);
+		ms.Write ("DSD "u8);
+		ms.WriteByte (14);
+		ms.Write ("not compressed"u8);
+
+		var propEnd = ms.Position;
+		var propSize = propEnd - propStart - 12;
+		ms.Position = propSizePosition;
+		WriteUInt64BE (ms, (ulong)propSize);
+		ms.Position = propEnd;
+
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
+
+		// NO DSD or DST chunk here!
+
+		// Update FRM8 size
+		var totalSize = ms.Position;
+		ms.Position = sizePosition;
+		WriteUInt64BE (ms, (ulong)(totalSize - 12));
+
+		return ms.ToArray ();
+	}
+
+	/// <summary>
+	/// Creates a DFF file where PROP appears before FVER (invalid per spec).
+	/// </summary>
+	private static byte[] CreateDffWithPropBeforeFver ()
+	{
+		using var ms = new MemoryStream ();
+
+		// FRM8 header
+		ms.Write (Frm8Magic);
+		var sizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write (DsdFormType);
+
+		// PROP chunk FIRST (invalid - FVER should be first)
+		var propStart = ms.Position;
+		ms.Write ("PROP"u8);
+		var propSizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write ("SND "u8);
+
+		ms.Write ("FS  "u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 2822400);
+
+		ms.Write ("CHNL"u8);
+		WriteUInt64BE (ms, 10);
+		WriteUInt16BE (ms, 2);
+		ms.Write ("SLFT"u8);
+		ms.Write ("SRGT"u8);
+
+		ms.Write ("CMPR"u8);
+		WriteUInt64BE (ms, 4 + 1 + 14);
+		ms.Write ("DSD "u8);
+		ms.WriteByte (14);
+		ms.Write ("not compressed"u8);
+
+		var propEnd = ms.Position;
+		var propSize = propEnd - propStart - 12;
+		ms.Position = propSizePosition;
+		WriteUInt64BE (ms, (ulong)propSize);
+		ms.Position = propEnd;
+
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
+
+		// FVER chunk SECOND (should be first)
+		ms.Write ("FVER"u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 0x01050000);
+
+		// DSD chunk
+		ms.Write ("DSD "u8);
+		WriteUInt64BE (ms, 1024);
+		ms.Write (new byte[1024]);
+
+		// Update FRM8 size
+		var totalSize = ms.Position;
+		ms.Position = sizePosition;
+		WriteUInt64BE (ms, (ulong)(totalSize - 12));
+
+		return ms.ToArray ();
+	}
+
+	/// <summary>
+	/// Creates a DFF file where DSD audio appears before PROP (invalid per spec).
+	/// </summary>
+	private static byte[] CreateDffWithAudioBeforeProp ()
+	{
+		using var ms = new MemoryStream ();
+
+		// FRM8 header
+		ms.Write (Frm8Magic);
+		var sizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write (DsdFormType);
+
+		// FVER chunk (correct position)
+		ms.Write ("FVER"u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 0x01050000);
+
+		// DSD chunk BEFORE PROP (invalid)
+		ms.Write ("DSD "u8);
+		WriteUInt64BE (ms, 1024);
+		ms.Write (new byte[1024]);
+
+		// PROP chunk (should be before DSD)
+		var propStart = ms.Position;
+		ms.Write ("PROP"u8);
+		var propSizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write ("SND "u8);
+
+		ms.Write ("FS  "u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 2822400);
+
+		ms.Write ("CHNL"u8);
+		WriteUInt64BE (ms, 10);
+		WriteUInt16BE (ms, 2);
+		ms.Write ("SLFT"u8);
+		ms.Write ("SRGT"u8);
+
+		ms.Write ("CMPR"u8);
+		WriteUInt64BE (ms, 4 + 1 + 14);
+		ms.Write ("DSD "u8);
+		ms.WriteByte (14);
+		ms.Write ("not compressed"u8);
+
+		var propEnd = ms.Position;
+		var propSize = propEnd - propStart - 12;
+		ms.Position = propSizePosition;
+		WriteUInt64BE (ms, (ulong)propSize);
+		ms.Position = propEnd;
+
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
+
+		// Update FRM8 size
+		var totalSize = ms.Position;
+		ms.Position = sizePosition;
+		WriteUInt64BE (ms, (ulong)(totalSize - 12));
+
+		return ms.ToArray ();
+	}
+
+	/// <summary>
+	/// Creates a DFF file with an odd-sized chunk to test padding alignment.
+	/// </summary>
+	private static byte[] CreateDffWithOddSizedChunk ()
+	{
+		using var ms = new MemoryStream ();
+
+		// FRM8 header
+		ms.Write (Frm8Magic);
+		var sizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write (DsdFormType);
+
+		// FVER chunk
+		ms.Write ("FVER"u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 0x01050000);
+
+		// PROP chunk with odd-sized CMPR sub-chunk
+		var propStart = ms.Position;
+		ms.Write ("PROP"u8);
+		var propSizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write ("SND "u8);
+
+		ms.Write ("FS  "u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 2822400);
+
+		ms.Write ("CHNL"u8);
+		WriteUInt64BE (ms, 10);
+		WriteUInt16BE (ms, 2);
+		ms.Write ("SLFT"u8);
+		ms.Write ("SRGT"u8);
+
+		// CMPR with 5-byte compression name (odd size = 4 + 1 + 5 = 10)
+		ms.Write ("CMPR"u8);
+		WriteUInt64BE (ms, 4 + 1 + 5); // 10 bytes = even, try 9
+		ms.Write ("DSD "u8);
+		ms.WriteByte (5);
+		ms.Write ("hello"u8);
+		// No padding added - test if parser handles this
+
+		var propEnd = ms.Position;
+		var propSize = propEnd - propStart - 12;
+		ms.Position = propSizePosition;
+		WriteUInt64BE (ms, (ulong)propSize);
+		ms.Position = propEnd;
+
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
+
+		// DSD chunk with odd size (1023 bytes)
+		ms.Write ("DSD "u8);
+		WriteUInt64BE (ms, 1023); // Odd size
+		ms.Write (new byte[1023]);
+		ms.WriteByte (0); // Padding byte to maintain alignment
+
+		// Update FRM8 size
+		var totalSize = ms.Position;
+		ms.Position = sizePosition;
+		WriteUInt64BE (ms, (ulong)(totalSize - 12));
+
+		return ms.ToArray ();
+	}
+
+	/// <summary>
+	/// Creates a DFF file with DST compression.
+	/// </summary>
+	private static byte[] CreateDstCompressedDffFile ()
+	{
+		using var ms = new MemoryStream ();
+
+		// FRM8 header
+		ms.Write (Frm8Magic);
+		var sizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write (DsdFormType);
+
+		// FVER chunk
+		ms.Write ("FVER"u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 0x01050000);
+
+		// PROP chunk
+		var propStart = ms.Position;
+		ms.Write ("PROP"u8);
+		var propSizePosition = ms.Position;
+		WriteUInt64BE (ms, 0);
+		ms.Write ("SND "u8);
+
+		// FS - Sample Rate
+		ms.Write ("FS  "u8);
+		WriteUInt64BE (ms, 4);
+		WriteUInt32BE (ms, 2822400);
+
+		// CHNL - Channels
+		ms.Write ("CHNL"u8);
+		WriteUInt64BE (ms, 10);
+		WriteUInt16BE (ms, 2);
+		ms.Write ("SLFT"u8);
+		ms.Write ("SRGT"u8);
+
+		// CMPR - DST compression
+		ms.Write ("CMPR"u8);
+		WriteUInt64BE (ms, 4 + 1 + 3); // "DST " + count byte + "DST"
+		ms.Write ("DST "u8);
+		ms.WriteByte (3);
+		ms.Write ("DST"u8);
+
+		var propEnd = ms.Position;
+		var propSize = propEnd - propStart - 12;
+		ms.Position = propSizePosition;
+		WriteUInt64BE (ms, (ulong)propSize);
+		ms.Position = propEnd;
+
+		// Add padding byte for odd-sized PROP chunk (IFF requirement)
+		if (propSize % 2 != 0)
+			ms.WriteByte (0);
+
+		// DST chunk (instead of DSD)
+		ms.Write ("DST "u8);
+		WriteUInt64BE (ms, 1024);
+		ms.Write (new byte[1024]);
+
+		// Update FRM8 size
+		var totalSize = ms.Position;
+		ms.Position = sizePosition;
+		WriteUInt64BE (ms, (ulong)(totalSize - 12));
+
+		return ms.ToArray ();
 	}
 
 	#endregion

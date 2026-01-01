@@ -130,6 +130,7 @@ public sealed class DffFile : IDisposable
 
 	private byte[]? _originalData;
 	private bool _disposed;
+	private IFileSystem? _sourceFileSystem;
 
 	/// <summary>Gets the source file path, if read from disk.</summary>
 	public string? SourcePath { get; private set; }
@@ -144,7 +145,13 @@ public sealed class DffFile : IDisposable
 	public int SampleRate { get; private set; }
 
 	/// <summary>Gets the number of audio channels.</summary>
-	public int ChannelCount { get; private set; }
+	public int Channels { get; private set; }
+
+	/// <summary>Gets the bits per sample (always 1 for DSD).</summary>
+	public int BitsPerSample => 1;
+
+	/// <summary>Gets the total sample count.</summary>
+	public ulong SampleCount => _sampleCount;
 
 	/// <summary>Gets the DSD rate classification.</summary>
 	public DsfSampleRate DsdRate { get; private set; }
@@ -163,6 +170,11 @@ public sealed class DffFile : IDisposable
 
 	/// <summary>Gets or sets the ID3v2 tag (unofficial extension).</summary>
 	public Id3v2Tag? Id3v2Tag { get; set; }
+
+	/// <summary>
+	/// Gets a value indicating whether this file has an ID3v2 tag.
+	/// </summary>
+	public bool HasId3v2Tag => Id3v2Tag is not null;
 
 	// Internal state for rendering
 	private int _fverOffset;
@@ -203,12 +215,23 @@ public sealed class DffFile : IDisposable
 		var offset = 16;
 		var foundFver = false;
 		var foundProp = false;
+		var foundAudio = false;
+		var isFirstChunk = true;
+
+		// Track PROP sub-chunks
+		var foundFs = false;
+		var foundChnl = false;
+		var foundCmpr = false;
 
 		while (offset + 12 <= data.Length) {
 			var chunkId = System.Text.Encoding.ASCII.GetString (data.Slice (offset, 4));
 			var chunkSize = BinaryPrimitives.ReadUInt64BigEndian (data.Slice (offset + 4, 8));
 			var availableData = (ulong)(data.Length - offset - 12);
 			var chunkExtendsData = chunkSize > availableData;
+
+			// FVER must be the first chunk per DSDIFF spec
+			if (isFirstChunk && chunkId != "FVER")
+				return DffFileParseResult.Failure ("Invalid DFF file: FVER must be the first chunk");
 
 			switch (chunkId) {
 				case "FVER":
@@ -225,24 +248,34 @@ public sealed class DffFile : IDisposable
 					file._propOffset = offset;
 					file._propSize = (int)chunkSize;
 					if (!chunkExtendsData)
-						ParsePropChunk (data.Slice (offset + 12, (int)chunkSize), file);
+						ParsePropChunk (data.Slice (offset + 12, (int)chunkSize), file, ref foundFs, ref foundChnl, ref foundCmpr);
 					foundProp = true;
 					break;
 
 				case "DSD ":
+					// PROP must precede audio data per spec
+					if (!foundProp)
+						return DffFileParseResult.Failure ("Invalid DFF file: PROP chunk must precede audio data");
+
 					file._dsdOffset = offset;
 					file._dsdSize = (int)chunkSize;
 					// Sample count = data size * 8 / channels (1 bit per sample)
 					// Use chunk SIZE (not available data) to calculate samples
-					if (file.ChannelCount > 0) {
-						file._sampleCount = chunkSize * 8 / (ulong)file.ChannelCount;
+					if (file.Channels > 0) {
+						file._sampleCount = chunkSize * 8 / (ulong)file.Channels;
 					}
+					foundAudio = true;
 					break;
 
 				case "DST ":
+					// PROP must precede audio data per spec
+					if (!foundProp)
+						return DffFileParseResult.Failure ("Invalid DFF file: PROP chunk must precede audio data");
+
 					file._dsdOffset = offset;
 					file._dsdSize = (int)chunkSize;
 					file.CompressionType = DffCompressionType.Dst;
+					foundAudio = true;
 					break;
 
 				case "ID3 ":
@@ -257,13 +290,18 @@ public sealed class DffFile : IDisposable
 					break;
 			}
 
-			// Move to next chunk
+			isFirstChunk = false;
+
+			// Move to next chunk (IFF chunks are padded to even byte boundaries)
 			if (chunkExtendsData) {
 				// For truncated chunks (like audio data), skip to end of available data
 				// to look for any trailing chunks (like ID3)
 				offset += 12 + (int)availableData;
 			} else {
 				offset += 12 + (int)chunkSize;
+				// Add padding for odd-sized chunks (IFF alignment requirement)
+				if (chunkSize % 2 != 0 && offset < data.Length)
+					offset++;
 			}
 		}
 
@@ -272,6 +310,20 @@ public sealed class DffFile : IDisposable
 
 		if (!foundProp)
 			return DffFileParseResult.Failure ("Invalid DFF file: missing PROP chunk");
+
+		// Validate required PROP sub-chunks
+		if (!foundFs)
+			return DffFileParseResult.Failure ("Invalid DFF file: missing FS (sample rate) in PROP chunk");
+
+		if (!foundChnl)
+			return DffFileParseResult.Failure ("Invalid DFF file: missing CHNL (channels) in PROP chunk");
+
+		if (!foundCmpr)
+			return DffFileParseResult.Failure ("Invalid DFF file: missing CMPR (compression) in PROP chunk");
+
+		// Audio data chunk is required
+		if (!foundAudio)
+			return DffFileParseResult.Failure ("Invalid DFF file: missing DSD or DST audio data chunk");
 
 		// Calculate duration
 		if (file.SampleRate > 0 && file._sampleCount > 0) {
@@ -286,14 +338,14 @@ public sealed class DffFile : IDisposable
 		// Create properties object
 		file.Properties = new DffAudioProperties (
 			(uint)file.SampleRate,
-			(uint)file.ChannelCount,
+			(uint)file.Channels,
 			file._sampleCount,
 			file.CompressionType);
 
 		return DffFileParseResult.Success (file);
 	}
 
-	private static void ParsePropChunk (ReadOnlySpan<byte> data, DffFile file)
+	private static void ParsePropChunk (ReadOnlySpan<byte> data, DffFile file, ref bool foundFs, ref bool foundChnl, ref bool foundCmpr)
 	{
 		if (data.Length < 4) return;
 
@@ -321,12 +373,14 @@ public sealed class DffFile : IDisposable
 							45158400 => DsfSampleRate.DSD1024,
 							_ => DsfSampleRate.Unknown
 						};
+						foundFs = true;
 					}
 					break;
 
 				case "CHNL": // Channels
 					if (chunkSize >= 2) {
-						file.ChannelCount = BinaryPrimitives.ReadUInt16BigEndian (data.Slice (offset + 12, 2));
+						file.Channels = BinaryPrimitives.ReadUInt16BigEndian (data.Slice (offset + 12, 2));
+						foundChnl = true;
 					}
 					break;
 
@@ -338,11 +392,15 @@ public sealed class DffFile : IDisposable
 							"DST " => DffCompressionType.Dst,
 							_ => DffCompressionType.Unknown
 						};
+						foundCmpr = true;
 					}
 					break;
 			}
 
 			offset += 12 + (int)chunkSize;
+			// Add padding for odd-sized chunks within PROP
+			if (chunkSize % 2 != 0 && offset < data.Length)
+				offset++;
 		}
 	}
 
@@ -358,8 +416,10 @@ public sealed class DffFile : IDisposable
 			return DffFileParseResult.Failure (readResult.Error!);
 
 		var result = Parse (readResult.Data!);
-		if (result.IsSuccess)
+		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fileSystem;
+		}
 
 		return result;
 	}
@@ -381,8 +441,10 @@ public sealed class DffFile : IDisposable
 			return DffFileParseResult.Failure (readResult.Error!);
 
 		var result = Parse (readResult.Data!);
-		if (result.IsSuccess)
+		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fileSystem;
+		}
 
 		return result;
 	}
@@ -441,28 +503,99 @@ public sealed class DffFile : IDisposable
 	}
 
 	/// <summary>
-	/// Saves the file to disk.
+	/// Saves the file to disk with explicit original data.
 	/// </summary>
-	public FileWriteResult SaveToFile (string path, byte[]? originalData = null)
+	/// <param name="path">The path to save to.</param>
+	/// <param name="originalData">The original file data to use for rendering.</param>
+	/// <param name="fileSystem">Optional file system abstraction.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DffFile));
 
-		originalData ??= _originalData;
-		if (originalData is null)
-			return FileWriteResult.Failure ("No original data available");
-
 		try {
 			var rendered = Render ();
-			return AtomicFileWriter.Write (path, rendered.Span);
+			return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
 		} catch (Exception ex) {
 			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
 		}
 	}
 
 	/// <summary>
-	/// Saves the file to disk asynchronously.
+	/// Saves the file to disk asynchronously with explicit original data.
 	/// </summary>
+	public Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		ReadOnlyMemory<byte> originalData,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (_disposed)
+			throw new ObjectDisposedException (nameof (DffFile));
+
+		return SaveToFileAsyncCore (path, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
+	/// Saves the file to a new path.
+	/// </summary>
+	/// <param name="path">The path to save to.</param>
+	/// <param name="fileSystem">Optional file system abstraction.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		if (_disposed)
+			throw new ObjectDisposedException (nameof (DffFile));
+
+		if (_originalData is null)
+			return FileWriteResult.Failure ("No original data available");
+
+		try {
+			var rendered = Render ();
+			return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
+		} catch (Exception ex) {
+			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
+		}
+	}
+
+	/// <summary>
+	/// Saves the file back to its source path.
+	/// </summary>
+	/// <param name="fileSystem">Optional file system abstraction. If null, uses the file system from ReadFromFile.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	public FileWriteResult SaveToFile (IFileSystem? fileSystem = null)
+	{
+		if (_disposed)
+			throw new ObjectDisposedException (nameof (DffFile));
+
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		fileSystem ??= _sourceFileSystem;
+		return SaveToFile (SourcePath!, fileSystem);
+	}
+
+	/// <summary>
+	/// Saves the file asynchronously to a new path.
+	/// </summary>
+	public async Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (_disposed)
+			throw new ObjectDisposedException (nameof (DffFile));
+
+		return await SaveToFileAsyncCore (path, fileSystem, cancellationToken).ConfigureAwait (false);
+	}
+
+	/// <summary>
+	/// Saves the file asynchronously back to its source path.
+	/// </summary>
+	/// <param name="fileSystem">Optional file system abstraction. If null, uses the file system from ReadFromFile.</param>
+	/// <param name="cancellationToken">Cancellation token.</param>
+	/// <returns>A result indicating success or failure.</returns>
 	public async Task<FileWriteResult> SaveToFileAsync (
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -473,9 +606,18 @@ public sealed class DffFile : IDisposable
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
+		fileSystem ??= _sourceFileSystem;
+		return await SaveToFileAsyncCore (SourcePath!, fileSystem, cancellationToken).ConfigureAwait (false);
+	}
+
+	private async Task<FileWriteResult> SaveToFileAsyncCore (
+		string path,
+		IFileSystem? fileSystem,
+		CancellationToken cancellationToken)
+	{
 		try {
 			var rendered = Render ();
-			return await AtomicFileWriter.WriteAsync (SourcePath!, rendered.Memory, fileSystem, cancellationToken)
+			return await AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken)
 				.ConfigureAwait (false);
 		} catch (Exception ex) {
 			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");

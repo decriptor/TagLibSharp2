@@ -152,6 +152,55 @@ public sealed class AudioProperties : IMediaProperties
 		return new AudioProperties (duration, bitrate, OutputSampleRate, 0, channels, "Opus");
 	}
 
+	/// <summary>
+	/// Creates audio properties from DSF file information.
+	/// </summary>
+	/// <param name="duration">The audio duration.</param>
+	/// <param name="sampleRate">The sample rate in Hz (e.g., 2822400 for DSD64).</param>
+	/// <param name="channels">The number of audio channels.</param>
+	/// <returns>A new <see cref="AudioProperties"/> instance.</returns>
+	/// <remarks>
+	/// DSD always uses 1 bit per sample. Bitrate is calculated as:
+	/// sampleRate * channels / 1000 (since 1 bit per sample).
+	/// </remarks>
+	public static AudioProperties FromDsf (
+		TimeSpan duration,
+		int sampleRate,
+		int channels)
+	{
+		// DSD bitrate: sampleRate * 1 bit * channels / 1000
+		// Use long arithmetic to prevent overflow with high sample rates + many channels
+		var bitrate = sampleRate > 0 ? (int)((long)sampleRate * channels / 1000) : 0;
+
+		return new AudioProperties (duration, bitrate, sampleRate, 1, channels, "DSD");
+	}
+
+	/// <summary>
+	/// Creates audio properties from DFF file information.
+	/// </summary>
+	/// <param name="duration">The audio duration.</param>
+	/// <param name="sampleRate">The sample rate in Hz (e.g., 2822400 for DSD64).</param>
+	/// <param name="channels">The number of audio channels.</param>
+	/// <param name="isDst">True if the audio uses DST compression.</param>
+	/// <returns>A new <see cref="AudioProperties"/> instance.</returns>
+	/// <remarks>
+	/// DFF uses DSD audio (1 bit per sample), optionally with DST compression.
+	/// Bitrate is calculated as: sampleRate * channels / 1000.
+	/// </remarks>
+	public static AudioProperties FromDff (
+		TimeSpan duration,
+		int sampleRate,
+		int channels,
+		bool isDst = false)
+	{
+		// DSD bitrate: sampleRate * 1 bit * channels / 1000
+		// Use long arithmetic to prevent overflow with high sample rates + many channels
+		var bitrate = sampleRate > 0 ? (int)((long)sampleRate * channels / 1000) : 0;
+		var codec = isDst ? "DST" : "DSD";
+
+		return new AudioProperties (duration, bitrate, sampleRate, 1, channels, codec);
+	}
+
 	/// <inheritdoc/>
 	public override string ToString ()
 	{

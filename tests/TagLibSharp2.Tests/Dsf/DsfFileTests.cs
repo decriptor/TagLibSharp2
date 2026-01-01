@@ -8,6 +8,7 @@
 // - SDET: Edge cases for malformed files, boundary conditions, security tests
 // - C# Expert: Use Span<T>, avoid allocations in hot paths
 
+using System.Buffers.Binary;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using TagLibSharp2.Core;
 using TagLibSharp2.Dsf;
@@ -532,9 +533,9 @@ public class DsfFileTests
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (2822400u, result.File!.SampleRate);
-		Assert.AreEqual (2u, result.File.ChannelCount);
-		Assert.IsNull (result.File.Tag);
+		Assert.AreEqual (2822400, result.File!.SampleRate);
+		Assert.AreEqual (2, result.File.Channels);
+		Assert.IsNull (result.File.Id3v2Tag);
 	}
 
 	[TestMethod]
@@ -552,9 +553,9 @@ public class DsfFileTests
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
-		Assert.IsNotNull (result.File!.Tag);
-		Assert.AreEqual ("Test Song", result.File.Tag.Title);
-		Assert.AreEqual ("Test Artist", result.File.Tag.Artist);
+		Assert.IsNotNull (result.File!.Id3v2Tag);
+		Assert.AreEqual ("Test Song", result.File.Id3v2Tag.Title);
+		Assert.AreEqual ("Test Artist", result.File.Id3v2Tag.Artist);
 	}
 
 	[TestMethod]
@@ -586,9 +587,9 @@ public class DsfFileTests
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (TimeSpan.FromMinutes (1), result.File!.Duration);
-		Assert.AreEqual (2822400u, result.File.SampleRate);
-		Assert.AreEqual (2u, result.File.ChannelCount);
-		Assert.AreEqual (1u, result.File.BitsPerSample);
+		Assert.AreEqual (2822400, result.File.SampleRate);
+		Assert.AreEqual (2, result.File.Channels);
+		Assert.AreEqual (1, result.File.BitsPerSample);
 	}
 
 	#endregion
@@ -610,15 +611,15 @@ public class DsfFileTests
 		var file = parseResult.File!;
 
 		// Act - modify metadata
-		file.Tag!.Title = "Modified Title";
-		file.Tag.Artist = "Modified Artist";
+		file.Id3v2Tag!.Title = "Modified Title";
+		file.Id3v2Tag.Artist = "Modified Artist";
 		var rendered = file.Render ();
 
 		// Assert - can parse back
 		var reparsed = DsfFile.Parse (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Modified Title", reparsed.File!.Tag!.Title);
-		Assert.AreEqual ("Modified Artist", reparsed.File.Tag.Artist);
+		Assert.AreEqual ("Modified Title", reparsed.File!.Id3v2Tag!.Title);
+		Assert.AreEqual ("Modified Artist", reparsed.File.Id3v2Tag.Artist);
 	}
 
 	[TestMethod]
@@ -634,18 +635,79 @@ public class DsfFileTests
 		var parseResult = DsfFile.Parse (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
-		Assert.IsNull (file.Tag);
+		Assert.IsNull (file.Id3v2Tag);
 
 		// Act - create tag
-		file.CreateTag ();
-		file.Tag!.Title = "New Title";
+		file.EnsureId3v2Tag ();
+		file.Id3v2Tag!.Title = "New Title";
 		var rendered = file.Render ();
 
 		// Assert
 		var reparsed = DsfFile.Parse (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.IsNotNull (reparsed.File!.Tag);
-		Assert.AreEqual ("New Title", reparsed.File.Tag.Title);
+		Assert.IsNotNull (reparsed.File!.Id3v2Tag);
+		Assert.AreEqual ("New Title", reparsed.File.Id3v2Tag.Title);
+	}
+
+	[TestMethod]
+	public void RoundTrip_ModifyMetadata_PreservesAudioBytesExactly ()
+	{
+		// Arrange - create DSF with known audio pattern
+		var dsd = CreateDsdChunk (28, 0, 0);
+		var fmt = CreateFmtChunk (1, 0, 2, 2, 2822400, 1, 1000, 4096);
+		var dataHeader = CreateDataChunkHeader (100);
+
+		// Create recognizable audio pattern: 0xAA, 0xBB, 0xCC repeating
+		var audioData = new byte[88];
+		for (int i = 0; i < audioData.Length; i++) {
+			audioData[i] = (byte)(0xAA + (i % 3) * 0x11);
+		}
+
+		var baseSize = dsd.Length + fmt.Length + dataHeader.Length + audioData.Length;
+		var baseFile = new byte[baseSize];
+		var offset = 0;
+		dsd.CopyTo (baseFile, offset); offset += dsd.Length;
+		fmt.CopyTo (baseFile, offset); offset += fmt.Length;
+		dataHeader.CopyTo (baseFile, offset); offset += dataHeader.Length;
+		audioData.CopyTo (baseFile, offset);
+
+		// Update file size
+		BinaryPrimitives.WriteUInt64LittleEndian (baseFile.AsSpan (12), (ulong)baseSize);
+
+		// Add ID3v2 tag
+		var id3 = CreateSimpleId3v2Tag ("Original", "Artist");
+		var fullFile = new byte[baseSize + id3.Length];
+		baseFile.CopyTo (fullFile, 0);
+		id3.CopyTo (fullFile, baseSize);
+
+		// Update metadata offset and file size in DSD chunk
+		BinaryPrimitives.WriteUInt64LittleEndian (fullFile.AsSpan (12), (ulong)fullFile.Length);
+		BinaryPrimitives.WriteUInt64LittleEndian (fullFile.AsSpan (20), (ulong)baseSize);
+
+		// Parse and modify
+		var parseResult = DsfFile.Parse (fullFile);
+		Assert.IsTrue (parseResult.IsSuccess, $"Parse failed: {parseResult.Error}");
+		var file = parseResult.File!;
+
+		// Act - modify metadata
+		file.Id3v2Tag!.Title = "New Title With More Characters";
+		file.Id3v2Tag.Album = "Added Album Field";
+		var rendered = file.Render ();
+
+		// Assert - audio data should be byte-for-byte identical
+		var audioOffset = dsd.Length + fmt.Length + dataHeader.Length;
+		var originalAudio = fullFile.AsSpan (audioOffset, audioData.Length);
+		var renderedAudio = rendered.Span.Slice (audioOffset, audioData.Length);
+
+		Assert.IsTrue (originalAudio.SequenceEqual (renderedAudio),
+			"Audio data was not preserved byte-for-byte during metadata modification");
+
+		// Also verify audio pattern is still correct
+		for (int i = 0; i < audioData.Length; i++) {
+			var expected = (byte)(0xAA + (i % 3) * 0x11);
+			Assert.AreEqual (expected, renderedAudio[i],
+				$"Audio byte at offset {i} was modified: expected 0x{expected:X2}, got 0x{renderedAudio[i]:X2}");
+		}
 	}
 
 	#endregion
@@ -705,6 +767,61 @@ public class DsfFileTests
 
 		// Assert - should handle without throwing
 		Assert.IsNotNull (result);
+	}
+
+	[TestMethod]
+	public void Parse_DataChunkSizeExceedsAvailableData_ReturnsFailure ()
+	{
+		// Arrange - data chunk claims 1000 bytes but file only has 100 bytes of audio
+		var dsd = CreateDsdChunk (28, 192, 0); // file size = DSD + fmt + data header + audio
+		var fmt = CreateFmtChunk (1, 0, 2, 2, 2822400, 1, 1000, 4096);
+		var dataChunk = CreateDataChunkHeader (1000); // claims 1000 bytes of data
+		var audioData = new byte[100]; // but only 100 bytes available
+
+		var combined = new byte[dsd.Length + fmt.Length + dataChunk.Length + audioData.Length];
+		dsd.CopyTo (combined, 0);
+		fmt.CopyTo (combined, dsd.Length);
+		dataChunk.CopyTo (combined, dsd.Length + fmt.Length);
+		audioData.CopyTo (combined, dsd.Length + fmt.Length + dataChunk.Length);
+
+		// Update DSD file size to match actual
+		BinaryPrimitives.WriteUInt64LittleEndian (combined.AsSpan (12), (ulong)combined.Length);
+
+		// Act
+		var result = DsfFile.Parse (combined);
+
+		// Assert - should fail because data chunk claims more data than exists
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("data") || result.Error.Contains ("size") ||
+			result.Error.Contains ("exceeds") || result.Error.Contains ("truncated"),
+			$"Expected error about data size, got: {result.Error}");
+	}
+
+	[TestMethod]
+	public void Parse_DataChunkExtendsIntoMetadata_ReturnsFailure ()
+	{
+		// Arrange - data chunk size overlaps with metadata offset
+		var dsd = CreateDsdChunk (28, 500, 200); // metadata at offset 200
+		var fmt = CreateFmtChunk (1, 0, 2, 2, 2822400, 1, 1000, 4096);
+		var dataChunk = CreateDataChunkHeader (300); // claims 300 bytes, but metadata starts at 200
+		var audioData = new byte[300];
+
+		// DSD(28) + fmt(52) + data header(12) = 92 bytes
+		// Data claims to extend to 92 + 300 = 392, but metadata at 200
+		var combined = new byte[500];
+		dsd.CopyTo (combined, 0);
+		fmt.CopyTo (combined, dsd.Length);
+		dataChunk.CopyTo (combined, dsd.Length + fmt.Length);
+		audioData.CopyTo (combined, dsd.Length + fmt.Length + dataChunk.Length);
+
+		// Act
+		var result = DsfFile.Parse (combined);
+
+		// Assert - should fail because data chunk overlaps metadata
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsTrue (result.Error!.Contains ("data") || result.Error.Contains ("metadata") ||
+			result.Error.Contains ("overlap") || result.Error.Contains ("extends"),
+			$"Expected error about data/metadata overlap, got: {result.Error}");
 	}
 
 	#endregion
@@ -874,7 +991,7 @@ public class DsfFileTests
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
-		file.Tag!.Title = "Modified Title";
+		file.Id3v2Tag!.Title = "Modified Title";
 
 		var mockFs = new MockFileSystem ();
 
@@ -889,7 +1006,7 @@ public class DsfFileTests
 		var savedData = mockFs.ReadAllBytes ("/test/output.dsf");
 		var reparsed = DsfFile.Parse (savedData);
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Modified Title", reparsed.File!.Tag!.Title);
+		Assert.AreEqual ("Modified Title", reparsed.File!.Id3v2Tag!.Title);
 	}
 
 	[TestMethod]
@@ -904,7 +1021,7 @@ public class DsfFileTests
 		Assert.IsTrue (readResult.IsSuccess);
 		var file = readResult.File!;
 
-		file.Tag!.Title = "Updated Title";
+		file.Id3v2Tag!.Title = "Updated Title";
 
 		// Act - save to different path, should re-read original
 		var result = file.SaveToFile ("/music/copy.dsf", mockFs);
@@ -916,7 +1033,7 @@ public class DsfFileTests
 		var savedData = mockFs.ReadAllBytes ("/music/copy.dsf");
 		var reparsed = DsfFile.Parse (savedData);
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Updated Title", reparsed.File!.Tag!.Title);
+		Assert.AreEqual ("Updated Title", reparsed.File!.Id3v2Tag!.Title);
 	}
 
 	[TestMethod]
@@ -931,7 +1048,7 @@ public class DsfFileTests
 		Assert.IsTrue (readResult.IsSuccess);
 		var file = readResult.File!;
 
-		file.Tag!.Title = "In-Place Update";
+		file.Id3v2Tag!.Title = "In-Place Update";
 
 		// Act - save back to original path
 		var result = file.SaveToFile (mockFs);
@@ -942,7 +1059,7 @@ public class DsfFileTests
 		var savedData = mockFs.ReadAllBytes ("/music/song.dsf");
 		var reparsed = DsfFile.Parse (savedData);
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("In-Place Update", reparsed.File!.Tag!.Title);
+		Assert.AreEqual ("In-Place Update", reparsed.File!.Id3v2Tag!.Title);
 	}
 
 	[TestMethod]
@@ -974,8 +1091,8 @@ public class DsfFileTests
 		var file = parseResult.File!;
 
 		// Modify metadata
-		file.Tag!.Title = "New Title";
-		file.Tag.Album = "New Album";
+		file.Id3v2Tag!.Title = "New Title";
+		file.Id3v2Tag.Album = "New Album";
 
 		var mockFs = new MockFileSystem ();
 
@@ -989,8 +1106,8 @@ public class DsfFileTests
 		var reparsed = DsfFile.Parse (savedData);
 
 		// Audio properties should be unchanged
-		Assert.AreEqual (5644800u, reparsed.File!.SampleRate);
-		Assert.AreEqual (2u, reparsed.File.ChannelCount);
+		Assert.AreEqual (5644800, reparsed.File!.SampleRate);
+		Assert.AreEqual (2, reparsed.File.Channels);
 	}
 
 	[TestMethod]
@@ -1001,12 +1118,12 @@ public class DsfFileTests
 		var parseResult = DsfFile.Parse (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
-		Assert.IsNull (file.Tag);
+		Assert.IsNull (file.Id3v2Tag);
 
 		// Add new tag
-		file.CreateTag ();
-		file.Tag!.Title = "Brand New Tag";
-		file.Tag.Artist = "New Artist";
+		file.EnsureId3v2Tag ();
+		file.Id3v2Tag!.Title = "Brand New Tag";
+		file.Id3v2Tag.Artist = "New Artist";
 
 		var mockFs = new MockFileSystem ();
 
@@ -1018,8 +1135,8 @@ public class DsfFileTests
 
 		var savedData = mockFs.ReadAllBytes ("/output.dsf");
 		var reparsed = DsfFile.Parse (savedData);
-		Assert.IsNotNull (reparsed.File!.Tag);
-		Assert.AreEqual ("Brand New Tag", reparsed.File.Tag.Title);
+		Assert.IsNotNull (reparsed.File!.Id3v2Tag);
+		Assert.AreEqual ("Brand New Tag", reparsed.File.Id3v2Tag.Title);
 	}
 
 	[TestMethod]
@@ -1031,7 +1148,7 @@ public class DsfFileTests
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
-		file.Tag!.Title = "Async Modified";
+		file.Id3v2Tag!.Title = "Async Modified";
 
 		var mockFs = new MockFileSystem ();
 
@@ -1044,7 +1161,7 @@ public class DsfFileTests
 
 		var savedData = mockFs.ReadAllBytes ("/test/async.dsf");
 		var reparsed = DsfFile.Parse (savedData);
-		Assert.AreEqual ("Async Modified", reparsed.File!.Tag!.Title);
+		Assert.AreEqual ("Async Modified", reparsed.File!.Id3v2Tag!.Title);
 	}
 
 	[TestMethod]
@@ -1059,7 +1176,7 @@ public class DsfFileTests
 		Assert.IsTrue (readResult.IsSuccess);
 		var file = readResult.File!;
 
-		file.Tag!.Title = "Async In-Place";
+		file.Id3v2Tag!.Title = "Async In-Place";
 
 		// Act
 		var result = await file.SaveToFileAsync (mockFs);
@@ -1069,7 +1186,7 @@ public class DsfFileTests
 
 		var savedData = mockFs.ReadAllBytes ("/music/async.dsf");
 		var reparsed = DsfFile.Parse (savedData);
-		Assert.AreEqual ("Async In-Place", reparsed.File!.Tag!.Title);
+		Assert.AreEqual ("Async In-Place", reparsed.File!.Id3v2Tag!.Title);
 	}
 
 	[TestMethod]
@@ -1118,9 +1235,9 @@ public class DsfFileTests
 		data[2] = (byte)'D';
 		data[3] = (byte)' ';
 
-		BitConverter.GetBytes (chunkSize).CopyTo (data, 4);
-		BitConverter.GetBytes (fileSize).CopyTo (data, 12);
-		BitConverter.GetBytes (metadataOffset).CopyTo (data, 20);
+		BinaryPrimitives.WriteUInt64LittleEndian (data.AsSpan (4), chunkSize);
+		BinaryPrimitives.WriteUInt64LittleEndian (data.AsSpan (12), fileSize);
+		BinaryPrimitives.WriteUInt64LittleEndian (data.AsSpan (20), metadataOffset);
 
 		return data;
 	}
@@ -1144,15 +1261,15 @@ public class DsfFileTests
 		data[2] = (byte)'t';
 		data[3] = (byte)' ';
 
-		BitConverter.GetBytes (52UL).CopyTo (data, 4); // chunk size
-		BitConverter.GetBytes (formatVersion).CopyTo (data, 12);
-		BitConverter.GetBytes (formatId).CopyTo (data, 16);
-		BitConverter.GetBytes (channelType).CopyTo (data, 20);
-		BitConverter.GetBytes (channelCount).CopyTo (data, 24);
-		BitConverter.GetBytes (sampleRate).CopyTo (data, 28);
-		BitConverter.GetBytes (bitsPerSample).CopyTo (data, 32);
-		BitConverter.GetBytes (sampleCount).CopyTo (data, 36);
-		BitConverter.GetBytes (blockSizePerChannel).CopyTo (data, 44);
+		BinaryPrimitives.WriteUInt64LittleEndian (data.AsSpan (4), 52UL); // chunk size
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (12), formatVersion);
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (16), formatId);
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (20), channelType);
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (24), channelCount);
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (28), sampleRate);
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (32), bitsPerSample);
+		BinaryPrimitives.WriteUInt64LittleEndian (data.AsSpan (36), sampleCount);
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (44), blockSizePerChannel);
 		// reserved 4 bytes at end are already 0
 
 		return data;
@@ -1165,7 +1282,7 @@ public class DsfFileTests
 		data[1] = (byte)'a';
 		data[2] = (byte)'t';
 		data[3] = (byte)'a';
-		BitConverter.GetBytes (chunkSize).CopyTo (data, 4);
+		BinaryPrimitives.WriteUInt64LittleEndian (data.AsSpan (4), chunkSize);
 		return data;
 	}
 
@@ -1185,7 +1302,7 @@ public class DsfFileTests
 		var totalSize = dsd.Length + fmt.Length + dataHeader.Length + audioData.Length;
 
 		// Update DSD chunk with correct file size
-		BitConverter.GetBytes ((ulong)totalSize).CopyTo (dsd, 12);
+		BinaryPrimitives.WriteUInt64LittleEndian (dsd.AsSpan (12), (ulong)totalSize);
 
 		var result = new byte[totalSize];
 		var offset = 0;
@@ -1221,8 +1338,8 @@ public class DsfFileTests
 		var metadataOffset = baseFile.Length;
 
 		// Update DSD chunk header with metadata offset
-		BitConverter.GetBytes ((ulong)newFileSize).CopyTo (baseFile, 12);
-		BitConverter.GetBytes ((ulong)metadataOffset).CopyTo (baseFile, 20);
+		BinaryPrimitives.WriteUInt64LittleEndian (baseFile.AsSpan (12), (ulong)newFileSize);
+		BinaryPrimitives.WriteUInt64LittleEndian (baseFile.AsSpan (20), (ulong)metadataOffset);
 
 		// Combine
 		var result = new byte[newFileSize];
@@ -1322,7 +1439,7 @@ public class DsfFileTests
 		Assert.AreEqual (1, props.BitsPerSample);
 		Assert.AreEqual (DsfSampleRate.DSD128, props.DsdRate);
 		Assert.AreEqual (DsfChannelType.Stereo, props.ChannelType);
-		Assert.AreEqual (4096u, props.BlockSizePerChannel);
+		Assert.AreEqual (4096, props.BlockSizePerChannel);
 	}
 
 	[TestMethod]
@@ -1384,7 +1501,7 @@ public class DsfFileTests
 			var readResult = await DsfFile.ReadFromFileAsync (tempPath);
 			Assert.IsTrue (readResult.IsSuccess);
 			var file = readResult.File!;
-			file.Tag!.Title = "Modified Async";
+			file.Id3v2Tag!.Title = "Modified Async";
 
 			// Act
 			await file.SaveToFileAsync ();
@@ -1392,7 +1509,7 @@ public class DsfFileTests
 			// Assert
 			var verifyResult = await DsfFile.ReadFromFileAsync (tempPath);
 			Assert.IsTrue (verifyResult.IsSuccess);
-			Assert.AreEqual ("Modified Async", verifyResult.File!.Tag!.Title);
+			Assert.AreEqual ("Modified Async", verifyResult.File!.Id3v2Tag!.Title);
 		} finally {
 			if (File.Exists (tempPath))
 				File.Delete (tempPath);
@@ -1491,6 +1608,64 @@ public class DsfFileTests
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsFalse (failure.IsSuccess);
 		_ = result.GetHashCode ();
+	}
+
+	#endregion
+
+	#region Disposal Tests
+
+	[TestMethod]
+	public void Dispose_ClearsPropertiesConsistently ()
+	{
+		// Arrange
+		var data = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
+		var result = DsfFile.Parse (data);
+		Assert.IsTrue (result.IsSuccess);
+		var file = result.File!;
+
+		// Verify Properties exists before disposal
+		Assert.IsNotNull (file.Properties);
+		Assert.IsNotNull (file.Id3v2Tag);
+
+		// Act
+		file.Dispose ();
+
+		// Assert - Properties should be null after disposal (consistent with DffFile)
+		Assert.IsNull (file.Properties);
+		Assert.IsNull (file.Id3v2Tag);
+	}
+
+	[TestMethod]
+	public void Dispose_MultipleCalls_DoesNotThrow ()
+	{
+		// Arrange
+		var data = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
+		var result = DsfFile.Parse (data);
+		var file = result.File!;
+
+		// Act & Assert - should not throw on multiple disposals
+		file.Dispose ();
+		file.Dispose ();
+		file.Dispose ();
+	}
+
+	[TestMethod]
+	public void Render_AfterDispose_ThrowsObjectDisposedException ()
+	{
+		// Arrange
+		var data = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
+		var result = DsfFile.Parse (data);
+		var file = result.File!;
+		file.Dispose ();
+
+		// Act & Assert
+		var threw = false;
+		try {
+			file.Render ();
+		} catch (ObjectDisposedException) {
+			threw = true;
+		}
+		Assert.IsTrue (threw, "Expected ObjectDisposedException");
 	}
 
 	#endregion

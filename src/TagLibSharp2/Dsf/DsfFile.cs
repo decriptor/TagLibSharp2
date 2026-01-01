@@ -49,7 +49,7 @@ public sealed class DsfAudioProperties
 	public DsfChannelType ChannelType { get; }
 
 	/// <summary>Gets the block size per channel in bytes.</summary>
-	public uint BlockSizePerChannel { get; }
+	public int BlockSizePerChannel { get; }
 
 	internal DsfAudioProperties (DsfFmtChunk fmtChunk)
 	{
@@ -64,7 +64,7 @@ public sealed class DsfAudioProperties
 		BitsPerSample = (int)fmtChunk.BitsPerSample;
 		DsdRate = fmtChunk.DsdRate;
 		ChannelType = fmtChunk.ChannelType;
-		BlockSizePerChannel = fmtChunk.BlockSizePerChannel;
+		BlockSizePerChannel = (int)fmtChunk.BlockSizePerChannel;
 	}
 }
 
@@ -117,22 +117,27 @@ public sealed class DsfFile : IDisposable
 	/// Gets or sets the ID3v2 tag containing metadata.
 	/// May be null if the file has no metadata.
 	/// </summary>
-	public Id3v2Tag? Tag { get; set; }
+	public Id3v2Tag? Id3v2Tag { get; set; }
+
+	/// <summary>
+	/// Gets a value indicating whether this file has an ID3v2 tag.
+	/// </summary>
+	public bool HasId3v2Tag => Id3v2Tag is not null;
 
 	/// <summary>
 	/// Gets the sample rate in Hz.
 	/// </summary>
-	public uint SampleRate => _fmtChunk.SampleRate;
+	public int SampleRate => (int)_fmtChunk.SampleRate;
 
 	/// <summary>
 	/// Gets the number of audio channels.
 	/// </summary>
-	public uint ChannelCount => _fmtChunk.ChannelCount;
+	public int Channels => (int)_fmtChunk.ChannelCount;
 
 	/// <summary>
 	/// Gets the bits per sample (always 1 for DSD).
 	/// </summary>
-	public uint BitsPerSample => _fmtChunk.BitsPerSample;
+	public int BitsPerSample => (int)_fmtChunk.BitsPerSample;
 
 	/// <summary>
 	/// Gets the total number of samples per channel.
@@ -157,7 +162,7 @@ public sealed class DsfFile : IDisposable
 	/// <summary>
 	/// Gets the block size per channel.
 	/// </summary>
-	public uint BlockSizePerChannel => _fmtChunk.BlockSizePerChannel;
+	public int BlockSizePerChannel => (int)_fmtChunk.BlockSizePerChannel;
 
 	/// <summary>
 	/// Gets the audio properties for this file.
@@ -177,7 +182,7 @@ public sealed class DsfFile : IDisposable
 		_fmtChunk = fmtChunk;
 		_dataChunk = dataChunk;
 		_audioDataOffset = audioDataOffset;
-		Tag = tag;
+		Id3v2Tag = tag;
 	}
 
 	/// <summary>
@@ -216,6 +221,24 @@ public sealed class DsfFile : IDisposable
 		var dataChunk = dataResult.Chunk!;
 
 		var audioDataOffset = dataOffset + DsfDataChunk.HeaderSize;
+
+		// Validate data chunk size against available data
+		var audioDataSize = dataChunk.AudioDataSize;
+		var dataEnd = (ulong)audioDataOffset + audioDataSize;
+
+		if (dsdChunk.HasMetadata) {
+			// Data chunk should not extend beyond metadata offset
+			if (dataEnd > dsdChunk.MetadataOffset) {
+				return DsfFileParseResult.Failure (
+					$"Data chunk extends beyond metadata offset: data ends at {dataEnd}, metadata at {dsdChunk.MetadataOffset}");
+			}
+		} else {
+			// Data chunk should not exceed file size
+			if (dataEnd > (ulong)data.Length) {
+				return DsfFileParseResult.Failure (
+					$"Data chunk size exceeds available data: claims {audioDataSize} bytes, but only {data.Length - audioDataOffset} available");
+			}
+		}
 
 		// Validate metadata offset if present
 		Id3v2Tag? tag = null;
@@ -294,12 +317,13 @@ public sealed class DsfFile : IDisposable
 	}
 
 	/// <summary>
-	/// Creates an ID3v2 tag if one doesn't exist.
+	/// Ensures an ID3v2 tag exists, creating one if necessary.
 	/// </summary>
-	public Id3v2Tag CreateTag ()
+	/// <returns>The existing or newly created ID3v2 tag.</returns>
+	public Id3v2Tag EnsureId3v2Tag ()
 	{
-		Tag ??= new Id3v2Tag ();
-		return Tag;
+		Id3v2Tag ??= new Id3v2Tag ();
+		return Id3v2Tag;
 	}
 
 	/// <summary>
@@ -319,8 +343,8 @@ public sealed class DsfFile : IDisposable
 
 		// Render ID3v2 tag if present
 		byte[] id3Data = Array.Empty<byte> ();
-		if (Tag is not null) {
-			var renderedTag = Tag.Render ();
+		if (Id3v2Tag is not null) {
+			var renderedTag = Id3v2Tag.Render ();
 			id3Data = renderedTag.ToArray ();
 		}
 
@@ -504,7 +528,8 @@ public sealed class DsfFile : IDisposable
 			return;
 
 		_originalData = null;
-		Tag = null;
+		Id3v2Tag = null;
+		Properties = null;
 		_disposed = true;
 	}
 }
