@@ -2,12 +2,14 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Aiff;
+using TagLibSharp2.Ape;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Riff;
+using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Core;
@@ -57,6 +59,9 @@ public static class MediaFile
 	static readonly byte[] FtypMagic = [(byte)'f', (byte)'t', (byte)'y', (byte)'p'];
 	static readonly byte[] DsfMagic = [(byte)'D', (byte)'S', (byte)'D', (byte)' '];
 	static readonly byte[] Frm8Magic = [(byte)'F', (byte)'R', (byte)'M', (byte)'8'];
+	static readonly byte[] WavPackMagic = [(byte)'w', (byte)'v', (byte)'p', (byte)'k'];
+	static readonly byte[] MonkeysAudioMagic = [(byte)'M', (byte)'A', (byte)'C', (byte)' '];
+	static readonly byte[] OggFlacMagic = [0x7F, (byte)'F', (byte)'L', (byte)'A', (byte)'C'];
 
 	/// <summary>
 	/// Opens a media file and returns a unified result.
@@ -121,12 +126,15 @@ public static class MediaFile
 			MediaFormat.Flac => OpenFlac (data),
 			MediaFormat.OggVorbis => OpenOggVorbis (data),
 			MediaFormat.Opus => OpenOpus (data),
+			MediaFormat.OggFlac => OpenOggFlac (data),
 			MediaFormat.Mp3 => OpenMp3 (data),
 			MediaFormat.Wav => OpenWav (data),
 			MediaFormat.Aiff => OpenAiff (data),
 			MediaFormat.Mp4 => OpenMp4 (data),
 			MediaFormat.Dsf => OpenDsf (data),
 			MediaFormat.Dff => OpenDff (data),
+			MediaFormat.WavPack => OpenWavPack (data),
+			MediaFormat.MonkeysAudio => OpenMonkeysAudio (data),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 	}
@@ -187,6 +195,16 @@ public static class MediaFile
 				data[12] == DsfMagic[0] && data[13] == DsfMagic[1] &&
 				data[14] == DsfMagic[2] && data[15] == DsfMagic[3])
 				return MediaFormat.Dff;
+
+			// WavPack: starts with "wvpk"
+			if (data[0] == WavPackMagic[0] && data[1] == WavPackMagic[1] &&
+				data[2] == WavPackMagic[2] && data[3] == WavPackMagic[3])
+				return MediaFormat.WavPack;
+
+			// Monkey's Audio: starts with "MAC "
+			if (data[0] == MonkeysAudioMagic[0] && data[1] == MonkeysAudioMagic[1] &&
+				data[2] == MonkeysAudioMagic[2] && data[3] == MonkeysAudioMagic[3])
+				return MediaFormat.MonkeysAudio;
 		}
 
 		if (data.Length >= 3) {
@@ -205,6 +223,7 @@ public static class MediaFile
 			return ext switch {
 				".FLAC" => MediaFormat.Flac,
 				".OGG" => MediaFormat.OggVorbis,
+				".OGA" => MediaFormat.OggFlac, // Ogg FLAC typically uses .oga extension
 				".OPUS" => MediaFormat.Opus,
 				".MP3" => MediaFormat.Mp3,
 				".WAV" => MediaFormat.Wav,
@@ -212,6 +231,8 @@ public static class MediaFile
 				".M4A" or ".M4B" or ".M4P" or ".M4V" or ".MP4" => MediaFormat.Mp4,
 				".DSF" => MediaFormat.Dsf,
 				".DFF" => MediaFormat.Dff,
+				".WV" => MediaFormat.WavPack,
+				".APE" => MediaFormat.MonkeysAudio,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -262,6 +283,13 @@ public static class MediaFile
 			packetData[3] == VorbisMagic[2] && packetData[4] == VorbisMagic[3] &&
 			packetData[5] == VorbisMagic[4] && packetData[6] == VorbisMagic[5])
 			return MediaFormat.OggVorbis;
+
+		// Check for Ogg FLAC header (0x7F + "FLAC")
+		if (packetData.Length >= 5 &&
+			packetData[0] == OggFlacMagic[0] &&
+			packetData[1] == OggFlacMagic[1] && packetData[2] == OggFlacMagic[2] &&
+			packetData[3] == OggFlacMagic[3] && packetData[4] == OggFlacMagic[4])
+			return MediaFormat.OggFlac;
 
 		// Unknown Ogg codec - default to Vorbis for backwards compatibility
 		return MediaFormat.OggVorbis;
@@ -355,6 +383,33 @@ public static class MediaFile
 			return MediaFileResult.Failure (result.Error!);
 
 		return MediaFileResult.Success (result.File!, result.File!.Id3v2Tag, MediaFormat.Dff);
+	}
+
+	static MediaFileResult OpenOggFlac (ReadOnlyMemory<byte> data)
+	{
+		var result = OggFlacFile.Parse (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.File!, result.File!.VorbisComment, MediaFormat.OggFlac);
+	}
+
+	static MediaFileResult OpenWavPack (ReadOnlyMemory<byte> data)
+	{
+		var result = WavPackFile.Parse (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.File!, result.File!.ApeTag, MediaFormat.WavPack);
+	}
+
+	static MediaFileResult OpenMonkeysAudio (ReadOnlyMemory<byte> data)
+	{
+		var result = MonkeysAudioFile.Parse (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.File!, result.File!.ApeTag, MediaFormat.MonkeysAudio);
 	}
 }
 
@@ -470,5 +525,20 @@ public enum MediaFormat
 	/// <summary>
 	/// DFF audio format (DSDIFF - Philips' DSD Interchange File Format).
 	/// </summary>
-	Dff
+	Dff,
+
+	/// <summary>
+	/// Ogg FLAC audio format (FLAC encoded in Ogg container).
+	/// </summary>
+	OggFlac,
+
+	/// <summary>
+	/// WavPack audio format (.wv).
+	/// </summary>
+	WavPack,
+
+	/// <summary>
+	/// Monkey's Audio format (.ape).
+	/// </summary>
+	MonkeysAudio
 }

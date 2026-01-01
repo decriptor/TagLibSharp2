@@ -25,33 +25,34 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Performance-First**: Zero-allocation parsing with `Span<T>` and `ArrayPool<T>`
 - **Multi-Target**: Supports .NET Standard 2.0/2.1, .NET 8.0, and .NET 10.0
 - **Format Support**:
-  - Audio: MP3 (ID3v1/ID3v2), FLAC, OGG Vorbis, Ogg Opus, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), DSF (DSD), APE Tags
+  - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape)
   - Planned: ASF/WMA
 
 ## Format Support Matrix
 
-| Feature | MP3 | FLAC | Ogg Vorbis | Ogg Opus | WAV | AIFF | MP4/M4A | DSF |
-|---------|:---:|:----:|:----------:|:--------:|:---:|:----:|:-------:|:---:|
-| **Read metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Write metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| **Audio properties** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Async I/O** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Album art** | ✅ | ✅ | ✅ | ✅ | ✅¹ | ✅¹ | ✅ | ✅¹ |
-| **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅¹ | ✅¹ | ✅⁵ | ✅¹ |
-| **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅¹ | ✅¹ | ✅ | ✅¹ |
-| **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅¹ |
-| **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅¹ | ✅¹ | — | ✅¹ |
-| **BWF broadcast metadata** | — | — | — | — | ✅ | — | — | — |
-| **Surround sound info** | — | — | — | — | ✅³ | — | ✅⁶ | ✅⁷ |
-| **DSD sample rates** | — | — | — | — | — | — | — | ✅ |
+| Feature | MP3 | FLAC | Ogg Vorbis | Ogg Opus | Ogg FLAC | WAV | AIFF | MP4/M4A | DSF | DFF | WavPack | APE |
+|---------|:---:|:----:|:----------:|:--------:|:--------:|:---:|:----:|:-------:|:---:|:---:|:-------:|:---:|
+| **Read metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Write metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| **Audio properties** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Async I/O** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Album art** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
+| **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
+| **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
+| **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
+| **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
+| **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — |
+| **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | ✅⁷ | ✅⁷ | — | — |
+| **DSD sample rates** | — | — | — | — | — | — | — | — | ✅ | ✅ | — | — |
 
 ¹ Via embedded ID3v2 tag
-² Via Vorbis Comment LYRICS field
+² Via Vorbis Comment
 ³ Via WAVEFORMATEXTENSIBLE (channel mask, valid bits per sample)
 ⁴ Via R128 gain tags (RFC 7845)
 ⁵ Via iTunes ----:com.apple.iTunes:replaygain_* atoms
 ⁶ Via channel layout in stsd/esds
 ⁷ Via channel type in fmt chunk (Mono, Stereo, 5.1 surround)
+⁸ Via APE tag
 
 ### Tag Format by Container
 
@@ -61,10 +62,14 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | FLAC | Vorbis Comment | — | Native only |
 | Ogg Vorbis | Vorbis Comment | — | Native only |
 | Ogg Opus | Vorbis Comment | — | Native only |
+| Ogg FLAC | Vorbis Comment | — | Native only |
 | WAV | RIFF INFO | ID3v2, bext (BWF) | ID3v2 preferred |
 | AIFF | ID3 chunk | — | Native only |
 | MP4/M4A | iTunes atoms (ilst) | — | Native only |
 | DSF | ID3v2 | — | Native only |
+| DFF | ID3v2 | — | Native only |
+| WavPack | APE tag | — | Native only |
+| Monkey's Audio | APE tag | — | Native only |
 
 ## Installation
 
@@ -256,6 +261,25 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
   - [x] Text, Binary, and External item types
   - [x] Full read/write round-trip support
   - [x] Standard and extended metadata mappings
+
+### Phase 13: Extended Format Support ✅
+- [x] DFF (DSDIFF) format for high-resolution DSD audio
+  - [x] FRM8/DSD chunk parsing
+  - [x] DSD64/128/256/512/1024 sample rate detection
+  - [x] ID3v2 metadata at end of file
+  - [x] Channel type detection
+- [x] Ogg FLAC format
+  - [x] Ogg container with FLAC stream parsing
+  - [x] STREAMINFO extraction (sample rate, channels, bits per sample)
+  - [x] Vorbis Comment support with full read/write
+- [x] WavPack (.wv) format
+  - [x] Block header parsing with flags
+  - [x] Sample rate table lookup (15 standard rates)
+  - [x] APE tag support for metadata
+- [x] Monkey's Audio (.ape) format
+  - [x] Both old (≤3.97) and new (≥3.98) format versions
+  - [x] STREAMINFO extraction
+  - [x] APE tag support for metadata
 
 ### Future
 - [ ] ASF/WMA format
