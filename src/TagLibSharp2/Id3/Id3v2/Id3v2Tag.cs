@@ -1254,7 +1254,30 @@ public sealed class Id3v2Tag : Tag
 			remaining -= totalFrameSize;
 		}
 
-		return TagReadResult<Id3v2Tag>.Success (tag, (int)header.TotalSize);
+		// Check for duplicate ID3v2 tag following this one
+		// This can happen when multiple taggers write separate tags to the same file
+		// (e.g., WMP writes v2.3, then iTunes writes v2.4)
+		var hasDuplicateTag = HasDuplicateTagAfter (data, (int)header.TotalSize);
+
+		return TagReadResult<Id3v2Tag>.Success (tag, (int)header.TotalSize, hasDuplicateTag);
+	}
+
+	/// <summary>
+	/// Checks if there's another ID3v2 tag following the first one.
+	/// </summary>
+	static bool HasDuplicateTagAfter (ReadOnlySpan<byte> data, int firstTagEnd)
+	{
+		// Need at least 10 bytes for a valid ID3v2 header
+		if (data.Length < firstTagEnd + Id3v2Header.HeaderSize)
+			return false;
+
+		var afterFirstTag = data.Slice (firstTagEnd);
+
+		// Check for ID3 magic
+		return afterFirstTag.Length >= 3 &&
+			   afterFirstTag[0] == 'I' &&
+			   afterFirstTag[1] == 'D' &&
+			   afterFirstTag[2] == '3';
 	}
 
 	/// <summary>

@@ -38,11 +38,22 @@ public readonly struct TagReadResult<T> : IEquatable<TagReadResult<T>> where T :
 	/// </summary>
 	public int BytesConsumed { get; }
 
-	TagReadResult (T? tag, string? error, int bytesConsumed)
+	/// <summary>
+	/// Gets a value indicating whether a duplicate tag was detected after the primary tag.
+	/// </summary>
+	/// <remarks>
+	/// This can occur when multiple taggers write separate tags to the same file.
+	/// For example, Windows Media Player might write a v2.3 tag, then iTunes writes
+	/// a v2.4 tag, resulting in two back-to-back ID3v2 tags.
+	/// </remarks>
+	public bool HasDuplicateTag { get; }
+
+	TagReadResult (T? tag, string? error, int bytesConsumed, bool hasDuplicateTag = false)
 	{
 		Tag = tag;
 		Error = error;
 		BytesConsumed = bytesConsumed;
+		HasDuplicateTag = hasDuplicateTag;
 	}
 
 	/// <summary>
@@ -50,9 +61,10 @@ public readonly struct TagReadResult<T> : IEquatable<TagReadResult<T>> where T :
 	/// </summary>
 	/// <param name="tag">The parsed tag.</param>
 	/// <param name="bytesConsumed">The number of bytes consumed.</param>
+	/// <param name="hasDuplicateTag">Whether a duplicate tag was detected after this tag.</param>
 	/// <returns>A successful result.</returns>
-	public static TagReadResult<T> Success (T tag, int bytesConsumed) =>
-		new (tag, null, bytesConsumed);
+	public static TagReadResult<T> Success (T tag, int bytesConsumed, bool hasDuplicateTag = false) =>
+		new (tag, null, bytesConsumed, hasDuplicateTag);
 
 	/// <summary>
 	/// Creates a failure result with an error message.
@@ -73,7 +85,8 @@ public readonly struct TagReadResult<T> : IEquatable<TagReadResult<T>> where T :
 	public bool Equals (TagReadResult<T> other) =>
 		EqualityComparer<T?>.Default.Equals (Tag, other.Tag) &&
 		Error == other.Error &&
-		BytesConsumed == other.BytesConsumed;
+		BytesConsumed == other.BytesConsumed &&
+		HasDuplicateTag == other.HasDuplicateTag;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
@@ -81,7 +94,7 @@ public readonly struct TagReadResult<T> : IEquatable<TagReadResult<T>> where T :
 
 	/// <inheritdoc/>
 	public override int GetHashCode () =>
-		HashCode.Combine (Tag, Error, BytesConsumed);
+		HashCode.Combine (Tag, Error, BytesConsumed, HasDuplicateTag);
 
 	/// <summary>
 	/// Determines whether two results are equal.
