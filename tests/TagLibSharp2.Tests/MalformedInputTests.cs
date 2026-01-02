@@ -1,10 +1,17 @@
 // Copyright (c) 2025 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Aiff;
+using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
+using TagLibSharp2.Dff;
+using TagLibSharp2.Dsf;
 using TagLibSharp2.Id3;
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
+using TagLibSharp2.Riff;
+using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests;
@@ -405,6 +412,490 @@ public class MalformedInputTests
 
 		var result = VorbisComment.Read (data);
 		Assert.IsNotNull (result, "Invalid UTF-8 in field should return a result without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// DSF Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void DsfFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = DsfFile.Parse ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void DsfFile_TruncatedMagic_ReturnsFailure ()
+	{
+		// Only "DS" instead of "DSD "
+		var data = new byte[] { 0x44, 0x53 };
+		var result = DsfFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
+	}
+
+	[TestMethod]
+	public void DsfFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = DsfFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void DsfFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = DsfFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid DSF");
+	}
+
+	[TestMethod]
+	public void DsfFile_AllOnes_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		Array.Fill (data, (byte)0xFF);
+		var result = DsfFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All 0xFF bytes should be rejected as invalid DSF");
+	}
+
+	[TestMethod]
+	public void DsfFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42); // Fixed seed for reproducibility
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = DsfFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// DFF Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void DffFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = DffFile.Parse ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void DffFile_TruncatedMagic_ReturnsFailure ()
+	{
+		// Only "FR" instead of "FRM8"
+		var data = new byte[] { 0x46, 0x52 };
+		var result = DffFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
+	}
+
+	[TestMethod]
+	public void DffFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = DffFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void DffFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = DffFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid DFF");
+	}
+
+	[TestMethod]
+	public void DffFile_AllOnes_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		Array.Fill (data, (byte)0xFF);
+		var result = DffFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All 0xFF bytes should be rejected as invalid DFF");
+	}
+
+	[TestMethod]
+	public void DffFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = DffFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// AIFF/WAV Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void AiffFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = AiffFile.Read ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void AiffFile_TruncatedMagic_ReturnsFailure ()
+	{
+		// Only "FOR" instead of "FORM"
+		var data = new byte[] { 0x46, 0x4F, 0x52 };
+		var result = AiffFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
+	}
+
+	[TestMethod]
+	public void AiffFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = AiffFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void AiffFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = AiffFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid AIFF");
+	}
+
+	[TestMethod]
+	public void AiffFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = AiffFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+	[TestMethod]
+	public void WavFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = WavFile.Read ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void WavFile_TruncatedMagic_ReturnsFailure ()
+	{
+		// Only "RIF" instead of "RIFF"
+		var data = new byte[] { 0x52, 0x49, 0x46 };
+		var result = WavFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
+	}
+
+	[TestMethod]
+	public void WavFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = WavFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void WavFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = WavFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid WAV");
+	}
+
+	[TestMethod]
+	public void WavFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = WavFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// WavPack Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void WavPackFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = WavPackFile.Parse ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void WavPackFile_TruncatedMagic_ReturnsFailure ()
+	{
+		// Only "wvp" instead of "wvpk"
+		var data = new byte[] { 0x77, 0x76, 0x70 };
+		var result = WavPackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
+	}
+
+	[TestMethod]
+	public void WavPackFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = WavPackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void WavPackFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = WavPackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid WavPack");
+	}
+
+	[TestMethod]
+	public void WavPackFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = WavPackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// Monkey's Audio Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void MonkeysAudioFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = MonkeysAudioFile.Parse ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void MonkeysAudioFile_TruncatedMagic_ReturnsFailure ()
+	{
+		// Only "MA" instead of "MAC "
+		var data = new byte[] { 0x4D, 0x41 };
+		var result = MonkeysAudioFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
+	}
+
+	[TestMethod]
+	public void MonkeysAudioFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = MonkeysAudioFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void MonkeysAudioFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = MonkeysAudioFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid Monkey's Audio");
+	}
+
+	[TestMethod]
+	public void MonkeysAudioFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = MonkeysAudioFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// Musepack Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void MusepackFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = MusepackFile.Parse ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void MusepackFile_TruncatedMagic_ReturnsFailure ()
+	{
+		// Only "MP" instead of "MPCK" or "MP+"
+		var data = new byte[] { 0x4D, 0x50 };
+		var result = MusepackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
+	}
+
+	[TestMethod]
+	public void MusepackFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = MusepackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void MusepackFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = MusepackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid Musepack");
+	}
+
+	[TestMethod]
+	public void MusepackFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = MusepackFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// Ogg Opus Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void OggOpusFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = OggOpusFile.Read ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void OggOpusFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = OggOpusFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void OggOpusFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = OggOpusFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid Ogg Opus");
+	}
+
+	[TestMethod]
+	public void OggOpusFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = OggOpusFile.Read (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// Ogg FLAC Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void OggFlacFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = OggFlacFile.Parse ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void OggFlacFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = OggFlacFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void OggFlacFile_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = OggFlacFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid Ogg FLAC");
+	}
+
+	[TestMethod]
+	public void OggFlacFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		var result = OggFlacFile.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+
+
+	// ═══════════════════════════════════════════════════════════════
+	// APE Tag Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void ApeTag_EmptyInput_ReturnsFailure ()
+	{
+		var result = ApeTag.Parse ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void ApeTag_TruncatedPreamble_ReturnsFailure ()
+	{
+		// Only "APET" instead of "APETAGEX"
+		var data = new byte[] { 0x41, 0x50, 0x45, 0x54 };
+		var result = ApeTag.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Truncated preamble should fail gracefully");
+	}
+
+	[TestMethod]
+	public void ApeTag_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		var result = ApeTag.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
+	}
+
+	[TestMethod]
+	public void ApeTag_AllZeros_ReturnsFailure ()
+	{
+		var data = new byte[1000];
+		var result = ApeTag.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid APE tag");
+	}
+
+	[TestMethod]
+	public void ApeTag_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[1000];
+		random.NextBytes (data);
+
+		var result = ApeTag.Parse (data);
+		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 
 }
