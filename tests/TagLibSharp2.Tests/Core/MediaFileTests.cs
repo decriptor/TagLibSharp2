@@ -2,12 +2,14 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Aiff;
+using TagLibSharp2.Asf;
 using TagLibSharp2.Core;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Riff;
+using TagLibSharp2.Tests.Asf;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Core;
@@ -130,6 +132,18 @@ public class MediaFileTests
 	}
 
 	[TestMethod]
+	public void DetectFormat_AsfMagic_ReturnsAsf ()
+	{
+		// ASF: starts with 16-byte Header Object GUID
+		var data = new byte[30]; // Minimum ASF header size
+		TestConstants.Magic.Asf.CopyTo (data, 0);
+
+		var format = MediaFile.DetectFormat (data);
+
+		Assert.AreEqual (MediaFormat.Asf, format);
+	}
+
+	[TestMethod]
 	public void DetectFormat_UnknownMagic_UsesExtension ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00 };
@@ -142,6 +156,8 @@ public class MediaFileTests
 		Assert.AreEqual (MediaFormat.Aiff, MediaFile.DetectFormat (data, "song.aif"));
 		Assert.AreEqual (MediaFormat.Dsf, MediaFile.DetectFormat (data, "song.dsf"));
 		Assert.AreEqual (MediaFormat.Dff, MediaFile.DetectFormat (data, "song.dff"));
+		Assert.AreEqual (MediaFormat.Asf, MediaFile.DetectFormat (data, "song.wma"));
+		Assert.AreEqual (MediaFormat.Asf, MediaFile.DetectFormat (data, "video.asf"));
 	}
 
 	[TestMethod]
@@ -333,6 +349,31 @@ public class MediaFileTests
 		var dffFile = result.GetFileAs<DffFile> ();
 
 		Assert.IsNotNull (dffFile);
+	}
+
+	[TestMethod]
+	public void OpenFromData_ValidAsf_ReturnsAsfFile ()
+	{
+		var data = AsfTestBuilder.CreateMinimalWma (title: "MediaFile Test");
+
+		var result = MediaFile.OpenFromData (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.Asf, result.Format);
+		Assert.IsNotNull (result.File);
+		Assert.IsInstanceOfType<AsfFile> (result.File);
+		Assert.AreEqual ("MediaFile Test", result.Tag?.Title);
+	}
+
+	[TestMethod]
+	public void GetFileAs_AsfFile_ReturnsCorrectType ()
+	{
+		var data = AsfTestBuilder.CreateMinimalWma ();
+		var result = MediaFile.OpenFromData (data);
+
+		var asfFile = result.GetFileAs<AsfFile> ();
+
+		Assert.IsNotNull (asfFile);
 	}
 
 	static byte[] CreateMinimalDsf ()

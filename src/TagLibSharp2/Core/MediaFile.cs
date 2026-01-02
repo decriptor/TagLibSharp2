@@ -3,6 +3,7 @@
 
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
+using TagLibSharp2.Asf;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Mp4;
@@ -32,6 +33,7 @@ namespace TagLibSharp2.Core;
 /// <item>MP4/M4A (iTunes metadata)</item>
 /// <item>DSF (DSD Stream File - ID3v2 metadata)</item>
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
+/// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
 /// </list>
 /// </remarks>
 /// <example>
@@ -62,6 +64,7 @@ public static class MediaFile
 	static readonly byte[] WavPackMagic = [(byte)'w', (byte)'v', (byte)'p', (byte)'k'];
 	static readonly byte[] MonkeysAudioMagic = [(byte)'M', (byte)'A', (byte)'C', (byte)' '];
 	static readonly byte[] OggFlacMagic = [0x7F, (byte)'F', (byte)'L', (byte)'A', (byte)'C'];
+	static readonly byte[] AsfMagic = [0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C];
 
 	/// <summary>
 	/// Opens a media file and returns a unified result.
@@ -135,6 +138,7 @@ public static class MediaFile
 			MediaFormat.Dff => OpenDff (data),
 			MediaFormat.WavPack => OpenWavPack (data),
 			MediaFormat.MonkeysAudio => OpenMonkeysAudio (data),
+			MediaFormat.Asf => OpenAsf (data),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 	}
@@ -207,6 +211,10 @@ public static class MediaFile
 				return MediaFormat.MonkeysAudio;
 		}
 
+		// ASF/WMA: starts with ASF Header Object GUID (16 bytes)
+		if (data.Length >= 16 && data.Slice (0, 16).SequenceEqual (AsfMagic))
+			return MediaFormat.Asf;
+
 		if (data.Length >= 3) {
 			// ID3v2: starts with "ID3"
 			if (data[0] == Id3Magic[0] && data[1] == Id3Magic[1] && data[2] == Id3Magic[2])
@@ -233,6 +241,7 @@ public static class MediaFile
 				".DFF" => MediaFormat.Dff,
 				".WV" => MediaFormat.WavPack,
 				".APE" => MediaFormat.MonkeysAudio,
+				".WMA" or ".WMV" or ".ASF" => MediaFormat.Asf,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -411,6 +420,15 @@ public static class MediaFile
 
 		return MediaFileResult.Success (result.File!, result.File!.ApeTag, MediaFormat.MonkeysAudio);
 	}
+
+	static MediaFileResult OpenAsf (ReadOnlyMemory<byte> data)
+	{
+		var result = AsfFile.Read (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.Value, result.Value.Tag, MediaFormat.Asf);
+	}
 }
 
 /// <summary>
@@ -540,5 +558,10 @@ public enum MediaFormat
 	/// <summary>
 	/// Monkey's Audio format (.ape).
 	/// </summary>
-	MonkeysAudio
+	MonkeysAudio,
+
+	/// <summary>
+	/// ASF/WMA format (Windows Media Audio/Video).
+	/// </summary>
+	Asf
 }
