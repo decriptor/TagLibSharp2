@@ -68,6 +68,8 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Compression (zlib) | ✅ |
 | Grouping identity | ✅ |
 | Data length indicator | ✅ |
+| Apple proprietary frames (WFED, MVNM, MVIN) | ✅ |
+| Duplicate tag detection | ✅ |
 | Footer support | ❌ |
 | Encryption support | ❌ (detected, content preserved) |
 
@@ -79,15 +81,15 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Multi-value fields | ✅ |
 | METADATA_BLOCK_PICTURE (base64) | 🔶 | Needs verification |
 
-### APE Tag 🎯 v0.5.0 Priority
+### APE Tag ✅ Complete
 | Feature | Status |
 |---------|--------|
-| Read | ❌ |
-| Write | ❌ |
-| Binary items | ❌ |
-| Cover art | ❌ |
+| Read | ✅ |
+| Write | ✅ |
+| Binary items | ✅ |
+| Cover art | ✅ |
 
-*Note: APE Tag is infrastructure that unlocks WavPack, Musepack, and Monkey's Audio formats.*
+*Unlocks WavPack, Musepack, and Monkey's Audio formats.*
 
 ### MP4/iTunes Atoms ✅ Complete
 | Feature | Status |
@@ -99,15 +101,16 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | covr (cover art) | ✅ |
 | Freeform atoms (----) | ✅ |
 | Extended size atoms | ✅ |
+| Duplicate atom merging | ✅ |
 
-### ASF/WMA Tags
+### ASF/WMA Tags ✅ Complete
 | Feature | Status |
 |---------|--------|
-| Read | ❌ |
-| Write | ❌ |
-| Content Description Object | ❌ |
-| Extended Content Description | ❌ |
-| WM/Picture | ❌ |
+| Read | ✅ |
+| Write | ✅ |
+| Content Description Object | ✅ |
+| Extended Content Description | ✅ |
+| WM/Picture | ✅ |
 
 ### RIFF INFO Tags
 | Feature | Status |
@@ -198,15 +201,15 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Tag write | ✅ |
 | MediaFile factory integration | ✅ |
 
-### DSF (DSD) 🎯 v0.5.0 Priority
+### DSF (DSD) ✅ Complete
 | Feature | Status |
 |---------|--------|
-| DSD chunk | ❌ |
-| fmt chunk | ❌ |
-| ID3v2 at metadata offset | ❌ |
-| Audio properties | ❌ |
-| Duration (use double for overflow safety) | ❌ |
-| Write | ❌ |
+| DSD chunk | ✅ |
+| fmt chunk | ✅ |
+| ID3v2 at metadata offset | ✅ |
+| Audio properties | ✅ |
+| Duration (use double for overflow safety) | ✅ |
+| Write | ✅ |
 
 ### Opus ✅ Complete
 | Feature | Status |
@@ -223,11 +226,11 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 
 | Format | Status | Notes |
 |--------|--------|-------|
-| DFF (DSDIFF) | ❌ | Read-only (no tag support) |
-| WMA/ASF | ❌ | Full ASF container |
-| WavPack | ❌ | APE tags |
-| Musepack | ❌ | APE tags, SV7/SV8 |
-| OGG FLAC | ❌ | FLAC in OGG container |
+| DFF (DSDIFF) | ✅ | Read-only (no tag support) |
+| WMA/ASF | ✅ | Full ASF container |
+| WavPack | ✅ | APE tags |
+| Musepack | ✅ | APE tags, SV7/SV8 |
+| OGG FLAC | ✅ | FLAC in OGG container |
 | Speex | ❌ | Vorbis Comments |
 | TrueAudio | ❌ | ID3v2/ID3v1 |
 
@@ -237,7 +240,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 
 | Format | Status | Notes |
 |--------|--------|-------|
-| Monkey's Audio (.ape) | ❌ | APE tags |
+| Monkey's Audio (.ape) | ✅ | APE tags |
 | MOD | ❌ | Title only, embedded |
 | S3M | ❌ | Title only |
 | IT | ❌ | Title + message |
@@ -298,27 +301,35 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 
 ---
 
-## v0.5.0 Scope (BETA Release)
+## v0.6.0 Status
 
-### P0 - Must Ship
+All major format goals have been achieved:
+- ✅ DSF format support
+- ✅ DFF format support
+- ✅ APE Tag format
+- ✅ WavPack format
+- ✅ ASF/WMA format
+- ✅ Musepack format
+- ✅ Monkey's Audio format
+- ✅ Ogg FLAC format
+
+### Edge Cases Complete
+- ✅ Duplicate ID3v2 tag detection
+- ✅ Apple proprietary frames (WFED, MVNM, MVIN)
+- ✅ MP4 duplicate atom merging
+
+### Remaining Work
 | Item | Effort | Notes |
 |------|--------|-------|
-| DSF format support | 2-3 days | DSD chunk, ID3v2 at offset, duration with double |
-| APE Tag format | 3-4 days | v2 parsing, binary items, cover art |
 | IDisposable pattern | 0.5 days | All file types |
-| Test coverage >90% | 2-3 days | Currently 88.67% |
+| Test coverage >90% | 2-3 days | Currently ~88% |
 | Large file tests | 1 day | >4GB file support |
-
-### P1 - Should Ship
-| Item | Effort | Notes |
-|------|--------|-------|
 | Performance benchmarks | 0.5 days | Document <10ms tag reading |
-| Classical metadata | 1 day | WORK, MOVEMENTNAME in ID3v2/Vorbis |
 
-### Deferred to v0.6.0+
-- WavPack format (depends on APE Tag)
-- ASF/WMA format
-- DFF (DSD secondary format)
+### Deferred
+- Speex format
+- TrueAudio format
+- Tracker formats (MOD/S3M/IT/XM)
 - TagLib# compatibility shim
 
 ---
@@ -327,13 +338,13 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 
 From spec document "Critical Implementation Notes":
 
-1. **Integer Overflow in DSD Duration** - Use double arithmetic 🎯 v0.5.0
+1. **Integer Overflow in DSD Duration** - Use double arithmetic ✅ Fixed
 2. **Encoding Class Name Collision** - Use fully qualified names
 3. **LocalFileStream.Insert Off-by-One** - Fix loop condition
 4. **GetTextFrame Return Type** - Proper nullable annotations
 5. **XiphComment Empty String Handling** - Distinguish null vs empty
 6. **OGG Page Parsing Infinite Loop** - Add safety limits ✅ Fixed in v0.3.0
-7. **Missing IDisposable Pattern** - Full dispose implementation 🎯 v0.5.0
+7. **Missing IDisposable Pattern** - Full dispose implementation
 8. **Unsafe BitConverter Usage** - Use explicit endian readers
 9. **ID3v1 Genre Property** - Static genre list access
 
@@ -361,18 +372,22 @@ Consider adding compatibility shim for TagLib# consumers:
 
 ## Estimated Effort by Phase
 
-| Phase | Files | Complexity | Notes |
-|-------|-------|------------|-------|
-| WAV | ✅ | ✅ | Complete with RIFF + INFO + ID3v2 + BWF + WAVEFORMATEXTENSIBLE |
-| AIFF | ✅ | ✅ | Complete with FORM + COMM + ID3 + AIFC |
-| VBR Headers | ✅ | ✅ | Complete with Xing/VBRI parsing |
-| MP4/M4A | ✅ | ✅ | Complete with ISO 14496-12 parsing + iTunes atoms + AAC/ALAC |
-| Opus | ✅ | ✅ | Complete with OpusHead + OpusTags + R128 gain |
-| **DSF** | 3-4 | Low | 🎯 v0.5.0 - Simple chunk format, ID3v2 at offset |
-| **APE Tags** | 2-3 | Medium | 🎯 v0.5.0 - Unlocks WavPack/Monkey's Audio |
-| WavPack | 2-3 | Low | v0.6.0 - Depends on APE Tags |
-| ASF/WMA | 5-6 | High | v0.7.0 - GUID-based, complex |
+| Phase | Status | Notes |
+|-------|--------|-------|
+| WAV | ✅ | Complete with RIFF + INFO + ID3v2 + BWF + WAVEFORMATEXTENSIBLE |
+| AIFF | ✅ | Complete with FORM + COMM + ID3 + AIFC |
+| VBR Headers | ✅ | Complete with Xing/VBRI parsing |
+| MP4/M4A | ✅ | Complete with ISO 14496-12 parsing + iTunes atoms + AAC/ALAC |
+| Opus | ✅ | Complete with OpusHead + OpusTags + R128 gain |
+| DSF | ✅ | Complete with DSD chunk + ID3v2 at offset |
+| DFF | ✅ | Complete with read-only support |
+| APE Tags | ✅ | Complete with binary items + cover art |
+| WavPack | ✅ | Complete with APE tags |
+| ASF/WMA | ✅ | Complete with GUID-based parsing |
+| Musepack | ✅ | Complete with SV7/SV8 + APE tags |
+| Monkey's Audio | ✅ | Complete with APE tags |
+| Ogg FLAC | ✅ | Complete with FLAC in Ogg container |
 
 ---
 
-*Last Updated: 2025-12-31 (v0.5.0 planning)*
+*Last Updated: 2026-01-02 (v0.6.0 edge cases complete)*
