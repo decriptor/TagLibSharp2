@@ -7,9 +7,11 @@ using TagLibSharp2.Core;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Mpeg;
+using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Riff;
 using TagLibSharp2.Tests.Asf;
+using TagLibSharp2.Tests.Musepack;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Core;
@@ -374,6 +376,65 @@ public class MediaFileTests
 		var asfFile = result.GetFileAs<AsfFile> ();
 
 		Assert.IsNotNull (asfFile);
+	}
+
+	[TestMethod]
+	public void DetectFormat_MusepackSV7Magic_ReturnsMusepack ()
+	{
+		// Musepack SV7: starts with "MP+"
+		var data = new byte[20];
+		TestConstants.Magic.MusepackSV7.CopyTo (data, 0);
+		data[3] = 0x70; // Version 7 in upper nibble
+
+		var format = MediaFile.DetectFormat (data);
+
+		Assert.AreEqual (MediaFormat.Musepack, format);
+	}
+
+	[TestMethod]
+	public void DetectFormat_MusepackSV8Magic_ReturnsMusepack ()
+	{
+		// Musepack SV8: starts with "MPCK"
+		var data = new byte[20];
+		TestConstants.Magic.MusepackSV8.CopyTo (data, 0);
+
+		var format = MediaFile.DetectFormat (data);
+
+		Assert.AreEqual (MediaFormat.Musepack, format);
+	}
+
+	[TestMethod]
+	public void DetectFormat_UnknownMagic_MusepackExtensions ()
+	{
+		var data = new byte[] { 0x00, 0x00, 0x00, 0x00 };
+
+		Assert.AreEqual (MediaFormat.Musepack, MediaFile.DetectFormat (data, "song.mpc"));
+		Assert.AreEqual (MediaFormat.Musepack, MediaFile.DetectFormat (data, "song.mp+"));
+		Assert.AreEqual (MediaFormat.Musepack, MediaFile.DetectFormat (data, "song.mpp"));
+	}
+
+	[TestMethod]
+	public void OpenFromData_ValidMusepack_ReturnsMusepackFile ()
+	{
+		var data = MusepackFileTests.CreateMinimalMusepackSV7FilePublic ();
+
+		var result = MediaFile.OpenFromData (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.Musepack, result.Format);
+		Assert.IsNotNull (result.File);
+		Assert.IsInstanceOfType<MusepackFile> (result.File);
+	}
+
+	[TestMethod]
+	public void GetFileAs_MusepackFile_ReturnsCorrectType ()
+	{
+		var data = MusepackFileTests.CreateMinimalMusepackSV7FilePublic ();
+		var result = MediaFile.OpenFromData (data);
+
+		var mpcFile = result.GetFileAs<MusepackFile> ();
+
+		Assert.IsNotNull (mpcFile);
 	}
 
 	static byte[] CreateMinimalDsf ()

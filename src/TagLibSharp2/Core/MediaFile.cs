@@ -8,6 +8,7 @@ using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Mpeg;
+using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Riff;
 using TagLibSharp2.WavPack;
@@ -65,6 +66,8 @@ public static class MediaFile
 	static readonly byte[] MonkeysAudioMagic = [(byte)'M', (byte)'A', (byte)'C', (byte)' '];
 	static readonly byte[] OggFlacMagic = [0x7F, (byte)'F', (byte)'L', (byte)'A', (byte)'C'];
 	static readonly byte[] AsfMagic = [0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C];
+	static readonly byte[] MusepackSV7Magic = [(byte)'M', (byte)'P', (byte)'+'];
+	static readonly byte[] MusepackSV8Magic = [(byte)'M', (byte)'P', (byte)'C', (byte)'K'];
 
 	/// <summary>
 	/// Opens a media file and returns a unified result.
@@ -139,6 +142,7 @@ public static class MediaFile
 			MediaFormat.WavPack => OpenWavPack (data),
 			MediaFormat.MonkeysAudio => OpenMonkeysAudio (data),
 			MediaFormat.Asf => OpenAsf (data),
+			MediaFormat.Musepack => OpenMusepack (data),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 	}
@@ -209,6 +213,16 @@ public static class MediaFile
 			if (data[0] == MonkeysAudioMagic[0] && data[1] == MonkeysAudioMagic[1] &&
 				data[2] == MonkeysAudioMagic[2] && data[3] == MonkeysAudioMagic[3])
 				return MediaFormat.MonkeysAudio;
+
+			// Musepack SV8: starts with "MPCK"
+			if (data[0] == MusepackSV8Magic[0] && data[1] == MusepackSV8Magic[1] &&
+				data[2] == MusepackSV8Magic[2] && data[3] == MusepackSV8Magic[3])
+				return MediaFormat.Musepack;
+
+			// Musepack SV7: starts with "MP+"
+			if (data[0] == MusepackSV7Magic[0] && data[1] == MusepackSV7Magic[1] &&
+				data[2] == MusepackSV7Magic[2])
+				return MediaFormat.Musepack;
 		}
 
 		// ASF/WMA: starts with ASF Header Object GUID (16 bytes)
@@ -242,6 +256,7 @@ public static class MediaFile
 				".WV" => MediaFormat.WavPack,
 				".APE" => MediaFormat.MonkeysAudio,
 				".WMA" or ".WMV" or ".ASF" => MediaFormat.Asf,
+				".MPC" or ".MP+" or ".MPP" => MediaFormat.Musepack,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -429,6 +444,15 @@ public static class MediaFile
 
 		return MediaFileResult.Success (result.Value, result.Value.Tag, MediaFormat.Asf);
 	}
+
+	static MediaFileResult OpenMusepack (ReadOnlyMemory<byte> data)
+	{
+		var result = MusepackFile.Parse (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.File!, result.File!.ApeTag, MediaFormat.Musepack);
+	}
 }
 
 /// <summary>
@@ -563,5 +587,10 @@ public enum MediaFormat
 	/// <summary>
 	/// ASF/WMA format (Windows Media Audio/Video).
 	/// </summary>
-	Asf
+	Asf,
+
+	/// <summary>
+	/// Musepack audio format (.mpc, .mp+, .mpp).
+	/// </summary>
+	Musepack
 }
