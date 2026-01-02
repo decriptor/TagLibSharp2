@@ -798,8 +798,8 @@ public sealed class VorbisComment : Tag
 	public void SetValue (string name, string? value)
 	{
 		RemoveAll (name);
-		if (!string.IsNullOrEmpty (value))
-			AddField (name, value!);
+		if (value is not null)
+			AddField (name, value);
 	}
 
 	/// <summary>

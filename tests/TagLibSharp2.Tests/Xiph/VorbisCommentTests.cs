@@ -177,6 +177,21 @@ public class VorbisCommentTests
 	}
 
 	[TestMethod]
+	public void SetValue_EmptyString_SetsEmptyValue ()
+	{
+		// Empty strings are valid in Vorbis Comments and should NOT be treated as null.
+		// A field with an empty value is semantically different from no field at all.
+		var comment = new VorbisComment ();
+
+		comment.AddField ("TITLE", "Test");
+		comment.SetValue ("TITLE", "");
+
+		// Empty value should persist, not be removed
+		Assert.HasCount (1, comment.GetValues ("TITLE"));
+		Assert.AreEqual ("", comment.GetValue ("TITLE"));
+	}
+
+	[TestMethod]
 	public void RemoveAll_RemovesAllMatchingFields ()
 	{
 		var comment = new VorbisComment ();
