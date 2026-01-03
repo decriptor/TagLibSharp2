@@ -4,10 +4,6 @@
 using System;
 using System.Buffers.Binary;
 
-#pragma warning disable CA1815 // Override equals and operator equals on value types
-#pragma warning disable CA2231 // Overload operator equals on overriding value type Equals
-#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
-
 namespace TagLibSharp2.Ape;
 
 /// <summary>
@@ -15,8 +11,19 @@ namespace TagLibSharp2.Ape;
 /// </summary>
 public readonly struct ApeTagFooterParseResult : IEquatable<ApeTagFooterParseResult>
 {
+	/// <summary>
+	/// Gets the parsed APE tag footer, or null if parsing failed.
+	/// </summary>
 	public ApeTagFooter? Footer { get; }
+
+	/// <summary>
+	/// Gets the error message if parsing failed, or null if successful.
+	/// </summary>
 	public string? Error { get; }
+
+	/// <summary>
+	/// Gets a value indicating whether parsing was successful.
+	/// </summary>
 	public bool IsSuccess => Footer is not null && Error is null;
 
 	private ApeTagFooterParseResult (ApeTagFooter? footer, string? error)
@@ -25,16 +32,42 @@ public readonly struct ApeTagFooterParseResult : IEquatable<ApeTagFooterParseRes
 		Error = error;
 	}
 
+	/// <summary>
+	/// Creates a successful parse result.
+	/// </summary>
+	/// <param name="footer">The parsed APE tag footer.</param>
+	/// <returns>A successful result containing the footer.</returns>
 	public static ApeTagFooterParseResult Success (ApeTagFooter footer) => new (footer, null);
+
+	/// <summary>
+	/// Creates a failed parse result.
+	/// </summary>
+	/// <param name="error">The error message describing the failure.</param>
+	/// <returns>A failed result containing the error.</returns>
 	public static ApeTagFooterParseResult Failure (string error) => new (null, error);
 
+	/// <inheritdoc/>
 	public bool Equals (ApeTagFooterParseResult other) =>
 		Equals (Footer, other.Footer) && Error == other.Error;
 
+	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
 		obj is ApeTagFooterParseResult other && Equals (other);
 
+	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (Footer, Error);
+
+	/// <summary>
+	/// Determines whether two results are equal.
+	/// </summary>
+	public static bool operator == (ApeTagFooterParseResult left, ApeTagFooterParseResult right) =>
+		left.Equals (right);
+
+	/// <summary>
+	/// Determines whether two results are not equal.
+	/// </summary>
+	public static bool operator != (ApeTagFooterParseResult left, ApeTagFooterParseResult right) =>
+		!left.Equals (right);
 }
 
 /// <summary>

@@ -5,12 +5,9 @@ using System;
 using System.Buffers.Binary;
 using System.Text;
 
-#pragma warning disable CA1815 // Override equals and operator equals on value types
-#pragma warning disable CA2231 // Overload operator equals on overriding value type Equals
-#pragma warning disable CA1819 // Properties should not return arrays
-#pragma warning disable CA1054 // URI parameters should not be strings
-#pragma warning disable CA1062 // Validate arguments of public methods
-#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
+#pragma warning disable CA1819 // Properties should not return arrays - by design for binary data access
+#pragma warning disable CA1054 // URI parameters should not be strings - external locator uses string by design
+#pragma warning disable CA1062 // Validate arguments of public methods - validated in ValidateKey
 
 namespace TagLibSharp2.Ape;
 
@@ -19,9 +16,24 @@ namespace TagLibSharp2.Ape;
 /// </summary>
 public readonly struct ApeTagItemParseResult : IEquatable<ApeTagItemParseResult>
 {
+	/// <summary>
+	/// Gets the parsed APE tag item, or null if parsing failed.
+	/// </summary>
 	public ApeTagItem? Item { get; }
+
+	/// <summary>
+	/// Gets the error message if parsing failed, or null if successful.
+	/// </summary>
 	public string? Error { get; }
+
+	/// <summary>
+	/// Gets the number of bytes consumed during parsing.
+	/// </summary>
 	public int BytesConsumed { get; }
+
+	/// <summary>
+	/// Gets a value indicating whether parsing was successful.
+	/// </summary>
 	public bool IsSuccess => Item is not null && Error is null;
 
 	private ApeTagItemParseResult (ApeTagItem? item, string? error, int bytesConsumed)
@@ -31,19 +43,45 @@ public readonly struct ApeTagItemParseResult : IEquatable<ApeTagItemParseResult>
 		BytesConsumed = bytesConsumed;
 	}
 
+	/// <summary>
+	/// Creates a successful parse result.
+	/// </summary>
+	/// <param name="item">The parsed APE tag item.</param>
+	/// <param name="bytesConsumed">The number of bytes consumed.</param>
+	/// <returns>A successful result containing the item.</returns>
 	public static ApeTagItemParseResult Success (ApeTagItem item, int bytesConsumed) =>
 		new (item, null, bytesConsumed);
 
+	/// <summary>
+	/// Creates a failed parse result.
+	/// </summary>
+	/// <param name="error">The error message describing the failure.</param>
+	/// <returns>A failed result containing the error.</returns>
 	public static ApeTagItemParseResult Failure (string error) =>
 		new (null, error, 0);
 
+	/// <inheritdoc/>
 	public bool Equals (ApeTagItemParseResult other) =>
 		Equals (Item, other.Item) && Error == other.Error && BytesConsumed == other.BytesConsumed;
 
+	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
 		obj is ApeTagItemParseResult other && Equals (other);
 
+	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (Item, Error, BytesConsumed);
+
+	/// <summary>
+	/// Determines whether two results are equal.
+	/// </summary>
+	public static bool operator == (ApeTagItemParseResult left, ApeTagItemParseResult right) =>
+		left.Equals (right);
+
+	/// <summary>
+	/// Determines whether two results are not equal.
+	/// </summary>
+	public static bool operator != (ApeTagItemParseResult left, ApeTagItemParseResult right) =>
+		!left.Equals (right);
 }
 
 /// <summary>
@@ -61,6 +99,11 @@ public sealed class ApeBinaryData
 	/// </summary>
 	public byte[] Data { get; }
 
+	/// <summary>
+	/// Creates a new instance of <see cref="ApeBinaryData"/>.
+	/// </summary>
+	/// <param name="filename">The filename or description.</param>
+	/// <param name="data">The binary data.</param>
 	public ApeBinaryData (string filename, byte[] data)
 	{
 		Filename = filename;

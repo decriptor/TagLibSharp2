@@ -13,10 +13,7 @@ using System.Globalization;
 using System.Linq;
 using TagLibSharp2.Core;
 
-#pragma warning disable CA1815 // Override equals and operator equals on value types
-#pragma warning disable CA2231 // Overload operator equals on overriding value type Equals
-#pragma warning disable CA1307 // Specify StringComparison for clarity
-#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
+#pragma warning disable CA1307 // Specify StringComparison for clarity - IndexOf with char doesn't need it
 
 namespace TagLibSharp2.Ape;
 
@@ -25,8 +22,19 @@ namespace TagLibSharp2.Ape;
 /// </summary>
 public readonly struct ApeTagParseResult : IEquatable<ApeTagParseResult>
 {
+	/// <summary>
+	/// Gets the parsed APE tag, or null if parsing failed.
+	/// </summary>
 	public ApeTag? Tag { get; }
+
+	/// <summary>
+	/// Gets the error message if parsing failed, or null if successful.
+	/// </summary>
 	public string? Error { get; }
+
+	/// <summary>
+	/// Gets a value indicating whether parsing was successful.
+	/// </summary>
 	public bool IsSuccess => Tag is not null && Error is null;
 
 	private ApeTagParseResult (ApeTag? tag, string? error)
@@ -35,16 +43,42 @@ public readonly struct ApeTagParseResult : IEquatable<ApeTagParseResult>
 		Error = error;
 	}
 
+	/// <summary>
+	/// Creates a successful parse result.
+	/// </summary>
+	/// <param name="tag">The parsed APE tag.</param>
+	/// <returns>A successful result containing the tag.</returns>
 	public static ApeTagParseResult Success (ApeTag tag) => new (tag, null);
+
+	/// <summary>
+	/// Creates a failed parse result.
+	/// </summary>
+	/// <param name="error">The error message describing the failure.</param>
+	/// <returns>A failed result containing the error.</returns>
 	public static ApeTagParseResult Failure (string error) => new (null, error);
 
+	/// <inheritdoc/>
 	public bool Equals (ApeTagParseResult other) =>
 		Equals (Tag, other.Tag) && Error == other.Error;
 
+	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
 		obj is ApeTagParseResult other && Equals (other);
 
+	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (Tag, Error);
+
+	/// <summary>
+	/// Determines whether two results are equal.
+	/// </summary>
+	public static bool operator == (ApeTagParseResult left, ApeTagParseResult right) =>
+		left.Equals (right);
+
+	/// <summary>
+	/// Determines whether two results are not equal.
+	/// </summary>
+	public static bool operator != (ApeTagParseResult left, ApeTagParseResult right) =>
+		!left.Equals (right);
 }
 
 /// <summary>

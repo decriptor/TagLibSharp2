@@ -11,7 +11,6 @@ using System.Threading.Tasks;
 using TagLibSharp2.Core;
 using TagLibSharp2.Xiph;
 
-#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
 #pragma warning disable CA2000 // Dispose objects before losing scope - factory method pattern
 
 namespace TagLibSharp2.Ogg;
@@ -21,8 +20,19 @@ namespace TagLibSharp2.Ogg;
 /// </summary>
 public readonly struct OggFlacFileParseResult : IEquatable<OggFlacFileParseResult>
 {
+	/// <summary>
+	/// Gets the parsed Ogg FLAC file, or null if parsing failed.
+	/// </summary>
 	public OggFlacFile? File { get; }
+
+	/// <summary>
+	/// Gets the error message if parsing failed, or null if successful.
+	/// </summary>
 	public string? Error { get; }
+
+	/// <summary>
+	/// Gets a value indicating whether parsing was successful.
+	/// </summary>
 	public bool IsSuccess => File is not null && Error is null;
 
 	private OggFlacFileParseResult (OggFlacFile? file, string? error)
@@ -31,20 +41,40 @@ public readonly struct OggFlacFileParseResult : IEquatable<OggFlacFileParseResul
 		Error = error;
 	}
 
+	/// <summary>
+	/// Creates a successful parse result.
+	/// </summary>
+	/// <param name="file">The parsed Ogg FLAC file.</param>
+	/// <returns>A successful result containing the file.</returns>
 	public static OggFlacFileParseResult Success (OggFlacFile file) => new (file, null);
+
+	/// <summary>
+	/// Creates a failed parse result.
+	/// </summary>
+	/// <param name="error">The error message describing the failure.</param>
+	/// <returns>A failed result containing the error.</returns>
 	public static OggFlacFileParseResult Failure (string error) => new (null, error);
 
+	/// <inheritdoc/>
 	public bool Equals (OggFlacFileParseResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
+	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
 		obj is OggFlacFileParseResult other && Equals (other);
 
+	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
 
+	/// <summary>
+	/// Determines whether two results are equal.
+	/// </summary>
 	public static bool operator == (OggFlacFileParseResult left, OggFlacFileParseResult right) =>
 		left.Equals (right);
 
+	/// <summary>
+	/// Determines whether two results are not equal.
+	/// </summary>
 	public static bool operator != (OggFlacFileParseResult left, OggFlacFileParseResult right) =>
 		!left.Equals (right);
 }

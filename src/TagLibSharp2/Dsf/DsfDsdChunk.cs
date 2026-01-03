@@ -4,10 +4,6 @@
 using System;
 using System.Buffers.Binary;
 
-#pragma warning disable CA1815 // Override equals and operator equals on value types
-#pragma warning disable CA2231 // Overload operator equals on overriding value type Equals
-#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
-
 namespace TagLibSharp2.Dsf;
 
 /// <summary>
@@ -15,8 +11,19 @@ namespace TagLibSharp2.Dsf;
 /// </summary>
 public readonly struct DsfDsdChunkParseResult : IEquatable<DsfDsdChunkParseResult>
 {
+	/// <summary>
+	/// Gets the parsed DSD chunk, or null if parsing failed.
+	/// </summary>
 	public DsfDsdChunk? Chunk { get; }
+
+	/// <summary>
+	/// Gets the error message if parsing failed, or null if successful.
+	/// </summary>
 	public string? Error { get; }
+
+	/// <summary>
+	/// Gets a value indicating whether parsing was successful.
+	/// </summary>
 	public bool IsSuccess => Chunk is not null && Error is null;
 
 	private DsfDsdChunkParseResult (DsfDsdChunk? chunk, string? error)
@@ -25,16 +32,42 @@ public readonly struct DsfDsdChunkParseResult : IEquatable<DsfDsdChunkParseResul
 		Error = error;
 	}
 
+	/// <summary>
+	/// Creates a successful parse result.
+	/// </summary>
+	/// <param name="chunk">The parsed DSD chunk.</param>
+	/// <returns>A successful result containing the chunk.</returns>
 	public static DsfDsdChunkParseResult Success (DsfDsdChunk chunk) => new (chunk, null);
+
+	/// <summary>
+	/// Creates a failed parse result.
+	/// </summary>
+	/// <param name="error">The error message describing the failure.</param>
+	/// <returns>A failed result containing the error.</returns>
 	public static DsfDsdChunkParseResult Failure (string error) => new (null, error);
 
+	/// <inheritdoc/>
 	public bool Equals (DsfDsdChunkParseResult other) =>
 		Equals (Chunk, other.Chunk) && Error == other.Error;
 
+	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
 		obj is DsfDsdChunkParseResult other && Equals (other);
 
+	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (Chunk, Error);
+
+	/// <summary>
+	/// Determines whether two results are equal.
+	/// </summary>
+	public static bool operator == (DsfDsdChunkParseResult left, DsfDsdChunkParseResult right) =>
+		left.Equals (right);
+
+	/// <summary>
+	/// Determines whether two results are not equal.
+	/// </summary>
+	public static bool operator != (DsfDsdChunkParseResult left, DsfDsdChunkParseResult right) =>
+		!left.Equals (right);
 }
 
 /// <summary>

@@ -18,9 +18,6 @@ using System.Threading.Tasks;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 
-#pragma warning disable CA1815 // Override equals and operator equals on value types
-#pragma warning disable CA2231 // Overload operator equals on overriding value type Equals
-#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
 #pragma warning disable CA1513 // Use ObjectDisposedException.ThrowIf (not available in netstandard)
 
 namespace TagLibSharp2.Dsf;
@@ -73,8 +70,19 @@ public sealed class DsfAudioProperties
 /// </summary>
 public readonly struct DsfFileParseResult : IEquatable<DsfFileParseResult>
 {
+	/// <summary>
+	/// Gets the parsed DSF file, or null if parsing failed.
+	/// </summary>
 	public DsfFile? File { get; }
+
+	/// <summary>
+	/// Gets the error message if parsing failed, or null if successful.
+	/// </summary>
 	public string? Error { get; }
+
+	/// <summary>
+	/// Gets a value indicating whether parsing was successful.
+	/// </summary>
 	public bool IsSuccess => File is not null && Error is null;
 
 	private DsfFileParseResult (DsfFile? file, string? error)
@@ -83,16 +91,42 @@ public readonly struct DsfFileParseResult : IEquatable<DsfFileParseResult>
 		Error = error;
 	}
 
+	/// <summary>
+	/// Creates a successful parse result.
+	/// </summary>
+	/// <param name="file">The parsed DSF file.</param>
+	/// <returns>A successful result containing the file.</returns>
 	public static DsfFileParseResult Success (DsfFile file) => new (file, null);
+
+	/// <summary>
+	/// Creates a failed parse result.
+	/// </summary>
+	/// <param name="error">The error message describing the failure.</param>
+	/// <returns>A failed result containing the error.</returns>
 	public static DsfFileParseResult Failure (string error) => new (null, error);
 
+	/// <inheritdoc/>
 	public bool Equals (DsfFileParseResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
+	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
 		obj is DsfFileParseResult other && Equals (other);
 
+	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
+
+	/// <summary>
+	/// Determines whether two results are equal.
+	/// </summary>
+	public static bool operator == (DsfFileParseResult left, DsfFileParseResult right) =>
+		left.Equals (right);
+
+	/// <summary>
+	/// Determines whether two results are not equal.
+	/// </summary>
+	public static bool operator != (DsfFileParseResult left, DsfFileParseResult right) =>
+		!left.Equals (right);
 }
 
 /// <summary>
