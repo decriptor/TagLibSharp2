@@ -194,7 +194,7 @@ if (result.IsSuccess)
 | `Tag.Year` | `Year` | Same |
 | `Tag.Track` | `TrackNumber` | Renamed |
 | `Tag.TrackCount` | `TotalTracks` | Renamed |
-| `Tag.Disc` | `DiscNumber` | Same |
+| `Tag.Disc` | `DiscNumber` | Renamed |
 | `Tag.DiscCount` | `TotalDiscs` | Renamed |
 | `Tag.Comment` | `Comment` | Same |
 | `Tag.Lyrics` | `Lyrics` | Same |
