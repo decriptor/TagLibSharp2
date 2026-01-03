@@ -5,9 +5,67 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2025-12-31
+## [0.5.0] - 2026-01-03
 
 ### Added
+
+#### ASF/WMA Format Support
+- `AsfFile` class for reading and writing ASF/WMA audio files
+- Header Object parsing with GUID-based child object navigation
+- Content Description object for Title, Artist, Copyright, Description, Rating
+- Extended Content Description for Album, Year, Genre, Track, and custom fields
+- Stream Properties for audio properties (bitrate, sample rate, channels, bits per sample)
+- File Properties for duration extraction
+- Full read/write round-trip support with atomic file saves
+- Async file I/O with cancellation support
+- Result types: `AsfFileReadResult`, `AsfGuidParseResult`
+
+#### Musepack Format Support
+- `MusepackFile` class for reading Musepack audio files
+- SV7 and SV8 stream version detection
+- Audio properties (sample rate, channels, duration, bitrate)
+- APE tag support for metadata with full read/write
+- Result type: `MusepackFileParseResult`
+
+#### WavPack Format Support
+- `WavPackFile` class for reading WavPack audio files
+- Block header parsing with format flags
+- Sample rate table lookup (15 standard rates)
+- Duration calculation from total samples and sample rate
+- APE tag support for metadata with full read/write
+- Result type: `WavPackFileParseResult`
+
+#### Monkey's Audio Format Support
+- `MonkeysAudioFile` class for reading Monkey's Audio files
+- Both old format (≤3.97) and new format (≥3.98) header parsing
+- STREAMINFO extraction (sample rate, channels, bits per sample)
+- Compression level detection (Fast, Normal, High, Extra High, Insane)
+- APE tag support for metadata with full read/write
+- Result type: `MonkeysAudioFileParseResult`
+
+#### Ogg FLAC Format Support
+- `OggFlacFile` class for reading Ogg FLAC audio files
+- Ogg container with embedded FLAC stream parsing
+- STREAMINFO extraction (sample rate, channels, bits per sample)
+- Vorbis Comment support with full read/write
+- Duration calculation from total samples
+- Result type: `OggFlacFileParseResult`
+
+#### DFF (DSDIFF) Format Support
+- `DffFile` class for reading DFF audio files (Philips DSDIFF format)
+- IFF-based FRM8 container with big-endian byte order
+- FVER chunk parsing for format version detection (DSDIFF 1.5)
+- PROP chunk parsing with SND properties: FS (sample rate), CHNL (channels), CMPR (compression)
+- DSD and DST compression type detection
+- `DffAudioProperties` with DSD-specific information
+- ID3v2 tag support as unofficial extension
+- Result type: `DffFileParseResult`
+- Full read/write round-trip support for metadata
+
+#### DSF/DFF Write Support
+- `DsfFile.SaveToFile` and `SaveToFileAsync` for writing DSF files
+- `DffFile.SaveToFile` and `SaveToFileAsync` for writing DFF files
+- ID3v2 metadata modifications preserved through round-trip
 
 #### APE Tag v2 Support
 - `ApeTag` class for reading and writing APE v2 tags
@@ -31,17 +89,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Result types: `DsfDsdChunkParseResult`, `DsfFmtChunkParseResult`, `DsfDataChunkParseResult`, `DsfFileParseResult`
 - Channel type detection: Mono, Stereo, 3-channel, Quad, 4-channel, 5-channel, 5.1 surround
 
-#### DFF (DSDIFF) Format Support
-- `DffFile` class for reading DFF audio files (Philips DSDIFF format)
-- IFF-based FRM8 container with big-endian byte order
-- FVER chunk parsing for format version detection (DSDIFF 1.5)
-- PROP chunk parsing with SND properties: FS (sample rate), CHNL (channels), CMPR (compression)
-- DSD and DST compression type detection
-- `DffAudioProperties` with DSD-specific information
-- ID3v2 tag support as unofficial extension
-- Result type: `DffFileParseResult`
-- Full read/write round-trip support for metadata
-
 #### IDisposable Pattern
 - `BinaryDataBuilder` now implements `IDisposable` for proper resource cleanup
 - Automatic return of ArrayPool buffers on dispose
@@ -51,9 +98,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validated file operations with files >4GB
 - Comprehensive test coverage for large file scenarios
 
+#### MediaFile Factory Updates
+- `MediaFormat.Asf` enum value for ASF/WMA detection
+- `MediaFormat.Musepack` enum value for Musepack detection
+- `MediaFormat.WavPack` enum value for WavPack detection
+- `MediaFormat.MonkeysAudio` enum value for Monkey's Audio detection
+- `MediaFormat.OggFlac` enum value for Ogg FLAC detection
+- Automatic format detection for all new formats
+
 ### Changed
-- Test count increased from 2272 to 2606 (+334 tests)
-- Code coverage: 90.2% line coverage, 77.2% branch coverage
+- Test count increased from 2272 to 3175 (+903 tests)
+- Code coverage: 90.1% line coverage, 77.6% branch coverage
+- 15 audio formats now supported with full read/write
 
 ## [0.4.0] - 2025-12-31
 

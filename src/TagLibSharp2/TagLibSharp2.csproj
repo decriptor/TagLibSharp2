@@ -9,8 +9,8 @@
 		<Version>$(ReleaseVersion)</Version>
 
 		<!-- Package Metadata -->
-		<Description>A modern .NET library for reading and writing metadata in media files. Supports MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, WAV, AIFF, MP4/M4A (AAC/ALAC), DSF (DSD), and APE tags. Clean, span-based API designed for performance. MIT licensed alternative to TagLib#.</Description>
-		<PackageTags>audio;metadata;id3;flac;vorbis;ogg;opus;mp3;mp4;m4a;aac;alac;wav;aiff;dsf;dsd;ape;tags;taglib;music;album-art;replaygain;musicbrainz</PackageTags>
+		<Description>A modern .NET library for reading and writing metadata in media files. Supports 15 formats: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack, and APE tags. Clean, span-based API designed for performance. MIT licensed alternative to TagLib#.</Description>
+		<PackageTags>audio;metadata;id3;flac;vorbis;ogg;opus;mp3;mp4;m4a;aac;alac;wav;aiff;dsf;dsd;dff;dsdiff;ape;asf;wma;wavpack;musepack;mpc;monkeys-audio;tags;taglib;music;album-art;replaygain;musicbrainz</PackageTags>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://github.com/decriptor/TagLibSharp2</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>

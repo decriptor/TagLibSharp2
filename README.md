@@ -13,7 +13,6 @@ A modern .NET library for reading and writing metadata in media files.
 - Result-based error handling (no exceptions)
 
 **Choose TagLib# if you need:**
-- ASF/WMA support (not yet implemented here)
 - A battle-tested library used in production for years
 
 See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison.
@@ -25,25 +24,24 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Performance-First**: Zero-allocation parsing with `Span<T>` and `ArrayPool<T>`
 - **Multi-Target**: Supports .NET Standard 2.0/2.1, .NET 8.0, and .NET 10.0
 - **Format Support**:
-  - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape)
-  - Planned: ASF/WMA
+  - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
 
 ## Format Support Matrix
 
-| Feature | MP3 | FLAC | Ogg Vorbis | Ogg Opus | Ogg FLAC | WAV | AIFF | MP4/M4A | DSF | DFF | WavPack | APE |
-|---------|:---:|:----:|:----------:|:--------:|:--------:|:---:|:----:|:-------:|:---:|:---:|:-------:|:---:|
-| **Read metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Write metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
-| **Audio properties** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Async I/O** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Album art** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
-| **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
-| **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
-| **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
-| **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ |
-| **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — |
-| **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | ✅⁷ | ✅⁷ | — | — |
-| **DSD sample rates** | — | — | — | — | — | — | — | — | ✅ | ✅ | — | — |
+| Feature | MP3 | FLAC | Ogg Vorbis | Ogg Opus | Ogg FLAC | WAV | AIFF | MP4/M4A | ASF/WMA | DSF | DFF | WavPack | APE | MPC |
+|---------|:---:|:----:|:----------:|:--------:|:--------:|:---:|:----:|:-------:|:-------:|:---:|:---:|:-------:|:---:|:---:|
+| **Read metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Write metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅⁸ |
+| **Audio properties** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Async I/O** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Album art** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
+| **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
+| **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
+| **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
+| **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
+| **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — | — | — |
+| **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | — | ✅⁷ | ✅⁷ | — | — | — |
+| **DSD sample rates** | — | — | — | — | — | — | — | — | — | ✅ | ✅ | — | — | — |
 
 ¹ Via embedded ID3v2 tag
 ² Via Vorbis Comment
@@ -53,6 +51,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 ⁶ Via channel layout in stsd/esds
 ⁷ Via channel type in fmt chunk (Mono, Stereo, 5.1 surround)
 ⁸ Via APE tag
+⁹ Via ASF Extended Content Description
 
 ### Tag Format by Container
 
@@ -66,10 +65,12 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | WAV | RIFF INFO | ID3v2, bext (BWF) | ID3v2 preferred |
 | AIFF | ID3 chunk | — | Native only |
 | MP4/M4A | iTunes atoms (ilst) | — | Native only |
+| ASF/WMA | ASF Content Description | Extended Content Description | Native only |
 | DSF | ID3v2 | — | Native only |
 | DFF | ID3v2 | — | Native only |
 | WavPack | APE tag | — | Native only |
 | Monkey's Audio | APE tag | — | Native only |
+| Musepack | APE tag | — | Native only |
 
 ## Installation
 
@@ -280,9 +281,21 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
   - [x] Both old (≤3.97) and new (≥3.98) format versions
   - [x] STREAMINFO extraction
   - [x] APE tag support for metadata
+- [x] ASF/WMA format
+  - [x] Header Object parsing with child objects
+  - [x] Content Description (Title, Artist, Copyright)
+  - [x] Extended Content Description (Album, Year, Genre, Track, etc.)
+  - [x] Stream Properties for audio properties (bitrate, sample rate, channels)
+  - [x] File Properties for duration
+  - [x] Full read/write support with atomic saves
+- [x] Musepack format
+  - [x] SV7 and SV8 stream version detection
+  - [x] Audio properties (sample rate, channels, duration)
+  - [x] APE tag support for metadata
 
 ### Future
-- [ ] ASF/WMA format
+- [ ] Speex format (Ogg container support exists)
+- [ ] TrueAudio format
 
 ## Documentation
 

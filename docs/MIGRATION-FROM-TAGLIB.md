@@ -602,11 +602,48 @@ if (result.IsSuccess)
 }
 ```
 
+### ASF/WMA Files
+
+ASF (Advanced Systems Format) is Microsoft's container format for Windows Media Audio.
+
+```csharp
+var result = AsfFile.ReadFromFile("audio.wma");
+if (result.IsSuccess)
+{
+    var wma = result.File!;
+
+    // Audio properties
+    Console.WriteLine($"Duration: {wma.Duration}");
+    Console.WriteLine($"Sample Rate: {wma.SampleRate}");
+    Console.WriteLine($"Bitrate: {wma.Bitrate} kbps");
+    Console.WriteLine($"Channels: {wma.Channels}");
+
+    // Content Description (Title, Artist, Copyright)
+    Console.WriteLine($"Title: {wma.Title}");
+    Console.WriteLine($"Artist: {wma.Artist}");
+
+    // Extended Content Description (Album, Year, Genre, etc.)
+    Console.WriteLine($"Album: {wma.Album}");
+    Console.WriteLine($"Year: {wma.Tag.Year}");
+    Console.WriteLine($"Genre: {wma.Tag.Genre}");
+    Console.WriteLine($"Track: {wma.Tag.Track}");
+
+    // Modify metadata
+    wma.Title = "New Title";
+    wma.Artist = "New Artist";
+    wma.Album = "New Album";
+    wma.Tag.Year = "2026";
+    wma.Tag.Genre = "Rock";
+
+    wma.SaveToFile("audio.wma");
+}
+```
+
 ## New Features Not in TagLib#
 
 TagLibSharp2 includes several features not available in TagLib#:
 
-- **Automatic format detection**: `MediaFile.Open()` auto-detects MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, DSF, DFF, WavPack, Monkey's Audio, Musepack, and ASF/WMA
+- **Automatic format detection**: `MediaFile.Open()` auto-detects 15 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, and Musepack
 - **DSD audio support**: Native DSF and DFF format support for high-resolution DSD audio
 - **Lossless format breadth**: WavPack and Monkey's Audio support with APE tag handling
 - **Async I/O**: Full async support throughout the API with cancellation token support
