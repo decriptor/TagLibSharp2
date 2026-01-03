@@ -17,6 +17,8 @@ using TagLibSharp2.Tests.Core;
 namespace TagLibSharp2.Tests.Dsf;
 
 [TestClass]
+[TestCategory ("Unit")]
+[TestCategory ("Dsf")]
 public class DsfFileTests
 {
 	#region DSD Chunk Header Tests

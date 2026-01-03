@@ -10,6 +10,7 @@ namespace TagLibSharp2.Tests.Ape;
 
 [TestClass]
 [TestCategory ("Unit")]
+[TestCategory ("MonkeysAudio")]
 public class MonkeysAudioFileTests
 {
 	#region Magic and File Recognition

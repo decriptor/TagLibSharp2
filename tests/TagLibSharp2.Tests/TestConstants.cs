@@ -67,6 +67,15 @@ public static class TestConstants
 
 		/// <summary>Musepack SV8 magic "MPCK" (0x4D 0x50 0x43 0x4B).</summary>
 		public static readonly byte[] MusepackSV8 = [0x4D, 0x50, 0x43, 0x4B];
+
+		/// <summary>WavPack magic "wvpk" (0x77 0x76 0x70 0x6B).</summary>
+		public static readonly byte[] WavPack = [0x77, 0x76, 0x70, 0x6B];
+
+		/// <summary>Monkey's Audio magic "MAC " (0x4D 0x41 0x43 0x20).</summary>
+		public static readonly byte[] MonkeysAudio = [0x4D, 0x41, 0x43, 0x20];
+
+		/// <summary>Ogg FLAC magic byte sequence for identification header (0x7F + "FLAC").</summary>
+		public static readonly byte[] OggFlac = [0x7F, 0x46, 0x4C, 0x41, 0x43];
 	}
 
 	/// <summary>

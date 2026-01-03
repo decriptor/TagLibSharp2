@@ -1764,6 +1764,22 @@ public static class TestBuilders
 
 			return builder.ToArray ();
 		}
+
+		/// <summary>
+		/// Creates raw Vorbis Comment content (vendor + fields) for embedding in FLAC metadata blocks.
+		/// </summary>
+		public static byte[] CreateCommentsContent (string? title = null, string? artist = null, string? album = null)
+		{
+			var fields = new List<(string, string)> ();
+			if (!string.IsNullOrEmpty (title))
+				fields.Add (("TITLE", title!));
+			if (!string.IsNullOrEmpty (artist))
+				fields.Add (("ARTIST", artist!));
+			if (!string.IsNullOrEmpty (album))
+				fields.Add (("ALBUM", album!));
+
+			return CreateWithFields ("TagLibSharp2", [.. fields]);
+		}
 	}
 
 	/// <summary>
@@ -3196,6 +3212,911 @@ public static class TestBuilders
 		{
 			// For now, return minimal file
 			return CreateMinimalM4a (Mp4CodecType.Aac);
+		}
+	}
+
+	/// <summary>
+	/// Builders for WavPack (.wv) file test data.
+	/// </summary>
+	/// <remarks>
+	/// WavPack format: "wvpk" magic + 32-byte block header.
+	/// Metadata stored in APEv2 tags at end of file.
+	/// Spec: www.wavpack.com/file_format.txt
+	/// </remarks>
+	public static class WavPack
+	{
+		private const int BlockHeaderSize = 32;
+
+		/// <summary>
+		/// Creates a minimal valid WavPack file.
+		/// </summary>
+		public static byte[] CreateMinimal (
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100,
+			int channels = TestConstants.AudioProperties.ChannelsStereo,
+			int bitsPerSample = TestConstants.AudioProperties.BitsPerSample16)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Magic "wvpk"
+			builder.Add (TestConstants.Magic.WavPack);
+
+			// Block size (excluding first 8 bytes) - 24 for minimal header
+			builder.AddUInt32LE (24);
+
+			// Version (0x0410 = 4.16)
+			builder.AddUInt16LE (0x0410);
+
+			// Track number (unused)
+			builder.Add ((byte)0);
+
+			// Index number (unused)
+			builder.Add ((byte)0);
+
+			// Total samples
+			builder.AddUInt32LE (44100); // 1 second
+
+			// Block index
+			builder.AddUInt32LE (0);
+
+			// Block samples
+			builder.AddUInt32LE (44100);
+
+			// Flags
+			uint flags = 0;
+			// Bits 0-1: bytes per sample - 1
+			flags |= (uint)((bitsPerSample / 8) - 1) & 0x3;
+			// Bit 2: mono
+			if (channels == 1)
+				flags |= 0x4;
+			// Bits 23-26: sample rate index (9 = 44100)
+			var sampleRateIndex = GetSampleRateIndex (sampleRate);
+			flags |= (uint)(sampleRateIndex << 23);
+			// Set initial and final block flags
+			flags |= 0x800 | 0x1000; // Initial block, final block
+			builder.AddUInt32LE (flags);
+
+			// CRC
+			builder.AddUInt32LE (0);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a WavPack file with APE tag metadata.
+		/// </summary>
+		public static byte[] CreateWithMetadata (
+			string? title = null,
+			string? artist = null,
+			string? album = null,
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100)
+		{
+			var audioData = CreateMinimal (sampleRate);
+			var tagData = Ape.CreateTag (title, artist, album);
+
+			var result = new byte[audioData.Length + tagData.Length];
+			Array.Copy (audioData, result, audioData.Length);
+			Array.Copy (tagData, 0, result, audioData.Length, tagData.Length);
+			return result;
+		}
+
+		private static int GetSampleRateIndex (int sampleRate) => sampleRate switch {
+			6000 => 0,
+			8000 => 1,
+			9600 => 2,
+			11025 => 3,
+			12000 => 4,
+			16000 => 5,
+			22050 => 6,
+			24000 => 7,
+			32000 => 8,
+			44100 => 9,
+			48000 => 10,
+			64000 => 11,
+			88200 => 12,
+			96000 => 13,
+			192000 => 14,
+			_ => 15 // Custom rate
+		};
+	}
+
+	/// <summary>
+	/// Builders for Monkey's Audio (.ape) file test data.
+	/// </summary>
+	/// <remarks>
+	/// Monkey's Audio format: "MAC " magic + version + header.
+	/// New format (>=3980) has descriptor + header, old format has different layout.
+	/// Metadata stored in APEv2 tags at end of file.
+	/// Spec: wiki.hydrogenaud.io/index.php?title=APE
+	/// </remarks>
+	public static class MonkeysAudio
+	{
+		private const int NewFormatVersion = 3980;
+		private const int DescriptorSize = 52;
+		private const int HeaderSize = 24;
+
+		/// <summary>
+		/// Creates a minimal valid Monkey's Audio file (new format >=3980).
+		/// </summary>
+		public static byte[] CreateMinimal (
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100,
+			int channels = TestConstants.AudioProperties.ChannelsStereo,
+			int bitsPerSample = TestConstants.AudioProperties.BitsPerSample16,
+			int version = 3990)
+		{
+			if (version < NewFormatVersion)
+				return CreateOldFormat (sampleRate, channels, bitsPerSample, version);
+
+			return CreateNewFormat (sampleRate, channels, bitsPerSample, version);
+		}
+
+		private static byte[] CreateNewFormat (int sampleRate, int channels, int bitsPerSample, int version)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Magic "MAC "
+			builder.Add (TestConstants.Magic.MonkeysAudio);
+
+			// Version
+			builder.AddUInt16LE ((ushort)version);
+
+			// Padding (2 bytes)
+			builder.AddUInt16LE (0);
+
+			// Descriptor bytes (offset where header starts - absolute from file start)
+			builder.AddUInt32LE ((uint)(4 + DescriptorSize)); // Magic + descriptor
+
+			// Header bytes
+			builder.AddUInt32LE (HeaderSize);
+
+			// Seek table bytes
+			builder.AddUInt32LE (0);
+
+			// Wave header bytes
+			builder.AddUInt32LE (0);
+
+			// Audio data bytes
+			builder.AddUInt32LE (1000);
+
+			// Audio data bytes high
+			builder.AddUInt32LE (0);
+
+			// Terminating data bytes
+			builder.AddUInt32LE (0);
+
+			// MD5 (16 bytes)
+			for (var i = 0; i < 16; i++)
+				builder.Add ((byte)0);
+
+			// Padding to reach descriptor size
+			while (builder.Length < 4 + DescriptorSize)
+				builder.Add ((byte)0);
+
+			// APE_HEADER
+			// Compression type (2000 = Normal)
+			builder.AddUInt16LE (2000);
+
+			// Format flags
+			builder.AddUInt16LE (0);
+
+			// Blocks per frame
+			builder.AddUInt32LE (73728);
+
+			// Final frame blocks
+			builder.AddUInt32LE (44100);
+
+			// Total frames
+			builder.AddUInt32LE (1);
+
+			// Bits per sample
+			builder.AddUInt16LE ((ushort)bitsPerSample);
+
+			// Channels
+			builder.AddUInt16LE ((ushort)channels);
+
+			// Sample rate
+			builder.AddUInt32LE ((uint)sampleRate);
+
+			return builder.ToArray ();
+		}
+
+		private static byte[] CreateOldFormat (int sampleRate, int channels, int bitsPerSample, int version)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Magic "MAC "
+			builder.Add (TestConstants.Magic.MonkeysAudio);
+
+			// Version
+			builder.AddUInt16LE ((ushort)version);
+
+			// Compression type
+			builder.AddUInt16LE (2000);
+
+			// Format flags
+			ushort formatFlags = 0;
+			if (bitsPerSample == 8)
+				formatFlags |= 0x0001;
+			else if (bitsPerSample == 24)
+				formatFlags |= 0x0008;
+			builder.AddUInt16LE (formatFlags);
+
+			// Channels
+			builder.AddUInt16LE ((ushort)channels);
+
+			// Sample rate
+			builder.AddUInt32LE ((uint)sampleRate);
+
+			// Header bytes
+			builder.AddUInt32LE (0);
+
+			// Terminating bytes
+			builder.AddUInt32LE (0);
+
+			// Total frames
+			builder.AddUInt32LE (1);
+
+			// Final frame blocks
+			builder.AddUInt32LE (44100);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a Monkey's Audio file with APE tag metadata.
+		/// </summary>
+		public static byte[] CreateWithMetadata (
+			string? title = null,
+			string? artist = null,
+			string? album = null,
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100)
+		{
+			var audioData = CreateMinimal (sampleRate);
+			var tagData = Ape.CreateTag (title, artist, album);
+
+			var result = new byte[audioData.Length + tagData.Length];
+			Array.Copy (audioData, result, audioData.Length);
+			Array.Copy (tagData, 0, result, audioData.Length, tagData.Length);
+			return result;
+		}
+	}
+
+	/// <summary>
+	/// Builders for Musepack (.mpc) file test data.
+	/// </summary>
+	/// <remarks>
+	/// Musepack SV8 format: "MPCK" magic + packet-based structure.
+	/// Metadata stored in APEv2 tags at end of file.
+	/// Spec: wiki.hydrogenaud.io/index.php?title=Musepack_SV8
+	/// </remarks>
+	public static class Musepack
+	{
+		private const byte PacketStreamHeader = 0x53; // 'SH'
+		private const byte PacketReplayGain = 0x52;   // 'RG'
+		private const byte PacketEncoderInfo = 0x45; // 'EI'
+		private const byte PacketSeekOffset = 0x53;   // 'SO'
+		private const byte PacketAudioPacket = 0x41;  // 'AP'
+		private const byte PacketStreamEnd = 0x45;    // 'SE'
+
+		/// <summary>
+		/// Creates a minimal valid Musepack SV8 file.
+		/// </summary>
+		public static byte[] CreateMinimal (
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100,
+			int channels = TestConstants.AudioProperties.ChannelsStereo)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Magic "MPCK"
+			builder.Add (TestConstants.Magic.MusepackSV8);
+
+			// Stream Header packet (SH)
+			var shBuilder = new BinaryDataBuilder ();
+
+			// CRC placeholder
+			shBuilder.AddUInt32LE (0);
+
+			// Stream version
+			shBuilder.Add ((byte)8);
+
+			// Sample count (variable length, just use a simple encoding)
+			AddVarInt (shBuilder, 44100); // 1 second
+
+			// Beginning silence
+			AddVarInt (shBuilder, 0);
+
+			// Sample frequency (0-3: 44100, 48000, 37800, 32000)
+			var freqIndex = GetSampleFrequencyIndex (sampleRate);
+			// Max used bands | channel mode (MS stereo) | frequency index
+			var flags = (byte)((32 << 3) | (channels == 1 ? 0 : 1 << 2) | freqIndex);
+			shBuilder.Add (flags);
+
+			WritePacket (builder, (byte)'S', (byte)'H', shBuilder.ToArray ());
+
+			// Stream End packet (SE)
+			WritePacket (builder, (byte)'S', (byte)'E', []);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a Musepack file with APE tag metadata.
+		/// </summary>
+		public static byte[] CreateWithMetadata (
+			string? title = null,
+			string? artist = null,
+			string? album = null,
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100)
+		{
+			var audioData = CreateMinimal (sampleRate);
+			var tagData = Ape.CreateTag (title, artist, album);
+
+			var result = new byte[audioData.Length + tagData.Length];
+			Array.Copy (audioData, result, audioData.Length);
+			Array.Copy (tagData, 0, result, audioData.Length, tagData.Length);
+			return result;
+		}
+
+		private static void WritePacket (BinaryDataBuilder builder, byte key1, byte key2, byte[] data)
+		{
+			builder.Add (key1);
+			builder.Add (key2);
+			// Packet size (variable length encoding)
+			AddVarInt (builder, data.Length + 2); // +2 for key bytes already written...but this is size of remaining
+												  // Actually size is total packet size including key, so:
+												  // Key (2) + size field (varies) + data
+												  // For simplicity, just write length as single byte if small
+			builder.Add (data);
+		}
+
+		private static void AddVarInt (BinaryDataBuilder builder, long value)
+		{
+			// SV8 variable-length integer encoding
+			if (value < 128) {
+				builder.Add ((byte)value);
+			} else if (value < 16384) {
+				builder.Add ((byte)(0x80 | (value & 0x7F)));
+				builder.Add ((byte)((value >> 7) & 0x7F));
+			} else {
+				// For larger values, use more bytes
+				builder.Add ((byte)(0x80 | (value & 0x7F)));
+				builder.Add ((byte)(0x80 | ((value >> 7) & 0x7F)));
+				builder.Add ((byte)((value >> 14) & 0x7F));
+			}
+		}
+
+		private static int GetSampleFrequencyIndex (int sampleRate) => sampleRate switch {
+			44100 => 0,
+			48000 => 1,
+			37800 => 2,
+			32000 => 3,
+			_ => 0
+		};
+	}
+
+	/// <summary>
+	/// Builders for APEv2 tag test data.
+	/// </summary>
+	/// <remarks>
+	/// APEv2 is used by WavPack, Monkey's Audio, Musepack, and OptimFROG.
+	/// Structure: Header (optional) + Items + Footer.
+	/// Spec: wiki.hydrogenaud.io/index.php?title=APEv2_specification
+	/// </remarks>
+	public static class Ape
+	{
+		private const int FooterSize = 32;
+		private static readonly byte[] Preamble = "APETAGEX"u8.ToArray ();
+
+		/// <summary>
+		/// Creates an APEv2 tag with basic metadata.
+		/// </summary>
+		public static byte[] CreateTag (
+			string? title = null,
+			string? artist = null,
+			string? album = null)
+		{
+			var items = new List<byte[]> ();
+
+			if (!string.IsNullOrEmpty (title))
+				items.Add (CreateItem ("Title", title!));
+			if (!string.IsNullOrEmpty (artist))
+				items.Add (CreateItem ("Artist", artist!));
+			if (!string.IsNullOrEmpty (album))
+				items.Add (CreateItem ("Album", album!));
+
+			return CreateTagFromItems ([.. items]);
+		}
+
+		/// <summary>
+		/// Creates a single APE tag item.
+		/// </summary>
+		public static byte[] CreateItem (string key, string value)
+		{
+			var keyBytes = Encoding.ASCII.GetBytes (key);
+			var valueBytes = Encoding.UTF8.GetBytes (value);
+
+			var builder = new BinaryDataBuilder ();
+
+			// Value size
+			builder.AddUInt32LE ((uint)valueBytes.Length);
+
+			// Flags (0 = UTF-8 text)
+			builder.AddUInt32LE (0);
+
+			// Key + null terminator
+			builder.Add (keyBytes);
+			builder.Add ((byte)0);
+
+			// Value
+			builder.Add (valueBytes);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an APE tag from a list of items.
+		/// </summary>
+		public static byte[] CreateTagFromItems (byte[][] items)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Calculate items total size
+			var itemsSize = 0;
+			foreach (var item in items)
+				itemsSize += item.Length;
+
+			// Header (optional - we include it)
+			builder.Add (Preamble);
+			builder.AddUInt32LE (2000); // Version 2.0
+			builder.AddUInt32LE ((uint)(itemsSize + FooterSize)); // Tag size (includes footer, excludes header)
+			builder.AddUInt32LE ((uint)items.Length); // Item count
+			builder.AddUInt32LE (0x80000000); // Flags: header present, this is header
+			builder.AddUInt32LE (0); builder.AddUInt32LE (0); // Reserved
+
+			// Items
+			foreach (var item in items)
+				builder.Add (item);
+
+			// Footer
+			builder.Add (Preamble);
+			builder.AddUInt32LE (2000); // Version 2.0
+			builder.AddUInt32LE ((uint)(itemsSize + FooterSize)); // Tag size
+			builder.AddUInt32LE ((uint)items.Length); // Item count
+			builder.AddUInt32LE (0x80000000); // Flags: header present, this is footer (bit 29 = 0)
+			builder.AddUInt32LE (0); builder.AddUInt32LE (0); // Reserved
+
+			return builder.ToArray ();
+		}
+	}
+
+	/// <summary>
+	/// Builders for Ogg FLAC file test data.
+	/// </summary>
+	/// <remarks>
+	/// Ogg FLAC wraps native FLAC in an Ogg container.
+	/// First packet contains 0x7F + "FLAC" + mapping version + header count + STREAMINFO.
+	/// Metadata stored in VorbisComment within second packet.
+	/// Spec: xiph.org/flac/ogg_mapping.html
+	/// </remarks>
+	public static class OggFlac
+	{
+		/// <summary>
+		/// Creates a minimal valid Ogg FLAC file.
+		/// </summary>
+		public static byte[] CreateMinimal (
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100,
+			int channels = TestConstants.AudioProperties.ChannelsStereo,
+			int bitsPerSample = TestConstants.AudioProperties.BitsPerSample16)
+		{
+			var builder = new BinaryDataBuilder ();
+			var serialNumber = 1u;
+
+			// First page: Ogg FLAC identification header
+			var idPacket = CreateIdentificationPacket (sampleRate, channels, bitsPerSample);
+			var page1 = Ogg.CreatePage (idPacket, 0, OggPageFlags.BeginOfStream, serialNumber);
+			builder.Add (page1);
+
+			// Second page: VorbisComment
+			var commentPacket = CreateCommentPacket ();
+			var page2 = Ogg.CreatePage (commentPacket, 1, OggPageFlags.EndOfStream, serialNumber);
+			builder.Add (page2);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an Ogg FLAC file with VorbisComment metadata.
+		/// </summary>
+		public static byte[] CreateWithMetadata (
+			string? title = null,
+			string? artist = null,
+			string? album = null,
+			int sampleRate = TestConstants.AudioProperties.SampleRate44100)
+		{
+			var builder = new BinaryDataBuilder ();
+			var serialNumber = 1u;
+
+			// First page: Ogg FLAC identification header
+			var idPacket = CreateIdentificationPacket (sampleRate, 2, 16);
+			var page1 = Ogg.CreatePage (idPacket, 0, OggPageFlags.BeginOfStream, serialNumber);
+			builder.Add (page1);
+
+			// Second page: VorbisComment with metadata
+			var commentPacket = CreateCommentPacket (title, artist, album);
+			var page2 = Ogg.CreatePage (commentPacket, 1, OggPageFlags.EndOfStream, serialNumber);
+			builder.Add (page2);
+
+			return builder.ToArray ();
+		}
+
+		private static byte[] CreateIdentificationPacket (int sampleRate, int channels, int bitsPerSample)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Packet type (0x7F for FLAC)
+			builder.Add ((byte)0x7F);
+
+			// "FLAC" signature
+			builder.AddStringLatin1 ("FLAC");
+
+			// Ogg FLAC mapping version (1.0)
+			builder.Add ((byte)1);
+			builder.Add ((byte)0);
+
+			// Number of header packets (non-audio, excluding this one)
+			builder.AddUInt16BE (1);
+
+			// Native FLAC signature "fLaC"
+			builder.Add (TestConstants.Magic.Flac);
+
+			// STREAMINFO metadata block (type 0, last = false, length = 34)
+			builder.Add ((byte)0x00); // Type 0 (STREAMINFO), not last
+									  // Size (3 bytes big-endian) = 34
+			builder.Add ((byte)0);
+			builder.Add ((byte)0);
+			builder.Add ((byte)34);
+
+			// STREAMINFO content (34 bytes)
+			// Min block size (16-bit)
+			builder.AddUInt16BE (4096);
+			// Max block size (16-bit)
+			builder.AddUInt16BE (4096);
+			// Min frame size (24-bit)
+			builder.Add ((byte)0); builder.Add ((byte)0); builder.Add ((byte)0);
+			// Max frame size (24-bit)
+			builder.Add ((byte)0); builder.Add ((byte)0); builder.Add ((byte)0);
+
+			// Sample rate (20 bits) + channels-1 (3 bits) + bits per sample-1 (5 bits) + total samples MSB (4 bits)
+			var srChannelsBits = ((uint)sampleRate << 12) | ((uint)(channels - 1) << 9) | ((uint)(bitsPerSample - 1) << 4);
+			builder.Add ((byte)(srChannelsBits >> 24));
+			builder.Add ((byte)(srChannelsBits >> 16));
+			builder.Add ((byte)(srChannelsBits >> 8));
+			builder.Add ((byte)srChannelsBits);
+
+			// Total samples (low 32 bits)
+			builder.AddUInt32BE ((uint)sampleRate);
+
+			// MD5 (16 bytes)
+			for (var i = 0; i < 16; i++)
+				builder.Add ((byte)0);
+
+			return builder.ToArray ();
+		}
+
+		private static byte[] CreateCommentPacket (string? title = null, string? artist = null, string? album = null)
+		{
+			var commentBuilder = new BinaryDataBuilder ();
+
+			// VORBIS_COMMENT metadata block (type 4, last = true)
+			commentBuilder.Add ((byte)0x84); // Type 4, last block
+
+			// Build comments content
+			var commentsData = VorbisComment.CreateCommentsContent (title, artist, album);
+
+			// Size (3 bytes big-endian)
+			commentBuilder.Add ((byte)(commentsData.Length >> 16));
+			commentBuilder.Add ((byte)(commentsData.Length >> 8));
+			commentBuilder.Add ((byte)commentsData.Length);
+
+			commentBuilder.Add (commentsData);
+
+			return commentBuilder.ToArray ();
+		}
+	}
+
+	/// <summary>
+	/// Builders for DSF (DSD Stream File) test data.
+	/// </summary>
+	/// <remarks>
+	/// DSF format: "DSD " chunk + "fmt " chunk + "data" chunk.
+	/// Metadata stored in ID3v2 tag at offset specified in DSD chunk.
+	/// Spec: dsd-guide.com/sites/default/files/white-papers/DSFFileFormatSpec_E.pdf
+	/// </remarks>
+	public static class Dsf
+	{
+		private const int DsdChunkSize = 28;
+		private const int FmtChunkSize = 52;
+
+		/// <summary>
+		/// Creates a minimal valid DSF file.
+		/// </summary>
+		public static byte[] CreateMinimal (
+			int sampleRate = 2822400, // Standard DSD64 rate
+			int channels = 2,
+			int bitsPerSample = 1)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			var dataChunkSize = (ulong)12 + 4096; // Chunk header + minimal data
+			var totalFileSize = (ulong)DsdChunkSize + FmtChunkSize + dataChunkSize;
+
+			// DSD chunk
+			builder.Add (TestConstants.Magic.Dsf);
+			builder.AddUInt64LE (DsdChunkSize);
+			builder.AddUInt64LE (totalFileSize);
+			builder.AddUInt64LE (0); // No ID3v2 tag
+
+			// fmt chunk
+			builder.AddStringLatin1 ("fmt ");
+			builder.AddUInt64LE (FmtChunkSize);
+			builder.AddUInt32LE (1); // Format version
+			builder.AddUInt32LE (0); // Format ID (0 = DSD raw)
+			builder.AddUInt32LE ((uint)channels); // Channel type
+			builder.AddUInt32LE ((uint)channels); // Channel count
+			builder.AddUInt32LE ((uint)sampleRate);
+			builder.AddUInt32LE ((uint)bitsPerSample);
+			builder.AddUInt64LE ((ulong)sampleRate); // Sample count (1 second)
+			builder.AddUInt32LE (4096); // Block size per channel
+
+			// Reserved
+			builder.AddUInt32LE (0);
+
+			// data chunk
+			builder.AddStringLatin1 ("data");
+			builder.AddUInt64LE (dataChunkSize);
+
+			// Minimal audio data (silence)
+			for (var i = 0; i < 4096; i++)
+				builder.Add ((byte)0x69); // DSD silence pattern
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a DSF file with ID3v2 metadata.
+		/// </summary>
+		public static byte[] CreateWithMetadata (
+			string? title = null,
+			string? artist = null,
+			string? album = null,
+			int sampleRate = 2822400)
+		{
+			// Build ID3v2 tag
+			var tagBuilder = new BinaryDataBuilder ();
+			if (!string.IsNullOrEmpty (title))
+				tagBuilder.Add (Id3v2.CreateTextFrame (TestConstants.FrameIds.Title, title!, TestConstants.Id3v2.Version4));
+			if (!string.IsNullOrEmpty (artist))
+				tagBuilder.Add (Id3v2.CreateTextFrame (TestConstants.FrameIds.Artist, artist!, TestConstants.Id3v2.Version4));
+			if (!string.IsNullOrEmpty (album))
+				tagBuilder.Add (Id3v2.CreateTextFrame (TestConstants.FrameIds.Album, album!, TestConstants.Id3v2.Version4));
+
+			var frames = tagBuilder.ToArray ();
+			var header = Id3v2.CreateHeader (TestConstants.Id3v2.Version4, (uint)frames.Length);
+			var id3Tag = new byte[header.Length + frames.Length];
+			Array.Copy (header, id3Tag, header.Length);
+			Array.Copy (frames, 0, id3Tag, header.Length, frames.Length);
+
+			// Build DSF with tag
+			var builder = new BinaryDataBuilder ();
+			var dataChunkSize = (ulong)12 + 4096;
+			var audioSize = (ulong)DsdChunkSize + FmtChunkSize + dataChunkSize;
+			var totalFileSize = audioSize + (ulong)id3Tag.Length;
+
+			// DSD chunk with ID3v2 pointer
+			builder.Add (TestConstants.Magic.Dsf);
+			builder.AddUInt64LE (DsdChunkSize);
+			builder.AddUInt64LE (totalFileSize);
+			builder.AddUInt64LE (audioSize); // ID3v2 tag offset
+
+			// fmt chunk
+			builder.AddStringLatin1 ("fmt ");
+			builder.AddUInt64LE (FmtChunkSize);
+			builder.AddUInt32LE (1);
+			builder.AddUInt32LE (0);
+			builder.AddUInt32LE (2);
+			builder.AddUInt32LE (2);
+			builder.AddUInt32LE ((uint)sampleRate);
+			builder.AddUInt32LE (1);
+			builder.AddUInt64LE ((ulong)sampleRate);
+			builder.AddUInt32LE (4096);
+			builder.AddUInt32LE (0);
+
+			// data chunk
+			builder.AddStringLatin1 ("data");
+			builder.AddUInt64LE (dataChunkSize);
+			for (var i = 0; i < 4096; i++)
+				builder.Add ((byte)0x69);
+
+			// ID3v2 tag at end
+			builder.Add (id3Tag);
+
+			return builder.ToArray ();
+		}
+	}
+
+	/// <summary>
+	/// Builders for DFF (DSDIFF) file test data.
+	/// </summary>
+	/// <remarks>
+	/// DFF format: "FRM8" container + "DSD " form type + property chunks.
+	/// Metadata stored in DITI (title), DIAR (artist), ID3 chunks.
+	/// Spec: dsd-guide.com/sites/default/files/white-papers/DSDIFF_1.5_Spec.pdf
+	/// </remarks>
+	public static class Dff
+	{
+		/// <summary>
+		/// Creates a minimal valid DFF file.
+		/// </summary>
+		public static byte[] CreateMinimal (
+			int sampleRate = 2822400,
+			int channels = 2)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Calculate chunk sizes (each sub-chunk: 4-byte ID + 8-byte size + data)
+			var fverChunkSize = 12 + 4; // FVER header + version (required first chunk per DSDIFF spec)
+			var fsChunkDataSize = 4; // sample rate (4 bytes)
+			var chnlChunkDataSize = 2 + channels * 4; // channel count (2) + channel IDs (4 each)
+			var cmprChunkDataSize = 5; // compression type (4) + count (1)
+
+			// PROP content size (excludes PROP header itself)
+			// = "SND " + FS chunk + CHNL chunk + CMPR chunk
+			var propContentSize = 4 + (12 + fsChunkDataSize) + (12 + chnlChunkDataSize) + (12 + cmprChunkDataSize);
+			var propChunkSize = 12 + propContentSize; // PROP header + content
+
+			var dsdChunkSize = 12 + 4096; // DSD header + minimal audio data
+			var formSize = 4 + fverChunkSize + propChunkSize + dsdChunkSize; // "DSD " + all chunks
+
+			// FRM8 container
+			builder.Add (TestConstants.Magic.Frm8);
+			builder.AddUInt64BE ((ulong)formSize);
+
+			// Form type "DSD "
+			builder.Add (TestConstants.Magic.DsdType);
+
+			// FVER chunk (format version - MUST be first chunk per DSDIFF spec)
+			builder.AddStringLatin1 ("FVER");
+			builder.AddUInt64BE (4); // Size is just the 4-byte version
+			builder.AddUInt32BE (0x01050000); // Version 1.5.0.0
+
+			// PROP chunk (properties)
+			builder.AddStringLatin1 ("PROP");
+			builder.AddUInt64BE ((ulong)propContentSize); // Size of PROP content (excluding header)
+
+			// Property type "SND "
+			builder.AddStringLatin1 ("SND ");
+
+			// FS chunk (sample rate)
+			builder.AddStringLatin1 ("FS  ");
+			builder.AddUInt64BE ((ulong)fsChunkDataSize);
+			builder.AddUInt32BE ((uint)sampleRate);
+
+			// CHNL chunk (channels)
+			builder.AddStringLatin1 ("CHNL");
+			builder.AddUInt64BE ((ulong)chnlChunkDataSize);
+			builder.AddUInt16BE ((ushort)channels);
+			// Channel IDs (simplified - just use SLFT/SRGT for stereo)
+			if (channels >= 1)
+				builder.AddStringLatin1 ("SLFT");
+			if (channels >= 2)
+				builder.AddStringLatin1 ("SRGT");
+
+			// CMPR chunk (compression type)
+			builder.AddStringLatin1 ("CMPR");
+			builder.AddUInt64BE ((ulong)cmprChunkDataSize);
+			builder.AddStringLatin1 ("DSD ");
+			builder.Add ((byte)0); // Count byte
+
+			// Padding for 8-byte alignment
+			while (builder.Length % 8 != 0)
+				builder.Add ((byte)0);
+
+			// DSD chunk (audio data)
+			builder.AddStringLatin1 ("DSD ");
+			builder.AddUInt64BE (4096);
+			for (var i = 0; i < 4096; i++)
+				builder.Add ((byte)0x69);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a DFF file with metadata in DITI and DIAR chunks.
+		/// </summary>
+		public static byte[] CreateWithMetadata (
+			string? title = null,
+			string? artist = null,
+			int sampleRate = 2822400)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Calculate chunk sizes (each sub-chunk: 4-byte ID + 8-byte size + data)
+			var titleBytes = string.IsNullOrEmpty (title) ? [] : Encoding.ASCII.GetBytes (title);
+			var artistBytes = string.IsNullOrEmpty (artist) ? [] : Encoding.ASCII.GetBytes (artist);
+
+			var fverChunkSize = 12 + 4; // FVER header + version (required first chunk per DSDIFF spec)
+			var fsChunkDataSize = 4; // sample rate (4 bytes)
+			var chnlChunkDataSize = 2 + 2 * 4; // channel count (2) + 2 channel IDs (4 each)
+			var cmprChunkDataSize = 5; // compression type (4) + count (1)
+
+			// PROP content size (excludes PROP header itself)
+			var propContentSize = 4 + (12 + fsChunkDataSize) + (12 + chnlChunkDataSize) + (12 + cmprChunkDataSize);
+			var propChunkSize = 12 + propContentSize; // PROP header + content
+
+			var ditiChunkSize = titleBytes.Length > 0 ? 12 + 4 + titleBytes.Length : 0;
+			var diarChunkSize = artistBytes.Length > 0 ? 12 + 4 + artistBytes.Length : 0;
+			var dsdChunkSize = 12 + 4096;
+
+			// Add padding for alignment
+			ditiChunkSize = (ditiChunkSize + 7) & ~7;
+			diarChunkSize = (diarChunkSize + 7) & ~7;
+			var formSize = 4 + fverChunkSize + propChunkSize + ditiChunkSize + diarChunkSize + dsdChunkSize;
+
+			// FRM8 container
+			builder.Add (TestConstants.Magic.Frm8);
+			builder.AddUInt64BE ((ulong)formSize);
+			builder.Add (TestConstants.Magic.DsdType);
+
+			// FVER chunk (format version - MUST be first chunk per DSDIFF spec)
+			builder.AddStringLatin1 ("FVER");
+			builder.AddUInt64BE (4); // Size is just the 4-byte version
+			builder.AddUInt32BE (0x01050000); // Version 1.5.0.0
+
+			// PROP chunk
+			builder.AddStringLatin1 ("PROP");
+			builder.AddUInt64BE ((ulong)propContentSize); // Size of PROP content (excluding header)
+			builder.AddStringLatin1 ("SND ");
+			builder.AddStringLatin1 ("FS  ");
+			builder.AddUInt64BE ((ulong)fsChunkDataSize);
+			builder.AddUInt32BE ((uint)sampleRate);
+			builder.AddStringLatin1 ("CHNL");
+			builder.AddUInt64BE ((ulong)chnlChunkDataSize);
+			builder.AddUInt16BE (2);
+			builder.AddStringLatin1 ("SLFT");
+			builder.AddStringLatin1 ("SRGT");
+			builder.AddStringLatin1 ("CMPR");
+			builder.AddUInt64BE ((ulong)cmprChunkDataSize);
+			builder.AddStringLatin1 ("DSD ");
+			builder.Add ((byte)0);
+			while (builder.Length % 8 != 0)
+				builder.Add ((byte)0);
+
+			// DITI chunk (title)
+			if (titleBytes.Length > 0) {
+				builder.AddStringLatin1 ("DITI");
+				builder.AddUInt64BE ((ulong)(4 + titleBytes.Length));
+				builder.AddUInt32BE ((uint)titleBytes.Length);
+				builder.Add (titleBytes);
+				while (builder.Length % 8 != 0)
+					builder.Add ((byte)0);
+			}
+
+			// DIAR chunk (artist)
+			if (artistBytes.Length > 0) {
+				builder.AddStringLatin1 ("DIAR");
+				builder.AddUInt64BE ((ulong)(4 + artistBytes.Length));
+				builder.AddUInt32BE ((uint)artistBytes.Length);
+				builder.Add (artistBytes);
+				while (builder.Length % 8 != 0)
+					builder.Add ((byte)0);
+			}
+
+			// DSD chunk
+			builder.AddStringLatin1 ("DSD ");
+			builder.AddUInt64BE (4096);
+			for (var i = 0; i < 4096; i++)
+				builder.Add ((byte)0x69);
+
+			return builder.ToArray ();
 		}
 	}
 }

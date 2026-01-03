@@ -10,6 +10,7 @@ namespace TagLibSharp2.Tests.WavPack;
 
 [TestClass]
 [TestCategory ("Unit")]
+[TestCategory ("WavPack")]
 public class WavPackFileTests
 {
 	// WavPack sample rate table

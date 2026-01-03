@@ -10,6 +10,7 @@ namespace TagLibSharp2.Tests.Ogg;
 
 [TestClass]
 [TestCategory ("Unit")]
+[TestCategory ("OggFlac")]
 public class OggFlacFileTests
 {
 	#region Magic and File Recognition

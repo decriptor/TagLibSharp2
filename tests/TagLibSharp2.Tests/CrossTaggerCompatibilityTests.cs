@@ -1,9 +1,17 @@
 // Copyright (c) 2025 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
+using TagLibSharp2.Core;
+using TagLibSharp2.Dff;
+using TagLibSharp2.Dsf;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
+using TagLibSharp2.Musepack;
+using TagLibSharp2.Ogg;
+using TagLibSharp2.Riff;
+using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests;
@@ -762,5 +770,401 @@ public sealed class CrossTaggerCompatibilityTests
 		Assert.AreEqual ("-5.80 dB", result.ReplayGainAlbumGain);
 		Assert.AreEqual ("12345678-1234-1234-1234-123456789012", result.MusicBrainzTrackId);
 		Assert.AreEqual ("abcdefab-cdef-abcd-efab-cdefabcdefab", result.MusicBrainzReleaseId);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// File-Level Cross-Tagger Compatibility Tests
+	// Tests complete file parsing with industry-standard field names
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <summary>
+	/// Tests that WavPack files with APE tags preserve metadata correctly.
+	/// WavPack uses APE tags for metadata, which should use standard field names.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("WavPack")]
+	public void WavPackFile_MetadataRoundTrip_PreservesStandardFieldNames ()
+	{
+		var data = TestBuilders.WavPack.CreateWithMetadata (
+			title: "Test Title",
+			artist: "Test Artist",
+			album: "Test Album");
+
+		var result = WavPackFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File!.ApeTag);
+
+		// Verify standard APE field names
+		Assert.AreEqual ("Test Title", result.File.ApeTag!.Title);
+		Assert.AreEqual ("Test Artist", result.File.ApeTag.Artist);
+		Assert.AreEqual ("Test Album", result.File.ApeTag.Album);
+
+		// Verify case-insensitive lookup works (Picard compatibility)
+		Assert.AreEqual ("Test Title", result.File.ApeTag.GetValue ("Title"));
+		Assert.AreEqual ("Test Title", result.File.ApeTag.GetValue ("TITLE"));
+		Assert.AreEqual ("Test Title", result.File.ApeTag.GetValue ("title"));
+	}
+
+	/// <summary>
+	/// Tests that Monkey's Audio files with APE tags preserve metadata correctly.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("MonkeysAudio")]
+	public void MonkeysAudioFile_MetadataRoundTrip_PreservesStandardFieldNames ()
+	{
+		var data = TestBuilders.MonkeysAudio.CreateWithMetadata (
+			title: "Monkey Title",
+			artist: "Monkey Artist",
+			album: "Monkey Album");
+
+		var result = MonkeysAudioFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File!.ApeTag);
+
+		Assert.AreEqual ("Monkey Title", result.File.ApeTag!.Title);
+		Assert.AreEqual ("Monkey Artist", result.File.ApeTag.Artist);
+		Assert.AreEqual ("Monkey Album", result.File.ApeTag.Album);
+	}
+
+	/// <summary>
+	/// Tests that Musepack files with APE tags preserve metadata correctly.
+	/// Musepack SV7/SV8 uses APE tags at end of file.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("Musepack")]
+	public void MusepackFile_MetadataRoundTrip_PreservesStandardFieldNames ()
+	{
+		var data = TestBuilders.Musepack.CreateWithMetadata (
+			title: "Musepack Title",
+			artist: "Musepack Artist",
+			album: "Musepack Album");
+
+		var result = MusepackFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File!.ApeTag);
+
+		Assert.AreEqual ("Musepack Title", result.File.ApeTag!.Title);
+		Assert.AreEqual ("Musepack Artist", result.File.ApeTag.Artist);
+		Assert.AreEqual ("Musepack Album", result.File.ApeTag.Album);
+	}
+
+	/// <summary>
+	/// Tests that Ogg FLAC files with VorbisComment preserve metadata correctly.
+	/// Ogg FLAC uses Vorbis Comment which should use uppercase field names per spec.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("OggFlac")]
+	public void OggFlacFile_MetadataRoundTrip_PreservesStandardFieldNames ()
+	{
+		var data = TestBuilders.OggFlac.CreateWithMetadata (
+			title: "OggFlac Title",
+			artist: "OggFlac Artist",
+			album: "OggFlac Album");
+
+		var result = OggFlacFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File!.VorbisComment);
+
+		Assert.AreEqual ("OggFlac Title", result.File.VorbisComment!.Title);
+		Assert.AreEqual ("OggFlac Artist", result.File.VorbisComment.Artist);
+		Assert.AreEqual ("OggFlac Album", result.File.VorbisComment.Album);
+
+		// Verify uppercase field names per Vorbis Comment spec
+		Assert.AreEqual ("OggFlac Title", result.File.VorbisComment.GetValue ("TITLE"));
+		Assert.AreEqual ("OggFlac Artist", result.File.VorbisComment.GetValue ("ARTIST"));
+		Assert.AreEqual ("OggFlac Album", result.File.VorbisComment.GetValue ("ALBUM"));
+	}
+
+	/// <summary>
+	/// Tests that Ogg Opus files with VorbisComment preserve metadata correctly.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("OggOpus")]
+	public void OggOpusFile_MetadataRoundTrip_PreservesStandardFieldNames ()
+	{
+		var data = TestBuilders.Opus.CreateMinimalFile (
+			title: "Opus Title",
+			artist: "Opus Artist");
+
+		var result = OggOpusFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File!.VorbisComment);
+
+		Assert.AreEqual ("Opus Title", result.File.VorbisComment!.Title);
+		Assert.AreEqual ("Opus Artist", result.File.VorbisComment.Artist);
+
+		// Verify uppercase field names
+		Assert.AreEqual ("Opus Title", result.File.VorbisComment.GetValue ("TITLE"));
+		Assert.AreEqual ("Opus Artist", result.File.VorbisComment.GetValue ("ARTIST"));
+	}
+
+	/// <summary>
+	/// Tests that WAV files with INFO tags use standard RIFF INFO chunk codes.
+	/// RIFF INFO uses 4-character codes: INAM (title), IART (artist), IPRD (album).
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("Riff")]
+	public void WavFile_InfoTag_UsesStandardRiffInfoCodes ()
+	{
+		// Create minimal WAV file
+		var data = TestBuilders.Wav.CreateMinimal ();
+		var wavFile = WavFile.ReadFromData (new BinaryData (data));
+
+		Assert.IsNotNull (wavFile);
+
+		// Set INFO tag metadata
+		wavFile.InfoTag = new RiffInfoTag {
+			Title = "WAV Title",
+			Artist = "WAV Artist",
+			Album = "WAV Album"
+		};
+
+		// Render and re-read to verify round-trip
+		var rendered = wavFile.Render ();
+		var reparsed = WavFile.ReadFromData (rendered);
+
+		Assert.IsNotNull (reparsed?.InfoTag);
+
+		// Verify standard metadata extraction
+		Assert.AreEqual ("WAV Title", reparsed.InfoTag.Title);
+		Assert.AreEqual ("WAV Artist", reparsed.InfoTag.Artist);
+		Assert.AreEqual ("WAV Album", reparsed.InfoTag.Album);
+	}
+
+	/// <summary>
+	/// Tests that AIFF files with ID3v2 tags preserve metadata correctly.
+	/// AIFF stores ID3v2 tags in an "ID3 " chunk.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("Aiff")]
+	public void AiffFile_Id3v2Tag_PreservesStandardMetadata ()
+	{
+		// Create minimal AIFF file
+		var data = TestBuilders.Aiff.CreateMinimal ();
+		var result = AiffFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File);
+
+		// Set ID3v2 tag metadata (AIFF uses 'Tag' property for ID3v2)
+		result.File!.Tag = new Id3v2Tag {
+			Title = "AIFF Title",
+			Artist = "AIFF Artist",
+			Album = "AIFF Album"
+		};
+
+		// Render and re-read to verify round-trip
+		var rendered = result.File.Render ();
+		var reparsed = AiffFile.Read (rendered.Span);
+
+		Assert.IsTrue (reparsed.IsSuccess);
+		Assert.IsNotNull (reparsed.File?.Tag);
+
+		Assert.AreEqual ("AIFF Title", reparsed.File.Tag!.Title);
+		Assert.AreEqual ("AIFF Artist", reparsed.File.Tag.Artist);
+		Assert.AreEqual ("AIFF Album", reparsed.File.Tag.Album);
+	}
+
+	/// <summary>
+	/// Tests that DSF files with ID3v2 tags preserve metadata correctly.
+	/// DSF (DSD Stream File) stores ID3v2 at the end of the file.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("Dsf")]
+	public void DsfFile_Id3v2Tag_PreservesStandardMetadata ()
+	{
+		var data = TestBuilders.Dsf.CreateWithMetadata (
+			title: "DSF Title",
+			artist: "DSF Artist",
+			album: "DSF Album");
+
+		var result = DsfFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File!.Id3v2Tag);
+
+		Assert.AreEqual ("DSF Title", result.File.Id3v2Tag!.Title);
+		Assert.AreEqual ("DSF Artist", result.File.Id3v2Tag.Artist);
+		Assert.AreEqual ("DSF Album", result.File.Id3v2Tag.Album);
+	}
+
+	/// <summary>
+	/// Tests that DFF files with ID3v2 tags preserve metadata correctly.
+	/// DFF (DSDIFF) supports ID3v2 as an unofficial extension for metadata.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("Dff")]
+	public void DffFile_Id3v2Tag_PreservesStandardMetadata ()
+	{
+		// Create minimal DFF file
+		var data = TestBuilders.Dff.CreateMinimal ();
+		var result = TagLibSharp2.Dff.DffFile.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNotNull (result.File);
+
+		// Add ID3v2 tag metadata
+		result.File!.Id3v2Tag = new Id3v2Tag {
+			Title = "DFF Title",
+			Artist = "DFF Artist",
+			Album = "DFF Album"
+		};
+
+		// Render and re-read to verify round-trip
+		var rendered = result.File.Render ();
+		var reparsed = TagLibSharp2.Dff.DffFile.Parse (rendered.Span);
+
+		Assert.IsTrue (reparsed.IsSuccess);
+		Assert.IsNotNull (reparsed.File?.Id3v2Tag);
+
+		Assert.AreEqual ("DFF Title", reparsed.File.Id3v2Tag!.Title);
+		Assert.AreEqual ("DFF Artist", reparsed.File.Id3v2Tag.Artist);
+		Assert.AreEqual ("DFF Album", reparsed.File.Id3v2Tag.Album);
+	}
+
+	/// <summary>
+	/// Tests that APE tag format files (WavPack, Monkey's Audio, Musepack)
+	/// use MusicBrainz field names compatible with Picard.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("WavPack")]
+	public void WavPackFile_MusicBrainzFields_UsePicardCompatibleNames ()
+	{
+		// Create file and add MusicBrainz fields
+		var data = TestBuilders.WavPack.CreateMinimal ();
+		var result = WavPackFile.Parse (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		var file = result.File!;
+		var tag = file.EnsureApeTag ();
+
+		tag.MusicBrainzTrackId = "12345678-1234-1234-1234-123456789012";
+		tag.MusicBrainzReleaseId = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+		tag.MusicBrainzArtistId = "fedcba98-7654-3210-fedc-ba9876543210";
+
+		// Render and reparse
+		var rendered = file.Render (data);
+		var reparsed = WavPackFile.Parse (rendered);
+		Assert.IsTrue (reparsed.IsSuccess);
+
+		// Verify MusicBrainz fields use UPPERCASE with underscores (Picard format)
+		Assert.AreEqual ("12345678-1234-1234-1234-123456789012",
+			reparsed.File!.ApeTag!.GetValue ("MUSICBRAINZ_TRACKID"));
+		Assert.AreEqual ("abcdefab-cdef-abcd-efab-cdefabcdefab",
+			reparsed.File.ApeTag.GetValue ("MUSICBRAINZ_ALBUMID"));
+		Assert.AreEqual ("fedcba98-7654-3210-fedc-ba9876543210",
+			reparsed.File.ApeTag.GetValue ("MUSICBRAINZ_ARTISTID"));
+	}
+
+	/// <summary>
+	/// Tests that APE tag files use ReplayGain field names compatible with foobar2000.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("MonkeysAudio")]
+	public void MonkeysAudioFile_ReplayGain_UsesFoobar2000CompatibleNames ()
+	{
+		var data = TestBuilders.MonkeysAudio.CreateMinimal ();
+		var result = MonkeysAudioFile.Parse (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		var file = result.File!;
+		var tag = file.EnsureApeTag ();
+
+		tag.ReplayGainTrackGain = "-6.50 dB";
+		tag.ReplayGainTrackPeak = "0.988547";
+		tag.ReplayGainAlbumGain = "-7.20 dB";
+		tag.ReplayGainAlbumPeak = "0.995123";
+
+		var rendered = file.Render (data);
+		var reparsed = MonkeysAudioFile.Parse (rendered);
+		Assert.IsTrue (reparsed.IsSuccess);
+
+		// Verify ReplayGain fields use UPPERCASE with underscores
+		Assert.AreEqual ("-6.50 dB", reparsed.File!.ApeTag!.GetValue ("REPLAYGAIN_TRACK_GAIN"));
+		Assert.AreEqual ("0.988547", reparsed.File.ApeTag.GetValue ("REPLAYGAIN_TRACK_PEAK"));
+		Assert.AreEqual ("-7.20 dB", reparsed.File.ApeTag.GetValue ("REPLAYGAIN_ALBUM_GAIN"));
+		Assert.AreEqual ("0.995123", reparsed.File.ApeTag.GetValue ("REPLAYGAIN_ALBUM_PEAK"));
+	}
+
+	/// <summary>
+	/// Tests that Ogg FLAC files support MusicBrainz IDs with standard field names.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("OggFlac")]
+	public void OggFlacFile_MusicBrainzFields_UseStandardNames ()
+	{
+		var data = TestBuilders.OggFlac.CreateMinimal ();
+		var result = OggFlacFile.Parse (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		var file = result.File!;
+		var comment = file.EnsureVorbisComment ();
+
+		comment.MusicBrainzTrackId = "12345678-1234-1234-1234-123456789012";
+		comment.MusicBrainzReleaseId = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+
+		var rendered = file.Render (data);
+		var reparsed = OggFlacFile.Parse (rendered);
+		Assert.IsTrue (reparsed.IsSuccess);
+
+		// Verify VorbisComment uses MUSICBRAINZ_ prefix
+		Assert.AreEqual ("12345678-1234-1234-1234-123456789012",
+			reparsed.File!.VorbisComment!.GetValue ("MUSICBRAINZ_TRACKID"));
+		Assert.AreEqual ("abcdefab-cdef-abcd-efab-cdefabcdefab",
+			reparsed.File.VorbisComment.GetValue ("MUSICBRAINZ_ALBUMID"));
+	}
+
+	/// <summary>
+	/// Tests full metadata round-trip for WavPack files including extended fields.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("WavPack")]
+	public void WavPackFile_ExtendedMetadata_RoundTripsCorrectly ()
+	{
+		var data = TestBuilders.WavPack.CreateMinimal ();
+		var result = WavPackFile.Parse (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		var file = result.File!;
+		var tag = file.EnsureApeTag ();
+
+		// Set all standard fields
+		tag.Title = "Symphony No. 9";
+		tag.Artist = "Berlin Philharmonic";
+		tag.Album = "Complete Symphonies";
+		tag.Year = "2024";
+		tag.Genre = "Classical";
+		tag.Track = 9;
+		tag.TotalTracks = 12;
+		tag.AlbumArtist = "Various Artists";
+		tag.Composer = "Beethoven";
+		tag.Conductor = "Karajan";
+		tag.DiscNumber = 2;
+		tag.TotalDiscs = 5;
+		tag.Comment = "Live recording";
+
+		var rendered = file.Render (data);
+		var reparsed = WavPackFile.Parse (rendered);
+		Assert.IsTrue (reparsed.IsSuccess);
+
+		var resultTag = reparsed.File!.ApeTag!;
+		Assert.AreEqual ("Symphony No. 9", resultTag.Title);
+		Assert.AreEqual ("Berlin Philharmonic", resultTag.Artist);
+		Assert.AreEqual ("Complete Symphonies", resultTag.Album);
+		Assert.AreEqual ("2024", resultTag.Year);
+		Assert.AreEqual ("Classical", resultTag.Genre);
+		Assert.AreEqual (9u, resultTag.Track);
+		Assert.AreEqual (12u, resultTag.TotalTracks);
+		Assert.AreEqual ("Various Artists", resultTag.AlbumArtist);
+		Assert.AreEqual ("Beethoven", resultTag.Composer);
+		Assert.AreEqual ("Karajan", resultTag.Conductor);
+		Assert.AreEqual (2u, resultTag.DiscNumber);
+		Assert.AreEqual (5u, resultTag.TotalDiscs);
+		Assert.AreEqual ("Live recording", resultTag.Comment);
 	}
 }

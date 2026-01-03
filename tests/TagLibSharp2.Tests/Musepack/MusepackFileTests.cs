@@ -9,6 +9,7 @@ namespace TagLibSharp2.Tests.Musepack;
 
 [TestClass]
 [TestCategory ("Unit")]
+[TestCategory ("Musepack")]
 public class MusepackFileTests
 {
 	// Musepack sample rate table (SV7)

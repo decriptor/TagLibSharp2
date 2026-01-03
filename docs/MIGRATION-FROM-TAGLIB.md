@@ -463,7 +463,143 @@ async Task<string?> GetTitleAsync(string path, CancellationToken ct = default)
 
 TagLibSharp2 is under active development. These TagLib# features are planned but not yet implemented:
 
-- **Formats**: ASF/WMA, Musepack
+- **Formats**: ASF/WMA
+
+## Format-Specific Examples
+
+### DSD Files (DSF/DFF)
+
+DSD (Direct Stream Digital) is a high-resolution audio format. TagLibSharp2 supports both DSF and DFF container formats.
+
+```csharp
+// DSF files store ID3v2 tags at the end of the file
+var dsfResult = DsfFile.ReadFromFile("audio.dsf");
+if (dsfResult.IsSuccess)
+{
+    var dsf = dsfResult.File!;
+
+    // Access audio properties
+    Console.WriteLine($"Duration: {dsf.Duration}");
+    Console.WriteLine($"Sample Rate: {dsf.SampleRate} Hz");
+    Console.WriteLine($"DSD Rate: {dsf.DsdRate}"); // DSD64, DSD128, etc.
+
+    // Access/modify metadata via ID3v2
+    Console.WriteLine($"Title: {dsf.Id3v2Tag?.Title}");
+    dsf.EnsureId3v2Tag().Title = "New Title";
+    dsf.SaveToFile("audio.dsf");
+}
+
+// DFF files also support ID3v2 tags (unofficial extension)
+var dffResult = DffFile.ReadFromFile("audio.dff");
+if (dffResult.IsSuccess)
+{
+    var dff = dffResult.File!;
+    Console.WriteLine($"Format Version: {dff.FormatVersionMajor}.{dff.FormatVersionMinor}");
+    Console.WriteLine($"Compressed: {dff.IsCompressed}"); // DST compression
+
+    dff.EnsureId3v2Tag().Artist = "Artist Name";
+    dff.SaveToFile("audio.dff");
+}
+```
+
+### WavPack Files
+
+WavPack is a lossless audio format that uses APE tags for metadata.
+
+```csharp
+var result = WavPackFile.ReadFromFile("audio.wv");
+if (result.IsSuccess)
+{
+    var wv = result.File!;
+
+    // Audio properties
+    Console.WriteLine($"Duration: {wv.Duration}");
+    Console.WriteLine($"Sample Rate: {wv.SampleRate}");
+    Console.WriteLine($"Bits Per Sample: {wv.BitsPerSample}");
+
+    // Access/modify metadata via APE tag
+    Console.WriteLine($"Title: {wv.ApeTag?.Title}");
+    wv.EnsureApeTag().Album = "Album Name";
+
+    // APE tags support ReplayGain natively
+    wv.ApeTag!.ReplayGainTrackGain = "-6.50 dB";
+
+    var rendered = wv.Render(originalData);
+    wv.SaveToFile("audio.wv");
+}
+```
+
+### Monkey's Audio Files
+
+Monkey's Audio (.ape) is a lossless audio format that also uses APE tags.
+
+```csharp
+var result = MonkeysAudioFile.ReadFromFile("audio.ape");
+if (result.IsSuccess)
+{
+    var ape = result.File!;
+
+    // Audio properties
+    Console.WriteLine($"Duration: {ape.Duration}");
+    Console.WriteLine($"Compression Level: {ape.CompressionLevel}");
+    Console.WriteLine($"Version: {ape.Version}");
+
+    // Metadata via APE tag
+    ape.EnsureApeTag().Title = "Track Title";
+    ape.EnsureApeTag().Artist = "Artist";
+
+    var rendered = ape.Render(originalData);
+    ape.SaveToFile("audio.ape");
+}
+```
+
+### Musepack Files
+
+Musepack (.mpc) is a lossy audio format with excellent quality at low bitrates. It uses APE tags.
+
+```csharp
+var result = MusepackFile.ReadFromFile("audio.mpc");
+if (result.IsSuccess)
+{
+    var mpc = result.File!;
+
+    // Audio properties
+    Console.WriteLine($"Duration: {mpc.Duration}");
+    Console.WriteLine($"Stream Version: {mpc.StreamVersion}"); // SV7 or SV8
+    Console.WriteLine($"Average Bitrate: {mpc.AverageBitrate} kbps");
+
+    // Metadata via APE tag
+    mpc.EnsureApeTag().Title = "Track Title";
+    mpc.EnsureApeTag().MusicBrainzTrackId = "guid-here";
+
+    var rendered = mpc.Render(originalData);
+    mpc.SaveToFile("audio.mpc");
+}
+```
+
+### Ogg FLAC Files
+
+Ogg FLAC wraps FLAC audio in an Ogg container, using Vorbis Comments for metadata.
+
+```csharp
+var result = OggFlacFile.ReadFromFile("audio.oga");
+if (result.IsSuccess)
+{
+    var oggFlac = result.File!;
+
+    // FLAC audio properties
+    Console.WriteLine($"Duration: {oggFlac.Duration}");
+    Console.WriteLine($"Sample Rate: {oggFlac.SampleRate}");
+    Console.WriteLine($"Bits Per Sample: {oggFlac.BitsPerSample}");
+
+    // Metadata via Vorbis Comment
+    oggFlac.EnsureVorbisComment().Title = "Track Title";
+    oggFlac.VorbisComment!.ReplayGainTrackGain = "-6.50 dB";
+
+    var rendered = oggFlac.Render(originalData);
+    oggFlac.SaveToFile("audio.oga");
+}
+```
 
 ## New Features Not in TagLib#
 
