@@ -29,7 +29,7 @@ A modern .NET library for reading and writing metadata in media files.
 | WavPack | ✅ | ✅ | ✅ |
 | Monkey's Audio (APE) | ✅ | ✅ | ✅ |
 | Musepack | ✅ | ✅ | ✅ |
-| ASF/WMA | ✅ | — | ✅ |
+| ASF/WMA | ✅ | ✅ | ✅ |
 | APE Tags (standalone) | ✅ | ✅ | — |
 
 ## Quick Start
