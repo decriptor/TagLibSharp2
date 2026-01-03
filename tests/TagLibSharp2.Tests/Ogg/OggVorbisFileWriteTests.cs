@@ -464,4 +464,96 @@ public sealed class OggVorbisFileWriteTests
 		StringAssert.Contains (saveResult.Error, "cancel", StringComparison.OrdinalIgnoreCase);
 	}
 
+	// ==========================================================================
+	// Picture Round-Trip Tests (METADATA_BLOCK_PICTURE)
+	// ==========================================================================
+
+	[TestMethod]
+	public void Render_AddPicture_PreservesAsMETADATA_BLOCK_PICTURE ()
+	{
+		// Arrange: Create minimal JPEG header
+		var jpegData = new byte[] {
+			0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10,
+			0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+			0x01, 0x00, 0x00, 0x01, 0x00, 0x01,
+			0x00, 0x00, 0xFF, 0xD9
+		};
+
+		var originalData = CreateMinimalOggVorbis ("Test", "Artist");
+		var result = OggVorbisFile.Read (originalData);
+		Assert.IsTrue (result.IsSuccess);
+
+		// Add picture
+		var picture = new FlacPicture ("image/jpeg", PictureType.FrontCover, "Cover Art",
+			new BinaryData (jpegData), 100, 100, 24, 0);
+		result.File!.VorbisComment!.AddPicture (picture);
+
+		// Act
+		var rendered = result.File.Render (originalData);
+		var reRead = OggVorbisFile.Read (rendered.Span);
+
+		// Assert
+		Assert.IsTrue (reRead.IsSuccess, $"Failed to re-read: {reRead.Error}");
+		Assert.IsNotNull (reRead.File!.VorbisComment);
+		Assert.HasCount (1, reRead.File.VorbisComment.Pictures);
+		Assert.AreEqual (PictureType.FrontCover, reRead.File.VorbisComment.Pictures[0].PictureType);
+		Assert.AreEqual ("image/jpeg", reRead.File.VorbisComment.Pictures[0].MimeType);
+		CollectionAssert.AreEqual (jpegData, reRead.File.VorbisComment.Pictures[0].PictureData.ToArray ());
+	}
+
+	[TestMethod]
+	public void Render_MultiplePictures_AllPreserved ()
+	{
+		// Arrange
+		var jpegData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46 };
+		var pngData = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+
+		var originalData = CreateMinimalOggVorbis ();
+		var result = OggVorbisFile.Read (originalData);
+		Assert.IsTrue (result.IsSuccess);
+
+		// Add multiple pictures
+		result.File!.VorbisComment!.AddPicture (
+			new FlacPicture ("image/jpeg", PictureType.FrontCover, "Front", new BinaryData (jpegData), 0, 0, 0, 0));
+		result.File.VorbisComment.AddPicture (
+			new FlacPicture ("image/png", PictureType.BackCover, "Back", new BinaryData (pngData), 0, 0, 0, 0));
+
+		// Act
+		var rendered = result.File.Render (originalData);
+		var reRead = OggVorbisFile.Read (rendered.Span);
+
+		// Assert
+		Assert.IsTrue (reRead.IsSuccess);
+		Assert.HasCount (2, reRead.File!.VorbisComment!.Pictures);
+		Assert.AreEqual (PictureType.FrontCover, reRead.File.VorbisComment.Pictures[0].PictureType);
+		Assert.AreEqual (PictureType.BackCover, reRead.File.VorbisComment.Pictures[1].PictureType);
+	}
+
+	[TestMethod]
+	public void Render_RemovePicture_Removes ()
+	{
+		// Arrange
+		var jpegData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46 };
+
+		var originalData = CreateMinimalOggVorbis ();
+		var result = OggVorbisFile.Read (originalData);
+		Assert.IsTrue (result.IsSuccess);
+
+		// Add and save with picture
+		result.File!.VorbisComment!.AddPicture (
+			new FlacPicture ("image/jpeg", PictureType.FrontCover, "", new BinaryData (jpegData), 0, 0, 0, 0));
+		var withPicture = result.File.Render (originalData);
+		var reRead = OggVorbisFile.Read (withPicture.Span);
+		Assert.HasCount (1, reRead.File!.VorbisComment!.Pictures);
+
+		// Remove and save
+		reRead.File.VorbisComment.RemoveAllPictures ();
+		var withoutPicture = reRead.File.Render (withPicture.Span);
+		var finalRead = OggVorbisFile.Read (withoutPicture.Span);
+
+		// Assert
+		Assert.IsTrue (finalRead.IsSuccess);
+		Assert.IsEmpty (finalRead.File!.VorbisComment!.Pictures);
+	}
+
 }
