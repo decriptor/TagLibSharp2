@@ -23,7 +23,7 @@ public sealed class AsfFile : IMediaFile
 	/// <summary>
 	/// Gets the audio properties.
 	/// </summary>
-	public AudioProperties AudioProperties { get; }
+	public AudioProperties Properties { get; }
 
 	/// <summary>
 	/// Gets the source file path if the file was read from disk.
@@ -36,7 +36,7 @@ public sealed class AsfFile : IMediaFile
 	Tag? IMediaFile.Tag => Tag;
 
 	/// <inheritdoc />
-	IMediaProperties? IMediaFile.AudioProperties => AudioProperties;
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
 
 	/// <inheritdoc />
 	public MediaFormat Format => MediaFormat.Asf;
@@ -44,7 +44,7 @@ public sealed class AsfFile : IMediaFile
 	AsfFile (AsfTag tag, AudioProperties audioProperties)
 	{
 		Tag = tag;
-		AudioProperties = audioProperties;
+		Properties = audioProperties;
 	}
 
 	// ═══════════════════════════════════════════════════════════════

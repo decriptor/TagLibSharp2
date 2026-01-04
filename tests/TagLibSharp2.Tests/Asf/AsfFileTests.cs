@@ -93,8 +93,8 @@ public class AsfFileTests
 
 		Assert.IsTrue (result.IsSuccess);
 		// Duration should be approximately 180 seconds
-		Assert.IsTrue (result.File!.AudioProperties.Duration.TotalSeconds >= 170);
-		Assert.IsTrue (result.File!.AudioProperties.Duration.TotalSeconds <= 190);
+		Assert.IsTrue (result.File!.Properties.Duration.TotalSeconds >= 170);
+		Assert.IsTrue (result.File!.Properties.Duration.TotalSeconds <= 190);
 	}
 
 	[TestMethod]
@@ -105,7 +105,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (320, result.File!.AudioProperties.Bitrate);
+		Assert.AreEqual (320, result.File!.Properties.Bitrate);
 	}
 
 	[TestMethod]
@@ -116,7 +116,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (48000, result.File!.AudioProperties.SampleRate);
+		Assert.AreEqual (48000, result.File!.Properties.SampleRate);
 	}
 
 	[TestMethod]
@@ -127,7 +127,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (2, result.File!.AudioProperties.Channels);
+		Assert.AreEqual (2, result.File!.Properties.Channels);
 	}
 
 	[TestMethod]
@@ -138,7 +138,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (16, result.File!.AudioProperties.BitsPerSample);
+		Assert.AreEqual (16, result.File!.Properties.BitsPerSample);
 	}
 
 	// ═══════════════════════════════════════════════════════════════

@@ -141,8 +141,8 @@ public class AsfFileRoundTripTests
 		var file = result.File!;
 
 		// Store original audio properties
-		var originalSampleRate = file.AudioProperties.SampleRate;
-		var originalChannels = file.AudioProperties.Channels;
+		var originalSampleRate = file.Properties.SampleRate;
+		var originalChannels = file.Properties.Channels;
 
 		// Modify metadata
 		file.Tag.Title = "Modified Title";
@@ -154,8 +154,8 @@ public class AsfFileRoundTripTests
 		var file2 = result2.File!;
 
 		// Assert: Audio properties unchanged
-		Assert.AreEqual (originalSampleRate, file2.AudioProperties.SampleRate);
-		Assert.AreEqual (originalChannels, file2.AudioProperties.Channels);
+		Assert.AreEqual (originalSampleRate, file2.Properties.SampleRate);
+		Assert.AreEqual (originalChannels, file2.Properties.Channels);
 		Assert.AreEqual ("Modified Title", file2.Tag.Title);
 	}
 

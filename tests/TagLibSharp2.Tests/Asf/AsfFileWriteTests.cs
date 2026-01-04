@@ -148,14 +148,14 @@ public class AsfFileWriteTests
 		var data = AsfTestBuilder.CreateMinimalWma (durationMs: 180000);
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
-		var originalDuration = result.File!.AudioProperties.Duration;
+		var originalDuration = result.File!.Properties.Duration;
 
 		result.File!.Title = "Changed";
 		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual (originalDuration, reparsed.File!.AudioProperties.Duration);
+		Assert.AreEqual (originalDuration, reparsed.File!.Properties.Duration);
 	}
 
 	[TestMethod]
@@ -170,7 +170,7 @@ public class AsfFileWriteTests
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual (48000, reparsed.File!.AudioProperties.SampleRate);
+		Assert.AreEqual (48000, reparsed.File!.Properties.SampleRate);
 	}
 
 	[TestMethod]
@@ -185,7 +185,7 @@ public class AsfFileWriteTests
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual (2, reparsed.File!.AudioProperties.Channels);
+		Assert.AreEqual (2, reparsed.File!.Properties.Channels);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
