@@ -4137,7 +4137,7 @@ public static class TestBuilders
 				return baseFile;
 
 			// Parse and add ID3v2 tag
-			var parseResult = TagLibSharp2.Dff.DffFile.Parse (baseFile);
+			var parseResult = TagLibSharp2.Dff.DffFile.Read (baseFile);
 			if (!parseResult.IsSuccess)
 				throw new InvalidOperationException ($"Failed to parse DFF: {parseResult.Error}");
 

@@ -215,7 +215,7 @@ public class MediaFileFormatDetectionTests
 		var data = new byte[] { 0x66, 0x4C, 0x61, 0x43, 0x00, 0x00 };
 
 		// Act
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -229,7 +229,7 @@ public class MediaFileFormatDetectionTests
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00 };
 
 		// Act
-		var result = MediaFile.OpenFromData (data, "testfile.xyz");
+		var result = MediaFile.ReadFromData (data, "testfile.xyz");
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -243,7 +243,7 @@ public class MediaFileFormatDetectionTests
 		var data = TestBuilders.Ogg.CreateMinimalFile ();
 
 		// Act
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -257,7 +257,7 @@ public class MediaFileFormatDetectionTests
 		var data = TestBuilders.Opus.CreateMinimalFile ();
 
 		// Act
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -271,7 +271,7 @@ public class MediaFileFormatDetectionTests
 		var data = TestBuilders.Wav.CreateMinimal ();
 
 		// Act
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -285,7 +285,7 @@ public class MediaFileFormatDetectionTests
 		var data = TestBuilders.Aiff.CreateMinimal ();
 
 		// Act
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -299,7 +299,7 @@ public class MediaFileFormatDetectionTests
 		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
 
 		// Act
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);

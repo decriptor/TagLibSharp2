@@ -31,7 +31,7 @@ file.Save();
 using TagLibSharp2.Core;
 
 // Auto-detect format
-var result = MediaFile.Open("song.mp3");
+var result = MediaFile.Read("song.mp3");
 if (result.IsSuccess)
 {
     Console.WriteLine(result.Tag?.Title);
@@ -643,7 +643,7 @@ if (result.IsSuccess)
 
 TagLibSharp2 includes several features not available in TagLib#:
 
-- **Automatic format detection**: `MediaFile.Open()` auto-detects 15 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, and Musepack
+- **Automatic format detection**: `MediaFile.Read()` auto-detects 15 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, and Musepack
 - **DSD audio support**: Native DSF and DFF format support for high-resolution DSD audio
 - **Lossless format breadth**: WavPack and Monkey's Audio support with APE tag handling
 - **Async I/O**: Full async support throughout the API with cancellation token support

@@ -29,7 +29,7 @@ namespace TagLibSharp2.Mp4;
 /// Reference: ISO 14496-12 (MP4 base format), ISO 14496-14 (MP4 file format).
 /// </para>
 /// </remarks>
-public sealed class Mp4File : IDisposable
+public sealed class Mp4File : IMediaFile
 {
 	bool _disposed;
 
@@ -79,6 +79,15 @@ public sealed class Mp4File : IDisposable
 	/// Gets the audio duration from audio properties.
 	/// </summary>
 	public TimeSpan? Duration => Properties?.Duration;
+
+	/// <inheritdoc />
+	Tag? IMediaFile.Tag => Tag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Mp4;
 
 	/// <summary>
 	/// Gets or sets the title.
@@ -509,6 +518,16 @@ public sealed class Mp4File : IDisposable
 		get => Tag?.MediaType;
 		set => EnsureTag ().MediaType = value;
 	}
+
+	/// <summary>
+	/// Gets or sets the podcast feed URL.
+	/// </summary>
+#pragma warning disable CA1056 // URI properties should not be strings - API compatibility
+	public string? PodcastFeedUrl {
+		get => Tag?.PodcastFeedUrl;
+		set => EnsureTag ().PodcastFeedUrl = value;
+	}
+#pragma warning restore CA1056
 
 	/// <summary>
 	/// Gets the pictures (cover art) in this file.
@@ -994,7 +1013,7 @@ public sealed class Mp4File : IDisposable
 		if (!readResult.IsSuccess)
 			return Mp4FileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
@@ -1020,7 +1039,7 @@ public sealed class Mp4File : IDisposable
 		if (!readResult.IsSuccess)
 			return Mp4FileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
@@ -1243,7 +1262,7 @@ public sealed class Mp4File : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
 	}
 
 	/// <summary>
@@ -1285,7 +1304,7 @@ public sealed class Mp4File : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!, fileSystem, cancellationToken)
+		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
 			.ConfigureAwait (false);
 	}
 

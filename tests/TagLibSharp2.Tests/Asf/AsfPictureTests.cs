@@ -85,7 +85,7 @@ public class AsfPictureTests
 		var badData = new byte[20];
 		badData[0] = 0x03; // FrontCover
 		BitConverter.GetBytes ((uint)4).CopyTo (badData, 1); // Data length
-		// Fill rest with non-null bytes (no terminator)
+															 // Fill rest with non-null bytes (no terminator)
 		for (int i = 5; i < 20; i++)
 			badData[i] = 0x41; // 'A'
 
@@ -172,7 +172,7 @@ public class AsfPictureTests
 		var badData = new byte[30];
 		badData[0] = 0x03; // FrontCover
 		BitConverter.GetBytes ((uint)1000).CopyTo (badData, 1); // Claim 1000 bytes of data
-		// Write null-terminated MIME
+																// Write null-terminated MIME
 		badData[5] = 0x00;
 		badData[6] = 0x00;
 		// Write null-terminated description

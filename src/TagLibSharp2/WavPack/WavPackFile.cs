@@ -15,7 +15,7 @@ namespace TagLibSharp2.WavPack;
 /// <summary>
 /// Represents the result of parsing a WavPack file.
 /// </summary>
-public readonly struct WavPackFileParseResult : IEquatable<WavPackFileParseResult>
+public readonly struct WavPackFileReadResult : IEquatable<WavPackFileReadResult>
 {
 	/// <summary>
 	/// Gets the parsed WavPack file, or null if parsing failed.
@@ -32,7 +32,7 @@ public readonly struct WavPackFileParseResult : IEquatable<WavPackFileParseResul
 	/// </summary>
 	public bool IsSuccess => File is not null && Error is null;
 
-	private WavPackFileParseResult (WavPackFile? file, string? error)
+	private WavPackFileReadResult (WavPackFile? file, string? error)
 	{
 		File = file;
 		Error = error;
@@ -43,22 +43,22 @@ public readonly struct WavPackFileParseResult : IEquatable<WavPackFileParseResul
 	/// </summary>
 	/// <param name="file">The parsed WavPack file.</param>
 	/// <returns>A successful result containing the file.</returns>
-	public static WavPackFileParseResult Success (WavPackFile file) => new (file, null);
+	public static WavPackFileReadResult Success (WavPackFile file) => new (file, null);
 
 	/// <summary>
 	/// Creates a failed parse result.
 	/// </summary>
 	/// <param name="error">The error message describing the failure.</param>
 	/// <returns>A failed result containing the error.</returns>
-	public static WavPackFileParseResult Failure (string error) => new (null, error);
+	public static WavPackFileReadResult Failure (string error) => new (null, error);
 
 	/// <inheritdoc/>
-	public bool Equals (WavPackFileParseResult other) =>
+	public bool Equals (WavPackFileReadResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
-		obj is WavPackFileParseResult other && Equals (other);
+		obj is WavPackFileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
@@ -66,20 +66,20 @@ public readonly struct WavPackFileParseResult : IEquatable<WavPackFileParseResul
 	/// <summary>
 	/// Determines whether two results are equal.
 	/// </summary>
-	public static bool operator == (WavPackFileParseResult left, WavPackFileParseResult right) =>
+	public static bool operator == (WavPackFileReadResult left, WavPackFileReadResult right) =>
 		left.Equals (right);
 
 	/// <summary>
 	/// Determines whether two results are not equal.
 	/// </summary>
-	public static bool operator != (WavPackFileParseResult left, WavPackFileParseResult right) =>
+	public static bool operator != (WavPackFileReadResult left, WavPackFileReadResult right) =>
 		!left.Equals (right);
 }
 
 /// <summary>
 /// Represents a WavPack (.wv) file.
 /// </summary>
-public sealed class WavPackFile : IDisposable
+public sealed class WavPackFile : IMediaFile
 {
 	private bool _disposed;
 	private const int MagicSize = 4;
@@ -99,6 +99,12 @@ public sealed class WavPackFile : IDisposable
 
 	private byte[] _originalData = Array.Empty<byte> ();
 	private string? _sourcePath;
+
+	/// <summary>
+	/// Gets the source file path if the file was read from disk.
+	/// </summary>
+	public string? SourcePath => _sourcePath;
+
 	private IFileSystem? _sourceFileSystem;
 
 	private WavPackFile () { }
@@ -127,23 +133,32 @@ public sealed class WavPackFile : IDisposable
 	/// <summary>APEv2 tag (null if not present)</summary>
 	public ApeTag? ApeTag { get; private set; }
 
+	/// <inheritdoc />
+	public Tag? Tag => ApeTag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.WavPack;
+
 	/// <summary>
 	/// Parse a WavPack file from byte data.
 	/// </summary>
 	/// <param name="data">The raw file bytes to parse.</param>
 	/// <returns>A result indicating success with the parsed file, or failure with an error message.</returns>
 	[SuppressMessage ("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Factory method transfers ownership to caller")]
-	public static WavPackFileParseResult Parse (ReadOnlySpan<byte> data)
+	public static WavPackFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MagicSize)
-			return WavPackFileParseResult.Failure ("File too short to contain wvpk magic");
+			return WavPackFileReadResult.Failure ("File too short to contain wvpk magic");
 
 		// Verify magic "wvpk"
 		if (!data[..MagicSize].SequenceEqual (Magic))
-			return WavPackFileParseResult.Failure ("Invalid magic: expected 'wvpk'");
+			return WavPackFileReadResult.Failure ("Invalid magic: expected 'wvpk'");
 
 		if (data.Length < BlockHeaderSize)
-			return WavPackFileParseResult.Failure ("File too short for WavPack block header");
+			return WavPackFileReadResult.Failure ("File too short for WavPack block header");
 
 		var file = new WavPackFile ();
 
@@ -195,7 +210,7 @@ public sealed class WavPackFile : IDisposable
 		// Parse APEv2 tag at end of file
 		file.ParseApeTag (data);
 
-		return WavPackFileParseResult.Success (file);
+		return WavPackFileReadResult.Success (file);
 	}
 
 	private void CalculateProperties ()
@@ -433,14 +448,14 @@ public sealed class WavPackFile : IDisposable
 	/// <summary>
 	/// Read a WavPack file from disk.
 	/// </summary>
-	public static WavPackFileParseResult ReadFromFile (string path, IFileSystem? fileSystem = null)
+	public static WavPackFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = FileHelper.SafeReadAllBytes (path, fs);
 		if (!readResult.IsSuccess)
-			return WavPackFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return WavPackFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;
@@ -451,7 +466,7 @@ public sealed class WavPackFile : IDisposable
 	/// <summary>
 	/// Read a WavPack file from disk asynchronously.
 	/// </summary>
-	public static async Task<WavPackFileParseResult> ReadFromFileAsync (
+	public static async Task<WavPackFileReadResult> ReadFromFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -459,9 +474,9 @@ public sealed class WavPackFile : IDisposable
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fs, cancellationToken).ConfigureAwait (false);
 		if (!readResult.IsSuccess)
-			return WavPackFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return WavPackFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;

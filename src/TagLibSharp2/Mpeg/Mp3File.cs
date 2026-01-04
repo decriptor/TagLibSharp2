@@ -24,7 +24,7 @@ namespace TagLibSharp2.Mpeg;
 /// [ID3v1 tag] (optional, last 128 bytes)
 /// </code>
 /// </remarks>
-public sealed class Mp3File : IDisposable
+public sealed class Mp3File : IMediaFile
 {
 	const int Id3v1Size = 128;
 	bool _disposed;
@@ -86,6 +86,15 @@ public sealed class Mp3File : IDisposable
 	/// Gets a value indicating whether this file has an ID3v2 tag.
 	/// </summary>
 	public bool HasId3v2Tag => Id3v2Tag is not null;
+
+	/// <inheritdoc />
+	public Tag? Tag => (Tag?)Id3v2Tag ?? Id3v1Tag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => AudioProperties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Mp3;
 
 	/// <summary>
 	/// Gets or sets the title. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
@@ -263,7 +272,7 @@ public sealed class Mp3File : IDisposable
 		if (!readResult.IsSuccess)
 			return Mp3FileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
@@ -288,7 +297,7 @@ public sealed class Mp3File : IDisposable
 		if (!readResult.IsSuccess)
 			return Mp3FileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
@@ -415,6 +424,57 @@ public sealed class Mp3File : IDisposable
 	}
 
 	/// <summary>
+	/// Saves the file to the specified path asynchronously, re-reading from the source file.
+	/// </summary>
+	/// <remarks>
+	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
+	/// and saves to the specified path. Requires that the file was read using
+	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// </remarks>
+	/// <param name="path">The target file path.</param>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <param name="cancellationToken">A token to cancel the operation.</param>
+	/// <returns>A task containing a result indicating success or failure.</returns>
+	public async Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var fs = fileSystem ?? _sourceFileSystem;
+		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken)
+			.ConfigureAwait (false);
+		if (!readResult.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+
+		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
+			.ConfigureAwait (false);
+	}
+
+	/// <summary>
+	/// Saves the file back to its source path asynchronously.
+	/// </summary>
+	/// <remarks>
+	/// This convenience method saves the file back to the path it was read from.
+	/// Requires that the file was read using <see cref="ReadFromFile"/> or
+	/// <see cref="ReadFromFileAsync"/>.
+	/// </remarks>
+	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
+	/// <param name="cancellationToken">A token to cancel the operation.</param>
+	/// <returns>A task containing a result indicating success or failure.</returns>
+	public Task<FileWriteResult> SaveToFileAsync (
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
+
+		return SaveToFileAsync (SourcePath!, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
 	/// Saves the file to the specified path, re-reading from the source file.
 	/// </summary>
 	/// <remarks>
@@ -435,7 +495,7 @@ public sealed class Mp3File : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
 	}
 
 	/// <summary>

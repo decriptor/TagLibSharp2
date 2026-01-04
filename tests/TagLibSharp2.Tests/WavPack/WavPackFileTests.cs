@@ -25,7 +25,7 @@ public class WavPackFileTests
 	public void Parse_ValidMagic_ReturnsSuccess ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 	}
 
@@ -38,7 +38,7 @@ public class WavPackFileTests
 		data[2] = (byte)'X';
 		data[3] = (byte)'X';
 
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsTrue (result.Error!.Contains ("magic") || result.Error.Contains ("wvpk"));
 	}
@@ -47,7 +47,7 @@ public class WavPackFileTests
 	public void Parse_TooShort_ReturnsError ()
 	{
 		var data = new byte[3]; // Too short for magic
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 	}
 
@@ -59,7 +59,7 @@ public class WavPackFileTests
 	public void Parse_ExtractsVersion ()
 	{
 		var data = CreateMinimalWavPackFile (version: 0x410);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (0x410, result.File!.Version);
@@ -69,7 +69,7 @@ public class WavPackFileTests
 	public void Parse_ExtractsBlockSize ()
 	{
 		var data = CreateMinimalWavPackFile (blockSize: 1000);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (1000u, result.File!.BlockSize);
@@ -84,7 +84,7 @@ public class WavPackFileTests
 	{
 		// 44100 = index 9 in sample rate table
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 9);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (44100, result.File!.SampleRate);
@@ -95,7 +95,7 @@ public class WavPackFileTests
 	{
 		// 48000 = index 10 in sample rate table
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 10);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (48000, result.File!.SampleRate);
@@ -106,7 +106,7 @@ public class WavPackFileTests
 	{
 		// 96000 = index 13 in sample rate table
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 13);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (96000, result.File!.SampleRate);
@@ -118,7 +118,7 @@ public class WavPackFileTests
 		// bytesPerSample - 1 in flags bits 0-1
 		// 16-bit = 2 bytes = flags bits 0-1 = 1
 		var data = CreateMinimalWavPackFile (bytesPerSample: 2);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (16, result.File!.BitsPerSample);
@@ -129,7 +129,7 @@ public class WavPackFileTests
 	{
 		// 24-bit = 3 bytes = flags bits 0-1 = 2
 		var data = CreateMinimalWavPackFile (bytesPerSample: 3);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (24, result.File!.BitsPerSample);
@@ -140,7 +140,7 @@ public class WavPackFileTests
 	{
 		// Mono flag = bit 2. If not set, stereo
 		var data = CreateMinimalWavPackFile (isMono: false);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2, result.File!.Channels);
@@ -151,7 +151,7 @@ public class WavPackFileTests
 	{
 		// Mono flag = bit 2
 		var data = CreateMinimalWavPackFile (isMono: true);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (1, result.File!.Channels);
@@ -161,7 +161,7 @@ public class WavPackFileTests
 	public void Parse_ExtractsTotalSamples ()
 	{
 		var data = CreateMinimalWavPackFile (totalSamples: 441000);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (441000u, result.File!.TotalSamples);
@@ -176,7 +176,7 @@ public class WavPackFileTests
 	{
 		// 441000 samples at 44100 Hz = 10 seconds
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 9, totalSamples: 441000);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.Properties);
@@ -187,7 +187,7 @@ public class WavPackFileTests
 	public void Properties_MatchesFileProperties ()
 	{
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 10, bytesPerSample: 3, isMono: false);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		var file = result.File!;
@@ -206,7 +206,7 @@ public class WavPackFileTests
 	public void Parse_NoTag_ApeTagIsNull ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNull (result.File!.ApeTag);
@@ -216,7 +216,7 @@ public class WavPackFileTests
 	public void Parse_WithApeTag_ReadsTitle ()
 	{
 		var data = CreateMinimalWavPackFileWithTag (title: "Test Song");
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -227,7 +227,7 @@ public class WavPackFileTests
 	public void Parse_WithApeTag_ReadsArtist ()
 	{
 		var data = CreateMinimalWavPackFileWithTag (artist: "Test Artist");
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -238,7 +238,7 @@ public class WavPackFileTests
 	public void EnsureApeTag_CreatesTag ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -253,7 +253,7 @@ public class WavPackFileTests
 	public void RemoveApeTag_RemovesExistingTag ()
 	{
 		var data = CreateMinimalWavPackFileWithTag (title: "Test");
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -341,7 +341,7 @@ public class WavPackFileTests
 	public void Render_WithNewTag_AppendsTagToAudioData ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -353,7 +353,7 @@ public class WavPackFileTests
 		Assert.IsTrue (rendered.Length > data.Length);
 
 		// Should still be valid WavPack file
-		var reparsed = WavPackFile.Parse (rendered);
+		var reparsed = WavPackFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("Test", reparsed.File!.ApeTag!.Title);
 	}
@@ -362,7 +362,7 @@ public class WavPackFileTests
 	public void Render_RemoveTag_StripsTagFromFile ()
 	{
 		var data = CreateMinimalWavPackFileWithTag (title: "Original");
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -371,7 +371,7 @@ public class WavPackFileTests
 		var rendered = file.Render (data);
 
 		// Re-parse should have no tag
-		var reparsed = WavPackFile.Parse (rendered);
+		var reparsed = WavPackFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.IsNull (reparsed.File!.ApeTag);
 	}
@@ -431,7 +431,7 @@ public class WavPackFileTests
 	public void Dispose_WithTag_ClearsTag ()
 	{
 		var data = CreateMinimalWavPackFileWithTag (title: "Test");
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNotNull (result.File!.ApeTag);
 
@@ -444,7 +444,7 @@ public class WavPackFileTests
 	public void Dispose_WithoutTag_DoesNotThrow ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.File!.ApeTag);
 
@@ -455,7 +455,7 @@ public class WavPackFileTests
 	public void Dispose_CalledTwice_DoesNotThrow ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		result.File!.Dispose ();
@@ -467,31 +467,31 @@ public class WavPackFileTests
 	#region Result Type Tests
 
 	[TestMethod]
-	public void WavPackFileParseResult_Equals_SameFile_ReturnsTrue ()
+	public void WavPackFileReadResult_Equals_SameFile_ReturnsTrue ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result1 = WavPackFile.Parse (data);
-		var result2 = WavPackFile.Parse (data);
+		var result1 = WavPackFile.Read (data);
+		var result2 = WavPackFile.Read (data);
 
 		// Two different parse results with same structure
 		Assert.IsFalse (result1.Equals (result2)); // Different file instances
 	}
 
 	[TestMethod]
-	public void WavPackFileParseResult_Equals_SameError_ReturnsTrue ()
+	public void WavPackFileReadResult_Equals_SameError_ReturnsTrue ()
 	{
-		var result1 = WavPackFile.Parse (new byte[3]);
-		var result2 = WavPackFile.Parse (new byte[3]);
+		var result1 = WavPackFile.Read (new byte[3]);
+		var result2 = WavPackFile.Read (new byte[3]);
 
 		Assert.IsTrue (result1.Equals (result2));
 		Assert.IsTrue (result1 == result2);
 	}
 
 	[TestMethod]
-	public void WavPackFileParseResult_Equals_Object_ReturnsCorrectly ()
+	public void WavPackFileReadResult_Equals_Object_ReturnsCorrectly ()
 	{
-		var result1 = WavPackFile.Parse (new byte[3]);
-		var result2 = WavPackFile.Parse (new byte[3]);
+		var result1 = WavPackFile.Read (new byte[3]);
+		var result2 = WavPackFile.Read (new byte[3]);
 		object boxed = result2;
 
 		Assert.IsTrue (result1.Equals (boxed));
@@ -500,19 +500,19 @@ public class WavPackFileTests
 	}
 
 	[TestMethod]
-	public void WavPackFileParseResult_GetHashCode_SameError_SameHash ()
+	public void WavPackFileReadResult_GetHashCode_SameError_SameHash ()
 	{
-		var result1 = WavPackFile.Parse (new byte[3]);
-		var result2 = WavPackFile.Parse (new byte[3]);
+		var result1 = WavPackFile.Read (new byte[3]);
+		var result2 = WavPackFile.Read (new byte[3]);
 
 		Assert.AreEqual (result1.GetHashCode (), result2.GetHashCode ());
 	}
 
 	[TestMethod]
-	public void WavPackFileParseResult_NotEquals_DifferentError_ReturnsTrue ()
+	public void WavPackFileReadResult_NotEquals_DifferentError_ReturnsTrue ()
 	{
-		var result1 = WavPackFile.Parse (new byte[3]);
-		var result2 = WavPackFile.Parse (new byte[10]);
+		var result1 = WavPackFile.Read (new byte[3]);
+		var result2 = WavPackFile.Read (new byte[10]);
 
 		Assert.IsFalse (result1.Equals (result2));
 		Assert.IsTrue (result1 != result2);
@@ -528,7 +528,7 @@ public class WavPackFileTests
 		// Test all 15 standard sample rates
 		for (int i = 0; i < SampleRateTable.Length; i++) {
 			var data = CreateMinimalWavPackFile (sampleRateIndex: i);
-			var result = WavPackFile.Parse (data);
+			var result = WavPackFile.Read (data);
 
 			Assert.IsTrue (result.IsSuccess, $"Failed for sample rate index {i}");
 			Assert.AreEqual (SampleRateTable[i], result.File!.SampleRate, $"Wrong sample rate for index {i}");
@@ -540,7 +540,7 @@ public class WavPackFileTests
 	{
 		// 8-bit = 1 byte = flags bits 0-1 = 0
 		var data = CreateMinimalWavPackFile (bytesPerSample: 1);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (8, result.File!.BitsPerSample);
@@ -551,7 +551,7 @@ public class WavPackFileTests
 	{
 		// 32-bit = 4 bytes = flags bits 0-1 = 3
 		var data = CreateMinimalWavPackFile (bytesPerSample: 4);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (32, result.File!.BitsPerSample);
@@ -562,7 +562,7 @@ public class WavPackFileTests
 	{
 		// Sample rate index 15 = custom, needs metadata sub-block 0x07
 		var data = CreateMinimalWavPackFileWithCustomSampleRate (88200);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (88200, result.File!.SampleRate);
@@ -573,7 +573,7 @@ public class WavPackFileTests
 	{
 		// Sample rate index 15 without metadata sub-block should fallback to 44100
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 15);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (44100, result.File!.SampleRate); // Default fallback
@@ -583,7 +583,7 @@ public class WavPackFileTests
 	public void Parse_MultiChannel_ParsesChannelCount ()
 	{
 		var data = CreateMinimalWavPackFileWithChannelInfo (6);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (6, result.File!.Channels);
@@ -593,7 +593,7 @@ public class WavPackFileTests
 	public void EnsureApeTag_CreatesNewTag ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.File!.ApeTag);
 
@@ -607,7 +607,7 @@ public class WavPackFileTests
 	public void EnsureApeTag_ReturnsExistingTag ()
 	{
 		var data = CreateMinimalWavPackFileWithTag (title: "Test");
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNotNull (result.File!.ApeTag);
 
@@ -621,7 +621,7 @@ public class WavPackFileTests
 	public void RemoveApeTag_ClearsTag ()
 	{
 		var data = CreateMinimalWavPackFileWithTag (title: "Test");
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNotNull (result.File!.ApeTag);
 
@@ -634,7 +634,7 @@ public class WavPackFileTests
 	public void Render_PreservesAudioData ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var rendered = result.File!.Render (data);
@@ -647,7 +647,7 @@ public class WavPackFileTests
 	public void Render_AddsApeTag ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		result.File!.EnsureApeTag ().Title = "Test Title";
@@ -661,7 +661,7 @@ public class WavPackFileTests
 	public void SaveToFile_WithoutSourcePath_ReturnsError ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var saveResult = result.File!.SaveToFile ();
@@ -674,7 +674,7 @@ public class WavPackFileTests
 	public async Task SaveToFileAsync_WithoutSourcePath_ReturnsError ()
 	{
 		var data = CreateMinimalWavPackFile ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var saveResult = await result.File!.SaveToFileAsync ();
@@ -688,7 +688,7 @@ public class WavPackFileTests
 	{
 		var data = CreateMinimalWavPackFile ();
 		var mockFs = new MockFileSystem ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		result.File!.EnsureApeTag ().Title = "Modified";
@@ -703,7 +703,7 @@ public class WavPackFileTests
 	{
 		var data = CreateMinimalWavPackFile ();
 		var mockFs = new MockFileSystem ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		result.File!.EnsureApeTag ().Title = "Modified";
@@ -718,7 +718,7 @@ public class WavPackFileTests
 	{
 		// Create file with sample rate index 15 (custom) but no metadata - defaults to 44100
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 15, totalSamples: 0);
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.File!.Properties); // No properties when totalSamples is 0

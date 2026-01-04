@@ -649,6 +649,12 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <inheritdoc/>
+	public override string? PodcastFeedUrl {
+		get => GetValue ("PODCASTFEEDURL");
+		set => SetValue ("PODCASTFEEDURL", value);
+	}
+
+	/// <inheritdoc/>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public override string[]? PerformersRole {
 		get {

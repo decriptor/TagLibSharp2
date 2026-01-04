@@ -68,7 +68,7 @@ public sealed class DsfAudioProperties
 /// <summary>
 /// Represents the result of parsing a DSF file.
 /// </summary>
-public readonly struct DsfFileParseResult : IEquatable<DsfFileParseResult>
+public readonly struct DsfFileReadResult : IEquatable<DsfFileReadResult>
 {
 	/// <summary>
 	/// Gets the parsed DSF file, or null if parsing failed.
@@ -85,7 +85,7 @@ public readonly struct DsfFileParseResult : IEquatable<DsfFileParseResult>
 	/// </summary>
 	public bool IsSuccess => File is not null && Error is null;
 
-	private DsfFileParseResult (DsfFile? file, string? error)
+	private DsfFileReadResult (DsfFile? file, string? error)
 	{
 		File = file;
 		Error = error;
@@ -96,22 +96,22 @@ public readonly struct DsfFileParseResult : IEquatable<DsfFileParseResult>
 	/// </summary>
 	/// <param name="file">The parsed DSF file.</param>
 	/// <returns>A successful result containing the file.</returns>
-	public static DsfFileParseResult Success (DsfFile file) => new (file, null);
+	public static DsfFileReadResult Success (DsfFile file) => new (file, null);
 
 	/// <summary>
 	/// Creates a failed parse result.
 	/// </summary>
 	/// <param name="error">The error message describing the failure.</param>
 	/// <returns>A failed result containing the error.</returns>
-	public static DsfFileParseResult Failure (string error) => new (null, error);
+	public static DsfFileReadResult Failure (string error) => new (null, error);
 
 	/// <inheritdoc/>
-	public bool Equals (DsfFileParseResult other) =>
+	public bool Equals (DsfFileReadResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
-		obj is DsfFileParseResult other && Equals (other);
+		obj is DsfFileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
@@ -119,20 +119,20 @@ public readonly struct DsfFileParseResult : IEquatable<DsfFileParseResult>
 	/// <summary>
 	/// Determines whether two results are equal.
 	/// </summary>
-	public static bool operator == (DsfFileParseResult left, DsfFileParseResult right) =>
+	public static bool operator == (DsfFileReadResult left, DsfFileReadResult right) =>
 		left.Equals (right);
 
 	/// <summary>
 	/// Determines whether two results are not equal.
 	/// </summary>
-	public static bool operator != (DsfFileParseResult left, DsfFileParseResult right) =>
+	public static bool operator != (DsfFileReadResult left, DsfFileReadResult right) =>
 		!left.Equals (right);
 }
 
 /// <summary>
 /// Represents a DSF (DSD Stream File) audio file.
 /// </summary>
-public sealed class DsfFile : IDisposable
+public sealed class DsfFile : IMediaFile
 {
 	private byte[]? _originalData;
 	private bool _disposed;
@@ -203,6 +203,16 @@ public sealed class DsfFile : IDisposable
 	/// </summary>
 	public DsfAudioProperties? Properties { get; private set; }
 
+	/// <inheritdoc />
+	public Tag? Tag => Id3v2Tag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties is null ? null : new AudioProperties (
+		Properties.Duration, 0, Properties.SampleRate, Properties.BitsPerSample, Properties.Channels, "DSD");
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Dsf;
+
 	private DsfFile (
 		byte[] originalData,
 		DsfDsdChunk dsdChunk,
@@ -222,19 +232,19 @@ public sealed class DsfFile : IDisposable
 	/// <summary>
 	/// Parses a DSF file from binary data.
 	/// </summary>
-	public static DsfFileParseResult Parse (ReadOnlySpan<byte> data)
+	public static DsfFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		const int minSize = DsfDsdChunk.Size + DsfFmtChunk.Size + DsfDataChunk.HeaderSize;
 
 		if (data.Length < minSize) {
-			return DsfFileParseResult.Failure (
+			return DsfFileReadResult.Failure (
 				$"Data too short for DSF file: {data.Length} bytes, need at least {minSize}");
 		}
 
 		// Parse DSD chunk
 		var dsdResult = DsfDsdChunk.Parse (data);
 		if (!dsdResult.IsSuccess) {
-			return DsfFileParseResult.Failure ($"Failed to parse DSD chunk: {dsdResult.Error}");
+			return DsfFileReadResult.Failure ($"Failed to parse DSD chunk: {dsdResult.Error}");
 		}
 		var dsdChunk = dsdResult.Chunk!;
 
@@ -242,7 +252,7 @@ public sealed class DsfFile : IDisposable
 		var fmtOffset = DsfDsdChunk.Size;
 		var fmtResult = DsfFmtChunk.Parse (data[fmtOffset..]);
 		if (!fmtResult.IsSuccess) {
-			return DsfFileParseResult.Failure ($"Failed to parse format chunk: {fmtResult.Error}");
+			return DsfFileReadResult.Failure ($"Failed to parse format chunk: {fmtResult.Error}");
 		}
 		var fmtChunk = fmtResult.Chunk!;
 
@@ -250,7 +260,7 @@ public sealed class DsfFile : IDisposable
 		var dataOffset = fmtOffset + DsfFmtChunk.Size;
 		var dataResult = DsfDataChunk.Parse (data[dataOffset..]);
 		if (!dataResult.IsSuccess) {
-			return DsfFileParseResult.Failure ($"Failed to parse data chunk: {dataResult.Error}");
+			return DsfFileReadResult.Failure ($"Failed to parse data chunk: {dataResult.Error}");
 		}
 		var dataChunk = dataResult.Chunk!;
 
@@ -263,13 +273,13 @@ public sealed class DsfFile : IDisposable
 		if (dsdChunk.HasMetadata) {
 			// Data chunk should not extend beyond metadata offset
 			if (dataEnd > dsdChunk.MetadataOffset) {
-				return DsfFileParseResult.Failure (
+				return DsfFileReadResult.Failure (
 					$"Data chunk extends beyond metadata offset: data ends at {dataEnd}, metadata at {dsdChunk.MetadataOffset}");
 			}
 		} else {
 			// Data chunk should not exceed file size
 			if (dataEnd > (ulong)data.Length) {
-				return DsfFileParseResult.Failure (
+				return DsfFileReadResult.Failure (
 					$"Data chunk size exceeds available data: claims {audioDataSize} bytes, but only {data.Length - audioDataOffset} available");
 			}
 		}
@@ -278,7 +288,7 @@ public sealed class DsfFile : IDisposable
 		Id3v2Tag? tag = null;
 		if (dsdChunk.HasMetadata) {
 			if (dsdChunk.MetadataOffset > (ulong)data.Length) {
-				return DsfFileParseResult.Failure (
+				return DsfFileReadResult.Failure (
 					$"Metadata offset {dsdChunk.MetadataOffset} beyond file size {data.Length}");
 			}
 
@@ -299,7 +309,7 @@ public sealed class DsfFile : IDisposable
 
 		var file = new DsfFile (originalData, dsdChunk, fmtChunk, dataChunk, audioDataOffset, tag);
 		file.Properties = new DsfAudioProperties (fmtChunk);
-		return DsfFileParseResult.Success (file);
+		return DsfFileReadResult.Success (file);
 	}
 
 	/// <summary>
@@ -308,15 +318,15 @@ public sealed class DsfFile : IDisposable
 	/// <param name="path">The path to the file.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <returns>A result containing the parsed file or an error.</returns>
-	public static DsfFileParseResult ReadFromFile (string path, IFileSystem? fileSystem = null)
+	public static DsfFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = FileHelper.SafeReadAllBytes (path, fs);
 		if (!readResult.IsSuccess) {
-			return DsfFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return DsfFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 		}
 
-		var parseResult = Parse (readResult.Data!);
+		var parseResult = Read (readResult.Data!.Value.Span);
 		if (parseResult.IsSuccess) {
 			parseResult.File!.SourcePath = path;
 			parseResult.File._sourceFileSystem = fs;
@@ -331,7 +341,7 @@ public sealed class DsfFile : IDisposable
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result with the parsed file or an error.</returns>
-	public static async Task<DsfFileParseResult> ReadFromFileAsync (
+	public static async Task<DsfFileReadResult> ReadFromFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -339,10 +349,10 @@ public sealed class DsfFile : IDisposable
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fs, cancellationToken).ConfigureAwait (false);
 		if (!readResult.IsSuccess) {
-			return DsfFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return DsfFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 		}
 
-		var parseResult = Parse (readResult.Data!);
+		var parseResult = Read (readResult.Data!.Value.Span);
 		if (parseResult.IsSuccess) {
 			parseResult.File!.SourcePath = path;
 			parseResult.File._sourceFileSystem = fs;
@@ -485,7 +495,7 @@ public sealed class DsfFile : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
 	}
 
 	/// <summary>
@@ -527,7 +537,7 @@ public sealed class DsfFile : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!, fileSystem, cancellationToken).ConfigureAwait (false);
+		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken).ConfigureAwait (false);
 	}
 
 	/// <summary>

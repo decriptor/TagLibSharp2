@@ -243,6 +243,6 @@ public class AsfMalformedInputTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.IsTrue (result.Value.Tag.IsEmpty);
+		Assert.IsTrue (result.File!.Tag.IsEmpty);
 	}
 }

@@ -46,13 +46,13 @@ Console.WriteLine ("\nAll examples completed!");
 
 static async Task DemoAutoDetect ()
 {
-	// MediaFile.Open auto-detects the format based on magic bytes
+	// MediaFile.Read auto-detects the format based on magic bytes
 	var formats = new[] { "song.mp3", "song.flac", "song.ogg" };
 
 	foreach (var filename in formats) {
 		// Create sample data for demo (in real use, these would be actual files)
 		var sampleData = CreateSampleData (filename);
-		var result = MediaFile.OpenFromData (sampleData, filename);
+		var result = MediaFile.ReadFromData (sampleData, filename);
 
 		if (result.IsSuccess) {
 			Console.WriteLine ($"  {filename}: Format={result.Format}, Title={result.Tag?.Title ?? "(no title)"}");
@@ -63,7 +63,7 @@ static async Task DemoAutoDetect ()
 
 	// Async variant
 	Console.WriteLine ("\n  Async file reading:");
-	Console.WriteLine ("  await MediaFile.OpenAsync(path) - reads file asynchronously");
+	Console.WriteLine ("  await MediaFile.ReadAsync(path) - reads file asynchronously");
 }
 
 static async Task DemoBatchProcessing ()

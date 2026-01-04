@@ -602,7 +602,7 @@ public class DsfFileTests
 			hasMetadata: false);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -622,7 +622,7 @@ public class DsfFileTests
 			artist: "Test Artist");
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -638,7 +638,7 @@ public class DsfFileTests
 		var data = new byte[10];
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -655,7 +655,7 @@ public class DsfFileTests
 			hasMetadata: false);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -679,7 +679,7 @@ public class DsfFileTests
 			title: "Original Title",
 			artist: "Original Artist");
 
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -689,7 +689,7 @@ public class DsfFileTests
 		var rendered = file.Render ();
 
 		// Assert - can parse back
-		var reparsed = DsfFile.Parse (rendered.Span);
+		var reparsed = DsfFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("Modified Title", reparsed.File!.Id3v2Tag!.Title);
 		Assert.AreEqual ("Modified Artist", reparsed.File.Id3v2Tag.Artist);
@@ -705,7 +705,7 @@ public class DsfFileTests
 			sampleCount: 2822400,
 			hasMetadata: false);
 
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 		Assert.IsNull (file.Id3v2Tag);
@@ -716,7 +716,7 @@ public class DsfFileTests
 		var rendered = file.Render ();
 
 		// Assert
-		var reparsed = DsfFile.Parse (rendered.Span);
+		var reparsed = DsfFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.IsNotNull (reparsed.File!.Id3v2Tag);
 		Assert.AreEqual ("New Title", reparsed.File.Id3v2Tag.Title);
@@ -758,7 +758,7 @@ public class DsfFileTests
 		BinaryPrimitives.WriteUInt64LittleEndian (fullFile.AsSpan (20), (ulong)baseSize);
 
 		// Parse and modify
-		var parseResult = DsfFile.Parse (fullFile);
+		var parseResult = DsfFile.Read (fullFile);
 		Assert.IsTrue (parseResult.IsSuccess, $"Parse failed: {parseResult.Error}");
 		var file = parseResult.File!;
 
@@ -798,7 +798,7 @@ public class DsfFileTests
 			hasMetadata: false);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert - should not throw, may fail validation
 		// Implementation should handle gracefully
@@ -819,7 +819,7 @@ public class DsfFileTests
 		dataChunk.CopyTo (combined, dsd.Length + fmt.Length);
 
 		// Act
-		var result = DsfFile.Parse (combined);
+		var result = DsfFile.Read (combined);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -861,7 +861,7 @@ public class DsfFileTests
 		BinaryPrimitives.WriteUInt64LittleEndian (combined.AsSpan (12), (ulong)combined.Length);
 
 		// Act
-		var result = DsfFile.Parse (combined);
+		var result = DsfFile.Read (combined);
 
 		// Assert - should fail because data chunk claims more data than exists
 		Assert.IsFalse (result.IsSuccess);
@@ -888,7 +888,7 @@ public class DsfFileTests
 		audioData.CopyTo (combined, dsd.Length + fmt.Length + dataChunk.Length);
 
 		// Act
-		var result = DsfFile.Parse (combined);
+		var result = DsfFile.Read (combined);
 
 		// Assert - should fail because data chunk overlaps metadata
 		Assert.IsFalse (result.IsSuccess);
@@ -1060,7 +1060,7 @@ public class DsfFileTests
 	{
 		// Arrange
 		var original = CreateDsfWithId3v2 (2822400, 2, "Original", "Artist");
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -1077,7 +1077,7 @@ public class DsfFileTests
 
 		// Verify content is valid DSF
 		var savedData = mockFs.ReadAllBytes ("/test/output.dsf");
-		var reparsed = DsfFile.Parse (savedData);
+		var reparsed = DsfFile.Read (savedData);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("Modified Title", reparsed.File!.Id3v2Tag!.Title);
 	}
@@ -1104,7 +1104,7 @@ public class DsfFileTests
 		Assert.IsTrue (mockFs.FileExists ("/music/copy.dsf"));
 
 		var savedData = mockFs.ReadAllBytes ("/music/copy.dsf");
-		var reparsed = DsfFile.Parse (savedData);
+		var reparsed = DsfFile.Read (savedData);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("Updated Title", reparsed.File!.Id3v2Tag!.Title);
 	}
@@ -1130,7 +1130,7 @@ public class DsfFileTests
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var savedData = mockFs.ReadAllBytes ("/music/song.dsf");
-		var reparsed = DsfFile.Parse (savedData);
+		var reparsed = DsfFile.Read (savedData);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("In-Place Update", reparsed.File!.Id3v2Tag!.Title);
 	}
@@ -1140,7 +1140,7 @@ public class DsfFileTests
 	{
 		// Arrange - parsed from memory, no source path
 		var original = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -1159,7 +1159,7 @@ public class DsfFileTests
 	{
 		// Arrange - create file with specific audio data pattern
 		var original = CreateDsfWithId3v2 (5644800, 2, "DSD128 Test", "Artist");
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -1176,7 +1176,7 @@ public class DsfFileTests
 		Assert.IsTrue (result.IsSuccess);
 
 		var savedData = mockFs.ReadAllBytes ("/output.dsf");
-		var reparsed = DsfFile.Parse (savedData);
+		var reparsed = DsfFile.Read (savedData);
 
 		// Audio properties should be unchanged
 		Assert.AreEqual (5644800, reparsed.File!.SampleRate);
@@ -1188,7 +1188,7 @@ public class DsfFileTests
 	{
 		// Arrange - file without metadata
 		var original = CreateMinimalDsfFile (2822400, 2, 2822400, hasMetadata: false);
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 		Assert.IsNull (file.Id3v2Tag);
@@ -1207,7 +1207,7 @@ public class DsfFileTests
 		Assert.IsTrue (result.IsSuccess);
 
 		var savedData = mockFs.ReadAllBytes ("/output.dsf");
-		var reparsed = DsfFile.Parse (savedData);
+		var reparsed = DsfFile.Read (savedData);
 		Assert.IsNotNull (reparsed.File!.Id3v2Tag);
 		Assert.AreEqual ("Brand New Tag", reparsed.File.Id3v2Tag.Title);
 	}
@@ -1217,7 +1217,7 @@ public class DsfFileTests
 	{
 		// Arrange
 		var original = CreateDsfWithId3v2 (2822400, 2, "Async Test", "Artist");
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -1233,7 +1233,7 @@ public class DsfFileTests
 		Assert.IsTrue (mockFs.FileExists ("/test/async.dsf"));
 
 		var savedData = mockFs.ReadAllBytes ("/test/async.dsf");
-		var reparsed = DsfFile.Parse (savedData);
+		var reparsed = DsfFile.Read (savedData);
 		Assert.AreEqual ("Async Modified", reparsed.File!.Id3v2Tag!.Title);
 	}
 
@@ -1258,7 +1258,7 @@ public class DsfFileTests
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var savedData = mockFs.ReadAllBytes ("/music/async.dsf");
-		var reparsed = DsfFile.Parse (savedData);
+		var reparsed = DsfFile.Read (savedData);
 		Assert.AreEqual ("Async In-Place", reparsed.File!.Id3v2Tag!.Title);
 	}
 
@@ -1267,7 +1267,7 @@ public class DsfFileTests
 	{
 		// Arrange
 		var original = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		var file = parseResult.File!;
 
 		var mockFs = new MockFileSystem ();
@@ -1284,7 +1284,7 @@ public class DsfFileTests
 	{
 		// Arrange
 		var original = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
-		var parseResult = DsfFile.Parse (original);
+		var parseResult = DsfFile.Read (original);
 		var file = parseResult.File!;
 
 		file.Dispose ();
@@ -1500,7 +1500,7 @@ public class DsfFileTests
 			hasMetadata: false);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -1526,7 +1526,7 @@ public class DsfFileTests
 			hasMetadata: false);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -1545,7 +1545,7 @@ public class DsfFileTests
 			hasMetadata: false);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -1594,7 +1594,7 @@ public class DsfFileTests
 	{
 		// Arrange - parse in-memory (no SourcePath)
 		var data = CreateMinimalDsfFile (2822400, 2, 2822400, hasMetadata: false);
-		var parseResult = DsfFile.Parse (data);
+		var parseResult = DsfFile.Read (data);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -1611,15 +1611,15 @@ public class DsfFileTests
 	#region Result Type Tests
 
 	[TestMethod]
-	public void DsfFileParseResult_Equality_WorksCorrectly ()
+	public void DsfFileReadResult_Equality_WorksCorrectly ()
 	{
 		// Arrange
 		var data = CreateMinimalDsfFile (2822400, 2, 2822400, hasMetadata: false);
-		var result1 = DsfFile.Parse (data);
-		var result2 = DsfFile.Parse (data);
-		var failure1 = DsfFileParseResult.Failure ("Error 1");
-		var failure2 = DsfFileParseResult.Failure ("Error 1");
-		var failure3 = DsfFileParseResult.Failure ("Error 2");
+		var result1 = DsfFile.Read (data);
+		var result2 = DsfFile.Read (data);
+		var failure1 = DsfFileReadResult.Failure ("Error 1");
+		var failure2 = DsfFileReadResult.Failure ("Error 1");
+		var failure3 = DsfFileReadResult.Failure ("Error 2");
 
 		// Act & Assert - Success results with different file instances aren't equal
 		Assert.IsFalse (result1.Equals (result2));
@@ -1692,7 +1692,7 @@ public class DsfFileTests
 	{
 		// Arrange
 		var data = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		var file = result.File!;
 
@@ -1713,7 +1713,7 @@ public class DsfFileTests
 	{
 		// Arrange
 		var data = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		var file = result.File!;
 
 		// Act & Assert - should not throw on multiple disposals
@@ -1727,7 +1727,7 @@ public class DsfFileTests
 	{
 		// Arrange
 		var data = CreateDsfWithId3v2 (2822400, 2, "Test", "Artist");
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		var file = result.File!;
 		file.Dispose ();
 

@@ -22,7 +22,7 @@ Practical recipes for common audio tagging tasks.
 ### Read Any File (Auto-Detect Format)
 
 ```csharp
-var result = MediaFile.Open("music.mp3");
+var result = MediaFile.Read("music.mp3");
 if (result.IsSuccess)
 {
     var tag = result.Tag!;

@@ -18,7 +18,7 @@ namespace TagLibSharp2.Ogg;
 /// <summary>
 /// Represents the result of parsing an Ogg FLAC file.
 /// </summary>
-public readonly struct OggFlacFileParseResult : IEquatable<OggFlacFileParseResult>
+public readonly struct OggFlacFileReadResult : IEquatable<OggFlacFileReadResult>
 {
 	/// <summary>
 	/// Gets the parsed Ogg FLAC file, or null if parsing failed.
@@ -35,7 +35,7 @@ public readonly struct OggFlacFileParseResult : IEquatable<OggFlacFileParseResul
 	/// </summary>
 	public bool IsSuccess => File is not null && Error is null;
 
-	private OggFlacFileParseResult (OggFlacFile? file, string? error)
+	private OggFlacFileReadResult (OggFlacFile? file, string? error)
 	{
 		File = file;
 		Error = error;
@@ -46,22 +46,22 @@ public readonly struct OggFlacFileParseResult : IEquatable<OggFlacFileParseResul
 	/// </summary>
 	/// <param name="file">The parsed Ogg FLAC file.</param>
 	/// <returns>A successful result containing the file.</returns>
-	public static OggFlacFileParseResult Success (OggFlacFile file) => new (file, null);
+	public static OggFlacFileReadResult Success (OggFlacFile file) => new (file, null);
 
 	/// <summary>
 	/// Creates a failed parse result.
 	/// </summary>
 	/// <param name="error">The error message describing the failure.</param>
 	/// <returns>A failed result containing the error.</returns>
-	public static OggFlacFileParseResult Failure (string error) => new (null, error);
+	public static OggFlacFileReadResult Failure (string error) => new (null, error);
 
 	/// <inheritdoc/>
-	public bool Equals (OggFlacFileParseResult other) =>
+	public bool Equals (OggFlacFileReadResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
-		obj is OggFlacFileParseResult other && Equals (other);
+		obj is OggFlacFileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
@@ -69,20 +69,20 @@ public readonly struct OggFlacFileParseResult : IEquatable<OggFlacFileParseResul
 	/// <summary>
 	/// Determines whether two results are equal.
 	/// </summary>
-	public static bool operator == (OggFlacFileParseResult left, OggFlacFileParseResult right) =>
+	public static bool operator == (OggFlacFileReadResult left, OggFlacFileReadResult right) =>
 		left.Equals (right);
 
 	/// <summary>
 	/// Determines whether two results are not equal.
 	/// </summary>
-	public static bool operator != (OggFlacFileParseResult left, OggFlacFileParseResult right) =>
+	public static bool operator != (OggFlacFileReadResult left, OggFlacFileReadResult right) =>
 		!left.Equals (right);
 }
 
 /// <summary>
 /// Represents an Ogg FLAC (.oga/.ogg) file.
 /// </summary>
-public sealed class OggFlacFile : IDisposable
+public sealed class OggFlacFile : IMediaFile
 {
 	private const int MinHeaderSize = 27; // Minimum Ogg page header
 	private static readonly byte[] OggMagic = "OggS"u8.ToArray ();
@@ -115,30 +115,44 @@ public sealed class OggFlacFile : IDisposable
 	public VorbisComment? VorbisComment { get; private set; }
 
 	/// <summary>
+	/// Gets the source file path if the file was read from disk.
+	/// </summary>
+	public string? SourcePath => _sourcePath;
+
+	/// <inheritdoc />
+	public Tag? Tag => VorbisComment;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.OggFlac;
+
+	/// <summary>
 	/// Parse an Ogg FLAC file from byte data.
 	/// </summary>
-	public static OggFlacFileParseResult Parse (ReadOnlySpan<byte> data)
+	public static OggFlacFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MinHeaderSize)
-			return OggFlacFileParseResult.Failure ("File too short for Ogg header");
+			return OggFlacFileReadResult.Failure ("File too short for Ogg header");
 
 		// Verify Ogg magic
 		if (!data[..4].SequenceEqual (OggMagic))
-			return OggFlacFileParseResult.Failure ("Invalid Ogg magic");
+			return OggFlacFileReadResult.Failure ("Invalid Ogg magic");
 
 		// Find first packet and verify it's FLAC
 		var firstPacketResult = ExtractFirstPacket (data);
 		if (!firstPacketResult.IsSuccess)
-			return OggFlacFileParseResult.Failure (firstPacketResult.Error!);
+			return OggFlacFileReadResult.Failure (firstPacketResult.Error!);
 
 		var firstPacket = firstPacketResult.Data!;
 
 		// Verify FLAC stream marker: 0x7F "FLAC"
 		if (firstPacket.Length < 9 || firstPacket[0] != 0x7F)
-			return OggFlacFileParseResult.Failure ("Not an Ogg FLAC stream: missing 0x7F marker");
+			return OggFlacFileReadResult.Failure ("Not an Ogg FLAC stream: missing 0x7F marker");
 
 		if (!firstPacket.AsSpan (1, 4).SequenceEqual (FlacMagic))
-			return OggFlacFileParseResult.Failure ("Not an Ogg FLAC stream: missing FLAC magic");
+			return OggFlacFileReadResult.Failure ("Not an Ogg FLAC stream: missing FLAC magic");
 
 		var file = new OggFlacFile ();
 
@@ -152,11 +166,11 @@ public sealed class OggFlacFile : IDisposable
 		// [13+] STREAMINFO block
 
 		if (firstPacket.Length < 13 + 4 + 34) // 13 + block header + STREAMINFO
-			return OggFlacFileParseResult.Failure ("FLAC header too short for STREAMINFO");
+			return OggFlacFileReadResult.Failure ("FLAC header too short for STREAMINFO");
 
 		// Verify native FLAC marker
 		if (!firstPacket.AsSpan (9, 4).SequenceEqual ("fLaC"u8))
-			return OggFlacFileParseResult.Failure ("Missing native FLAC marker");
+			return OggFlacFileReadResult.Failure ("Missing native FLAC marker");
 
 		// Parse STREAMINFO block
 		var blockOffset = 13;
@@ -164,14 +178,14 @@ public sealed class OggFlacFile : IDisposable
 		var blockType = blockHeader & 0x7F;
 
 		if (blockType != 0) // Type 0 = STREAMINFO
-			return OggFlacFileParseResult.Failure ($"Expected STREAMINFO block, got type {blockType}");
+			return OggFlacFileReadResult.Failure ($"Expected STREAMINFO block, got type {blockType}");
 
 		var blockSize = (firstPacket[blockOffset + 1] << 16) |
 						(firstPacket[blockOffset + 2] << 8) |
 						firstPacket[blockOffset + 3];
 
 		if (blockSize != 34)
-			return OggFlacFileParseResult.Failure ($"Invalid STREAMINFO size: {blockSize}");
+			return OggFlacFileReadResult.Failure ($"Invalid STREAMINFO size: {blockSize}");
 
 		var streamInfoOffset = blockOffset + 4;
 		ParseStreamInfo (firstPacket.AsSpan (streamInfoOffset, 34), file);
@@ -185,7 +199,7 @@ public sealed class OggFlacFile : IDisposable
 		// Parse Vorbis Comment from subsequent Ogg pages
 		file.ParseVorbisComment (data);
 
-		return OggFlacFileParseResult.Success (file);
+		return OggFlacFileReadResult.Success (file);
 	}
 
 	private static void ParseStreamInfo (ReadOnlySpan<byte> data, OggFlacFile file)
@@ -518,14 +532,14 @@ public sealed class OggFlacFile : IDisposable
 	/// <summary>
 	/// Read an Ogg FLAC file from disk.
 	/// </summary>
-	public static OggFlacFileParseResult ReadFromFile (string path, IFileSystem? fileSystem = null)
+	public static OggFlacFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = FileHelper.SafeReadAllBytes (path, fs);
 		if (!readResult.IsSuccess)
-			return OggFlacFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return OggFlacFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;
@@ -536,7 +550,7 @@ public sealed class OggFlacFile : IDisposable
 	/// <summary>
 	/// Read an Ogg FLAC file from disk asynchronously.
 	/// </summary>
-	public static async Task<OggFlacFileParseResult> ReadFromFileAsync (
+	public static async Task<OggFlacFileReadResult> ReadFromFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -544,9 +558,9 @@ public sealed class OggFlacFile : IDisposable
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fs, cancellationToken).ConfigureAwait (false);
 		if (!readResult.IsSuccess)
-			return OggFlacFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return OggFlacFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;

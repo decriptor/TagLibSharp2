@@ -27,7 +27,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Syncsafe integer utilities | 🔶 | In Id3v2Tag, could be extracted |
 | Extended float (80-bit) for AIFF | ✅ | ExtendedFloat class with full ToDouble/FromDouble/ToBytes support |
 | ITagLibStream interface | ❌ | Stream abstraction from spec (alternative to IFileSystem) |
-| Format detection factory | ✅ | MediaFile.Open with magic byte detection |
+| Format detection factory | ✅ | MediaFile.Read with magic byte detection |
 
 ---
 

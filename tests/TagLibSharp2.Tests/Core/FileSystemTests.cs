@@ -180,7 +180,7 @@ public sealed class FileHelperTests
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.Error);
-		CollectionAssert.AreEqual (data, result.Data);
+		CollectionAssert.AreEqual (data, result.Data!.Value.ToArray ());
 	}
 
 	[TestMethod]
@@ -226,7 +226,7 @@ public sealed class FileHelperTests
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.Error);
-		CollectionAssert.AreEqual (data, result.Data);
+		CollectionAssert.AreEqual (data, result.Data!.Value.ToArray ());
 	}
 
 	[TestMethod]
@@ -270,7 +270,20 @@ public sealed class FileReadResultTests
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.Error);
-		CollectionAssert.AreEqual (data, result.Data);
+		Assert.IsTrue (result.Data.HasValue);
+		CollectionAssert.AreEqual (data, result.Data.Value.ToArray ());
+	}
+
+	[TestMethod]
+	public void Success_DataIsImmutable ()
+	{
+		byte[] data = [1, 2, 3];
+		var result = FileReadResult.Success (data);
+
+		// Verify that Data is ReadOnlyMemory<byte>, not byte[]
+		// This compile-time check ensures immutability
+		ReadOnlyMemory<byte> immutableData = result.Data!.Value;
+		Assert.AreEqual (3, immutableData.Length);
 	}
 
 	[TestMethod]
@@ -280,7 +293,7 @@ public sealed class FileReadResultTests
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.AreEqual ("Something went wrong", result.Error);
-		Assert.IsNull (result.Data);
+		Assert.IsFalse (result.Data.HasValue);
 	}
 
 	[TestMethod]

@@ -8,30 +8,30 @@ namespace TagLibSharp2.Core;
 /// </summary>
 public readonly struct FileReadResult : IEquatable<FileReadResult>
 {
+	readonly ReadOnlyMemory<byte>? _data;
+
 	/// <summary>
 	/// Gets the file data if successful, or null if failed.
 	/// </summary>
 	/// <remarks>
-	/// This property returns the raw file bytes for parsing.
-	/// The array is owned by the caller and should not be modified.
+	/// This property returns an immutable view of the raw file bytes for parsing.
+	/// The underlying array should not be modified.
 	/// </remarks>
-	[System.Diagnostics.CodeAnalysis.SuppressMessage ("Performance", "CA1819:Properties should not return arrays",
-		Justification = "Result type that transfers ownership of file bytes to caller")]
-	public byte[]? Data { get; }
+	public ReadOnlyMemory<byte>? Data => _data;
 
 	/// <summary>
 	/// Gets a value indicating whether the read was successful.
 	/// </summary>
-	public bool IsSuccess => Data is not null && Error is null;
+	public bool IsSuccess => _data.HasValue && Error is null;
 
 	/// <summary>
 	/// Gets the error message if failed, or null if successful.
 	/// </summary>
 	public string? Error { get; }
 
-	FileReadResult (byte[]? data, string? error)
+	FileReadResult (ReadOnlyMemory<byte>? data, string? error)
 	{
-		Data = data;
+		_data = data;
 		Error = error;
 	}
 
@@ -51,14 +51,14 @@ public readonly struct FileReadResult : IEquatable<FileReadResult>
 
 	/// <inheritdoc/>
 	public bool Equals (FileReadResult other) =>
-		ReferenceEquals (Data, other.Data) && Error == other.Error;
+		Nullable.Equals (_data, other._data) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
 		obj is FileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
-	public override int GetHashCode () => HashCode.Combine (Data, Error);
+	public override int GetHashCode () => HashCode.Combine (_data, Error);
 
 	/// <summary>
 	/// Determines whether two results are equal.

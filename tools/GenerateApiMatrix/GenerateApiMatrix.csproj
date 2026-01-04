@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>CA1305;IL2026;IL2070;IL2075</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../GenerateApiMatrix.cs" Link="GenerateApiMatrix.cs" />
+  </ItemGroup>
+</Project>

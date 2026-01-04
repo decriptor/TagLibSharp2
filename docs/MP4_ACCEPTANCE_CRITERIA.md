@@ -588,7 +588,7 @@ And no attempt to decrypt should be made
 
 ### Integration (Must Complete)
 
-- [ ] Integration with `MediaFile.Open()` factory
+- [ ] Integration with `MediaFile.Read()` factory
 - [ ] Integration with `MediaFormat` enum
 - [ ] Support for `.m4a`, `.m4b`, `.mp4` (audio) extensions
 - [ ] Result type pattern (no exceptions for expected errors)

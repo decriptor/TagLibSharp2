@@ -21,7 +21,7 @@ public class MusepackFileTests
 	public void Parse_SV7Magic_ReturnsSuccess ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 	}
 
@@ -29,7 +29,7 @@ public class MusepackFileTests
 	public void Parse_SV8Magic_ReturnsSuccess ()
 	{
 		var data = CreateMinimalMusepackSV8File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 	}
 
@@ -42,7 +42,7 @@ public class MusepackFileTests
 		data[2] = (byte)'X';
 		data[3] = (byte)'X';
 
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsTrue (result.Error!.Contains ("magic") || result.Error.Contains ("MP+") || result.Error.Contains ("MPCK"));
 	}
@@ -51,7 +51,7 @@ public class MusepackFileTests
 	public void Parse_TooShort_ReturnsError ()
 	{
 		var data = new byte[3]; // Too short for magic
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 	}
 
@@ -63,7 +63,7 @@ public class MusepackFileTests
 	public void Parse_SV7_ExtractsVersion ()
 	{
 		var data = CreateMinimalMusepackSV7File (streamVersion: 7);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (7, result.File!.StreamVersion);
@@ -74,7 +74,7 @@ public class MusepackFileTests
 	{
 		// 44100 = index 0 in sample rate table
 		var data = CreateMinimalMusepackSV7File (sampleRateIndex: 0);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (44100, result.File!.SampleRate);
@@ -85,7 +85,7 @@ public class MusepackFileTests
 	{
 		// 48000 = index 1 in sample rate table
 		var data = CreateMinimalMusepackSV7File (sampleRateIndex: 1);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (48000, result.File!.SampleRate);
@@ -95,7 +95,7 @@ public class MusepackFileTests
 	public void Parse_SV7_ExtractsChannels ()
 	{
 		var data = CreateMinimalMusepackSV7File (channels: 2);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2, result.File!.Channels);
@@ -105,7 +105,7 @@ public class MusepackFileTests
 	public void Parse_SV7_ExtractsFrameCount ()
 	{
 		var data = CreateMinimalMusepackSV7File (frameCount: 1000);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (1000u, result.File!.FrameCount);
@@ -119,7 +119,7 @@ public class MusepackFileTests
 	public void Parse_SV8_ExtractsVersion ()
 	{
 		var data = CreateMinimalMusepackSV8File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (8, result.File!.StreamVersion);
@@ -129,7 +129,7 @@ public class MusepackFileTests
 	public void Parse_SV8_ExtractsSampleRate ()
 	{
 		var data = CreateMinimalMusepackSV8File (sampleRate: 44100);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (44100, result.File!.SampleRate);
@@ -139,7 +139,7 @@ public class MusepackFileTests
 	public void Parse_SV8_ExtractsChannels ()
 	{
 		var data = CreateMinimalMusepackSV8File (channels: 2);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2, result.File!.Channels);
@@ -149,7 +149,7 @@ public class MusepackFileTests
 	public void Parse_SV8_ExtractsTotalSamples ()
 	{
 		var data = CreateMinimalMusepackSV8File (totalSamples: 441000);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (441000UL, result.File!.TotalSamples);
@@ -164,7 +164,7 @@ public class MusepackFileTests
 	{
 		// 1152 samples per frame * 100 frames at 44100 Hz
 		var data = CreateMinimalMusepackSV7File (frameCount: 100, sampleRateIndex: 0);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.Properties);
@@ -178,7 +178,7 @@ public class MusepackFileTests
 	{
 		// 441000 samples at 44100 Hz = 10 seconds
 		var data = CreateMinimalMusepackSV8File (totalSamples: 441000, sampleRate: 44100);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.Properties);
@@ -189,7 +189,7 @@ public class MusepackFileTests
 	public void Properties_MatchesFileProperties ()
 	{
 		var data = CreateMinimalMusepackSV7File (sampleRateIndex: 1, channels: 2);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		var file = result.File!;
@@ -207,7 +207,7 @@ public class MusepackFileTests
 	public void Parse_NoTag_ApeTagIsNull ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNull (result.File!.ApeTag);
@@ -217,7 +217,7 @@ public class MusepackFileTests
 	public void Parse_WithApeTag_ReadsTitle ()
 	{
 		var data = CreateMusepackFileWithTag (title: "Test Song");
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -228,7 +228,7 @@ public class MusepackFileTests
 	public void Parse_WithApeTag_ReadsArtist ()
 	{
 		var data = CreateMusepackFileWithTag (artist: "Test Artist");
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -239,7 +239,7 @@ public class MusepackFileTests
 	public void EnsureApeTag_CreatesTag ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -254,7 +254,7 @@ public class MusepackFileTests
 	public void RemoveApeTag_RemovesExistingTag ()
 	{
 		var data = CreateMusepackFileWithTag (title: "Test");
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -321,7 +321,7 @@ public class MusepackFileTests
 	public void Render_WithNewTag_AppendsTagToAudioData ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -333,7 +333,7 @@ public class MusepackFileTests
 		Assert.IsTrue (rendered.Length > data.Length);
 
 		// Should still be valid Musepack file
-		var reparsed = MusepackFile.Parse (rendered);
+		var reparsed = MusepackFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("Test", reparsed.File!.ApeTag!.Title);
 	}
@@ -342,7 +342,7 @@ public class MusepackFileTests
 	public void Render_RemoveTag_StripsTagFromFile ()
 	{
 		var data = CreateMusepackFileWithTag (title: "Original");
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -351,7 +351,7 @@ public class MusepackFileTests
 		var rendered = file.Render (data);
 
 		// Re-parse should have no tag
-		var reparsed = MusepackFile.Parse (rendered);
+		var reparsed = MusepackFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.IsNull (reparsed.File!.ApeTag);
 	}
@@ -366,7 +366,7 @@ public class MusepackFileTests
 		// Test all 4 SV7 sample rates
 		for (int i = 0; i < SampleRateTable.Length; i++) {
 			var data = CreateMinimalMusepackSV7File (sampleRateIndex: i);
-			var result = MusepackFile.Parse (data);
+			var result = MusepackFile.Read (data);
 
 			Assert.IsTrue (result.IsSuccess, $"Failed for sample rate index {i}");
 			Assert.AreEqual (SampleRateTable[i], result.File!.SampleRate, $"Wrong sample rate for index {i}");
@@ -379,7 +379,7 @@ public class MusepackFileTests
 		// SV7 format doesn't explicitly store channel count in header
 		// It's always assumed stereo for most implementations
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2, result.File!.Channels);
@@ -440,7 +440,7 @@ public class MusepackFileTests
 	public void Dispose_WithoutTag_DoesNotThrow ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.File!.ApeTag);
 
@@ -451,7 +451,7 @@ public class MusepackFileTests
 	public void Dispose_CalledTwice_DoesNotThrow ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		result.File!.Dispose ();
@@ -462,7 +462,7 @@ public class MusepackFileTests
 	public void MusepackFile_Dispose_ClearsProperties ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		result.File!.Dispose ();
@@ -479,7 +479,7 @@ public class MusepackFileTests
 	public void MusepackFile_Parse_SV7_Version4_Succeeds ()
 	{
 		var data = CreateMinimalMusepackSV7File (streamVersion: 4);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (4, result.File!.StreamVersion);
 	}
@@ -488,7 +488,7 @@ public class MusepackFileTests
 	public void MusepackFile_Parse_SV7_Version5_Succeeds ()
 	{
 		var data = CreateMinimalMusepackSV7File (streamVersion: 5);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (5, result.File!.StreamVersion);
 	}
@@ -497,7 +497,7 @@ public class MusepackFileTests
 	public void MusepackFile_Parse_SV7_Version6_Succeeds ()
 	{
 		var data = CreateMinimalMusepackSV7File (streamVersion: 6);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (6, result.File!.StreamVersion);
 	}
@@ -506,7 +506,7 @@ public class MusepackFileTests
 	public void MusepackFile_Parse_SV7_Version3_Fails ()
 	{
 		var data = CreateMinimalMusepackSV7File (streamVersion: 3);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 	}
 
@@ -514,7 +514,7 @@ public class MusepackFileTests
 	public void MusepackFile_Parse_SV7_Version8_Fails ()
 	{
 		var data = CreateMinimalMusepackSV7File (streamVersion: 8);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 	}
 
@@ -528,7 +528,7 @@ public class MusepackFileTests
 		ms.Write (new byte[2]);
 		ms.Write (new byte[50]); // Audio data
 
-		var result = MusepackFile.Parse (ms.ToArray ());
+		var result = MusepackFile.Read (ms.ToArray ());
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (44100, result.File!.SampleRate);
 		Assert.AreEqual (2, result.File.Channels);
@@ -538,7 +538,7 @@ public class MusepackFileTests
 	public void MusepackFile_SaveToFile_NoSourcePath_Fails ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var mockFs = new MockFileSystem ();
@@ -552,7 +552,7 @@ public class MusepackFileTests
 	public async Task MusepackFile_SaveToFileAsync_NoSourcePath_Fails ()
 	{
 		var data = CreateMinimalMusepackSV7File ();
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var mockFs = new MockFileSystem ();
@@ -581,7 +581,7 @@ public class MusepackFileTests
 	public void MusepackFile_SV7_SampleRateIndex_37800 ()
 	{
 		var data = CreateMinimalMusepackSV7File (sampleRateIndex: 2);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (37800, result.File!.SampleRate);
 	}
@@ -590,7 +590,7 @@ public class MusepackFileTests
 	public void MusepackFile_SV7_SampleRateIndex_32000 ()
 	{
 		var data = CreateMinimalMusepackSV7File (sampleRateIndex: 3);
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (32000, result.File!.SampleRate);
 	}
@@ -608,20 +608,20 @@ public class MusepackFileTests
 	#region Result Type Tests
 
 	[TestMethod]
-	public void MusepackFileParseResult_Equals_SameError_ReturnsTrue ()
+	public void MusepackFileReadResult_Equals_SameError_ReturnsTrue ()
 	{
-		var result1 = MusepackFile.Parse (new byte[3]);
-		var result2 = MusepackFile.Parse (new byte[3]);
+		var result1 = MusepackFile.Read (new byte[3]);
+		var result2 = MusepackFile.Read (new byte[3]);
 
 		Assert.IsTrue (result1.Equals (result2));
 		Assert.IsTrue (result1 == result2);
 	}
 
 	[TestMethod]
-	public void MusepackFileParseResult_Equals_Object_ReturnsCorrectly ()
+	public void MusepackFileReadResult_Equals_Object_ReturnsCorrectly ()
 	{
-		var result1 = MusepackFile.Parse (new byte[3]);
-		var result2 = MusepackFile.Parse (new byte[3]);
+		var result1 = MusepackFile.Read (new byte[3]);
+		var result2 = MusepackFile.Read (new byte[3]);
 		object boxed = result2;
 
 		Assert.IsTrue (result1.Equals (boxed));
@@ -630,19 +630,19 @@ public class MusepackFileTests
 	}
 
 	[TestMethod]
-	public void MusepackFileParseResult_GetHashCode_SameError_SameHash ()
+	public void MusepackFileReadResult_GetHashCode_SameError_SameHash ()
 	{
-		var result1 = MusepackFile.Parse (new byte[3]);
-		var result2 = MusepackFile.Parse (new byte[3]);
+		var result1 = MusepackFile.Read (new byte[3]);
+		var result2 = MusepackFile.Read (new byte[3]);
 
 		Assert.AreEqual (result1.GetHashCode (), result2.GetHashCode ());
 	}
 
 	[TestMethod]
-	public void MusepackFileParseResult_NotEquals_DifferentError_ReturnsTrue ()
+	public void MusepackFileReadResult_NotEquals_DifferentError_ReturnsTrue ()
 	{
-		var result1 = MusepackFile.Parse (new byte[3]);
-		var result2 = MusepackFile.Parse (new byte[10]);
+		var result1 = MusepackFile.Read (new byte[3]);
+		var result2 = MusepackFile.Read (new byte[10]);
 
 		Assert.IsFalse (result1.Equals (result2));
 		Assert.IsTrue (result1 != result2);

@@ -790,7 +790,7 @@ public sealed class CrossTaggerCompatibilityTests
 			artist: "Test Artist",
 			album: "Test Album");
 
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -818,7 +818,7 @@ public sealed class CrossTaggerCompatibilityTests
 			artist: "Monkey Artist",
 			album: "Monkey Album");
 
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -841,7 +841,7 @@ public sealed class CrossTaggerCompatibilityTests
 			artist: "Musepack Artist",
 			album: "Musepack Album");
 
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -864,7 +864,7 @@ public sealed class CrossTaggerCompatibilityTests
 			artist: "OggFlac Artist",
 			album: "OggFlac Album");
 
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.VorbisComment);
@@ -983,7 +983,7 @@ public sealed class CrossTaggerCompatibilityTests
 			artist: "DSF Artist",
 			album: "DSF Album");
 
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.Id3v2Tag);
@@ -1003,7 +1003,7 @@ public sealed class CrossTaggerCompatibilityTests
 	{
 		// Create minimal DFF file
 		var data = TestBuilders.Dff.CreateMinimal ();
-		var result = TagLibSharp2.Dff.DffFile.Parse (data);
+		var result = TagLibSharp2.Dff.DffFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File);
@@ -1017,7 +1017,7 @@ public sealed class CrossTaggerCompatibilityTests
 
 		// Render and re-read to verify round-trip
 		var rendered = result.File.Render ();
-		var reparsed = TagLibSharp2.Dff.DffFile.Parse (rendered.Span);
+		var reparsed = TagLibSharp2.Dff.DffFile.Read (rendered.Span);
 
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.IsNotNull (reparsed.File?.Id3v2Tag);
@@ -1037,7 +1037,7 @@ public sealed class CrossTaggerCompatibilityTests
 	{
 		// Create DFF file with ID3v2 tag
 		var data = TestBuilders.Dff.CreateMinimal ();
-		var result = TagLibSharp2.Dff.DffFile.Parse (data);
+		var result = TagLibSharp2.Dff.DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -1065,7 +1065,7 @@ public sealed class CrossTaggerCompatibilityTests
 
 		// Render and reparse
 		var rendered = file.Render ();
-		var reparsed = TagLibSharp2.Dff.DffFile.Parse (rendered.Span);
+		var reparsed = TagLibSharp2.Dff.DffFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess, $"Reparse failed: {reparsed.Error}");
 
 		var reparsedTag = reparsed.File!.Id3v2Tag!;
@@ -1099,7 +1099,7 @@ public sealed class CrossTaggerCompatibilityTests
 	public void DffFile_Id3v2Tag_PreservesLyrics ()
 	{
 		var data = TestBuilders.Dff.CreateMinimal ();
-		var result = TagLibSharp2.Dff.DffFile.Parse (data);
+		var result = TagLibSharp2.Dff.DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -1107,7 +1107,7 @@ public sealed class CrossTaggerCompatibilityTests
 		file.Id3v2Tag!.Lyrics = "These are the lyrics\nWith multiple lines";
 
 		var rendered = file.Render ();
-		var reparsed = TagLibSharp2.Dff.DffFile.Parse (rendered.Span);
+		var reparsed = TagLibSharp2.Dff.DffFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess);
 
 		Assert.AreEqual ("These are the lyrics\nWith multiple lines",
@@ -1124,7 +1124,7 @@ public sealed class CrossTaggerCompatibilityTests
 	{
 		// Create file and add MusicBrainz fields
 		var data = TestBuilders.WavPack.CreateMinimal ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -1136,7 +1136,7 @@ public sealed class CrossTaggerCompatibilityTests
 
 		// Render and reparse
 		var rendered = file.Render (data);
-		var reparsed = WavPackFile.Parse (rendered);
+		var reparsed = WavPackFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 
 		// Verify MusicBrainz fields use UPPERCASE with underscores (Picard format)
@@ -1156,7 +1156,7 @@ public sealed class CrossTaggerCompatibilityTests
 	public void MonkeysAudioFile_ReplayGain_UsesFoobar2000CompatibleNames ()
 	{
 		var data = TestBuilders.MonkeysAudio.CreateMinimal ();
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -1168,7 +1168,7 @@ public sealed class CrossTaggerCompatibilityTests
 		tag.ReplayGainAlbumPeak = "0.995123";
 
 		var rendered = file.Render (data);
-		var reparsed = MonkeysAudioFile.Parse (rendered);
+		var reparsed = MonkeysAudioFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 
 		// Verify ReplayGain fields use UPPERCASE with underscores
@@ -1186,7 +1186,7 @@ public sealed class CrossTaggerCompatibilityTests
 	public void OggFlacFile_MusicBrainzFields_UseStandardNames ()
 	{
 		var data = TestBuilders.OggFlac.CreateMinimal ();
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -1196,7 +1196,7 @@ public sealed class CrossTaggerCompatibilityTests
 		comment.MusicBrainzReleaseId = "abcdefab-cdef-abcd-efab-cdefabcdefab";
 
 		var rendered = file.Render (data);
-		var reparsed = OggFlacFile.Parse (rendered);
+		var reparsed = OggFlacFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 
 		// Verify VorbisComment uses MUSICBRAINZ_ prefix
@@ -1214,7 +1214,7 @@ public sealed class CrossTaggerCompatibilityTests
 	public void WavPackFile_ExtendedMetadata_RoundTripsCorrectly ()
 	{
 		var data = TestBuilders.WavPack.CreateMinimal ();
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -1236,7 +1236,7 @@ public sealed class CrossTaggerCompatibilityTests
 		tag.Comment = "Live recording";
 
 		var rendered = file.Render (data);
-		var reparsed = WavPackFile.Parse (rendered);
+		var reparsed = WavPackFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 
 		var resultTag = reparsed.File!.ApeTag!;

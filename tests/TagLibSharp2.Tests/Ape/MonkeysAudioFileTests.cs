@@ -19,7 +19,7 @@ public class MonkeysAudioFileTests
 	public void Parse_ValidMagic_ReturnsSuccess ()
 	{
 		var data = CreateMinimalApeFile (version: 3990);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 	}
 
@@ -32,7 +32,7 @@ public class MonkeysAudioFileTests
 		data[2] = (byte)'X';
 		data[3] = (byte)'X';
 
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsTrue (result.Error!.Contains ("magic") || result.Error.Contains ("MAC"));
 	}
@@ -41,7 +41,7 @@ public class MonkeysAudioFileTests
 	public void Parse_TooShort_ReturnsError ()
 	{
 		var data = new byte[3]; // Too short for magic
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 	}
 
@@ -54,7 +54,7 @@ public class MonkeysAudioFileTests
 	{
 		// Version 3.99 = 3990 (new format with descriptor)
 		var data = CreateMinimalApeFile (version: 3990);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (3990, result.File!.Version);
@@ -65,7 +65,7 @@ public class MonkeysAudioFileTests
 	{
 		// Version 3.97 = 3970 (old format, last version without descriptor)
 		var data = CreateMinimalApeFileOldFormat (version: 3970);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (3970, result.File!.Version);
@@ -76,7 +76,7 @@ public class MonkeysAudioFileTests
 	{
 		// Version 3.98+ uses APE_DESCRIPTOR
 		var data = CreateMinimalApeFile (version: 3980);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (3980, result.File!.Version);
@@ -90,7 +90,7 @@ public class MonkeysAudioFileTests
 	public void Parse_ExtractsSampleRate ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, sampleRate: 44100);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (44100, result.File!.SampleRate);
@@ -100,7 +100,7 @@ public class MonkeysAudioFileTests
 	public void Parse_ExtractsChannels ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, channels: 2);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2, result.File!.Channels);
@@ -110,7 +110,7 @@ public class MonkeysAudioFileTests
 	public void Parse_ExtractsBitsPerSample ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, bitsPerSample: 16);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (16, result.File!.BitsPerSample);
@@ -120,7 +120,7 @@ public class MonkeysAudioFileTests
 	public void Parse_ExtractsTotalFrames ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, totalFrames: 1000);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (1000u, result.File!.TotalFrames);
@@ -131,7 +131,7 @@ public class MonkeysAudioFileTests
 	{
 		// With sample rate 44100 and enough samples for ~10 seconds
 		var data = CreateMinimalApeFile (version: 3990, sampleRate: 44100, totalFrames: 100, blocksPerFrame: 4410);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.Properties);
@@ -143,7 +143,7 @@ public class MonkeysAudioFileTests
 	public void Parse_ExtractsCompressionLevel ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, compressionLevel: 2000); // Normal compression
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2000, result.File!.CompressionLevel);
@@ -157,7 +157,7 @@ public class MonkeysAudioFileTests
 	public void Properties_MatchesFileProperties ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, sampleRate: 48000, channels: 2, bitsPerSample: 24);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		var file = result.File!;
@@ -176,7 +176,7 @@ public class MonkeysAudioFileTests
 	public void Parse_NoTag_ApeTagIsNull ()
 	{
 		var data = CreateMinimalApeFile (version: 3990);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNull (result.File!.ApeTag);
@@ -186,7 +186,7 @@ public class MonkeysAudioFileTests
 	public void Parse_WithApeTag_ReadsTitle ()
 	{
 		var data = CreateMinimalApeFileWithTag (version: 3990, title: "Test Song");
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -197,7 +197,7 @@ public class MonkeysAudioFileTests
 	public void Parse_WithApeTag_ReadsArtist ()
 	{
 		var data = CreateMinimalApeFileWithTag (version: 3990, artist: "Test Artist");
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.ApeTag);
@@ -208,7 +208,7 @@ public class MonkeysAudioFileTests
 	public void EnsureApeTag_CreatesTag ()
 	{
 		var data = CreateMinimalApeFile (version: 3990);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -223,7 +223,7 @@ public class MonkeysAudioFileTests
 	public void RemoveApeTag_RemovesExistingTag ()
 	{
 		var data = CreateMinimalApeFileWithTag (version: 3990, title: "Test");
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -311,7 +311,7 @@ public class MonkeysAudioFileTests
 	public void Render_WithNewTag_AppendsTagToAudioData ()
 	{
 		var data = CreateMinimalApeFile (version: 3990);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -323,7 +323,7 @@ public class MonkeysAudioFileTests
 		Assert.IsTrue (rendered.Length > data.Length);
 
 		// Should still be valid APE file
-		var reparsed = MonkeysAudioFile.Parse (rendered);
+		var reparsed = MonkeysAudioFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("Test", reparsed.File!.ApeTag!.Title);
 	}
@@ -332,7 +332,7 @@ public class MonkeysAudioFileTests
 	public void Render_RemoveTag_StripsTagFromFile ()
 	{
 		var data = CreateMinimalApeFileWithTag (version: 3990, title: "Original");
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -341,7 +341,7 @@ public class MonkeysAudioFileTests
 		var rendered = file.Render (data);
 
 		// Re-parse should have no tag
-		var reparsed = MonkeysAudioFile.Parse (rendered);
+		var reparsed = MonkeysAudioFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.IsNull (reparsed.File!.ApeTag);
 	}
@@ -354,7 +354,7 @@ public class MonkeysAudioFileTests
 	public void Parse_OldFormat_ExtractsSampleRate ()
 	{
 		var data = CreateMinimalApeFileOldFormat (version: 3970, sampleRate: 44100);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (44100, result.File!.SampleRate);
@@ -364,7 +364,7 @@ public class MonkeysAudioFileTests
 	public void Parse_OldFormat_ExtractsChannels ()
 	{
 		var data = CreateMinimalApeFileOldFormat (version: 3970, channels: 2);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2, result.File!.Channels);
@@ -374,7 +374,7 @@ public class MonkeysAudioFileTests
 	public void Parse_OldFormat_ExtractsBitsPerSample ()
 	{
 		var data = CreateMinimalApeFileOldFormat (version: 3970, bitsPerSample: 16);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (16, result.File!.BitsPerSample);
@@ -388,7 +388,7 @@ public class MonkeysAudioFileTests
 	public void Parse_HighResAudio_96kHz24bit ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, sampleRate: 96000, bitsPerSample: 24);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (96000, result.File!.SampleRate);
@@ -399,7 +399,7 @@ public class MonkeysAudioFileTests
 	public void Parse_MonoFile ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, channels: 1);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (1, result.File!.Channels);
@@ -409,7 +409,7 @@ public class MonkeysAudioFileTests
 	public void Parse_MultiChannel_5Point1 ()
 	{
 		var data = CreateMinimalApeFile (version: 3990, channels: 6);
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (6, result.File!.Channels);

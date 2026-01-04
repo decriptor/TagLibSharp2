@@ -10,7 +10,7 @@ namespace TagLibSharp2.Asf;
 /// <summary>
 /// Represents an ASF/WMA audio file.
 /// </summary>
-public sealed class AsfFile : IDisposable
+public sealed class AsfFile : IMediaFile
 {
 	bool _disposed;
 	byte[] _originalData = [];
@@ -31,6 +31,15 @@ public sealed class AsfFile : IDisposable
 	public string? SourcePath { get; private set; }
 
 	IFileSystem? _sourceFileSystem;
+
+	/// <inheritdoc />
+	Tag? IMediaFile.Tag => Tag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => AudioProperties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Asf;
 
 	AsfFile (AsfTag tag, AudioProperties audioProperties)
 	{
@@ -181,10 +190,10 @@ public sealed class AsfFile : IDisposable
 		if (!readResult.IsSuccess)
 			return AsfFileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
-			result.Value.SourcePath = path;
-			result.Value._sourceFileSystem = fs;
+			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fs;
 		}
 		return result;
 	}
@@ -202,10 +211,10 @@ public sealed class AsfFile : IDisposable
 		if (!readResult.IsSuccess)
 			return AsfFileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
-			result.Value.SourcePath = path;
-			result.Value._sourceFileSystem = fs;
+			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fs;
 		}
 		return result;
 	}
@@ -489,9 +498,9 @@ public sealed class AsfFile : IDisposable
 public readonly struct AsfFileReadResult : IEquatable<AsfFileReadResult>
 {
 	/// <summary>
-	/// Gets the parsed ASF file.
+	/// Gets the parsed ASF file, or null if parsing failed.
 	/// </summary>
-	public AsfFile Value { get; }
+	public AsfFile? File { get; }
 
 	/// <summary>
 	/// Gets the error message if reading failed.
@@ -501,33 +510,33 @@ public readonly struct AsfFileReadResult : IEquatable<AsfFileReadResult>
 	/// <summary>
 	/// Gets whether reading was successful.
 	/// </summary>
-	public bool IsSuccess => Error is null;
+	public bool IsSuccess => File is not null && Error is null;
 
-	AsfFileReadResult (AsfFile value, string? error)
+	AsfFileReadResult (AsfFile? file, string? error)
 	{
-		Value = value;
+		File = file;
 		Error = error;
 	}
 
 	/// <summary>
 	/// Creates a successful read result.
 	/// </summary>
-	public static AsfFileReadResult Success (AsfFile value) => new (value, null);
+	public static AsfFileReadResult Success (AsfFile file) => new (file, null);
 
 	/// <summary>
 	/// Creates a failed read result.
 	/// </summary>
-	public static AsfFileReadResult Failure (string error) => new (null!, error);
+	public static AsfFileReadResult Failure (string error) => new (null, error);
 
 	/// <inheritdoc/>
-	public bool Equals (AsfFileReadResult other) => Error == other.Error;
+	public bool Equals (AsfFileReadResult other) => Equals (File, other.File) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj)
 		=> obj is AsfFileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
-	public override int GetHashCode () => HashCode.Combine (Error);
+	public override int GetHashCode () => HashCode.Combine (File, Error);
 
 	/// <summary>
 	/// Equality operator.

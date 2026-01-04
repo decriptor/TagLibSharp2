@@ -22,7 +22,7 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		var rendered = result.Value.Render (data);
+		var rendered = result.File!.Render (data);
 
 		Assert.IsNotNull (rendered);
 		Assert.IsTrue (rendered.Length > 0);
@@ -35,7 +35,7 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		var rendered = result.Value.Render (data);
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
@@ -48,11 +48,11 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		var rendered = result.Value.Render (data);
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Original Title", reparsed.Value.Title);
+		Assert.AreEqual ("Original Title", reparsed.File!.Title);
 	}
 
 	[TestMethod]
@@ -62,11 +62,11 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		var rendered = result.Value.Render (data);
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Original Artist", reparsed.Value.Artist);
+		Assert.AreEqual ("Original Artist", reparsed.File!.Artist);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -80,12 +80,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Modified Title";
-		var rendered = result.Value.Render (data);
+		result.File!.Title = "Modified Title";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Modified Title", reparsed.Value.Title);
+		Assert.AreEqual ("Modified Title", reparsed.File!.Title);
 	}
 
 	[TestMethod]
@@ -95,12 +95,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Artist = "Modified Artist";
-		var rendered = result.Value.Render (data);
+		result.File!.Artist = "Modified Artist";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Modified Artist", reparsed.Value.Artist);
+		Assert.AreEqual ("Modified Artist", reparsed.File!.Artist);
 	}
 
 	[TestMethod]
@@ -110,12 +110,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Album = "New Album";
-		var rendered = result.Value.Render (data);
+		result.File!.Album = "New Album";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("New Album", reparsed.Value.Album);
+		Assert.AreEqual ("New Album", reparsed.File!.Album);
 	}
 
 	[TestMethod]
@@ -125,17 +125,17 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Added Title";
-		result.Value.Artist = "Added Artist";
-		result.Value.Album = "Added Album";
+		result.File!.Title = "Added Title";
+		result.File!.Artist = "Added Artist";
+		result.File!.Album = "Added Album";
 
-		var rendered = result.Value.Render (data);
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Added Title", reparsed.Value.Title);
-		Assert.AreEqual ("Added Artist", reparsed.Value.Artist);
-		Assert.AreEqual ("Added Album", reparsed.Value.Album);
+		Assert.AreEqual ("Added Title", reparsed.File!.Title);
+		Assert.AreEqual ("Added Artist", reparsed.File!.Artist);
+		Assert.AreEqual ("Added Album", reparsed.File!.Album);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -148,14 +148,14 @@ public class AsfFileWriteTests
 		var data = AsfTestBuilder.CreateMinimalWma (durationMs: 180000);
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
-		var originalDuration = result.Value.AudioProperties.Duration;
+		var originalDuration = result.File!.AudioProperties.Duration;
 
-		result.Value.Title = "Changed";
-		var rendered = result.Value.Render (data);
+		result.File!.Title = "Changed";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual (originalDuration, reparsed.Value.AudioProperties.Duration);
+		Assert.AreEqual (originalDuration, reparsed.File!.AudioProperties.Duration);
 	}
 
 	[TestMethod]
@@ -165,12 +165,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Changed";
-		var rendered = result.Value.Render (data);
+		result.File!.Title = "Changed";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual (48000, reparsed.Value.AudioProperties.SampleRate);
+		Assert.AreEqual (48000, reparsed.File!.AudioProperties.SampleRate);
 	}
 
 	[TestMethod]
@@ -180,12 +180,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Changed";
-		var rendered = result.Value.Render (data);
+		result.File!.Title = "Changed";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual (2, reparsed.Value.AudioProperties.Channels);
+		Assert.AreEqual (2, reparsed.File!.AudioProperties.Channels);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -199,12 +199,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "日本語タイトル";
-		var rendered = result.Value.Render (data);
+		result.File!.Title = "日本語タイトル";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("日本語タイトル", reparsed.Value.Title);
+		Assert.AreEqual ("日本語タイトル", reparsed.File!.Title);
 	}
 
 	[TestMethod]
@@ -214,12 +214,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Artist = "Café Français";
-		var rendered = result.Value.Render (data);
+		result.File!.Artist = "Café Français";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Café Français", reparsed.Value.Artist);
+		Assert.AreEqual ("Café Français", reparsed.File!.Artist);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -233,12 +233,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Tag.Year = "2024";
-		var rendered = result.Value.Render (data);
+		result.File!.Tag.Year = "2024";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("2024", reparsed.Value.Tag.Year);
+		Assert.AreEqual ("2024", reparsed.File!.Tag.Year);
 	}
 
 	[TestMethod]
@@ -248,12 +248,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Tag.Genre = "Rock";
-		var rendered = result.Value.Render (data);
+		result.File!.Tag.Genre = "Rock";
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual ("Rock", reparsed.Value.Tag.Genre);
+		Assert.AreEqual ("Rock", reparsed.File!.Tag.Genre);
 	}
 
 	[TestMethod]
@@ -263,12 +263,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Tag.Track = 5;
-		var rendered = result.Value.Render (data);
+		result.File!.Tag.Track = 5;
+		var rendered = result.File!.Render (data);
 		var reparsed = AsfFile.Read (rendered);
 
 		Assert.IsTrue (reparsed.IsSuccess);
-		Assert.AreEqual (5u, reparsed.Value.Tag.Track);
+		Assert.AreEqual (5u, reparsed.File!.Tag.Track);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -285,8 +285,8 @@ public class AsfFileWriteTests
 		var result = AsfFile.ReadFromFile ("/test.wma", mockFs);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Modified";
-		var writeResult = result.Value.SaveToFile ("/test.wma", mockFs);
+		result.File!.Title = "Modified";
+		var writeResult = result.File!.SaveToFile ("/test.wma", mockFs);
 
 		Assert.IsTrue (writeResult.IsSuccess, writeResult.Error);
 	}
@@ -301,12 +301,12 @@ public class AsfFileWriteTests
 		var result = AsfFile.ReadFromFile ("/test.wma", mockFs);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Modified Title";
-		result.Value.SaveToFile ("/test.wma", mockFs);
+		result.File!.Title = "Modified Title";
+		result.File!.SaveToFile ("/test.wma", mockFs);
 
 		var reread = AsfFile.ReadFromFile ("/test.wma", mockFs);
 		Assert.IsTrue (reread.IsSuccess);
-		Assert.AreEqual ("Modified Title", reread.Value.Title);
+		Assert.AreEqual ("Modified Title", reread.File!.Title);
 	}
 
 	[TestMethod]
@@ -319,13 +319,13 @@ public class AsfFileWriteTests
 		var result = AsfFile.ReadFromFile ("/source.wma", mockFs);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Updated";
-		var writeResult = result.Value.SaveToFile (mockFs);
+		result.File!.Title = "Updated";
+		var writeResult = result.File!.SaveToFile (mockFs);
 
 		Assert.IsTrue (writeResult.IsSuccess, writeResult.Error);
 
 		var reread = AsfFile.ReadFromFile ("/source.wma", mockFs);
-		Assert.AreEqual ("Updated", reread.Value.Title);
+		Assert.AreEqual ("Updated", reread.File!.Title);
 	}
 
 	[TestMethod]
@@ -335,7 +335,7 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data); // No source path set
 		Assert.IsTrue (result.IsSuccess);
 
-		var writeResult = result.Value.SaveToFile ();
+		var writeResult = result.File!.SaveToFile ();
 
 		Assert.IsFalse (writeResult.IsSuccess);
 		Assert.IsNotNull (writeResult.Error);
@@ -351,8 +351,8 @@ public class AsfFileWriteTests
 		var result = await AsfFile.ReadFromFileAsync ("/async.wma", mockFs);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Async Modified";
-		var writeResult = await result.Value.SaveToFileAsync ("/async.wma", mockFs);
+		result.File!.Title = "Async Modified";
+		var writeResult = await result.File!.SaveToFileAsync ("/async.wma", mockFs);
 
 		Assert.IsTrue (writeResult.IsSuccess, writeResult.Error);
 	}
@@ -367,14 +367,14 @@ public class AsfFileWriteTests
 		var result = await AsfFile.ReadFromFileAsync ("/async.wma", mockFs);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Async Title";
-		result.Value.Artist = "Async Artist";
-		await result.Value.SaveToFileAsync ("/async.wma", mockFs);
+		result.File!.Title = "Async Title";
+		result.File!.Artist = "Async Artist";
+		await result.File!.SaveToFileAsync ("/async.wma", mockFs);
 
 		var reread = await AsfFile.ReadFromFileAsync ("/async.wma", mockFs);
 		Assert.IsTrue (reread.IsSuccess);
-		Assert.AreEqual ("Async Title", reread.Value.Title);
-		Assert.AreEqual ("Async Artist", reread.Value.Artist);
+		Assert.AreEqual ("Async Title", reread.File!.Title);
+		Assert.AreEqual ("Async Artist", reread.File!.Artist);
 	}
 
 	[TestMethod]
@@ -387,13 +387,13 @@ public class AsfFileWriteTests
 		var result = await AsfFile.ReadFromFileAsync ("/source.wma", mockFs);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "Async Updated";
-		var writeResult = await result.Value.SaveToFileAsync (mockFs);
+		result.File!.Title = "Async Updated";
+		var writeResult = await result.File!.SaveToFileAsync (mockFs);
 
 		Assert.IsTrue (writeResult.IsSuccess, writeResult.Error);
 
 		var reread = await AsfFile.ReadFromFileAsync ("/source.wma", mockFs);
-		Assert.AreEqual ("Async Updated", reread.Value.Title);
+		Assert.AreEqual ("Async Updated", reread.File!.Title);
 	}
 
 	[TestMethod]
@@ -403,7 +403,7 @@ public class AsfFileWriteTests
 		var result = AsfFile.Read (data); // No source path set
 		Assert.IsTrue (result.IsSuccess);
 
-		var writeResult = await result.Value.SaveToFileAsync ();
+		var writeResult = await result.File!.SaveToFileAsync ();
 
 		Assert.IsFalse (writeResult.IsSuccess);
 		Assert.IsNotNull (writeResult.Error);

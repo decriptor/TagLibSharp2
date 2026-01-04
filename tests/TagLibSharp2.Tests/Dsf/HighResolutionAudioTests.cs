@@ -25,7 +25,7 @@ public class HighResolutionAudioTests
 		var data = TestBuilders.Dsf.CreateMinimal (sampleRate: 22579200);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -42,7 +42,7 @@ public class HighResolutionAudioTests
 			artist: "High-Res Artist",
 			sampleRate: 22579200);
 
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var file = result.File!;
@@ -50,7 +50,7 @@ public class HighResolutionAudioTests
 
 		// Act - Round trip
 		var rendered = file.Render ();
-		var reparsed = DsfFile.Parse (rendered.Span);
+		var reparsed = DsfFile.Read (rendered.Span);
 
 		// Assert
 		Assert.IsTrue (reparsed.IsSuccess);
@@ -67,7 +67,7 @@ public class HighResolutionAudioTests
 		var data = TestBuilders.Dsf.CreateMinimal (sampleRate: 11289600);
 
 		// Act
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);

@@ -23,7 +23,7 @@ namespace TagLibSharp2.Riff;
 /// Reference: Microsoft RIFF Specification
 /// </para>
 /// </remarks>
-public sealed class WavFile : IDisposable
+public sealed class WavFile : IMediaFile
 {
 	bool _disposed;
 
@@ -101,6 +101,20 @@ public sealed class WavFile : IDisposable
 	/// Gets whether this file was successfully parsed.
 	/// </summary>
 	public bool IsValid => _riff?.IsValid == true && Properties is not null;
+
+	/// <summary>
+	/// Gets the source file path (not tracked for WAV files parsed from data).
+	/// </summary>
+	public string? SourcePath { get; private set; }
+
+	/// <inheritdoc />
+	Tag? IMediaFile.Tag => (Tag?)Id3v2Tag ?? InfoTag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Wav;
 
 	WavFile (RiffFile riff)
 	{
@@ -263,7 +277,10 @@ public sealed class WavFile : IDisposable
 		if (!readResult.IsSuccess)
 			return WavFileReadResult.Failure (readResult.Error!);
 
-		return Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
+		if (result.IsSuccess)
+			result.File!.SourcePath = path;
+		return result;
 	}
 
 	/// <summary>
@@ -284,7 +301,10 @@ public sealed class WavFile : IDisposable
 		if (!readResult.IsSuccess)
 			return WavFileReadResult.Failure (readResult.Error!);
 
-		return Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
+		if (result.IsSuccess)
+			result.File!.SourcePath = path;
+		return result;
 	}
 
 	/// <summary>

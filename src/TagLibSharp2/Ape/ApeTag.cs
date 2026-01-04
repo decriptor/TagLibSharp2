@@ -123,6 +123,32 @@ public sealed class ApeTag : Tag
 		public const string MusicBrainzArtistId = "MUSICBRAINZ_ARTISTID";
 		public const string MusicBrainzAlbumArtistId = "MUSICBRAINZ_ALBUMARTISTID";
 		public const string MusicBrainzReleaseGroupId = "MUSICBRAINZ_RELEASEGROUPID";
+		public const string MusicBrainzWorkId = "MUSICBRAINZ_WORKID";
+		public const string MusicBrainzDiscId = "MUSICBRAINZ_DISCID";
+		public const string Bpm = "BPM";
+		public const string Compilation = "Compilation";
+		public const string OriginalDate = "OriginalDate";
+		public const string Work = "WORK";
+		public const string Movement = "MOVEMENT";
+		public const string MovementNumber = "MOVEMENTNUMBER";
+		public const string MovementTotal = "MOVEMENTTOTAL";
+		public const string Grouping = "Grouping";
+		public const string Remixer = "MixArtist";
+		public const string InitialKey = "Key";
+		public const string Mood = "Mood";
+		public const string MediaType = "Media";
+		public const string EncodedBy = "EncodedBy";
+		public const string EncoderSettings = "EncoderSettings";
+		public const string Description = "Description";
+		public const string DateTagged = "DateTagged";
+		public const string AmazonId = "ASIN";
+		public const string MusicBrainzRecordingId = "MUSICBRAINZ_RECORDINGID";
+		public const string MusicBrainzReleaseStatus = "MUSICBRAINZ_ALBUMSTATUS";
+		public const string MusicBrainzReleaseType = "MUSICBRAINZ_ALBUMTYPE";
+		public const string MusicBrainzReleaseCountry = "RELEASECOUNTRY";
+		public const string AcoustIdId = "ACOUSTID_ID";
+		public const string AcoustIdFingerprint = "ACOUSTID_FINGERPRINT";
+		public const string PodcastFeedUrl = "PODCASTFEEDURL";
 	}
 
 	/// <summary>
@@ -308,6 +334,18 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	public override string? MusicBrainzWorkId {
+		get => GetValue (Keys.MusicBrainzWorkId);
+		set => SetOrRemove (Keys.MusicBrainzWorkId, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzDiscId {
+		get => GetValue (Keys.MusicBrainzDiscId);
+		set => SetOrRemove (Keys.MusicBrainzDiscId, value);
+	}
+
+	/// <inheritdoc/>
 	public override string? ReplayGainTrackGain {
 		get => GetValue (Keys.ReplayGainTrackGain);
 		set => SetOrRemove (Keys.ReplayGainTrackGain, value);
@@ -383,6 +421,204 @@ public sealed class ApeTag : Tag
 	public override string? Lyrics {
 		get => GetValue ("Lyrics");
 		set => SetOrRemove ("Lyrics", value);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// Extended Metadata Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override uint? BeatsPerMinute {
+		get {
+			var value = GetValue (Keys.Bpm);
+			if (string.IsNullOrEmpty (value))
+				return null;
+			return uint.TryParse (value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bpm) ? bpm : null;
+		}
+		set {
+			if (value.HasValue)
+				SetValue (Keys.Bpm, value.Value.ToString (CultureInfo.InvariantCulture));
+			else
+				_items.Remove (Keys.Bpm);
+		}
+	}
+
+	/// <inheritdoc/>
+	public override bool IsCompilation {
+		get {
+			var value = GetValue (Keys.Compilation);
+			return value == "1" || string.Equals (value, "true", StringComparison.OrdinalIgnoreCase);
+		}
+		set {
+			if (value)
+				SetValue (Keys.Compilation, "1");
+			else
+				_items.Remove (Keys.Compilation);
+		}
+	}
+
+	/// <inheritdoc/>
+	public override string? OriginalReleaseDate {
+		get => GetValue (Keys.OriginalDate);
+		set => SetOrRemove (Keys.OriginalDate, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Grouping {
+		get => GetValue (Keys.Grouping);
+		set => SetOrRemove (Keys.Grouping, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Remixer {
+		get => GetValue (Keys.Remixer);
+		set => SetOrRemove (Keys.Remixer, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? InitialKey {
+		get => GetValue (Keys.InitialKey);
+		set => SetOrRemove (Keys.InitialKey, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Mood {
+		get => GetValue (Keys.Mood);
+		set => SetOrRemove (Keys.Mood, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MediaType {
+		get => GetValue (Keys.MediaType);
+		set => SetOrRemove (Keys.MediaType, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? EncodedBy {
+		get => GetValue (Keys.EncodedBy);
+		set => SetOrRemove (Keys.EncodedBy, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? EncoderSettings {
+		get => GetValue (Keys.EncoderSettings);
+		set => SetOrRemove (Keys.EncoderSettings, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Description {
+		get => GetValue (Keys.Description);
+		set => SetOrRemove (Keys.Description, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? DateTagged {
+		get => GetValue (Keys.DateTagged);
+		set => SetOrRemove (Keys.DateTagged, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? AmazonId {
+		get => GetValue (Keys.AmazonId);
+		set => SetOrRemove (Keys.AmazonId, value);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// MusicBrainz Extended IDs
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzRecordingId {
+		get => GetValue (Keys.MusicBrainzRecordingId);
+		set => SetOrRemove (Keys.MusicBrainzRecordingId, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseStatus {
+		get => GetValue (Keys.MusicBrainzReleaseStatus);
+		set => SetOrRemove (Keys.MusicBrainzReleaseStatus, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseType {
+		get => GetValue (Keys.MusicBrainzReleaseType);
+		set => SetOrRemove (Keys.MusicBrainzReleaseType, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseCountry {
+		get => GetValue (Keys.MusicBrainzReleaseCountry);
+		set => SetOrRemove (Keys.MusicBrainzReleaseCountry, value);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// AcoustId Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override string? AcoustIdId {
+		get => GetValue (Keys.AcoustIdId);
+		set => SetOrRemove (Keys.AcoustIdId, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? AcoustIdFingerprint {
+		get => GetValue (Keys.AcoustIdFingerprint);
+		set => SetOrRemove (Keys.AcoustIdFingerprint, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? PodcastFeedUrl {
+		get => GetValue (Keys.PodcastFeedUrl);
+		set => SetOrRemove (Keys.PodcastFeedUrl, value);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// Classical Music Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override string? Work {
+		get => GetValue (Keys.Work);
+		set => SetOrRemove (Keys.Work, value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Movement {
+		get => GetValue (Keys.Movement);
+		set => SetOrRemove (Keys.Movement, value);
+	}
+
+	/// <inheritdoc/>
+	public override uint? MovementNumber {
+		get {
+			var value = GetValue (Keys.MovementNumber);
+			if (string.IsNullOrEmpty (value))
+				return null;
+			return uint.TryParse (value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num) ? num : null;
+		}
+		set {
+			if (value.HasValue)
+				SetValue (Keys.MovementNumber, value.Value.ToString (CultureInfo.InvariantCulture));
+			else
+				_items.Remove (Keys.MovementNumber);
+		}
+	}
+
+	/// <inheritdoc/>
+	public override uint? MovementTotal {
+		get {
+			var value = GetValue (Keys.MovementTotal);
+			if (string.IsNullOrEmpty (value))
+				return null;
+			return uint.TryParse (value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num) ? num : null;
+		}
+		set {
+			if (value.HasValue)
+				SetValue (Keys.MovementTotal, value.Value.ToString (CultureInfo.InvariantCulture));
+			else
+				_items.Remove (Keys.MovementTotal);
+		}
 	}
 
 	// ═══════════════════════════════════════════════════════════════

@@ -39,7 +39,7 @@ namespace TagLibSharp2.Core;
 /// </remarks>
 /// <example>
 /// <code>
-/// var result = MediaFile.Open("song.flac");
+/// var result = MediaFile.Read("song.flac");
 /// if (result.IsSuccess)
 /// {
 ///     Console.WriteLine($"Title: {result.Tag?.Title}");
@@ -70,12 +70,12 @@ public static class MediaFile
 	static readonly byte[] MusepackSV8Magic = [(byte)'M', (byte)'P', (byte)'C', (byte)'K'];
 
 	/// <summary>
-	/// Opens a media file and returns a unified result.
+	/// Reads a media file and returns a unified result.
 	/// </summary>
 	/// <param name="path">The path to the media file.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
-	/// <returns>A result containing the opened file or an error.</returns>
-	public static MediaFileResult Open (string path, IFileSystem? fileSystem = null)
+	/// <returns>A result containing the parsed file or an error.</returns>
+	public static MediaFileResult Read (string path, IFileSystem? fileSystem = null)
 	{
 #if NETSTANDARD2_0 || NETSTANDARD2_1
 		if (path is null)
@@ -88,17 +88,17 @@ public static class MediaFile
 		if (!readResult.IsSuccess)
 			return MediaFileResult.Failure (readResult.Error!);
 
-		return OpenFromData (readResult.Data!, path);
+		return ReadFromData (readResult.Data!.Value, path);
 	}
 
 	/// <summary>
-	/// Opens a media file asynchronously and returns a unified result.
+	/// Reads a media file asynchronously and returns a unified result.
 	/// </summary>
 	/// <param name="path">The path to the media file.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
-	/// <returns>A result containing the opened file or an error.</returns>
-	public static async Task<MediaFileResult> OpenAsync (
+	/// <returns>A result containing the parsed file or an error.</returns>
+	public static async Task<MediaFileResult> ReadAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -115,16 +115,16 @@ public static class MediaFile
 		if (!readResult.IsSuccess)
 			return MediaFileResult.Failure (readResult.Error!);
 
-		return OpenFromData (readResult.Data!, path);
+		return ReadFromData (readResult.Data!.Value, path);
 	}
 
 	/// <summary>
-	/// Opens a media file from raw bytes.
+	/// Reads a media file from raw bytes.
 	/// </summary>
 	/// <param name="data">The file data.</param>
 	/// <param name="pathHint">Optional file path hint for extension-based detection.</param>
-	/// <returns>A result containing the opened file or an error.</returns>
-	public static MediaFileResult OpenFromData (ReadOnlyMemory<byte> data, string? pathHint = null)
+	/// <returns>A result containing the parsed file or an error.</returns>
+	public static MediaFileResult ReadFromData (ReadOnlyMemory<byte> data, string? pathHint = null)
 	{
 		var format = DetectFormat (data.Span, pathHint);
 
@@ -393,7 +393,7 @@ public static class MediaFile
 
 	static MediaFileResult OpenDsf (ReadOnlyMemory<byte> data)
 	{
-		var result = DsfFile.Parse (data.Span);
+		var result = DsfFile.Read (data.Span);
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
@@ -402,7 +402,7 @@ public static class MediaFile
 
 	static MediaFileResult OpenDff (ReadOnlyMemory<byte> data)
 	{
-		var result = DffFile.Parse (data.Span);
+		var result = DffFile.Read (data.Span);
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
@@ -411,7 +411,7 @@ public static class MediaFile
 
 	static MediaFileResult OpenOggFlac (ReadOnlyMemory<byte> data)
 	{
-		var result = OggFlacFile.Parse (data.Span);
+		var result = OggFlacFile.Read (data.Span);
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
@@ -420,7 +420,7 @@ public static class MediaFile
 
 	static MediaFileResult OpenWavPack (ReadOnlyMemory<byte> data)
 	{
-		var result = WavPackFile.Parse (data.Span);
+		var result = WavPackFile.Read (data.Span);
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
@@ -429,7 +429,7 @@ public static class MediaFile
 
 	static MediaFileResult OpenMonkeysAudio (ReadOnlyMemory<byte> data)
 	{
-		var result = MonkeysAudioFile.Parse (data.Span);
+		var result = MonkeysAudioFile.Read (data.Span);
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
@@ -442,12 +442,12 @@ public static class MediaFile
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
-		return MediaFileResult.Success (result.Value, result.Value.Tag, MediaFormat.Asf);
+		return MediaFileResult.Success (result.File!, result.File!.Tag, MediaFormat.Asf);
 	}
 
 	static MediaFileResult OpenMusepack (ReadOnlyMemory<byte> data)
 	{
-		var result = MusepackFile.Parse (data.Span);
+		var result = MusepackFile.Read (data.Span);
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 

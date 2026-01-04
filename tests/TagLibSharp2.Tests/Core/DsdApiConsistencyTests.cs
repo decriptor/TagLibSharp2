@@ -24,7 +24,7 @@ public class DsdApiConsistencyTests
 	{
 		// DSF should use int (not uint) to match AudioProperties and DFF
 		var data = CreateMinimalDsfFile ();
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		// SampleRate should be int type
@@ -36,7 +36,7 @@ public class DsdApiConsistencyTests
 	public void DffFile_SampleRate_IsInt ()
 	{
 		var data = CreateMinimalDffFile ();
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		int sampleRate = result.File!.SampleRate;
@@ -48,7 +48,7 @@ public class DsdApiConsistencyTests
 	{
 		// DSF should have Channels property (not just ChannelCount)
 		var data = CreateMinimalDsfFile ();
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		// Channels should exist and be int type
@@ -60,7 +60,7 @@ public class DsdApiConsistencyTests
 	public void DffFile_Channels_PropertyExists ()
 	{
 		var data = CreateMinimalDffFile ();
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		int channels = result.File!.Channels;
@@ -71,7 +71,7 @@ public class DsdApiConsistencyTests
 	public void DsfFile_BitsPerSample_IsInt ()
 	{
 		var data = CreateMinimalDsfFile ();
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		int bitsPerSample = result.File!.BitsPerSample;
@@ -83,7 +83,7 @@ public class DsdApiConsistencyTests
 	{
 		// DFF should have BitsPerSample on main class (not just Properties)
 		var data = CreateMinimalDffFile ();
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		int bitsPerSample = result.File!.BitsPerSample;
@@ -96,7 +96,7 @@ public class DsdApiConsistencyTests
 	public void DsfFile_SampleCount_IsPublic ()
 	{
 		var data = CreateMinimalDsfFile ();
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		ulong sampleCount = result.File!.SampleCount;
@@ -108,7 +108,7 @@ public class DsdApiConsistencyTests
 	{
 		// DFF should expose SampleCount publicly (like DSF)
 		var data = CreateMinimalDffFile ();
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		ulong sampleCount = result.File!.SampleCount;
@@ -122,7 +122,7 @@ public class DsdApiConsistencyTests
 	{
 		// DFF should have SaveToFile(string path, IFileSystem?) like DSF
 		var data = CreateMinimalDffFile ();
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var mockFs = new MockFileSystem ();
@@ -154,7 +154,7 @@ public class DsdApiConsistencyTests
 
 		// Verify it was saved
 		var savedData = mockFs.ReadAllBytes ("/music/song.dff");
-		var reparsed = DffFile.Parse (savedData);
+		var reparsed = DffFile.Read (savedData);
 		Assert.AreEqual ("Test", reparsed.File!.Id3v2Tag!.Title);
 	}
 
@@ -179,7 +179,7 @@ public class DsdApiConsistencyTests
 		// Verify it was saved to the mock filesystem
 		Assert.IsTrue (mockFs.FileExists ("/music/song.dff"));
 		var savedData = mockFs.ReadAllBytes ("/music/song.dff");
-		var reparsed = DffFile.Parse (savedData);
+		var reparsed = DffFile.Read (savedData);
 		Assert.AreEqual ("Updated", reparsed.File!.Id3v2Tag!.Title);
 	}
 
@@ -202,7 +202,7 @@ public class DsdApiConsistencyTests
 		Assert.IsTrue (saveResult.IsSuccess, saveResult.Error);
 
 		var savedData = mockFs.ReadAllBytes ("/output.dff");
-		var reparsed = DffFile.Parse (savedData);
+		var reparsed = DffFile.Read (savedData);
 		Assert.AreEqual ("Async Test", reparsed.File!.Id3v2Tag!.Title);
 	}
 
@@ -212,7 +212,7 @@ public class DsdApiConsistencyTests
 	public void DsfAudioProperties_Channels_MatchesFileChannels ()
 	{
 		var data = CreateMinimalDsfFile ();
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		// Properties.Channels should match File.Channels
@@ -223,7 +223,7 @@ public class DsdApiConsistencyTests
 	public void DffAudioProperties_Channels_MatchesFileChannels ()
 	{
 		var data = CreateMinimalDffFile ();
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		// Properties.Channels should match File.Channels

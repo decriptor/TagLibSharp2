@@ -26,7 +26,7 @@ namespace TagLibSharp2.Ogg;
 /// Reference: RFC 6716 (Opus codec), RFC 7845 (Ogg Opus encapsulation)
 /// </para>
 /// </remarks>
-public sealed class OggOpusFile : IDisposable
+public sealed class OggOpusFile : IMediaFile
 {
 	const int OpusHeadMinSize = 19; // Minimum size for OpusHead header
 	bool _disposed;
@@ -154,6 +154,15 @@ public sealed class OggOpusFile : IDisposable
 		set => EnsureVorbisComment ().Comment = value;
 	}
 
+	/// <inheritdoc />
+	public Tag? Tag => VorbisComment;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Opus;
+
 	OggOpusFile (AudioProperties properties)
 	{
 		Properties = properties;
@@ -173,11 +182,11 @@ public sealed class OggOpusFile : IDisposable
 		if (!readResult.IsSuccess)
 			return OggOpusFileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!, validateCrc);
+		var result = Read (readResult.Data!.Value.Span, validateCrc);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
-			result.File._fileSize = readResult.Data!.Length;
+			result.File._fileSize = readResult.Data!.Value.Length;
 		}
 		return result;
 	}
@@ -202,11 +211,11 @@ public sealed class OggOpusFile : IDisposable
 		if (!readResult.IsSuccess)
 			return OggOpusFileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!, validateCrc);
+		var result = Read (readResult.Data!.Value.Span, validateCrc);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
-			result.File._fileSize = readResult.Data!.Length;
+			result.File._fileSize = readResult.Data!.Value.Length;
 		}
 		return result;
 	}
@@ -552,7 +561,7 @@ public sealed class OggOpusFile : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
 	}
 
 	/// <summary>
@@ -594,7 +603,7 @@ public sealed class OggOpusFile : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!, fileSystem, cancellationToken)
+		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
 			.ConfigureAwait (false);
 	}
 

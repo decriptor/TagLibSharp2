@@ -46,7 +46,7 @@ Fix blocking issues before new formats:
 | Extract `SyncsafeInteger.cs` static class | 1h | 🔶 In Id3v2Tag (adequate for now) |
 | Create `ExtendedFloat.cs` (80-bit IEEE 754) | 4h | ✅ Complete |
 | Fix DSD duration overflow (use double) | 1h | ❌ Not started (DSF not yet implemented) |
-| Format detection factory | 4h | ✅ Complete (MediaFile.Open) |
+| Format detection factory | 4h | ✅ Complete (MediaFile.Read) |
 | Complete IDisposable pattern | 4h | ❌ Not started |
 
 **Exit Criteria:**
@@ -100,7 +100,7 @@ Highest business value (Apple ecosystem):
 - ✅ iTunes-tagged files read correctly
 - ✅ Write operations don't break iTunes compatibility
 - ✅ ALAC and AAC variants both work
-- ✅ MediaFile.Open auto-detects MP4/M4A format
+- ✅ MediaFile.Read auto-detects MP4/M4A format
 
 **Risks Mitigated:**
 - ✅ Complex atom tree structure - handled

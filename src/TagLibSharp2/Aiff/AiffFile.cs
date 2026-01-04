@@ -21,7 +21,7 @@ namespace TagLibSharp2.Aiff;
 ///
 /// Unlike RIFF/WAV, AIFF uses big-endian byte order throughout.
 /// </remarks>
-public sealed class AiffFile : IDisposable
+public sealed class AiffFile : IMediaFile
 {
 	bool _disposed;
 
@@ -99,6 +99,22 @@ public sealed class AiffFile : IDisposable
 	/// Gets all parsed chunks in order.
 	/// </summary>
 	public IReadOnlyList<AiffChunk> AllChunks => _chunks;
+
+	/// <summary>
+	/// Gets the source file path (not tracked for AIFF files parsed from data).
+	/// </summary>
+	public string? SourcePath { get; private set; }
+
+	/// <inheritdoc />
+	Tag? IMediaFile.Tag => Tag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => AudioProperties is null ? null : new AudioProperties (
+		AudioProperties.Duration, AudioProperties.Bitrate, AudioProperties.SampleRate,
+		AudioProperties.BitsPerSample, AudioProperties.Channels, "AIFF");
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Aiff;
 
 	readonly List<AiffChunk> _chunks = [];
 
@@ -186,7 +202,10 @@ public sealed class AiffFile : IDisposable
 		if (!readResult.IsSuccess)
 			return AiffFileReadResult.Failure (readResult.Error!);
 
-		return Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
+		if (result.IsSuccess)
+			result.File!.SourcePath = path;
+		return result;
 	}
 
 	/// <summary>
@@ -207,7 +226,10 @@ public sealed class AiffFile : IDisposable
 		if (!readResult.IsSuccess)
 			return AiffFileReadResult.Failure (readResult.Error!);
 
-		return Read (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
+		if (result.IsSuccess)
+			result.File!.SourcePath = path;
+		return result;
 	}
 
 	bool Parse (BinaryData data)

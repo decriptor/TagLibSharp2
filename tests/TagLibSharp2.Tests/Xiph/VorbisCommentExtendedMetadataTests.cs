@@ -52,6 +52,7 @@ public class VorbisCommentExtendedMetadataTests
 	[DataRow (nameof (VorbisComment.MusicBrainzReleaseStatus), "official", "RELEASESTATUS")]
 	[DataRow (nameof (VorbisComment.MusicBrainzReleaseType), "album", "RELEASETYPE")]
 	[DataRow (nameof (VorbisComment.MusicBrainzReleaseCountry), "US", "RELEASECOUNTRY")]
+	[DataRow (nameof (VorbisComment.PodcastFeedUrl), "https://example.com/feed.rss", "PODCASTFEEDURL")]
 	public void StringProperty_GetSet_Works (string propertyName, string testValue, string fieldName)
 	{
 		var comment = new VorbisComment ("test");
@@ -93,6 +94,7 @@ public class VorbisCommentExtendedMetadataTests
 	[DataRow (nameof (VorbisComment.MusicBrainzReleaseStatus), "RELEASESTATUS")]
 	[DataRow (nameof (VorbisComment.MusicBrainzReleaseType), "RELEASETYPE")]
 	[DataRow (nameof (VorbisComment.MusicBrainzReleaseCountry), "RELEASECOUNTRY")]
+	[DataRow (nameof (VorbisComment.PodcastFeedUrl), "PODCASTFEEDURL")]
 	public void StringProperty_SetNull_ClearsField (string propertyName, string fieldName)
 	{
 		var comment = new VorbisComment ("test");

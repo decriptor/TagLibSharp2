@@ -1108,4 +1108,37 @@ public class Mp4TagTests
 	}
 
 	#endregion
+
+	// ═══════════════════════════════════════════════════════════════
+	// Podcast Metadata
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void PodcastFeedUrl_GetSet_WorksCorrectly ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastFeedUrl = "https://example.com/podcast.rss";
+
+		Assert.AreEqual ("https://example.com/podcast.rss", file.PodcastFeedUrl);
+
+		var rendered = file.Render (data);
+		var reResult = Mp4File.Read (rendered.Span);
+		Assert.AreEqual ("https://example.com/podcast.rss", reResult.File!.PodcastFeedUrl);
+	}
+
+	[TestMethod]
+	public void PodcastFeedUrl_SetNull_ClearsValue ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastFeedUrl = "https://test.com/feed.xml";
+		file.PodcastFeedUrl = null;
+
+		Assert.IsNull (file.PodcastFeedUrl);
+	}
 }

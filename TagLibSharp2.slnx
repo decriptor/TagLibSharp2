@@ -2,7 +2,6 @@
   <Folder Name="/examples/">
     <Project Path="examples/FileOperations/FileOperations.csproj" />
   </Folder>
-  <Folder Name="/src/" />
   <Project Path="src/TagLibSharp2/TagLibSharp2.csproj" />
   <Project Path="tests/TagLibSharp2.Tests/TagLibSharp2.Tests.csproj" />
 </Solution>

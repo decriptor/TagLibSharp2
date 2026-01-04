@@ -423,7 +423,7 @@ public class MalformedInputTests
 	[TestMethod]
 	public void DsfFile_EmptyInput_ReturnsFailure ()
 	{
-		var result = DsfFile.Parse ([]);
+		var result = DsfFile.Read ([]);
 		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
 	}
 
@@ -432,7 +432,7 @@ public class MalformedInputTests
 	{
 		// Only "DS" instead of "DSD "
 		var data = new byte[] { 0x44, 0x53 };
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
 	}
 
@@ -440,7 +440,7 @@ public class MalformedInputTests
 	public void DsfFile_WrongMagic_ReturnsFailure ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
 	}
 
@@ -448,7 +448,7 @@ public class MalformedInputTests
 	public void DsfFile_AllZeros_ReturnsFailure ()
 	{
 		var data = new byte[1000];
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid DSF");
 	}
 
@@ -457,7 +457,7 @@ public class MalformedInputTests
 	{
 		var data = new byte[1000];
 		Array.Fill (data, (byte)0xFF);
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All 0xFF bytes should be rejected as invalid DSF");
 	}
 
@@ -468,7 +468,7 @@ public class MalformedInputTests
 		var data = new byte[10000];
 		random.NextBytes (data);
 
-		var result = DsfFile.Parse (data);
+		var result = DsfFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 
@@ -481,7 +481,7 @@ public class MalformedInputTests
 	[TestMethod]
 	public void DffFile_EmptyInput_ReturnsFailure ()
 	{
-		var result = DffFile.Parse ([]);
+		var result = DffFile.Read ([]);
 		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
 	}
 
@@ -490,7 +490,7 @@ public class MalformedInputTests
 	{
 		// Only "FR" instead of "FRM8"
 		var data = new byte[] { 0x46, 0x52 };
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
 	}
 
@@ -498,7 +498,7 @@ public class MalformedInputTests
 	public void DffFile_WrongMagic_ReturnsFailure ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
 	}
 
@@ -506,7 +506,7 @@ public class MalformedInputTests
 	public void DffFile_AllZeros_ReturnsFailure ()
 	{
 		var data = new byte[1000];
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid DFF");
 	}
 
@@ -515,7 +515,7 @@ public class MalformedInputTests
 	{
 		var data = new byte[1000];
 		Array.Fill (data, (byte)0xFF);
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All 0xFF bytes should be rejected as invalid DFF");
 	}
 
@@ -526,7 +526,7 @@ public class MalformedInputTests
 		var data = new byte[10000];
 		random.NextBytes (data);
 
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 
@@ -631,7 +631,7 @@ public class MalformedInputTests
 	[TestMethod]
 	public void WavPackFile_EmptyInput_ReturnsFailure ()
 	{
-		var result = WavPackFile.Parse ([]);
+		var result = WavPackFile.Read ([]);
 		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
 	}
 
@@ -640,7 +640,7 @@ public class MalformedInputTests
 	{
 		// Only "wvp" instead of "wvpk"
 		var data = new byte[] { 0x77, 0x76, 0x70 };
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
 	}
 
@@ -648,7 +648,7 @@ public class MalformedInputTests
 	public void WavPackFile_WrongMagic_ReturnsFailure ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
 	}
 
@@ -656,7 +656,7 @@ public class MalformedInputTests
 	public void WavPackFile_AllZeros_ReturnsFailure ()
 	{
 		var data = new byte[1000];
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid WavPack");
 	}
 
@@ -667,7 +667,7 @@ public class MalformedInputTests
 		var data = new byte[10000];
 		random.NextBytes (data);
 
-		var result = WavPackFile.Parse (data);
+		var result = WavPackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 
@@ -680,7 +680,7 @@ public class MalformedInputTests
 	[TestMethod]
 	public void MonkeysAudioFile_EmptyInput_ReturnsFailure ()
 	{
-		var result = MonkeysAudioFile.Parse ([]);
+		var result = MonkeysAudioFile.Read ([]);
 		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
 	}
 
@@ -689,7 +689,7 @@ public class MalformedInputTests
 	{
 		// Only "MA" instead of "MAC "
 		var data = new byte[] { 0x4D, 0x41 };
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
 	}
 
@@ -697,7 +697,7 @@ public class MalformedInputTests
 	public void MonkeysAudioFile_WrongMagic_ReturnsFailure ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
 	}
 
@@ -705,7 +705,7 @@ public class MalformedInputTests
 	public void MonkeysAudioFile_AllZeros_ReturnsFailure ()
 	{
 		var data = new byte[1000];
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid Monkey's Audio");
 	}
 
@@ -716,7 +716,7 @@ public class MalformedInputTests
 		var data = new byte[10000];
 		random.NextBytes (data);
 
-		var result = MonkeysAudioFile.Parse (data);
+		var result = MonkeysAudioFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 
@@ -729,7 +729,7 @@ public class MalformedInputTests
 	[TestMethod]
 	public void MusepackFile_EmptyInput_ReturnsFailure ()
 	{
-		var result = MusepackFile.Parse ([]);
+		var result = MusepackFile.Read ([]);
 		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
 	}
 
@@ -738,7 +738,7 @@ public class MalformedInputTests
 	{
 		// Only "MP" instead of "MPCK" or "MP+"
 		var data = new byte[] { 0x4D, 0x50 };
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Truncated magic should fail gracefully");
 	}
 
@@ -746,7 +746,7 @@ public class MalformedInputTests
 	public void MusepackFile_WrongMagic_ReturnsFailure ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
 	}
 
@@ -754,7 +754,7 @@ public class MalformedInputTests
 	public void MusepackFile_AllZeros_ReturnsFailure ()
 	{
 		var data = new byte[1000];
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid Musepack");
 	}
 
@@ -765,7 +765,7 @@ public class MalformedInputTests
 		var data = new byte[10000];
 		random.NextBytes (data);
 
-		var result = MusepackFile.Parse (data);
+		var result = MusepackFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 
@@ -818,7 +818,7 @@ public class MalformedInputTests
 	[TestMethod]
 	public void OggFlacFile_EmptyInput_ReturnsFailure ()
 	{
-		var result = OggFlacFile.Parse ([]);
+		var result = OggFlacFile.Read ([]);
 		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
 	}
 
@@ -826,7 +826,7 @@ public class MalformedInputTests
 	public void OggFlacFile_WrongMagic_ReturnsFailure ()
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Wrong magic should be rejected");
 	}
 
@@ -834,7 +834,7 @@ public class MalformedInputTests
 	public void OggFlacFile_AllZeros_ReturnsFailure ()
 	{
 		var data = new byte[1000];
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "All zeros should be rejected as invalid Ogg FLAC");
 	}
 
@@ -845,7 +845,7 @@ public class MalformedInputTests
 		var data = new byte[10000];
 		random.NextBytes (data);
 
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 

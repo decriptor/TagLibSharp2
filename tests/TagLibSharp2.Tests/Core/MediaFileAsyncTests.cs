@@ -21,7 +21,7 @@ public class MediaFileAsyncTests
 			await File.WriteAllBytesAsync (tempPath, data);
 
 			// Act
-			var result = await MediaFile.OpenAsync (tempPath);
+			var result = await MediaFile.ReadAsync (tempPath);
 
 			// Assert
 			Assert.IsTrue (result.IsSuccess);
@@ -39,7 +39,7 @@ public class MediaFileAsyncTests
 		var path = Path.Combine (Path.GetTempPath (), $"nonexistent_{Guid.NewGuid ()}.flac");
 
 		// Act
-		var result = await MediaFile.OpenAsync (path);
+		var result = await MediaFile.ReadAsync (path);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -51,7 +51,7 @@ public class MediaFileAsyncTests
 	{
 		// Act & Assert
 		await Assert.ThrowsExactlyAsync<ArgumentNullException> (
-			() => MediaFile.OpenAsync (null!));
+			() => MediaFile.ReadAsync (null!));
 	}
 
 	[TestMethod]
@@ -69,7 +69,7 @@ public class MediaFileAsyncTests
 			// depending on implementation, so we just verify it doesn't throw
 			// other exceptions and handles the token gracefully
 			try {
-				var result = await MediaFile.OpenAsync (tempPath, cancellationToken: cts.Token);
+				var result = await MediaFile.ReadAsync (tempPath, cancellationToken: cts.Token);
 				// If it completes without checking cancellation, that's OK
 				// Some implementations may not check after file read completes
 				Assert.IsNotNull (result);
@@ -86,7 +86,7 @@ public class MediaFileAsyncTests
 	{
 		// Act & Assert
 		Assert.ThrowsExactly<ArgumentNullException> (
-			() => MediaFile.Open (null!));
+			() => MediaFile.Read (null!));
 	}
 
 	[TestMethod]
@@ -96,7 +96,7 @@ public class MediaFileAsyncTests
 		var path = Path.Combine (Path.GetTempPath (), $"nonexistent_{Guid.NewGuid ()}.flac");
 
 		// Act
-		var result = MediaFile.Open (path);
+		var result = MediaFile.Read (path);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);

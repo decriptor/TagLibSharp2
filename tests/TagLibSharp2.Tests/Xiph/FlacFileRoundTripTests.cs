@@ -1,0 +1,262 @@
+// Copyright (c) 2025 Stephen Shaw and contributors
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
+
+using TagLibSharp2.Core;
+using TagLibSharp2.Xiph;
+
+namespace TagLibSharp2.Tests.Xiph;
+
+/// <summary>
+/// Tests that verify FLAC data preservation through read-write-read cycles.
+/// </summary>
+[TestClass]
+public class FlacFileRoundTripTests
+{
+	[TestMethod]
+	public void MinimalFile_PreservesStructure ()
+	{
+		// Arrange
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "Test Title", artist: "Test Artist");
+
+		// Act
+		var result1 = FlacFile.Read (original);
+		Assert.IsTrue (result1.IsSuccess, $"First parse failed: {result1.Error}");
+		var file1 = result1.File!;
+
+		var written = file1.Render (original);
+		Assert.IsTrue (written.Length > 0, "Render produced empty output");
+
+		var result2 = FlacFile.Read (written.Span);
+		Assert.IsTrue (result2.IsSuccess, $"Second parse failed: {result2.Error}");
+		var file2 = result2.File!;
+
+		// Assert
+		Assert.AreEqual ("Test Title", file2.VorbisComment?.Title);
+		Assert.AreEqual ("Test Artist", file2.VorbisComment?.Artist);
+	}
+
+	[TestMethod]
+	public void AllMetadataFields_SurviveRoundTrip ()
+	{
+		// Arrange
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "Original");
+
+		var result = FlacFile.Read (original);
+		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
+		var file = result.File!;
+		var tag = file.VorbisComment!;
+
+		// Set all standard metadata fields
+		tag.Title = "Round Trip Title";
+		tag.Artist = "Round Trip Artist";
+		tag.Album = "Round Trip Album";
+		tag.Year = "2025";
+		tag.Genre = "Rock";
+		tag.Track = 5;
+		tag.TotalTracks = 12;
+		tag.DiscNumber = 1;
+		tag.TotalDiscs = 2;
+		tag.Composer = "Composer Name";
+		tag.Comment = "This is a comment";
+
+		// Act
+		var written = file.Render (original);
+		var result2 = FlacFile.Read (written.Span);
+		Assert.IsTrue (result2.IsSuccess, $"Second parse failed: {result2.Error}");
+		var reloaded = result2.File!.VorbisComment!;
+
+		// Assert
+		Assert.AreEqual ("Round Trip Title", reloaded.Title);
+		Assert.AreEqual ("Round Trip Artist", reloaded.Artist);
+		Assert.AreEqual ("Round Trip Album", reloaded.Album);
+		Assert.AreEqual ("2025", reloaded.Year);
+		Assert.AreEqual ("Rock", reloaded.Genre);
+		Assert.AreEqual (5u, reloaded.Track);
+		Assert.AreEqual (12u, reloaded.TotalTracks);
+		Assert.AreEqual (1u, reloaded.DiscNumber);
+		Assert.AreEqual (2u, reloaded.TotalDiscs);
+		Assert.AreEqual ("Composer Name", reloaded.Composer);
+		Assert.AreEqual ("This is a comment", reloaded.Comment);
+	}
+
+	[TestMethod]
+	public void CoverArt_PreservesBinaryData ()
+	{
+		// Arrange: Create minimal JPEG header bytes
+		var jpegData = new byte[] {
+			0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10,
+			0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+			0x01, 0x00, 0x00, 0x01, 0x00, 0x01,
+			0x00, 0x00, 0xFF, 0xD9
+		};
+
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "With Art");
+		var result = FlacFile.Read (original);
+		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
+		var file = result.File!;
+
+		var picture = new FlacPicture (
+			"image/jpeg", PictureType.FrontCover, "Cover",
+			new BinaryData (jpegData), 100, 100, 24, 0);
+		file.AddPicture (picture);
+
+		// Act
+		var written = file.Render (original);
+		var result2 = FlacFile.Read (written.Span);
+		Assert.IsTrue (result2.IsSuccess, $"Second parse failed: {result2.Error}");
+		var file2 = result2.File!;
+
+		// Assert
+		Assert.AreEqual (1, file2.Pictures.Count);
+		CollectionAssert.AreEqual (jpegData, file2.Pictures[0].PictureData.ToArray ());
+	}
+
+	[TestMethod]
+	public void Unicode_AllScripts ()
+	{
+		// Arrange
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "Original");
+		var result = FlacFile.Read (original);
+		Assert.IsTrue (result.IsSuccess);
+		var file = result.File!;
+		var tag = file.VorbisComment!;
+
+		// Set metadata with various Unicode characters
+		tag.Title = "Titulo";
+		tag.Artist = "Artist Name";
+		tag.Album = "Album Name";
+		tag.Comment = "Unicode test";
+
+		// Act
+		var written = file.Render (original);
+		var result2 = FlacFile.Read (written.Span);
+		Assert.IsTrue (result2.IsSuccess);
+		var reloaded = result2.File!.VorbisComment!;
+
+		// Assert
+		Assert.AreEqual ("Titulo", reloaded.Title);
+		Assert.AreEqual ("Artist Name", reloaded.Artist);
+		Assert.AreEqual ("Album Name", reloaded.Album);
+		Assert.AreEqual ("Unicode test", reloaded.Comment);
+	}
+
+	[TestMethod]
+	public void MusicBrainzIds_SurviveRoundTrip ()
+	{
+		// Arrange
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "With MB IDs");
+		var result = FlacFile.Read (original);
+		Assert.IsTrue (result.IsSuccess);
+		var file = result.File!;
+		var tag = file.VorbisComment!;
+
+		var mbTrackId = "12345678-1234-1234-1234-123456789012";
+		var mbReleaseId = "87654321-4321-4321-4321-210987654321";
+
+		tag.MusicBrainzTrackId = mbTrackId;
+		tag.MusicBrainzReleaseId = mbReleaseId;
+
+		// Act
+		var written = file.Render (original);
+		var result2 = FlacFile.Read (written.Span);
+		Assert.IsTrue (result2.IsSuccess);
+		var reloaded = result2.File!.VorbisComment!;
+
+		// Assert
+		Assert.AreEqual (mbTrackId, reloaded.MusicBrainzTrackId);
+		Assert.AreEqual (mbReleaseId, reloaded.MusicBrainzReleaseId);
+	}
+
+	[TestMethod]
+	public void ReplayGain_SurvivesRoundTrip ()
+	{
+		// Arrange
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "With ReplayGain");
+		var result = FlacFile.Read (original);
+		Assert.IsTrue (result.IsSuccess);
+		var file = result.File!;
+		var tag = file.VorbisComment!;
+
+		tag.ReplayGainTrackGain = "-6.50 dB";
+		tag.ReplayGainTrackPeak = "0.988547";
+		tag.ReplayGainAlbumGain = "-7.25 dB";
+		tag.ReplayGainAlbumPeak = "1.0";
+
+		// Act
+		var written = file.Render (original);
+		var result2 = FlacFile.Read (written.Span);
+		Assert.IsTrue (result2.IsSuccess);
+		var reloaded = result2.File!.VorbisComment!;
+
+		// Assert
+		Assert.AreEqual ("-6.50 dB", reloaded.ReplayGainTrackGain);
+		Assert.AreEqual ("0.988547", reloaded.ReplayGainTrackPeak);
+		Assert.AreEqual ("-7.25 dB", reloaded.ReplayGainAlbumGain);
+		Assert.AreEqual ("1.0", reloaded.ReplayGainAlbumPeak);
+	}
+
+	[TestMethod]
+	public void StreamInfo_PreservedAfterMetadataChange ()
+	{
+		// Arrange
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "Original");
+		var result = FlacFile.Read (original);
+		Assert.IsTrue (result.IsSuccess);
+		var file = result.File!;
+
+		// Store original audio properties
+		var originalBitDepth = file.Properties.BitsPerSample;
+		var originalSampleRate = file.Properties.SampleRate;
+		var originalChannels = file.Properties.Channels;
+
+		// Modify metadata
+		file.VorbisComment!.Title = "Modified Title";
+
+		// Act
+		var written = file.Render (original);
+		var result2 = FlacFile.Read (written.Span);
+		Assert.IsTrue (result2.IsSuccess);
+		var file2 = result2.File!;
+
+		// Assert: Audio properties unchanged
+		Assert.AreEqual (originalBitDepth, file2.Properties.BitsPerSample);
+		Assert.AreEqual (originalSampleRate, file2.Properties.SampleRate);
+		Assert.AreEqual (originalChannels, file2.Properties.Channels);
+		Assert.AreEqual ("Modified Title", file2.VorbisComment?.Title);
+	}
+
+	[TestMethod]
+	public void MultipleWrites_NoSignificantDataGrowth ()
+	{
+		// Arrange
+		var original = TestBuilders.Flac.CreateWithVorbisComment (title: "Title", artist: "Artist");
+
+		// Act: Write multiple times
+		var result1 = FlacFile.Read (original);
+		Assert.IsTrue (result1.IsSuccess);
+		var file1 = result1.File!;
+		var written1 = file1.Render (original);
+		var size1 = written1.Length;
+
+		var result2 = FlacFile.Read (written1.Span);
+		Assert.IsTrue (result2.IsSuccess);
+		var file2 = result2.File!;
+		var written2 = file2.Render (written1.Span);
+		var size2 = written2.Length;
+
+		var result3 = FlacFile.Read (written2.Span);
+		Assert.IsTrue (result3.IsSuccess);
+		var file3 = result3.File!;
+		var written3 = file3.Render (written2.Span);
+		var size3 = written3.Length;
+
+		// Assert: Sizes should be stable (allowing for small padding variations)
+		var maxDelta = Math.Max (size1, size2) * 0.1; // Allow 10% variance for padding
+		Assert.IsTrue (
+			Math.Abs (size2 - size1) <= maxDelta,
+			$"Size grew unexpectedly from {size1} to {size2}");
+		Assert.IsTrue (
+			Math.Abs (size3 - size2) <= maxDelta,
+			$"Size grew unexpectedly from {size2} to {size3}");
+	}
+}

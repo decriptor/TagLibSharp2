@@ -473,6 +473,15 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Uses the standard "purl" podcast URL atom.
+	/// </remarks>
+	public override string? PodcastFeedUrl {
+		get => GetText (Mp4AtomMapping.PodcastUrl);
+		set => SetText (Mp4AtomMapping.PodcastUrl, value);
+	}
+
+	/// <inheritdoc/>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public override IPicture[] Pictures {
 		get => [.. _pictures];

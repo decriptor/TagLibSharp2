@@ -19,12 +19,12 @@ namespace TagLibSharp2.Tests.Docs;
 [TestClass]
 public class DocExamplesCompileTests
 {
-	// QuickStart.md - MediaFile.Open example
+	// QuickStart.md - MediaFile.Read example
 	[TestMethod]
-	public void QuickStart_MediaFileOpen_Compiles ()
+	public void QuickStart_MediaFileRead_Compiles ()
 	{
 		// This just verifies the API exists - skip actual file access
-		Assert.IsNotNull (typeof (MediaFile).GetMethod ("Open"));
+		Assert.IsNotNull (typeof (MediaFile).GetMethod ("Read"));
 		Assert.IsNotNull (typeof (MediaFileResult).GetProperty ("IsSuccess"));
 		Assert.IsNotNull (typeof (MediaFileResult).GetProperty ("Tag"));
 		Assert.IsNotNull (typeof (MediaFileResult).GetProperty ("Format"));

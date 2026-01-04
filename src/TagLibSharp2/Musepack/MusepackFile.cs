@@ -13,7 +13,7 @@ namespace TagLibSharp2.Musepack;
 /// <summary>
 /// Represents the result of parsing a Musepack file.
 /// </summary>
-public readonly struct MusepackFileParseResult : IEquatable<MusepackFileParseResult>
+public readonly struct MusepackFileReadResult : IEquatable<MusepackFileReadResult>
 {
 	/// <summary>
 	/// Gets the parsed Musepack file, or null if parsing failed.
@@ -30,7 +30,7 @@ public readonly struct MusepackFileParseResult : IEquatable<MusepackFileParseRes
 	/// </summary>
 	public bool IsSuccess => File is not null && Error is null;
 
-	private MusepackFileParseResult (MusepackFile? file, string? error)
+	private MusepackFileReadResult (MusepackFile? file, string? error)
 	{
 		File = file;
 		Error = error;
@@ -41,22 +41,22 @@ public readonly struct MusepackFileParseResult : IEquatable<MusepackFileParseRes
 	/// </summary>
 	/// <param name="file">The parsed Musepack file.</param>
 	/// <returns>A successful result containing the file.</returns>
-	public static MusepackFileParseResult Success (MusepackFile file) => new (file, null);
+	public static MusepackFileReadResult Success (MusepackFile file) => new (file, null);
 
 	/// <summary>
 	/// Creates a failed parse result.
 	/// </summary>
 	/// <param name="error">The error message describing the failure.</param>
 	/// <returns>A failed result containing the error.</returns>
-	public static MusepackFileParseResult Failure (string error) => new (null, error);
+	public static MusepackFileReadResult Failure (string error) => new (null, error);
 
 	/// <inheritdoc/>
-	public bool Equals (MusepackFileParseResult other) =>
+	public bool Equals (MusepackFileReadResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
-		obj is MusepackFileParseResult other && Equals (other);
+		obj is MusepackFileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
@@ -64,13 +64,13 @@ public readonly struct MusepackFileParseResult : IEquatable<MusepackFileParseRes
 	/// <summary>
 	/// Determines whether two results are equal.
 	/// </summary>
-	public static bool operator == (MusepackFileParseResult left, MusepackFileParseResult right) =>
+	public static bool operator == (MusepackFileReadResult left, MusepackFileReadResult right) =>
 		left.Equals (right);
 
 	/// <summary>
 	/// Determines whether two results are not equal.
 	/// </summary>
-	public static bool operator != (MusepackFileParseResult left, MusepackFileParseResult right) =>
+	public static bool operator != (MusepackFileReadResult left, MusepackFileReadResult right) =>
 		!left.Equals (right);
 }
 
@@ -78,7 +78,7 @@ public readonly struct MusepackFileParseResult : IEquatable<MusepackFileParseRes
 /// Represents a Musepack (.mpc, .mp+, .mpp) audio file.
 /// Supports both SV7 (MP+) and SV8 (MPCK) stream formats.
 /// </summary>
-public sealed class MusepackFile : IDisposable
+public sealed class MusepackFile : IMediaFile
 {
 	private bool _disposed;
 	private const int MinHeaderSize = 4;
@@ -97,6 +97,12 @@ public sealed class MusepackFile : IDisposable
 
 	private byte[] _originalData = [];
 	private string? _sourcePath;
+
+	/// <summary>
+	/// Gets the source file path if the file was read from disk.
+	/// </summary>
+	public string? SourcePath => _sourcePath;
+
 	private IFileSystem? _sourceFileSystem;
 
 	private MusepackFile () { }
@@ -122,13 +128,22 @@ public sealed class MusepackFile : IDisposable
 	/// <summary>APEv2 tag (null if not present)</summary>
 	public ApeTag? ApeTag { get; private set; }
 
+	/// <inheritdoc />
+	public Tag? Tag => ApeTag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Musepack;
+
 	/// <summary>
 	/// Parse a Musepack file from byte data.
 	/// </summary>
-	public static MusepackFileParseResult Parse (ReadOnlySpan<byte> data)
+	public static MusepackFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MinHeaderSize)
-			return MusepackFileParseResult.Failure ("File too short to contain Musepack magic");
+			return MusepackFileReadResult.Failure ("File too short to contain Musepack magic");
 
 		// Check for SV7 magic "MP+"
 		if (data[..3].SequenceEqual (SV7Magic))
@@ -138,13 +153,13 @@ public sealed class MusepackFile : IDisposable
 		if (data.Length >= 4 && data[..4].SequenceEqual (SV8Magic))
 			return ParseSV8 (data);
 
-		return MusepackFileParseResult.Failure ("Invalid magic: expected 'MP+' (SV7) or 'MPCK' (SV8)");
+		return MusepackFileReadResult.Failure ("Invalid magic: expected 'MP+' (SV7) or 'MPCK' (SV8)");
 	}
 
 	/// <summary>
 	/// Parse SV7 format (MP+ magic).
 	/// </summary>
-	private static MusepackFileParseResult ParseSV7 (ReadOnlySpan<byte> data)
+	private static MusepackFileReadResult ParseSV7 (ReadOnlySpan<byte> data)
 	{
 		// SV7 Header structure:
 		// [0-2] Magic "MP+"
@@ -154,7 +169,7 @@ public sealed class MusepackFile : IDisposable
 		// [10-13] Flags with sample rate
 
 		if (data.Length < 16)
-			return MusepackFileParseResult.Failure ("File too short for SV7 header");
+			return MusepackFileReadResult.Failure ("File too short for SV7 header");
 
 		var file = new MusepackFile ();
 
@@ -163,7 +178,7 @@ public sealed class MusepackFile : IDisposable
 
 		// Validate version (should be 7 for SV7)
 		if (file.StreamVersion < 4 || file.StreamVersion > 7)
-			return MusepackFileParseResult.Failure ($"Unsupported SV7 version: {file.StreamVersion}");
+			return MusepackFileReadResult.Failure ($"Unsupported SV7 version: {file.StreamVersion}");
 
 		// Frame count (bytes 4-7, LE)
 		file.FrameCount = BinaryPrimitives.ReadUInt32LittleEndian (data.Slice (4, 4));
@@ -191,20 +206,20 @@ public sealed class MusepackFile : IDisposable
 		// Parse APEv2 tag at end of file
 		file.ParseApeTag (data);
 
-		return MusepackFileParseResult.Success (file);
+		return MusepackFileReadResult.Success (file);
 	}
 
 	/// <summary>
 	/// Parse SV8 format (MPCK magic).
 	/// </summary>
-	private static MusepackFileParseResult ParseSV8 (ReadOnlySpan<byte> data)
+	private static MusepackFileReadResult ParseSV8 (ReadOnlySpan<byte> data)
 	{
 		// SV8 is packet-based format
 		// Magic "MPCK" followed by packets
 		// We need to find the SH (Stream Header) packet
 
 		if (data.Length < 8)
-			return MusepackFileParseResult.Failure ("File too short for SV8 header");
+			return MusepackFileReadResult.Failure ("File too short for SV8 header");
 
 		var file = new MusepackFile {
 			StreamVersion = 8
@@ -257,7 +272,7 @@ public sealed class MusepackFile : IDisposable
 		// Parse APEv2 tag at end of file
 		file.ParseApeTag (data);
 
-		return MusepackFileParseResult.Success (file);
+		return MusepackFileReadResult.Success (file);
 	}
 
 	/// <summary>
@@ -442,14 +457,14 @@ public sealed class MusepackFile : IDisposable
 	/// <summary>
 	/// Read a Musepack file from disk.
 	/// </summary>
-	public static MusepackFileParseResult ReadFromFile (string path, IFileSystem? fileSystem = null)
+	public static MusepackFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = FileHelper.SafeReadAllBytes (path, fs);
 		if (!readResult.IsSuccess)
-			return MusepackFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return MusepackFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;
@@ -460,7 +475,7 @@ public sealed class MusepackFile : IDisposable
 	/// <summary>
 	/// Read a Musepack file from disk asynchronously.
 	/// </summary>
-	public static async Task<MusepackFileParseResult> ReadFromFileAsync (
+	public static async Task<MusepackFileReadResult> ReadFromFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -468,9 +483,9 @@ public sealed class MusepackFile : IDisposable
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fs, cancellationToken).ConfigureAwait (false);
 		if (!readResult.IsSuccess)
-			return MusepackFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return MusepackFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;

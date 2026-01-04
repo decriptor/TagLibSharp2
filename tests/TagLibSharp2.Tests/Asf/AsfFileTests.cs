@@ -70,7 +70,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("Test Song", result.Value.Tag.Title);
+		Assert.AreEqual ("Test Song", result.File!.Tag.Title);
 	}
 
 	[TestMethod]
@@ -81,7 +81,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("Test Artist", result.Value.Tag.Artist);
+		Assert.AreEqual ("Test Artist", result.File!.Tag.Artist);
 	}
 
 	[TestMethod]
@@ -93,8 +93,8 @@ public class AsfFileTests
 
 		Assert.IsTrue (result.IsSuccess);
 		// Duration should be approximately 180 seconds
-		Assert.IsTrue (result.Value.AudioProperties.Duration.TotalSeconds >= 170);
-		Assert.IsTrue (result.Value.AudioProperties.Duration.TotalSeconds <= 190);
+		Assert.IsTrue (result.File!.AudioProperties.Duration.TotalSeconds >= 170);
+		Assert.IsTrue (result.File!.AudioProperties.Duration.TotalSeconds <= 190);
 	}
 
 	[TestMethod]
@@ -105,7 +105,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (320, result.Value.AudioProperties.Bitrate);
+		Assert.AreEqual (320, result.File!.AudioProperties.Bitrate);
 	}
 
 	[TestMethod]
@@ -116,7 +116,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (48000, result.Value.AudioProperties.SampleRate);
+		Assert.AreEqual (48000, result.File!.AudioProperties.SampleRate);
 	}
 
 	[TestMethod]
@@ -127,7 +127,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (2, result.Value.AudioProperties.Channels);
+		Assert.AreEqual (2, result.File!.AudioProperties.Channels);
 	}
 
 	[TestMethod]
@@ -138,7 +138,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (16, result.Value.AudioProperties.BitsPerSample);
+		Assert.AreEqual (16, result.File!.AudioProperties.BitsPerSample);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -153,8 +153,8 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.IsNotNull (result.Value.Tag);
-		Assert.IsInstanceOfType<AsfTag> (result.Value.Tag);
+		Assert.IsNotNull (result.File!.Tag);
+		Assert.IsInstanceOfType<AsfTag> (result.File!.Tag);
 	}
 
 	[TestMethod]
@@ -165,7 +165,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("Convenience Test", result.Value.Title);
+		Assert.AreEqual ("Convenience Test", result.File!.Title);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -180,7 +180,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("日本語タイトル", result.Value.Tag.Title);
+		Assert.AreEqual ("日本語タイトル", result.File!.Tag.Title);
 	}
 
 	[TestMethod]
@@ -191,7 +191,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("Café Français", result.Value.Tag.Artist);
+		Assert.AreEqual ("Café Français", result.File!.Tag.Artist);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -208,7 +208,7 @@ public class AsfFileTests
 		var result = AsfFile.ReadFromFile ("/test.wma", mockFs);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
-		Assert.AreEqual ("File Test", result.Value.Title);
+		Assert.AreEqual ("File Test", result.File!.Title);
 	}
 
 	[TestMethod]
@@ -221,7 +221,7 @@ public class AsfFileTests
 		var result = AsfFile.ReadFromFile ("/music/song.wma", mockFs);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("/music/song.wma", result.Value.SourcePath);
+		Assert.AreEqual ("/music/song.wma", result.File!.SourcePath);
 	}
 
 	[TestMethod]
@@ -245,7 +245,7 @@ public class AsfFileTests
 		var result = await AsfFile.ReadFromFileAsync ("/test.wma", mockFs);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
-		Assert.AreEqual ("Async Test", result.Value.Title);
+		Assert.AreEqual ("Async Test", result.File!.Title);
 	}
 
 	[TestMethod]
@@ -258,7 +258,7 @@ public class AsfFileTests
 		var result = await AsfFile.ReadFromFileAsync ("/music/async.wma", mockFs);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("/music/async.wma", result.Value.SourcePath);
+		Assert.AreEqual ("/music/async.wma", result.File!.SourcePath);
 	}
 
 	[TestMethod]
@@ -283,10 +283,10 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Title = "New Title";
+		result.File!.Title = "New Title";
 
-		Assert.AreEqual ("New Title", result.Value.Title);
-		Assert.AreEqual ("New Title", result.Value.Tag.Title);
+		Assert.AreEqual ("New Title", result.File!.Title);
+		Assert.AreEqual ("New Title", result.File!.Tag.Title);
 	}
 
 	[TestMethod]
@@ -296,10 +296,10 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Artist = "New Artist";
+		result.File!.Artist = "New Artist";
 
-		Assert.AreEqual ("New Artist", result.Value.Artist);
-		Assert.AreEqual ("New Artist", result.Value.Tag.Artist);
+		Assert.AreEqual ("New Artist", result.File!.Artist);
+		Assert.AreEqual ("New Artist", result.File!.Tag.Artist);
 	}
 
 	[TestMethod]
@@ -309,7 +309,7 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("Test Album", result.Value.Album);
+		Assert.AreEqual ("Test Album", result.File!.Album);
 	}
 
 	[TestMethod]
@@ -319,10 +319,10 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Album = "New Album";
+		result.File!.Album = "New Album";
 
-		Assert.AreEqual ("New Album", result.Value.Album);
-		Assert.AreEqual ("New Album", result.Value.Tag.Album);
+		Assert.AreEqual ("New Album", result.File!.Album);
+		Assert.AreEqual ("New Album", result.File!.Tag.Album);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -338,11 +338,11 @@ public class AsfFileTests
 
 		var result = AsfFile.ReadFromFile ("/test.wma", mockFs);
 		Assert.IsTrue (result.IsSuccess);
-		Assert.IsNotNull (result.Value.SourcePath);
+		Assert.IsNotNull (result.File!.SourcePath);
 
-		result.Value.Dispose ();
+		result.File!.Dispose ();
 
-		Assert.IsNull (result.Value.SourcePath);
+		Assert.IsNull (result.File!.SourcePath);
 	}
 
 	[TestMethod]
@@ -352,8 +352,8 @@ public class AsfFileTests
 		var result = AsfFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
-		result.Value.Dispose ();
-		result.Value.Dispose (); // Should not throw
+		result.File!.Dispose ();
+		result.File!.Dispose (); // Should not throw
 	}
 
 	// ═══════════════════════════════════════════════════════════════

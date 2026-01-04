@@ -15,7 +15,7 @@ dotnet add package TagLibSharp2
 ```csharp
 using TagLibSharp2.Core;
 
-var result = MediaFile.Open("music.mp3");  // Also works with .flac, .ogg, .m4a, .opus
+var result = MediaFile.Read("music.mp3");  // Also works with .flac, .ogg, .m4a, .opus
 if (result.IsSuccess)
 {
     Console.WriteLine($"Title:  {result.Tag?.Title}");

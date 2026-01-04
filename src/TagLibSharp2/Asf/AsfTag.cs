@@ -280,6 +280,253 @@ public sealed class AsfTag : Tag
 	}
 
 	// ═══════════════════════════════════════════════════════════════
+	// Extended Metadata Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override string? Subtitle {
+		get => GetString ("WM/SubTitle");
+		set => SetString ("WM/SubTitle", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Language {
+		get => GetString ("WM/Language");
+		set => SetString ("WM/Language", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? OriginalReleaseDate {
+		get => GetString ("WM/OriginalReleaseDate");
+		set => SetString ("WM/OriginalReleaseDate", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Barcode {
+		get => GetString ("WM/Barcode");
+		set => SetString ("WM/Barcode", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? CatalogNumber {
+		get => GetString ("WM/CatalogNo");
+		set => SetString ("WM/CatalogNo", value);
+	}
+
+	/// <inheritdoc/>
+	public override uint? TotalTracks {
+		get {
+			var desc = GetDescriptor ("WM/TrackTotal");
+			if (desc is null) return null;
+
+			if (desc.Type == AsfAttributeType.Dword)
+				return desc.DwordValue;
+
+			if (desc.StringValue is not null &&
+				uint.TryParse (desc.StringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
+				return num;
+
+			return null;
+		}
+		set {
+			if (value.HasValue)
+				SetDword ("WM/TrackTotal", value.Value);
+			else
+				RemoveDescriptor ("WM/TrackTotal");
+		}
+	}
+
+	/// <inheritdoc/>
+	public override string? Grouping {
+		get => GetString ("WM/ContentGroupDescription");
+		set => SetString ("WM/ContentGroupDescription", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Remixer {
+		get => GetString ("WM/ModifiedBy");
+		set => SetString ("WM/ModifiedBy", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? InitialKey {
+		get => GetString ("WM/InitialKey");
+		set => SetString ("WM/InitialKey", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Mood {
+		get => GetString ("WM/Mood");
+		set => SetString ("WM/Mood", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MediaType {
+		get => GetString ("WM/Media");
+		set => SetString ("WM/Media", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? EncodedBy {
+		get => GetString ("WM/EncodedBy");
+		set => SetString ("WM/EncodedBy", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? EncoderSettings {
+		get => GetString ("WM/EncodingSettings");
+		set => SetString ("WM/EncodingSettings", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Description {
+		get => GetString ("WM/Description");
+		set => SetString ("WM/Description", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? DateTagged {
+		get => GetString ("WM/DateTagged");
+		set => SetString ("WM/DateTagged", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? AmazonId {
+		get => GetString ("ASIN");
+		set => SetString ("ASIN", value);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// MusicBrainz Extended IDs
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseGroupId {
+		get => GetString ("MusicBrainz/Release Group Id");
+		set => SetString ("MusicBrainz/Release Group Id", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzWorkId {
+		get => GetString ("MusicBrainz/Work Id");
+		set => SetString ("MusicBrainz/Work Id", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzDiscId {
+		get => GetString ("MusicBrainz/Disc Id");
+		set => SetString ("MusicBrainz/Disc Id", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzRecordingId {
+		get => GetString ("MusicBrainz/Recording Id");
+		set => SetString ("MusicBrainz/Recording Id", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseStatus {
+		get => GetString ("MusicBrainz/Album Status");
+		set => SetString ("MusicBrainz/Album Status", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseType {
+		get => GetString ("MusicBrainz/Album Type");
+		set => SetString ("MusicBrainz/Album Type", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseCountry {
+		get => GetString ("MusicBrainz/Album Release Country");
+		set => SetString ("MusicBrainz/Album Release Country", value);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// AcoustId Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override string? AcoustIdId {
+		get => GetString ("Acoustid/Id");
+		set => SetString ("Acoustid/Id", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? AcoustIdFingerprint {
+		get => GetString ("Acoustid/Fingerprint");
+		set => SetString ("Acoustid/Fingerprint", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? PodcastFeedUrl {
+		get => GetString ("WM/PodcastFeedUrl");
+		set => SetString ("WM/PodcastFeedUrl", value);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// Classical Music Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	/// <inheritdoc/>
+	public override string? Work {
+		get => GetString ("WM/Work");
+		set => SetString ("WM/Work", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Movement {
+		get => GetString ("WM/Movement");
+		set => SetString ("WM/Movement", value);
+	}
+
+	/// <inheritdoc/>
+	public override uint? MovementNumber {
+		get {
+			var desc = GetDescriptor ("WM/MovementNumber");
+			if (desc is null) return null;
+
+			if (desc.Type == AsfAttributeType.Dword)
+				return desc.DwordValue;
+
+			if (desc.StringValue is not null &&
+				uint.TryParse (desc.StringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
+				return num;
+
+			return null;
+		}
+		set {
+			if (value.HasValue)
+				SetDword ("WM/MovementNumber", value.Value);
+			else
+				RemoveDescriptor ("WM/MovementNumber");
+		}
+	}
+
+	/// <inheritdoc/>
+	public override uint? MovementTotal {
+		get {
+			var desc = GetDescriptor ("WM/MovementTotal");
+			if (desc is null) return null;
+
+			if (desc.Type == AsfAttributeType.Dword)
+				return desc.DwordValue;
+
+			if (desc.StringValue is not null &&
+				uint.TryParse (desc.StringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
+				return num;
+
+			return null;
+		}
+		set {
+			if (value.HasValue)
+				SetDword ("WM/MovementTotal", value.Value);
+			else
+				RemoveDescriptor ("WM/MovementTotal");
+		}
+	}
+
+	// ═══════════════════════════════════════════════════════════════
 	// Sort Order Fields (WM/*)
 	// ═══════════════════════════════════════════════════════════════
 

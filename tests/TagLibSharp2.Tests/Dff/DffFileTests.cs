@@ -34,7 +34,7 @@ public class DffFileTests
 			channelCount: 2);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
@@ -49,7 +49,7 @@ public class DffFileTests
 		"XXXX"u8.CopyTo (data);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -69,7 +69,7 @@ public class DffFileTests
 		"AIFF"u8.CopyTo (data.AsSpan (16));
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -83,7 +83,7 @@ public class DffFileTests
 		var data = new byte[10];
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -100,7 +100,7 @@ public class DffFileTests
 		var data = CreateMinimalDffFile (2822400, 2);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -116,7 +116,7 @@ public class DffFileTests
 		var data = CreateDffWithoutFver ();
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsFalse (result.IsSuccess);
@@ -136,7 +136,7 @@ public class DffFileTests
 			channelCount: 2);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -153,7 +153,7 @@ public class DffFileTests
 			channelCount: 2);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -170,7 +170,7 @@ public class DffFileTests
 			channelCount: 2);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -185,7 +185,7 @@ public class DffFileTests
 		var data = CreateMinimalDffFile (2822400, channelCount: 2);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -199,7 +199,7 @@ public class DffFileTests
 		var data = CreateMinimalDffFile (2822400, channelCount: 1);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -213,7 +213,7 @@ public class DffFileTests
 		var data = CreateMinimalDffFile (2822400, channelCount: 6);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -230,7 +230,7 @@ public class DffFileTests
 			sampleCount: 2822400 * 60);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -251,7 +251,7 @@ public class DffFileTests
 			sampleCount: 5644800 * 120); // 2 minutes
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -279,7 +279,7 @@ public class DffFileTests
 			artist: "Test Artist");
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -295,7 +295,7 @@ public class DffFileTests
 		var data = CreateMinimalDffFile (2822400, 2);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -313,7 +313,7 @@ public class DffFileTests
 		var data = CreateMinimalDffFile (2822400, 2, compressionType: "DSD ");
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -328,7 +328,7 @@ public class DffFileTests
 		var data = CreateMinimalDffFile (2822400, 2, compressionType: "DST ");
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess);
@@ -401,7 +401,7 @@ public class DffFileTests
 		// Arrange - DFF without metadata, using small sample count so DSD size matches actual data
 		// sampleCount = 16384 results in audioDataSize = 16384 * 2 / 8 = 4096 bytes (within limit)
 		var original = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -412,7 +412,7 @@ public class DffFileTests
 		var rendered = file.Render ();
 
 		// Assert - can parse back
-		var reparsed = DffFile.Parse (rendered.Span);
+		var reparsed = DffFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.AreEqual ("New Title", reparsed.File!.Id3v2Tag!.Title);
 		Assert.AreEqual ("New Artist", reparsed.File.Id3v2Tag.Artist);
@@ -429,7 +429,7 @@ public class DffFileTests
 			title: "Original",
 			artist: "Original Artist");
 
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess, $"Initial parse failed: {parseResult.Error}");
 		var file = parseResult.File!;
 
@@ -438,7 +438,7 @@ public class DffFileTests
 		var rendered = file.Render ();
 
 		// Assert
-		var reparsed = DffFile.Parse (rendered.Span);
+		var reparsed = DffFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess, $"Re-parse failed: {reparsed.Error}");
 		Assert.AreEqual ("Modified", reparsed.File!.Id3v2Tag!.Title);
 		Assert.AreEqual (5644800, reparsed.File.SampleRate);
@@ -452,7 +452,7 @@ public class DffFileTests
 		var audioSize = 4096;
 		var original = TestBuilders.Dff.CreateWithKnownAudioPattern (audioSize: audioSize);
 
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess, $"Initial parse failed: {parseResult.Error}");
 		var file = parseResult.File!;
 
@@ -488,7 +488,7 @@ public class DffFileTests
 		// Arrange - start with small metadata
 		var audioSize = 4096;
 		var original = TestBuilders.Dff.CreateWithKnownAudioPattern (audioSize: audioSize);
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -519,7 +519,7 @@ public class DffFileTests
 			title: new string ('T', 500),
 			artist: new string ('A', 500),
 			album: new string ('B', 500));
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -546,7 +546,7 @@ public class DffFileTests
 	{
 		// Arrange - start with ID3v2 tag
 		var original = TestBuilders.Dff.CreateWithId3v2 (title: "Test", artist: "Artist");
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 		Assert.IsNotNull (file.Id3v2Tag);
@@ -561,7 +561,7 @@ public class DffFileTests
 		var rendered = file.Render ();
 
 		// Assert - no ID3v2 tag in output
-		var reparsed = DffFile.Parse (rendered.Span);
+		var reparsed = DffFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.IsNull (reparsed.File!.Id3v2Tag);
 
@@ -579,7 +579,7 @@ public class DffFileTests
 		var original = TestBuilders.Dff.CreateMinimal ();
 		var originalFrm8Size = BinaryPrimitives.ReadUInt64BigEndian (original.AsSpan (4, 8));
 
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -603,7 +603,7 @@ public class DffFileTests
 	{
 		// Arrange
 		var original = TestBuilders.Dff.CreateMinimal ();
-		var parseResult = DffFile.Parse (original);
+		var parseResult = DffFile.Read (original);
 		Assert.IsTrue (parseResult.IsSuccess);
 		var file = parseResult.File!;
 
@@ -613,7 +613,7 @@ public class DffFileTests
 		var rendered = file.Render ();
 
 		// Assert - file should be valid and reparseable
-		var reparsed = DffFile.Parse (rendered.Span);
+		var reparsed = DffFile.Read (rendered.Span);
 		Assert.IsTrue (reparsed.IsSuccess, $"Re-parse failed: {reparsed.Error}");
 		Assert.AreEqual ("X", reparsed.File!.Id3v2Tag!.Title);
 
@@ -647,11 +647,11 @@ public class DffFileTests
 	#region Result Type Tests
 
 	[TestMethod]
-	public void DffFileParseResult_Equality_SameSuccess_AreEqual ()
+	public void DffFileReadResult_Equality_SameSuccess_AreEqual ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var result1 = DffFile.Parse (data);
-		var result2 = DffFile.Parse (data);
+		var result1 = DffFile.Read (data);
+		var result2 = DffFile.Read (data);
 
 		// Different instances but both successful
 		Assert.IsTrue (result1.IsSuccess);
@@ -659,10 +659,10 @@ public class DffFileTests
 	}
 
 	[TestMethod]
-	public void DffFileParseResult_Equality_SameFailure_AreEqual ()
+	public void DffFileReadResult_Equality_SameFailure_AreEqual ()
 	{
-		var result1 = DffFile.Parse (new byte[5]);
-		var result2 = DffFile.Parse (new byte[5]);
+		var result1 = DffFile.Read (new byte[5]);
+		var result2 = DffFile.Read (new byte[5]);
 
 		Assert.IsFalse (result1.IsSuccess);
 		Assert.IsFalse (result2.IsSuccess);
@@ -670,20 +670,20 @@ public class DffFileTests
 	}
 
 	[TestMethod]
-	public void DffFileParseResult_GetHashCode_Works ()
+	public void DffFileReadResult_GetHashCode_Works ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		var hash = result.GetHashCode ();
 		Assert.AreNotEqual (0, hash);
 	}
 
 	[TestMethod]
-	public void DffFileParseResult_Equals_WithObject_Works ()
+	public void DffFileReadResult_Equals_WithObject_Works ()
 	{
-		var result1 = DffFile.Parse (new byte[5]);
-		var result2 = DffFile.Parse (new byte[5]);
+		var result1 = DffFile.Read (new byte[5]);
+		var result2 = DffFile.Read (new byte[5]);
 
 		Assert.IsTrue (result1.Equals ((object)result2));
 		Assert.IsFalse (result1.Equals ("not a result"));
@@ -700,7 +700,7 @@ public class DffFileTests
 		var tempPath = Path.GetTempFileName ();
 		try {
 			var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-			var parseResult = DffFile.Parse (data);
+			var parseResult = DffFile.Read (data);
 			Assert.IsTrue (parseResult.IsSuccess);
 
 			var saveResult = parseResult.File!.SaveToFile (tempPath);
@@ -716,7 +716,7 @@ public class DffFileTests
 	public void SaveToFile_AfterDispose_ThrowsObjectDisposedException ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var parseResult = DffFile.Parse (data);
+		var parseResult = DffFile.Read (data);
 		var file = parseResult.File!;
 		file.Dispose ();
 
@@ -751,7 +751,7 @@ public class DffFileTests
 	public async Task SaveToFileAsync_NoSourcePath_ReturnsFailure ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var parseResult = DffFile.Parse (data);
+		var parseResult = DffFile.Read (data);
 		Assert.IsTrue (parseResult.IsSuccess);
 
 		// File was parsed from bytes, not read from disk - no SourcePath
@@ -764,7 +764,7 @@ public class DffFileTests
 	public async Task SaveToFileAsync_AfterDispose_ThrowsObjectDisposedException ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var parseResult = DffFile.Parse (data);
+		var parseResult = DffFile.Read (data);
 		var file = parseResult.File!;
 		file.Dispose ();
 
@@ -806,7 +806,7 @@ public class DffFileTests
 	public void Dispose_CalledTwice_NoException ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var parseResult = DffFile.Parse (data);
+		var parseResult = DffFile.Read (data);
 		var file = parseResult.File!;
 
 		file.Dispose ();
@@ -817,7 +817,7 @@ public class DffFileTests
 	public void Dispose_ClearsReferences ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var parseResult = DffFile.Parse (data);
+		var parseResult = DffFile.Read (data);
 		var file = parseResult.File!;
 		file.EnsureId3v2Tag ().Title = "Test";
 
@@ -831,7 +831,7 @@ public class DffFileTests
 	public void Render_AfterDispose_ThrowsObjectDisposedException ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var parseResult = DffFile.Parse (data);
+		var parseResult = DffFile.Read (data);
 		var file = parseResult.File!;
 		file.Dispose ();
 
@@ -850,7 +850,7 @@ public class DffFileTests
 			channelCount: 2,
 			sampleCount: 16384);
 
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (DsfSampleRate.DSD512, result.File!.DsdRate);
@@ -865,7 +865,7 @@ public class DffFileTests
 			channelCount: 2,
 			sampleCount: 16384);
 
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (DsfSampleRate.DSD1024, result.File!.DsdRate);
@@ -879,7 +879,7 @@ public class DffFileTests
 			channelCount: 2,
 			sampleCount: 16384);
 
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (DsfSampleRate.Unknown, result.File!.DsdRate);
@@ -889,7 +889,7 @@ public class DffFileTests
 	public void Properties_BitsPerSample_AlwaysOne ()
 	{
 		var data = CreateMinimalDffFile (2822400, 2, sampleCount: 16384);
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (1, result.File!.Properties!.BitsPerSample);
@@ -906,7 +906,7 @@ public class DffFileTests
 		var data = CreateDffWithMissingPropSubChunk ("FS  ");
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - FS is required per spec
 		Assert.IsFalse (result.IsSuccess);
@@ -921,7 +921,7 @@ public class DffFileTests
 		var data = CreateDffWithMissingPropSubChunk ("CHNL");
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - CHNL is required per spec
 		Assert.IsFalse (result.IsSuccess);
@@ -936,7 +936,7 @@ public class DffFileTests
 		var data = CreateDffWithMissingPropSubChunk ("CMPR");
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - CMPR is required per spec
 		Assert.IsFalse (result.IsSuccess);
@@ -951,7 +951,7 @@ public class DffFileTests
 		var data = CreateDffWithoutAudioChunk ();
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - audio data chunk is required per spec
 		Assert.IsFalse (result.IsSuccess);
@@ -967,7 +967,7 @@ public class DffFileTests
 		var data = CreateDffWithPropBeforeFver ();
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - FVER must be first chunk per spec
 		Assert.IsFalse (result.IsSuccess);
@@ -982,7 +982,7 @@ public class DffFileTests
 		var data = CreateDffWithAudioBeforeProp ();
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - PROP must precede audio per spec
 		Assert.IsFalse (result.IsSuccess);
@@ -998,7 +998,7 @@ public class DffFileTests
 		var data = CreateDffWithOddSizedChunk ();
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - should handle padding correctly
 		Assert.IsTrue (result.IsSuccess, $"Failed to parse: {result.Error}");
@@ -1013,7 +1013,7 @@ public class DffFileTests
 	{
 		// Arrange
 		var data = CreateMinimalDffFile (2822400, 2, 16384);
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		var file = result.File!;
 
@@ -1034,7 +1034,7 @@ public class DffFileTests
 	{
 		// Arrange
 		var data = CreateMinimalDffFile (2822400, 2, 16384);
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 		var file = result.File!;
 
 		// Act & Assert - should not throw on multiple disposals
@@ -1107,7 +1107,7 @@ public class DffFileTests
 			sampleCount: largeSampleCount);
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
@@ -1126,7 +1126,7 @@ public class DffFileTests
 		var data = CreateDffWithLargeDsdChunk (fiveGigabytes);
 
 		// Act - should parse header and properties even though we don't have 5GB of actual data
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - parsing should succeed, sample count derived from claimed chunk size
 		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
@@ -1292,7 +1292,7 @@ public class DffFileTests
 			compressionType: "DST ");
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert
 		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");
@@ -1312,7 +1312,7 @@ public class DffFileTests
 		var data = CreateDstCompressedDffFile ();
 
 		// Act
-		var result = DffFile.Parse (data);
+		var result = DffFile.Read (data);
 
 		// Assert - Duration should be zero or indicate incomplete for DST
 		Assert.IsTrue (result.IsSuccess, $"Parse failed: {result.Error}");

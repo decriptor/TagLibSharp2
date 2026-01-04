@@ -98,7 +98,7 @@ using TagLibSharp2.Aiff;
 using TagLibSharp2.Mp4;
 
 // Auto-detect format using MediaFile factory
-var result = MediaFile.Open("song.m4a");
+var result = MediaFile.Read("song.m4a");
 if (result.IsSuccess)
 {
     Console.WriteLine($"Format: {result.Format}");

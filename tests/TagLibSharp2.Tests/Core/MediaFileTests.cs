@@ -178,7 +178,7 @@ public class MediaFileTests
 		// Build a minimal valid FLAC file
 		var data = CreateMinimalFlac ();
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (MediaFormat.Flac, result.Format);
@@ -192,7 +192,7 @@ public class MediaFileTests
 		// Build a minimal valid MP3 with ID3v2 tag
 		var data = CreateMinimalMp3WithId3v2 ();
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (MediaFormat.Mp3, result.Format);
@@ -205,7 +205,7 @@ public class MediaFileTests
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00 };
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.AreEqual (MediaFormat.Unknown, result.Format);
@@ -217,7 +217,7 @@ public class MediaFileTests
 	public void GetFileAs_CorrectType_ReturnsFile ()
 	{
 		var data = CreateMinimalFlac ();
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		var flacFile = result.GetFileAs<FlacFile> ();
 
@@ -228,7 +228,7 @@ public class MediaFileTests
 	public void GetFileAs_WrongType_ReturnsNull ()
 	{
 		var data = CreateMinimalFlac ();
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		var mp3File = result.GetFileAs<Mp3File> ();
 
@@ -240,7 +240,7 @@ public class MediaFileTests
 	{
 		var data = new byte[] { 0x00, 0x00, 0x00, 0x00 };
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsNull (result.File);
@@ -310,7 +310,7 @@ public class MediaFileTests
 	{
 		var data = CreateMinimalDsf ();
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (MediaFormat.Dsf, result.Format);
@@ -323,7 +323,7 @@ public class MediaFileTests
 	{
 		var data = CreateMinimalDff ();
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (MediaFormat.Dff, result.Format);
@@ -335,7 +335,7 @@ public class MediaFileTests
 	public void GetFileAs_DsfFile_ReturnsCorrectType ()
 	{
 		var data = CreateMinimalDsf ();
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		var dsfFile = result.GetFileAs<DsfFile> ();
 
@@ -346,7 +346,7 @@ public class MediaFileTests
 	public void GetFileAs_DffFile_ReturnsCorrectType ()
 	{
 		var data = CreateMinimalDff ();
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		var dffFile = result.GetFileAs<DffFile> ();
 
@@ -358,7 +358,7 @@ public class MediaFileTests
 	{
 		var data = AsfTestBuilder.CreateMinimalWma (title: "MediaFile Test");
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (MediaFormat.Asf, result.Format);
@@ -371,7 +371,7 @@ public class MediaFileTests
 	public void GetFileAs_AsfFile_ReturnsCorrectType ()
 	{
 		var data = AsfTestBuilder.CreateMinimalWma ();
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		var asfFile = result.GetFileAs<AsfFile> ();
 
@@ -418,7 +418,7 @@ public class MediaFileTests
 	{
 		var data = MusepackFileTests.CreateMinimalMusepackSV7FilePublic ();
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (MediaFormat.Musepack, result.Format);
@@ -430,7 +430,7 @@ public class MediaFileTests
 	public void GetFileAs_MusepackFile_ReturnsCorrectType ()
 	{
 		var data = MusepackFileTests.CreateMinimalMusepackSV7FilePublic ();
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		var mpcFile = result.GetFileAs<MusepackFile> ();
 

@@ -14,7 +14,7 @@ namespace TagLibSharp2.Ape;
 /// <summary>
 /// Represents the result of parsing a Monkey's Audio file.
 /// </summary>
-public readonly struct MonkeysAudioFileParseResult : IEquatable<MonkeysAudioFileParseResult>
+public readonly struct MonkeysAudioFileReadResult : IEquatable<MonkeysAudioFileReadResult>
 {
 	/// <summary>
 	/// Gets the parsed Monkey's Audio file, or null if parsing failed.
@@ -31,7 +31,7 @@ public readonly struct MonkeysAudioFileParseResult : IEquatable<MonkeysAudioFile
 	/// </summary>
 	public bool IsSuccess => File is not null && Error is null;
 
-	private MonkeysAudioFileParseResult (MonkeysAudioFile? file, string? error)
+	private MonkeysAudioFileReadResult (MonkeysAudioFile? file, string? error)
 	{
 		File = file;
 		Error = error;
@@ -42,22 +42,22 @@ public readonly struct MonkeysAudioFileParseResult : IEquatable<MonkeysAudioFile
 	/// </summary>
 	/// <param name="file">The parsed Monkey's Audio file.</param>
 	/// <returns>A successful result containing the file.</returns>
-	public static MonkeysAudioFileParseResult Success (MonkeysAudioFile file) => new (file, null);
+	public static MonkeysAudioFileReadResult Success (MonkeysAudioFile file) => new (file, null);
 
 	/// <summary>
 	/// Creates a failed parse result.
 	/// </summary>
 	/// <param name="error">The error message describing the failure.</param>
 	/// <returns>A failed result containing the error.</returns>
-	public static MonkeysAudioFileParseResult Failure (string error) => new (null, error);
+	public static MonkeysAudioFileReadResult Failure (string error) => new (null, error);
 
 	/// <inheritdoc/>
-	public bool Equals (MonkeysAudioFileParseResult other) =>
+	public bool Equals (MonkeysAudioFileReadResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
-		obj is MonkeysAudioFileParseResult other && Equals (other);
+		obj is MonkeysAudioFileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
@@ -65,20 +65,20 @@ public readonly struct MonkeysAudioFileParseResult : IEquatable<MonkeysAudioFile
 	/// <summary>
 	/// Determines whether two results are equal.
 	/// </summary>
-	public static bool operator == (MonkeysAudioFileParseResult left, MonkeysAudioFileParseResult right) =>
+	public static bool operator == (MonkeysAudioFileReadResult left, MonkeysAudioFileReadResult right) =>
 		left.Equals (right);
 
 	/// <summary>
 	/// Determines whether two results are not equal.
 	/// </summary>
-	public static bool operator != (MonkeysAudioFileParseResult left, MonkeysAudioFileParseResult right) =>
+	public static bool operator != (MonkeysAudioFileReadResult left, MonkeysAudioFileReadResult right) =>
 		!left.Equals (right);
 }
 
 /// <summary>
 /// Represents a Monkey's Audio (.ape) file.
 /// </summary>
-public sealed class MonkeysAudioFile : IDisposable
+public sealed class MonkeysAudioFile : IMediaFile
 {
 	private bool _disposed;
 	private const int MagicSize = 4;
@@ -101,6 +101,12 @@ public sealed class MonkeysAudioFile : IDisposable
 
 	private byte[] _originalData = Array.Empty<byte> ();
 	private string? _sourcePath;
+
+	/// <summary>
+	/// Gets the source file path if the file was read from disk.
+	/// </summary>
+	public string? SourcePath => _sourcePath;
+
 	private IFileSystem? _sourceFileSystem;
 
 	private MonkeysAudioFile () { }
@@ -135,23 +141,32 @@ public sealed class MonkeysAudioFile : IDisposable
 	/// <summary>APEv2 tag (null if not present)</summary>
 	public ApeTag? ApeTag { get; private set; }
 
+	/// <inheritdoc />
+	public Tag? Tag => ApeTag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.MonkeysAudio;
+
 	/// <summary>
 	/// Parse a Monkey's Audio file from byte data.
 	/// </summary>
 	/// <param name="data">The raw file bytes to parse.</param>
 	/// <returns>A result indicating success with the parsed file, or failure with an error message.</returns>
 	[SuppressMessage ("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Factory method transfers ownership to caller")]
-	public static MonkeysAudioFileParseResult Parse (ReadOnlySpan<byte> data)
+	public static MonkeysAudioFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MagicSize)
-			return MonkeysAudioFileParseResult.Failure ("File too short to contain MAC magic");
+			return MonkeysAudioFileReadResult.Failure ("File too short to contain MAC magic");
 
 		// Verify magic "MAC "
 		if (!data[..MagicSize].SequenceEqual (Magic))
-			return MonkeysAudioFileParseResult.Failure ("Invalid magic: expected 'MAC '");
+			return MonkeysAudioFileReadResult.Failure ("Invalid magic: expected 'MAC '");
 
 		if (data.Length < MagicSize + 2)
-			return MonkeysAudioFileParseResult.Failure ("File too short to contain version");
+			return MonkeysAudioFileReadResult.Failure ("File too short to contain version");
 
 		var version = BinaryPrimitives.ReadUInt16LittleEndian (data.Slice (MagicSize, 2));
 
@@ -161,12 +176,12 @@ public sealed class MonkeysAudioFile : IDisposable
 			// New format with descriptor
 			var parseResult = ParseNewFormat (data, file);
 			if (!parseResult.IsSuccess)
-				return MonkeysAudioFileParseResult.Failure (parseResult.Error!);
+				return MonkeysAudioFileReadResult.Failure (parseResult.Error!);
 		} else {
 			// Old format without descriptor
 			var parseResult = ParseOldFormat (data, file);
 			if (!parseResult.IsSuccess)
-				return MonkeysAudioFileParseResult.Failure (parseResult.Error!);
+				return MonkeysAudioFileReadResult.Failure (parseResult.Error!);
 		}
 
 		// Store original data for calculations and rendering
@@ -178,7 +193,7 @@ public sealed class MonkeysAudioFile : IDisposable
 		// Parse APEv2 tag at end of file
 		file.ParseApeTag (data);
 
-		return MonkeysAudioFileParseResult.Success (file);
+		return MonkeysAudioFileReadResult.Success (file);
 	}
 
 	private static ParseResult ParseNewFormat (ReadOnlySpan<byte> data, MonkeysAudioFile file)
@@ -413,14 +428,14 @@ public sealed class MonkeysAudioFile : IDisposable
 	/// <summary>
 	/// Read a Monkey's Audio file from disk.
 	/// </summary>
-	public static MonkeysAudioFileParseResult ReadFromFile (string path, IFileSystem? fileSystem = null)
+	public static MonkeysAudioFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = FileHelper.SafeReadAllBytes (path, fs);
 		if (!readResult.IsSuccess)
-			return MonkeysAudioFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return MonkeysAudioFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;
@@ -431,7 +446,7 @@ public sealed class MonkeysAudioFile : IDisposable
 	/// <summary>
 	/// Read a Monkey's Audio file from disk asynchronously.
 	/// </summary>
-	public static async Task<MonkeysAudioFileParseResult> ReadFromFileAsync (
+	public static async Task<MonkeysAudioFileReadResult> ReadFromFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -439,9 +454,9 @@ public sealed class MonkeysAudioFile : IDisposable
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
 		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fs, cancellationToken).ConfigureAwait (false);
 		if (!readResult.IsSuccess)
-			return MonkeysAudioFileParseResult.Failure ($"Failed to read file: {readResult.Error}");
+			return MonkeysAudioFileReadResult.Failure ($"Failed to read file: {readResult.Error}");
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!._sourcePath = path;
 			result.File._sourceFileSystem = fs;

@@ -29,7 +29,7 @@ namespace TagLibSharp2.Dff;
 /// <summary>
 /// Result of parsing a DFF file.
 /// </summary>
-public readonly struct DffFileParseResult : IEquatable<DffFileParseResult>
+public readonly struct DffFileReadResult : IEquatable<DffFileReadResult>
 {
 	/// <summary>Gets the parsed file, if successful.</summary>
 	public DffFile? File { get; }
@@ -40,25 +40,25 @@ public readonly struct DffFileParseResult : IEquatable<DffFileParseResult>
 	/// <summary>Gets whether parsing was successful.</summary>
 	public bool IsSuccess => File is not null && Error is null;
 
-	private DffFileParseResult (DffFile? file, string? error)
+	private DffFileReadResult (DffFile? file, string? error)
 	{
 		File = file;
 		Error = error;
 	}
 
 	/// <summary>Creates a successful result.</summary>
-	public static DffFileParseResult Success (DffFile file) => new (file, null);
+	public static DffFileReadResult Success (DffFile file) => new (file, null);
 
 	/// <summary>Creates a failure result.</summary>
-	public static DffFileParseResult Failure (string error) => new (null, error);
+	public static DffFileReadResult Failure (string error) => new (null, error);
 
 	/// <inheritdoc/>
-	public bool Equals (DffFileParseResult other) =>
+	public bool Equals (DffFileReadResult other) =>
 		Equals (File, other.File) && Error == other.Error;
 
 	/// <inheritdoc/>
 	public override bool Equals (object? obj) =>
-		obj is DffFileParseResult other && Equals (other);
+		obj is DffFileReadResult other && Equals (other);
 
 	/// <inheritdoc/>
 	public override int GetHashCode () => HashCode.Combine (File, Error);
@@ -122,7 +122,7 @@ public sealed class DffAudioProperties
 /// <summary>
 /// Represents a DFF (DSDIFF) audio file.
 /// </summary>
-public sealed class DffFile : IDisposable
+public sealed class DffFile : IMediaFile
 {
 	private const int MinHeaderSize = 20; // FRM8(4) + size(8) + DSD (4) + some content
 	private static readonly byte[] Frm8Magic = { 0x46, 0x52, 0x4D, 0x38 }; // "FRM8"
@@ -171,6 +171,16 @@ public sealed class DffFile : IDisposable
 	/// <summary>Gets or sets the ID3v2 tag (unofficial extension).</summary>
 	public Id3v2Tag? Id3v2Tag { get; set; }
 
+	/// <inheritdoc />
+	public Tag? Tag => Id3v2Tag;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties is null ? null : new AudioProperties (
+		Properties.Duration, 0, Properties.SampleRate, Properties.BitsPerSample, Properties.Channels, "DSD");
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.Dff;
+
 	/// <summary>
 	/// Gets a value indicating whether this file has an ID3v2 tag.
 	/// </summary>
@@ -191,21 +201,21 @@ public sealed class DffFile : IDisposable
 	/// <summary>
 	/// Parses a DFF file from binary data.
 	/// </summary>
-	public static DffFileParseResult Parse (ReadOnlySpan<byte> data)
+	public static DffFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MinHeaderSize)
-			return DffFileParseResult.Failure ($"Data too short for DFF file: {data.Length} bytes");
+			return DffFileReadResult.Failure ($"Data too short for DFF file: {data.Length} bytes");
 
 		// Check FRM8 magic
 		if (!data[..4].SequenceEqual (Frm8Magic))
-			return DffFileParseResult.Failure ("Invalid DFF file: missing FRM8 magic");
+			return DffFileReadResult.Failure ("Invalid DFF file: missing FRM8 magic");
 
 		// Read form size (big-endian)
 		var formSize = BinaryPrimitives.ReadUInt64BigEndian (data[4..12]);
 
 		// Check DSD form type
 		if (!data[12..16].SequenceEqual (DsdFormType))
-			return DffFileParseResult.Failure ("Invalid DFF file: expected DSD form type");
+			return DffFileReadResult.Failure ("Invalid DFF file: expected DSD form type");
 
 		var file = new DffFile {
 			_originalData = data.ToArray ()
@@ -231,7 +241,7 @@ public sealed class DffFile : IDisposable
 
 			// FVER must be the first chunk per DSDIFF spec
 			if (isFirstChunk && chunkId != "FVER")
-				return DffFileParseResult.Failure ("Invalid DFF file: FVER must be the first chunk");
+				return DffFileReadResult.Failure ("Invalid DFF file: FVER must be the first chunk");
 
 			switch (chunkId) {
 				case "FVER":
@@ -255,7 +265,7 @@ public sealed class DffFile : IDisposable
 				case "DSD ":
 					// PROP must precede audio data per spec
 					if (!foundProp)
-						return DffFileParseResult.Failure ("Invalid DFF file: PROP chunk must precede audio data");
+						return DffFileReadResult.Failure ("Invalid DFF file: PROP chunk must precede audio data");
 
 					file._dsdOffset = offset;
 					file._dsdSize = (int)chunkSize;
@@ -270,7 +280,7 @@ public sealed class DffFile : IDisposable
 				case "DST ":
 					// PROP must precede audio data per spec
 					if (!foundProp)
-						return DffFileParseResult.Failure ("Invalid DFF file: PROP chunk must precede audio data");
+						return DffFileReadResult.Failure ("Invalid DFF file: PROP chunk must precede audio data");
 
 					file._dsdOffset = offset;
 					file._dsdSize = (int)chunkSize;
@@ -306,24 +316,24 @@ public sealed class DffFile : IDisposable
 		}
 
 		if (!foundFver)
-			return DffFileParseResult.Failure ("Invalid DFF file: missing FVER chunk");
+			return DffFileReadResult.Failure ("Invalid DFF file: missing FVER chunk");
 
 		if (!foundProp)
-			return DffFileParseResult.Failure ("Invalid DFF file: missing PROP chunk");
+			return DffFileReadResult.Failure ("Invalid DFF file: missing PROP chunk");
 
 		// Validate required PROP sub-chunks
 		if (!foundFs)
-			return DffFileParseResult.Failure ("Invalid DFF file: missing FS (sample rate) in PROP chunk");
+			return DffFileReadResult.Failure ("Invalid DFF file: missing FS (sample rate) in PROP chunk");
 
 		if (!foundChnl)
-			return DffFileParseResult.Failure ("Invalid DFF file: missing CHNL (channels) in PROP chunk");
+			return DffFileReadResult.Failure ("Invalid DFF file: missing CHNL (channels) in PROP chunk");
 
 		if (!foundCmpr)
-			return DffFileParseResult.Failure ("Invalid DFF file: missing CMPR (compression) in PROP chunk");
+			return DffFileReadResult.Failure ("Invalid DFF file: missing CMPR (compression) in PROP chunk");
 
 		// Audio data chunk is required
 		if (!foundAudio)
-			return DffFileParseResult.Failure ("Invalid DFF file: missing DSD or DST audio data chunk");
+			return DffFileReadResult.Failure ("Invalid DFF file: missing DSD or DST audio data chunk");
 
 		// Calculate duration
 		if (file.SampleRate > 0 && file._sampleCount > 0) {
@@ -342,7 +352,7 @@ public sealed class DffFile : IDisposable
 			file._sampleCount,
 			file.CompressionType);
 
-		return DffFileParseResult.Success (file);
+		return DffFileReadResult.Success (file);
 	}
 
 	private static void ParsePropChunk (ReadOnlySpan<byte> data, DffFile file, ref bool foundFs, ref bool foundChnl, ref bool foundCmpr)
@@ -407,15 +417,15 @@ public sealed class DffFile : IDisposable
 	/// <summary>
 	/// Reads a DFF file from disk.
 	/// </summary>
-	public static DffFileParseResult ReadFromFile (string path, IFileSystem? fileSystem = null)
+	public static DffFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
 		fileSystem ??= DefaultFileSystem.Instance;
 
 		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
 		if (!readResult.IsSuccess)
-			return DffFileParseResult.Failure (readResult.Error!);
+			return DffFileReadResult.Failure (readResult.Error!);
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
@@ -427,7 +437,7 @@ public sealed class DffFile : IDisposable
 	/// <summary>
 	/// Reads a DFF file from disk asynchronously.
 	/// </summary>
-	public static async Task<DffFileParseResult> ReadFromFileAsync (
+	public static async Task<DffFileReadResult> ReadFromFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -438,9 +448,9 @@ public sealed class DffFile : IDisposable
 			.ConfigureAwait (false);
 
 		if (!readResult.IsSuccess)
-			return DffFileParseResult.Failure (readResult.Error!);
+			return DffFileReadResult.Failure (readResult.Error!);
 
-		var result = Parse (readResult.Data!);
+		var result = Read (readResult.Data!.Value.Span);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;

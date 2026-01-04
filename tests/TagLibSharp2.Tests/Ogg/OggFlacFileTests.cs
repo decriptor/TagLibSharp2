@@ -19,7 +19,7 @@ public class OggFlacFileTests
 	public void Parse_ValidOggFlac_ReturnsSuccess ()
 	{
 		var data = CreateMinimalOggFlacFile ();
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 	}
 
@@ -27,7 +27,7 @@ public class OggFlacFileTests
 	public void Parse_InvalidMagic_ReturnsError ()
 	{
 		var data = new byte[100];
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 	}
 
@@ -35,7 +35,7 @@ public class OggFlacFileTests
 	public void Parse_TooShort_ReturnsError ()
 	{
 		var data = new byte[3];
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 	}
 
@@ -44,7 +44,7 @@ public class OggFlacFileTests
 	{
 		// An Ogg Vorbis file should not parse as Ogg FLAC
 		var data = CreateMinimalOggVorbisFile ();
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsTrue (result.Error!.Contains ("FLAC") || result.Error.Contains ("stream"));
 	}
@@ -57,7 +57,7 @@ public class OggFlacFileTests
 	public void Parse_ExtractsSampleRate ()
 	{
 		var data = CreateMinimalOggFlacFile (sampleRate: 44100);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (44100, result.File!.SampleRate);
@@ -67,7 +67,7 @@ public class OggFlacFileTests
 	public void Parse_ExtractsChannels ()
 	{
 		var data = CreateMinimalOggFlacFile (channels: 2);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (2, result.File!.Channels);
@@ -77,7 +77,7 @@ public class OggFlacFileTests
 	public void Parse_ExtractsBitsPerSample ()
 	{
 		var data = CreateMinimalOggFlacFile (bitsPerSample: 16);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (16, result.File!.BitsPerSample);
@@ -87,7 +87,7 @@ public class OggFlacFileTests
 	public void Parse_ExtractsTotalSamples ()
 	{
 		var data = CreateMinimalOggFlacFile (totalSamples: 441000);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (441000UL, result.File!.TotalSamples);
@@ -102,7 +102,7 @@ public class OggFlacFileTests
 	{
 		// 441000 samples at 44100 Hz = 10 seconds
 		var data = CreateMinimalOggFlacFile (sampleRate: 44100, totalSamples: 441000);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.Properties);
@@ -114,7 +114,7 @@ public class OggFlacFileTests
 	public void Properties_MatchesFileProperties ()
 	{
 		var data = CreateMinimalOggFlacFile (sampleRate: 48000, channels: 2, bitsPerSample: 24);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		var file = result.File!;
@@ -133,7 +133,7 @@ public class OggFlacFileTests
 	public void Parse_NoComment_VorbisCommentIsNull ()
 	{
 		var data = CreateMinimalOggFlacFile (includeVorbisComment: false);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNull (result.File!.VorbisComment);
@@ -143,7 +143,7 @@ public class OggFlacFileTests
 	public void Parse_WithVorbisComment_ReadsTitle ()
 	{
 		var data = CreateMinimalOggFlacFileWithComment (title: "Test Song");
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.VorbisComment);
@@ -154,7 +154,7 @@ public class OggFlacFileTests
 	public void Parse_WithVorbisComment_ReadsArtist ()
 	{
 		var data = CreateMinimalOggFlacFileWithComment (artist: "Test Artist");
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File!.VorbisComment);
@@ -165,7 +165,7 @@ public class OggFlacFileTests
 	public void EnsureVorbisComment_CreatesComment ()
 	{
 		var data = CreateMinimalOggFlacFile (includeVorbisComment: false);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -180,7 +180,7 @@ public class OggFlacFileTests
 	public void RemoveVorbisComment_RemovesExistingComment ()
 	{
 		var data = CreateMinimalOggFlacFileWithComment (title: "Test");
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
 		var file = result.File!;
@@ -268,7 +268,7 @@ public class OggFlacFileTests
 	public void Parse_HighRes_96kHz24bit ()
 	{
 		var data = CreateMinimalOggFlacFile (sampleRate: 96000, bitsPerSample: 24);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (96000, result.File!.SampleRate);
@@ -279,7 +279,7 @@ public class OggFlacFileTests
 	public void Parse_Mono ()
 	{
 		var data = CreateMinimalOggFlacFile (channels: 1);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (1, result.File!.Channels);
@@ -289,7 +289,7 @@ public class OggFlacFileTests
 	public void Parse_5Point1Surround ()
 	{
 		var data = CreateMinimalOggFlacFile (channels: 6);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (6, result.File!.Channels);
@@ -300,19 +300,19 @@ public class OggFlacFileTests
 	#region Coverage Edge Cases
 
 	[TestMethod]
-	public void OggFlacFileParseResult_OperatorEquals_Works ()
+	public void OggFlacFileReadResult_OperatorEquals_Works ()
 	{
-		var failure1 = OggFlacFileParseResult.Failure ("Error A");
-		var failure2 = OggFlacFileParseResult.Failure ("Error A");
+		var failure1 = OggFlacFileReadResult.Failure ("Error A");
+		var failure2 = OggFlacFileReadResult.Failure ("Error A");
 
 		Assert.IsTrue (failure1 == failure2);
 	}
 
 	[TestMethod]
-	public void OggFlacFileParseResult_OperatorNotEquals_Works ()
+	public void OggFlacFileReadResult_OperatorNotEquals_Works ()
 	{
-		var failure1 = OggFlacFileParseResult.Failure ("Error A");
-		var failure2 = OggFlacFileParseResult.Failure ("Error B");
+		var failure1 = OggFlacFileReadResult.Failure ("Error A");
+		var failure2 = OggFlacFileReadResult.Failure ("Error B");
 
 		Assert.IsTrue (failure1 != failure2);
 	}
@@ -321,7 +321,7 @@ public class OggFlacFileTests
 	public void OggFlacFile_SaveToFile_NoSourcePath_Fails ()
 	{
 		var data = CreateMinimalOggFlacFile ();
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var mockFs = new MockFileSystem ();
@@ -335,7 +335,7 @@ public class OggFlacFileTests
 	public async Task OggFlacFile_SaveToFileAsync_NoSourcePath_Fails ()
 	{
 		var data = CreateMinimalOggFlacFile ();
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		var mockFs = new MockFileSystem ();
@@ -364,7 +364,7 @@ public class OggFlacFileTests
 	public void OggFlacFile_Dispose_ClearsProperties ()
 	{
 		var data = CreateMinimalOggFlacFile ();
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNotNull (result.File!.Properties);
 
@@ -378,7 +378,7 @@ public class OggFlacFileTests
 	public void OggFlacFile_Dispose_MultipleCalls_DoesNotThrow ()
 	{
 		var data = CreateMinimalOggFlacFile ();
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 
 		result.File!.Dispose ();
@@ -389,7 +389,7 @@ public class OggFlacFileTests
 	public void OggFlacFile_Properties_ZeroSampleRate_ReturnsNull ()
 	{
 		var data = CreateMinimalOggFlacFile (sampleRate: 0);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.File!.Properties);
 	}
@@ -398,7 +398,7 @@ public class OggFlacFileTests
 	public void OggFlacFile_Properties_ZeroTotalSamples_ReturnsNull ()
 	{
 		var data = CreateMinimalOggFlacFile (totalSamples: 0);
-		var result = OggFlacFile.Parse (data);
+		var result = OggFlacFile.Read (data);
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.File!.Properties);
 	}

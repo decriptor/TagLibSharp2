@@ -23,7 +23,7 @@ namespace TagLibSharp2.Ogg;
 /// Reference: https://xiph.org/vorbis/doc/Vorbis_I_spec.html
 /// </para>
 /// </remarks>
-public sealed class OggVorbisFile : IDisposable
+public sealed class OggVorbisFile : IMediaFile
 {
 	const int MinVorbisHeaderSize = 7; // 1 byte type + 6 bytes "vorbis"
 	static readonly byte[] VorbisMagic = [(byte)'v', (byte)'o', (byte)'r', (byte)'b', (byte)'i', (byte)'s'];
@@ -110,6 +110,15 @@ public sealed class OggVorbisFile : IDisposable
 		set => EnsureVorbisComment ().Comment = value;
 	}
 
+	/// <inheritdoc />
+	public Tag? Tag => VorbisComment;
+
+	/// <inheritdoc />
+	IMediaProperties? IMediaFile.AudioProperties => Properties;
+
+	/// <inheritdoc />
+	public MediaFormat Format => MediaFormat.OggVorbis;
+
 	OggVorbisFile (AudioProperties properties)
 	{
 		Properties = properties;
@@ -129,7 +138,7 @@ public sealed class OggVorbisFile : IDisposable
 		if (!readResult.IsSuccess)
 			return OggVorbisFileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!, validateCrc);
+		var result = Read (readResult.Data!.Value.Span, validateCrc);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
@@ -157,7 +166,7 @@ public sealed class OggVorbisFile : IDisposable
 		if (!readResult.IsSuccess)
 			return OggVorbisFileReadResult.Failure (readResult.Error!);
 
-		var result = Read (readResult.Data!, validateCrc);
+		var result = Read (readResult.Data!.Value.Span, validateCrc);
 		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
 			result.File._sourceFileSystem = fileSystem;
@@ -462,7 +471,7 @@ public sealed class OggVorbisFile : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
 	}
 
 	/// <summary>
@@ -504,7 +513,7 @@ public sealed class OggVorbisFile : IDisposable
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!, fileSystem, cancellationToken)
+		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
 			.ConfigureAwait (false);
 	}
 

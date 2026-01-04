@@ -346,7 +346,7 @@ public class OggOpusFileTests
 	{
 		var data = TestBuilders.Opus.CreateMinimalFile ("Opus Title", "Opus Artist");
 
-		var result = MediaFile.OpenFromData (data);
+		var result = MediaFile.ReadFromData (data);
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (MediaFormat.Opus, result.Format);
