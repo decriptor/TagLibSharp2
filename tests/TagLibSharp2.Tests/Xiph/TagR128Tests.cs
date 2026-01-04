@@ -4,7 +4,7 @@
 using TagLibSharp2.Core;
 using TagLibSharp2.Xiph;
 
-namespace TagLibSharp2.Tests.Core;
+namespace TagLibSharp2.Tests.Xiph;
 
 [TestClass]
 [TestCategory ("Unit")]
