@@ -5,6 +5,28 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-01-05
+
+### Breaking Changes
+
+- **Removed**: `MusicIpId` property from `Tag` base class (MusicIP service discontinued, use AcoustID instead)
+- **Removed**: `AiffFile.TryParse` method (use `AiffFile.Read` which returns `AiffFileReadResult` with error context)
+- **Removed**: `WavFile.ReadFromData` method (use `WavFile.Read` for span-based parsing)
+- **Changed**: `AudioProperties` converted from class to readonly record struct for better performance and immutability
+- **Renamed**: `AsfFile.AudioProperties` property renamed to `Properties` for consistency with other file types
+
+### Added
+
+- Comprehensive test suite expanded to 3,780 tests (from 3,175)
+- Test coverage increased to 90.1% line coverage, 77.6% branch coverage
+- Additional MP3 APE tag test coverage for edge cases
+
+### Changed
+
+- Performance improvements from AudioProperties struct conversion
+- Improved API consistency across file format implementations
+- Enhanced documentation and code examples
+
 ## [0.5.0] - 2026-01-03
 
 ### Added
@@ -581,6 +603,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `BinaryData(byte[])` constructor now copies the array to ensure true immutability
 
+[0.6.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.6.0
 [0.5.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.5.0
 [0.4.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.4.0
 [0.3.0]: https://github.com/decriptor/TagLibSharp2/releases/tag/v0.3.0

@@ -5,10 +5,10 @@
 		<Product>TagLibSharp2</Product>
 		<Authors>Stephen Shaw</Authors>
 		<Company>Stephen Shaw</Company>
-		<Copyright>Copyright (c) 2025 Stephen Shaw and contributors</Copyright>
+		<Copyright>Copyright (c) 2025-2026 Stephen Shaw and contributors</Copyright>
 
 		<!-- Version: Set via CI or use default for local builds -->
-		<ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.5.0</ReleaseVersion>
+		<ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.6.0</ReleaseVersion>
 		<VersionSuffix Condition="'$(VersionSuffix)' == '' And '$(CI)' == ''">dev</VersionSuffix>
 
 		<!-- Repository Info -->
