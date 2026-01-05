@@ -36,13 +36,74 @@ namespace TagLibSharp2.Core;
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
 /// </list>
+///
+/// <para><b>Reading and Modifying Tags</b></para>
+/// <para>
+/// Use <see cref="Read"/> or <see cref="ReadAsync"/> to open a file. The result contains
+/// the strongly-typed file object (e.g., <see cref="TagLibSharp2.Xiph.FlacFile"/>,
+/// <see cref="TagLibSharp2.Mpeg.Mp3File"/>) with Tag and audio property access.
+/// Modify tag properties directly on the file object.
+/// </para>
+///
+/// <para><b>Saving Changes</b></para>
+/// <para>
+/// To save changes, call the file object's <c>Render(originalData)</c> method with the
+/// original file bytes. This returns a new <see cref="BinaryData"/> representing the
+/// modified file. Then use <see cref="AtomicFileWriter"/> for safe disk writes:
+/// </para>
+/// <list type="number">
+/// <item>Creates a temporary file with changes</item>
+/// <item>Verifies the temp file is valid</item>
+/// <item>Atomically replaces the original (rename on Unix, replace on Windows)</item>
+/// </list>
+/// <para>
+/// The <c>originalData</c> parameter is required because:
+/// </para>
+/// <list type="bullet">
+/// <item>Audio data is NOT held in memory - only metadata is parsed</item>
+/// <item>Render combines new metadata with original audio data</item>
+/// <item>This keeps memory usage low for large files</item>
+/// </list>
 /// </remarks>
 /// <example>
+/// <para><b>Reading a file:</b></para>
 /// <code>
 /// var result = MediaFile.Read("song.flac");
 /// if (result.IsSuccess)
 /// {
 ///     Console.WriteLine($"Title: {result.Tag?.Title}");
+/// }
+/// </code>
+///
+/// <para><b>Complete read-modify-save workflow:</b></para>
+/// <code>
+/// // 1. Read the original file bytes (needed for rendering)
+/// var originalBytes = File.ReadAllBytes("song.flac");
+///
+/// // 2. Parse the file
+/// var result = MediaFile.ReadFromData(originalBytes, "song.flac");
+/// if (!result.IsSuccess) return;
+///
+/// // 3. Modify tags through the strongly-typed file object
+/// var flacFile = (FlacFile)result.File!;
+/// flacFile.Tag.Title = "New Title";
+/// flacFile.Tag.Artist = "New Artist";
+///
+/// // 4. Render the modified file (combines metadata + original audio)
+/// var modifiedBytes = flacFile.Render(originalBytes);
+///
+/// // 5. Save atomically (safe disk write)
+/// AtomicFileWriter.Write("song.flac", modifiedBytes);
+/// </code>
+///
+/// <para><b>Using IMediaFile interface for polymorphic code:</b></para>
+/// <code>
+/// var result = MediaFile.Read("song.mp3");
+/// if (result.IsSuccess)
+/// {
+///     IMediaFile file = result.File!;
+///     file.Tag!.Title = "Works with any format";
+///     // Note: Render/Save requires format-specific cast
 /// }
 /// </code>
 /// </example>

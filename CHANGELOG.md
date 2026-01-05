@@ -548,7 +548,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DateTagged (TDTG / DATETAGGED) - ISO 8601 tagging timestamp (ID3v2.4 only)
 - Description (TXXX:DESCRIPTION / DESCRIPTION) - Content synopsis
 - AmazonId (TXXX:ASIN / ASIN) - Amazon Standard Identification Number
-- MusicIpId (TXXX:MusicIP PUID / MUSICIP_PUID) - Obsolete, deprecated in favor of AcoustID
+- ~~MusicIpId~~ - Removed (MusicIP service discontinued, use AcoustID instead)
 - Extended MusicBrainz identifiers (ID3v2 and Vorbis Comments):
   - WorkId - Musical work/composition identifier
   - DiscId - CD table of contents hash

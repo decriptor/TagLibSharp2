@@ -198,16 +198,16 @@ public sealed class OggVorbisFile : IMediaFile
 			return OggVorbisFileReadResult.Failure (packetsResult.Error!);
 
 		if (packetsResult.Packets.Count < 1)
-			return OggVorbisFileReadResult.Failure ("No packets found in Ogg stream");
+			return OggVorbisFileReadResult.Failure ("Invalid Ogg Vorbis file: no packets found");
 
 		// Packet 0: Vorbis identification header
 		var identPacket = packetsResult.Packets[0];
 		if (!IsVorbisIdentificationHeader (identPacket))
-			return OggVorbisFileReadResult.Failure ("Not a Vorbis stream (expected identification header)");
+			return OggVorbisFileReadResult.Failure ("Invalid Ogg Vorbis file: not a Vorbis stream (expected identification header)");
 
 		var (sampleRate, channels, bitrateNominal) = ParseIdentificationHeader (identPacket);
 		if (sampleRate == 0 || channels == 0)
-			return OggVorbisFileReadResult.Failure ("Invalid Vorbis identification header (invalid version or missing audio info)");
+			return OggVorbisFileReadResult.Failure ("Invalid Ogg Vorbis file: invalid identification header (invalid version or missing audio info)");
 
 		// Packet 1: Vorbis comment header
 		VorbisComment? vorbisComment = null;
@@ -259,6 +259,41 @@ public sealed class OggVorbisFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out OggVorbisFile? file, bool validateCrc = false) =>
 		TryRead (data.Span, out file, validateCrc);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid Ogg Vorbis file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with OggS and contains a Vorbis identification header.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 35 bytes: OggS header (27) + segment table (1) + vorbis header (7)
+		if (data.Length < 35)
+			return false;
+
+		// Check "OggS" magic
+		if (data[0] != 'O' || data[1] != 'g' || data[2] != 'g' || data[3] != 'S')
+			return false;
+
+		// Get segment count (at offset 26)
+		var segmentCount = data[26];
+		if (segmentCount == 0)
+			return false;
+
+		// First packet starts after header (27) + segment table (segmentCount)
+		var packetOffset = 27 + segmentCount;
+		if (data.Length < packetOffset + MinVorbisHeaderSize)
+			return false;
+
+		// Check for Vorbis identification header: 0x01 + "vorbis"
+		return data[packetOffset] == 0x01 &&
+			   data[packetOffset + 1] == 'v' &&
+			   data[packetOffset + 2] == 'o' &&
+			   data[packetOffset + 3] == 'r' &&
+			   data[packetOffset + 4] == 'b' &&
+			   data[packetOffset + 5] == 'i' &&
+			   data[packetOffset + 6] == 's';
+	}
 
 	static VorbisCommentReadResult TryParseCommentPacket (ReadOnlySpan<byte> packet)
 	{

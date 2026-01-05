@@ -193,9 +193,15 @@ public sealed class ApeTag : Tag
 		set => SetOrRemove (Keys.Album, value);
 	}
 
-	/// <inheritdoc/>
+	/// <summary>
+	/// Gets or sets the album artist.
+	/// </summary>
+	/// <remarks>
+	/// Reads from "Album Artist" with fallback to "ALBUMARTIST" for compatibility.
+	/// Writes to "Album Artist".
+	/// </remarks>
 	public override string? AlbumArtist {
-		get => GetValue (Keys.AlbumArtist);
+		get => GetValue (Keys.AlbumArtist) ?? GetValue ("ALBUMARTIST");
 		set => SetOrRemove (Keys.AlbumArtist, value);
 	}
 
@@ -283,6 +289,12 @@ public sealed class ApeTag : Tag
 				SetValue (Keys.Disc, disc.Value.ToString (CultureInfo.InvariantCulture));
 			}
 		}
+	}
+
+	/// <inheritdoc/>
+	public override string? DiscSubtitle {
+		get => GetValue ("DiscSubtitle");
+		set => SetOrRemove ("DiscSubtitle", value);
 	}
 
 	/// <inheritdoc/>

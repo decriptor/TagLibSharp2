@@ -136,11 +136,11 @@ var opus = opusResult.File;
 Console.WriteLine($"Opus: {opus?.Properties?.Duration}, R128 gain: {opus?.Properties?.OutputGain}dB");
 
 // WAV files support both RIFF INFO and ID3v2 tags
-WavFile.TryParse(new BinaryData(File.ReadAllBytes("song.wav")), out var wav);
+WavFile.TryRead(new BinaryData(File.ReadAllBytes("song.wav")), out var wav);
 Console.WriteLine($"WAV: {wav.Title} - {wav.AudioProperties?.Duration}");
 
 // AIFF files (read and write, includes audio properties)
-AiffFile.TryParse(new BinaryData(File.ReadAllBytes("song.aiff")), out var aiff);
+AiffFile.TryRead(new BinaryData(File.ReadAllBytes("song.aiff")), out var aiff);
 Console.WriteLine($"AIFF: {aiff.AudioProperties?.SampleRate}Hz");
 aiff.Tag = new Id3v2Tag { Title = "Updated Title" };
 aiff.SaveToFile("song.aiff");

@@ -322,7 +322,7 @@ public sealed class Mp3File : IMediaFile
 	public static Mp3FileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < 4)
-			return Mp3FileReadResult.Failure ("Data too short for MP3 file");
+			return Mp3FileReadResult.Failure ("Invalid MP3 file: data too short");
 
 		var file = new Mp3File ();
 		var binaryData = new BinaryData (data);
@@ -371,6 +371,35 @@ public sealed class Mp3File : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out Mp3File? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid MP3 file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with ID3 magic or a valid MPEG sync.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		if (data.Length < 2)
+			return false;
+
+		// Check for ID3v2 magic "ID3"
+		if (data.Length >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3')
+			return true;
+
+		// Check for MPEG frame sync: 0xFF + valid frame header
+		// Frame sync is 11 bits: 0xFF followed by 0xE0 or higher in second byte
+		// We also validate the MPEG audio version and layer bits
+		if (data[0] == 0xFF && (data[1] & 0xE0) == 0xE0) {
+			// Bits in second byte: 111VVLLP where VV=version, LL=layer, P=protection
+			// Version 01 (reserved) is invalid
+			var version = (data[1] >> 3) & 0x03;
+			var layer = (data[1] >> 1) & 0x03;
+			// Version 01 is reserved, layer 00 is reserved
+			return version != 0x01 && layer != 0x00;
+		}
+
+		return false;
+	}
 
 	Id3v2Tag EnsureId3v2Tag ()
 	{

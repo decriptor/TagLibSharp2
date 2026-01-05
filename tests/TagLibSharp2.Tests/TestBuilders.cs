@@ -485,6 +485,58 @@ public static class TestBuilders
 		}
 
 		/// <summary>
+		/// Creates a FLAC file with custom block and frame sizes in STREAMINFO.
+		/// </summary>
+		/// <param name="minBlockSize">Minimum block size (16-bit, 16-65535).</param>
+		/// <param name="maxBlockSize">Maximum block size (16-bit, 16-65535).</param>
+		/// <param name="minFrameSize">Minimum frame size (24-bit, 0 = unknown).</param>
+		/// <param name="maxFrameSize">Maximum frame size (24-bit, 0 = unknown).</param>
+		public static byte[] CreateWithBlockAndFrameSizes (
+			int minBlockSize,
+			int maxBlockSize,
+			int minFrameSize,
+			int maxFrameSize)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			// Magic: "fLaC"
+			builder.Add (TestConstants.Magic.Flac);
+
+			// STREAMINFO block header: last=true, type=0, size=34
+			builder.Add (StreamInfoHeaderLast);
+
+			// min block size (16 bits big-endian)
+			builder.Add ((byte)((minBlockSize >> 8) & 0xFF));
+			builder.Add ((byte)(minBlockSize & 0xFF));
+
+			// max block size (16 bits big-endian)
+			builder.Add ((byte)((maxBlockSize >> 8) & 0xFF));
+			builder.Add ((byte)(maxBlockSize & 0xFF));
+
+			// min frame size (24 bits big-endian)
+			builder.Add ((byte)((minFrameSize >> 16) & 0xFF));
+			builder.Add ((byte)((minFrameSize >> 8) & 0xFF));
+			builder.Add ((byte)(minFrameSize & 0xFF));
+
+			// max frame size (24 bits big-endian)
+			builder.Add ((byte)((maxFrameSize >> 16) & 0xFF));
+			builder.Add ((byte)((maxFrameSize >> 8) & 0xFF));
+			builder.Add ((byte)(maxFrameSize & 0xFF));
+
+			// Sample rate, channels, bps, total samples (using defaults: 44100Hz, 2ch, 16-bit, 0 samples)
+			builder.Add ((byte)0xAC); // 44100 Hz upper
+			builder.Add ((byte)0x44);
+			builder.Add ((byte)0xF0); // 44100 lower + 2 channels
+			builder.Add ((byte)0x00); // 16 bits + 0 samples upper
+			builder.AddZeros (4); // total samples lower
+
+			// MD5 signature (16 bytes - all zeros)
+			builder.AddZeros (16);
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
 		/// Creates a FLAC file with a Vorbis Comment block.
 		/// </summary>
 		public static byte[] CreateWithVorbisComment (string? title = null, string? artist = null)

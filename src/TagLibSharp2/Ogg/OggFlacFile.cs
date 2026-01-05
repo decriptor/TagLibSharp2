@@ -143,11 +143,11 @@ public sealed class OggFlacFile : IMediaFile
 	public static OggFlacFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MinHeaderSize)
-			return OggFlacFileReadResult.Failure ("File too short for Ogg header");
+			return OggFlacFileReadResult.Failure ("Invalid Ogg FLAC file: data too short for header");
 
 		// Verify Ogg magic
 		if (!data[..4].SequenceEqual (OggMagic))
-			return OggFlacFileReadResult.Failure ("Invalid Ogg magic");
+			return OggFlacFileReadResult.Failure ("Invalid Ogg FLAC file: missing Ogg magic");
 
 		// Find first packet and verify it's FLAC
 		var firstPacketResult = ExtractFirstPacket (data);
@@ -158,10 +158,10 @@ public sealed class OggFlacFile : IMediaFile
 
 		// Verify FLAC stream marker: 0x7F "FLAC"
 		if (firstPacket.Length < 9 || firstPacket[0] != 0x7F)
-			return OggFlacFileReadResult.Failure ("Not an Ogg FLAC stream: missing 0x7F marker");
+			return OggFlacFileReadResult.Failure ("Invalid Ogg FLAC file: missing 0x7F marker");
 
 		if (!firstPacket.AsSpan (1, 4).SequenceEqual (FlacMagic))
-			return OggFlacFileReadResult.Failure ("Not an Ogg FLAC stream: missing FLAC magic");
+			return OggFlacFileReadResult.Failure ("Invalid Ogg FLAC file: missing FLAC magic");
 
 		var file = new OggFlacFile ();
 
@@ -232,6 +232,39 @@ public sealed class OggFlacFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out OggFlacFile? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid Ogg FLAC file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with OggS and contains a FLAC mapping header.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 33 bytes: OggS header (27) + segment table (1) + FLAC header (5)
+		if (data.Length < 33)
+			return false;
+
+		// Check "OggS" magic
+		if (data[0] != 'O' || data[1] != 'g' || data[2] != 'g' || data[3] != 'S')
+			return false;
+
+		// Get segment count (at offset 26)
+		var segmentCount = data[26];
+		if (segmentCount == 0)
+			return false;
+
+		// First packet starts after header (27) + segment table (segmentCount)
+		var packetOffset = 27 + segmentCount;
+		if (data.Length < packetOffset + 5)
+			return false;
+
+		// Check for FLAC mapping header: 0x7F + "FLAC"
+		return data[packetOffset] == 0x7F &&
+			   data[packetOffset + 1] == 'F' &&
+			   data[packetOffset + 2] == 'L' &&
+			   data[packetOffset + 3] == 'A' &&
+			   data[packetOffset + 4] == 'C';
+	}
 
 	private static void ParseStreamInfo (ReadOnlySpan<byte> data, OggFlacFile file)
 	{

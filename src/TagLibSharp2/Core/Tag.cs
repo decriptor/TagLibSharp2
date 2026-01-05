@@ -88,13 +88,25 @@ public abstract class Tag
 	/// <summary>
 	/// Gets or sets the title/song name.
 	/// </summary>
+	/// <remarks>
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Truncated to 30 bytes. Latin-1 encoding only (Unicode characters are lost).</description></item>
+	/// <item><description>ID3v2, Vorbis, MP4, ASF: Full Unicode support, no practical length limit.</description></item>
+	/// </list>
+	/// </remarks>
 	public abstract string? Title { get; set; }
 
 	/// <summary>
 	/// Gets or sets the primary artist/performer.
 	/// </summary>
 	/// <remarks>
-	/// This returns the first performer. For multiple performers, use <see cref="Performers"/>.
+	/// <para>This returns the first performer. For multiple performers, use <see cref="Performers"/>.</para>
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Truncated to 30 bytes. Latin-1 encoding only (Unicode characters are lost).</description></item>
+	/// <item><description>ID3v2, Vorbis, MP4, ASF: Full Unicode support, no practical length limit.</description></item>
+	/// </list>
 	/// </remarks>
 	public abstract string? Artist { get; set; }
 
@@ -102,8 +114,17 @@ public abstract class Tag
 	/// Gets or sets the performers/artists for this track.
 	/// </summary>
 	/// <remarks>
+	/// <para>
 	/// This is the primary array of artists. The <see cref="Artist"/> property returns
 	/// the first value from this array.
+	/// </para>
+	/// <para>
+	/// <b>Design Note:</b> This property uses an array type for compatibility with
+	/// the original TagLib# API and to support multiple artists naturally. While
+	/// <c>IReadOnlyList&lt;string&gt;</c> would be more idiomatic in modern C#,
+	/// the array type ensures drop-in compatibility for existing TagLib# users
+	/// and matches common tagging conventions (separator-split artist strings).
+	/// </para>
 	/// </remarks>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public virtual string[] Performers {
@@ -115,11 +136,25 @@ public abstract class Tag
 	/// <summary>
 	/// Gets or sets the album/collection name.
 	/// </summary>
+	/// <remarks>
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Truncated to 30 bytes. Latin-1 encoding only (Unicode characters are lost).</description></item>
+	/// <item><description>ID3v2, Vorbis, MP4, ASF: Full Unicode support, no practical length limit.</description></item>
+	/// </list>
+	/// </remarks>
 	public abstract string? Album { get; set; }
 
 	/// <summary>
 	/// Gets or sets the year of release.
 	/// </summary>
+	/// <remarks>
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Limited to 4 characters (e.g., "2024"). Longer values are truncated.</description></item>
+	/// <item><description>ID3v2, Vorbis, MP4, ASF: Supports full date strings (e.g., "2024-12-25").</description></item>
+	/// </list>
+	/// </remarks>
 	public abstract string? Year { get; set; }
 
 	/// <summary>
@@ -135,13 +170,25 @@ public abstract class Tag
 	/// <summary>
 	/// Gets or sets the comment/description.
 	/// </summary>
+	/// <remarks>
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Truncated to 28 bytes (or 30 if no track number). Latin-1 encoding only.</description></item>
+	/// <item><description>ID3v2, Vorbis, MP4, ASF: Full Unicode support, no practical length limit.</description></item>
+	/// </list>
+	/// </remarks>
 	public abstract string? Comment { get; set; }
 
 	/// <summary>
 	/// Gets or sets the genre name.
 	/// </summary>
 	/// <remarks>
-	/// This returns the first genre. For multiple genres, use <see cref="Genres"/>.
+	/// <para>This returns the first genre. For multiple genres, use <see cref="Genres"/>.</para>
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Single genre only, must match one of 192 predefined genres. Custom genres not supported.</description></item>
+	/// <item><description>ID3v2, Vorbis, MP4, ASF: Full Unicode support, multiple genres, custom genres allowed.</description></item>
+	/// </list>
 	/// </remarks>
 	public abstract string? Genre { get; set; }
 
@@ -161,6 +208,21 @@ public abstract class Tag
 	/// <summary>
 	/// Gets or sets the track number.
 	/// </summary>
+	/// <remarks>
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Limited to 0-255. Values above 255 are silently clamped.</description></item>
+	/// <item><description>MP4: Limited to 0-65535 (16-bit). Values above are silently clamped.</description></item>
+	/// <item><description>ID3v2, Vorbis, ASF: Full 32-bit range supported.</description></item>
+	/// </list>
+	/// <para>
+	/// <b>Design Note:</b> This property uses <c>uint?</c> (unsigned 32-bit integer)
+	/// rather than <c>int?</c> to enforce non-negative semantics at the type level.
+	/// Track numbers are inherently non-negative values, and using unsigned types
+	/// prevents accidental negative values. The nullable wrapper indicates when no
+	/// track number has been set.
+	/// </para>
+	/// </remarks>
 	public abstract uint? Track { get; set; }
 
 	/// <summary>
@@ -191,7 +253,13 @@ public abstract class Tag
 	/// Gets or sets the disc number.
 	/// </summary>
 	/// <remarks>
-	/// Not all tag formats support this field. Default implementation returns null.
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Not supported (returns null).</description></item>
+	/// <item><description>MP4: Limited to 0-65535 (16-bit). Values above are silently clamped.</description></item>
+	/// <item><description>ID3v2, Vorbis, ASF: Full 32-bit range supported.</description></item>
+	/// </list>
+	/// <para>Not all tag formats support this field. Default implementation returns null.</para>
 	/// </remarks>
 	public virtual uint? DiscNumber { get => null; set { } }
 
@@ -337,7 +405,13 @@ public abstract class Tag
 	/// Gets or sets the total number of tracks on the album/disc.
 	/// </summary>
 	/// <remarks>
-	/// Not all tag formats support this field. Default implementation returns null.
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Not supported (returns null).</description></item>
+	/// <item><description>MP4: Limited to 0-65535 (16-bit). Values above are silently clamped.</description></item>
+	/// <item><description>ID3v2, Vorbis, ASF: Full 32-bit range supported.</description></item>
+	/// </list>
+	/// <para>Not all tag formats support this field. Default implementation returns null.</para>
 	/// </remarks>
 	public virtual uint? TotalTracks { get => null; set { } }
 
@@ -345,9 +419,26 @@ public abstract class Tag
 	/// Gets or sets the total number of discs in the set.
 	/// </summary>
 	/// <remarks>
-	/// Not all tag formats support this field. Default implementation returns null.
+	/// <para>Format-specific limitations:</para>
+	/// <list type="bullet">
+	/// <item><description>ID3v1: Not supported (returns null).</description></item>
+	/// <item><description>MP4: Limited to 0-65535 (16-bit). Values above are silently clamped.</description></item>
+	/// <item><description>ID3v2, Vorbis, ASF: Full 32-bit range supported.</description></item>
+	/// </list>
+	/// <para>Not all tag formats support this field. Default implementation returns null.</para>
 	/// </remarks>
 	public virtual uint? TotalDiscs { get => null; set { } }
+
+	/// <summary>
+	/// Gets or sets the disc subtitle.
+	/// </summary>
+	/// <remarks>
+	/// Used for multi-disc albums where each disc has a different title
+	/// (e.g., "Disc 1: The Early Years", "Disc 2: The Later Years").
+	/// ID3v2 uses TSST frame. Vorbis uses DISCSUBTITLE field.
+	/// Not all tag formats support this field. Default implementation returns null.
+	/// </remarks>
+	public virtual string? DiscSubtitle { get => null; set { } }
 
 	/// <summary>
 	/// Gets or sets the lyrics or text content.
@@ -725,8 +816,19 @@ public abstract class Tag
 	/// Gets or sets the MusicBrainz Track ID (Recording MBID).
 	/// </summary>
 	/// <remarks>
+	/// <para>
 	/// A UUID identifying this specific recording in the MusicBrainz database.
 	/// Not all tag formats support this field. Default implementation returns null.
+	/// </para>
+	/// <para>
+	/// <b>Design Note:</b> This property is named "TrackId" for historical compatibility
+	/// with the original TagLib# and MusicBrainz naming conventions. In MusicBrainz terminology,
+	/// a "track" is a recording as it appears on a specific release, while "recording"
+	/// refers to the unique audio content. This property stores the Recording MBID,
+	/// which is the standard identifier used by MusicBrainz Picard and other taggers.
+	/// See also <see cref="MusicBrainzRecordingId"/> which stores the same identifier in
+	/// formats that support it separately.
+	/// </para>
 	/// </remarks>
 	public virtual string? MusicBrainzTrackId { get => null; set { } }
 
@@ -1045,6 +1147,28 @@ public abstract class Tag
 	/// between multiple tag types in the same file.
 	/// </para>
 	/// </remarks>
+	/// <example>
+	/// <para><b>Copy all metadata between tags:</b></para>
+	/// <code>
+	/// // Copy all metadata from FLAC to MP3
+	/// flacFile.Tag.CopyTo(mp3File.Tag);
+	/// </code>
+	///
+	/// <para><b>Copy only basic metadata (title, artist, album):</b></para>
+	/// <code>
+	/// flacFile.Tag.CopyTo(mp3File.Tag, TagCopyOptions.Basic);
+	/// </code>
+	///
+	/// <para><b>Copy everything except pictures (for space savings):</b></para>
+	/// <code>
+	/// flacFile.Tag.CopyTo(mp3File.Tag, TagCopyOptions.All &amp; ~TagCopyOptions.Pictures);
+	/// </code>
+	///
+	/// <para><b>Copy only MusicBrainz identifiers:</b></para>
+	/// <code>
+	/// flacFile.Tag.CopyTo(mp3File.Tag, TagCopyOptions.Identifiers);
+	/// </code>
+	/// </example>
 	public void CopyTo (Tag target, TagCopyOptions options = TagCopyOptions.All)
 	{
 #if NETSTANDARD2_0 || NETSTANDARD2_1
@@ -1097,6 +1221,8 @@ public abstract class Tag
 				target.DiscNumber = DiscNumber;
 			if (TotalDiscs.HasValue)
 				target.TotalDiscs = TotalDiscs;
+			if (DiscSubtitle is not null)
+				target.DiscSubtitle = DiscSubtitle;
 			if (TotalTracks.HasValue)
 				target.TotalTracks = TotalTracks;
 			if (BeatsPerMinute.HasValue)

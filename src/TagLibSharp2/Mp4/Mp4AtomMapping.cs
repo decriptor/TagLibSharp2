@@ -41,6 +41,7 @@ internal static class Mp4AtomMapping
 	public const string BeatsPerMinute = "tmpo";
 	public const string Compilation = "cpil";
 	public const string GaplessPlayback = "pgap";
+	public const string ContentRating = "rtng";
 
 	// Cover art (can contain multiple images)
 	public const string CoverArt = "covr";

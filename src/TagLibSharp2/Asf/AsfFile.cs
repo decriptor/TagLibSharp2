@@ -95,7 +95,7 @@ public sealed class AsfFile : IMediaFile
 	{
 		// Minimum size: Header GUID (16) + Size (8) + Count (4) + Reserved (2) = 30
 		if (data.Length < 30)
-			return AsfFileReadResult.Failure ("Data too short for ASF header");
+			return AsfFileReadResult.Failure ("Invalid ASF file: data too short for header");
 
 		var offset = 0;
 
@@ -105,7 +105,7 @@ public sealed class AsfFile : IMediaFile
 			return AsfFileReadResult.Failure ($"Failed to parse header GUID: {headerGuidResult.Error}");
 
 		if (headerGuidResult.Value != AsfGuids.HeaderObject)
-			return AsfFileReadResult.Failure ("Invalid ASF header: not an ASF file");
+			return AsfFileReadResult.Failure ("Invalid ASF file: not an ASF file");
 
 		offset += 16;
 
@@ -114,7 +114,7 @@ public sealed class AsfFile : IMediaFile
 		offset += 8;
 
 		if (headerSize > (ulong)data.Length)
-			return AsfFileReadResult.Failure ("Header size exceeds available data");
+			return AsfFileReadResult.Failure ("Invalid ASF file: header size exceeds available data");
 
 		// Read child object count
 		var childCount = BinaryPrimitives.ReadUInt32LittleEndian (data[offset..]);
@@ -210,6 +210,24 @@ public sealed class AsfFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out AsfFile? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid ASF file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with the ASF Header Object GUID.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 16 bytes for GUID
+		if (data.Length < 16)
+			return false;
+
+		// Check for ASF Header Object GUID: 30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C
+		return data[0] == 0x30 && data[1] == 0x26 && data[2] == 0xB2 && data[3] == 0x75 &&
+			   data[4] == 0x8E && data[5] == 0x66 && data[6] == 0xCF && data[7] == 0x11 &&
+			   data[8] == 0xA6 && data[9] == 0xD9 && data[10] == 0x00 && data[11] == 0xAA &&
+			   data[12] == 0x00 && data[13] == 0x62 && data[14] == 0xCE && data[15] == 0x6C;
+	}
 
 	/// <summary>
 	/// Reads an ASF file from a file path.

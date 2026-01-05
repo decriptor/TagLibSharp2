@@ -7,6 +7,31 @@ using TagLibSharp2.Core;
 namespace TagLibSharp2.Mp4;
 
 /// <summary>
+/// Represents the content rating for an MP4 file (Clean/Explicit/None).
+/// </summary>
+/// <remarks>
+/// Used by iTunes and other media players to indicate whether content
+/// contains explicit material.
+/// </remarks>
+public enum Mp4ContentRating
+{
+	/// <summary>
+	/// No content rating specified.
+	/// </summary>
+	None = 0,
+
+	/// <summary>
+	/// Content is explicit (contains adult language or themes).
+	/// </summary>
+	Explicit = 1,
+
+	/// <summary>
+	/// Content is clean (edited version without explicit material).
+	/// </summary>
+	Clean = 2
+}
+
+/// <summary>
 /// Represents iTunes-style metadata in MP4/M4A files.
 /// </summary>
 /// <remarks>
@@ -164,6 +189,27 @@ public sealed class Mp4Tag : Tag
 	public bool IsGapless {
 		get => GetBoolean (Mp4AtomMapping.GaplessPlayback);
 		set => SetBoolean (Mp4AtomMapping.GaplessPlayback, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the content rating (Clean/Explicit/None).
+	/// </summary>
+	/// <remarks>
+	/// Uses the "rtng" atom. Used by iTunes to indicate whether content
+	/// contains explicit material (value 1), is clean/edited (value 2),
+	/// or has no rating (value 0).
+	/// </remarks>
+	public Mp4ContentRating ContentRating {
+		get {
+			var value = GetInteger (Mp4AtomMapping.ContentRating);
+			return value.HasValue ? (Mp4ContentRating)value.Value : Mp4ContentRating.None;
+		}
+		set {
+			if (value == Mp4ContentRating.None)
+				RemoveAtom (Mp4AtomMapping.ContentRating);
+			else
+				SetInteger (Mp4AtomMapping.ContentRating, (uint)value);
+		}
 	}
 
 	/// <summary>
@@ -479,6 +525,54 @@ public sealed class Mp4Tag : Tag
 	public override string? PodcastFeedUrl {
 		get => GetText (Mp4AtomMapping.PodcastUrl);
 		set => SetText (Mp4AtomMapping.PodcastUrl, value);
+	}
+
+	/// <summary>
+	/// Gets or sets whether this file is a podcast episode.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "pcst" podcast flag atom. When true, indicates this file
+	/// should be treated as a podcast episode in media players.
+	/// </remarks>
+	public bool IsPodcast {
+		get => GetBoolean (Mp4AtomMapping.PodcastFlag);
+		set => SetBoolean (Mp4AtomMapping.PodcastFlag, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the podcast episode GUID.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "egid" atom. A globally unique identifier for this episode,
+	/// typically matching the GUID from the podcast RSS feed.
+	/// </remarks>
+	public string? PodcastEpisodeGuid {
+		get => GetText (Mp4AtomMapping.PodcastGuid);
+		set => SetText (Mp4AtomMapping.PodcastGuid, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the podcast category.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "catg" atom. The category or genre classification
+	/// for this podcast (e.g., "Technology", "Comedy", "News").
+	/// </remarks>
+	public string? PodcastCategory {
+		get => GetText (Mp4AtomMapping.Category);
+		set => SetText (Mp4AtomMapping.Category, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the podcast keywords.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "keyw" atom. Comma-separated keywords for podcast search
+	/// and discovery (e.g., "programming, coding, tech").
+	/// </remarks>
+	public string? PodcastKeywords {
+		get => GetText (Mp4AtomMapping.Keywords);
+		set => SetText (Mp4AtomMapping.Keywords, value);
 	}
 
 	/// <inheritdoc/>

@@ -225,6 +225,56 @@ public class VorbisCommentExtendedMetadataTests
 		Assert.AreEqual ("3", comment.GetValue ("TOTALDISCS"));
 	}
 
+	[TestMethod]
+	public void TotalDiscs_FallsBackToDiscTotal ()
+	{
+		var comment = new VorbisComment ("test");
+
+		// Some taggers use DISCTOTAL instead of TOTALDISCS
+		comment.SetValue ("DISCTOTAL", "5");
+
+		Assert.AreEqual (5u, comment.TotalDiscs);
+	}
+
+	[TestMethod]
+	public void TotalDiscs_PrefersTotalDiscsOverDiscTotal ()
+	{
+		var comment = new VorbisComment ("test");
+
+		// When both exist, prefer TOTALDISCS
+		comment.SetValue ("TOTALDISCS", "3");
+		comment.SetValue ("DISCTOTAL", "5");
+
+		Assert.AreEqual (3u, comment.TotalDiscs);
+	}
+
+	// ===========================================
+	// DiscSubtitle Tests
+	// ===========================================
+
+	[TestMethod]
+	public void DiscSubtitle_GetSet_Works ()
+	{
+		var comment = new VorbisComment ("test");
+
+		comment.DiscSubtitle = "The Early Years";
+
+		Assert.AreEqual ("The Early Years", comment.DiscSubtitle);
+		Assert.AreEqual ("The Early Years", comment.GetValue ("DISCSUBTITLE"));
+	}
+
+	[TestMethod]
+	public void DiscSubtitle_RoundTrip_PreservesValue ()
+	{
+		var original = new VorbisComment ("test") { DiscSubtitle = "Disc 1: Origins" };
+
+		var rendered = original.Render ();
+		var result = VorbisComment.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Disc 1: Origins", result.Tag!.DiscSubtitle);
+	}
+
 	// ===========================================
 	// Original Release Date (with fallback logic)
 	// ===========================================

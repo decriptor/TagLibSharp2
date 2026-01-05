@@ -52,9 +52,9 @@ public class Mp4RoundTripTests
 		file.Year = "2025";
 		file.Genre = "Rock";
 		file.Track = 5;
-		file.TrackCount = 12;
+		file.TotalTracks = 12;
 		file.DiscNumber = 1;
-		file.DiscCount = 2;
+		file.TotalDiscs = 2;
 		file.Composer = "Composer Name";
 		file.Comment = "This is a comment";
 		file.AlbumArtist = "Album Artist";
@@ -72,9 +72,9 @@ public class Mp4RoundTripTests
 		Assert.AreEqual ("2025", reloaded.Year);
 		Assert.AreEqual ("Rock", reloaded.Genre);
 		Assert.AreEqual (5u, reloaded.Track);
-		Assert.AreEqual (12u, reloaded.TrackCount);
+		Assert.AreEqual (12u, reloaded.TotalTracks);
 		Assert.AreEqual (1u, reloaded.DiscNumber);
-		Assert.AreEqual (2u, reloaded.DiscCount);
+		Assert.AreEqual (2u, reloaded.TotalDiscs);
 		Assert.AreEqual ("Composer Name", reloaded.Composer);
 		Assert.AreEqual ("This is a comment", reloaded.Comment);
 		Assert.AreEqual ("Album Artist", reloaded.AlbumArtist);
@@ -264,7 +264,7 @@ public class Mp4RoundTripTests
 		var file = result.File!;
 
 		file.Track = 5;
-		file.TrackCount = 12;
+		file.TotalTracks = 12;
 
 		// Act
 		var written = file.Render (original);
@@ -274,7 +274,7 @@ public class Mp4RoundTripTests
 
 		// Assert
 		Assert.AreEqual (5u, file2.Track);
-		Assert.AreEqual (12u, file2.TrackCount);
+		Assert.AreEqual (12u, file2.TotalTracks);
 	}
 
 	[TestMethod]
@@ -287,7 +287,7 @@ public class Mp4RoundTripTests
 		var file = result.File!;
 
 		file.DiscNumber = 2;
-		file.DiscCount = 3;
+		file.TotalDiscs = 3;
 
 		// Act
 		var written = file.Render (original);
@@ -297,7 +297,7 @@ public class Mp4RoundTripTests
 
 		// Assert
 		Assert.AreEqual (2u, file2.DiscNumber);
-		Assert.AreEqual (3u, file2.DiscCount);
+		Assert.AreEqual (3u, file2.TotalDiscs);
 	}
 
 	[TestMethod]

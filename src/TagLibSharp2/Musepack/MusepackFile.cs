@@ -151,7 +151,7 @@ public sealed class MusepackFile : IMediaFile
 	public static MusepackFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MinHeaderSize)
-			return MusepackFileReadResult.Failure ("File too short to contain Musepack magic");
+			return MusepackFileReadResult.Failure ("Invalid Musepack file: data too short for magic");
 
 		// Check for SV7 magic "MP+"
 		if (data[..3].SequenceEqual (SV7Magic))
@@ -161,7 +161,7 @@ public sealed class MusepackFile : IMediaFile
 		if (data.Length >= 4 && data[..4].SequenceEqual (SV8Magic))
 			return ParseSV8 (data);
 
-		return MusepackFileReadResult.Failure ("Invalid magic: expected 'MP+' (SV7) or 'MPCK' (SV8)");
+		return MusepackFileReadResult.Failure ("Invalid Musepack file: missing magic (expected 'MP+' or 'MPCK')");
 	}
 
 	/// <summary>
@@ -177,7 +177,7 @@ public sealed class MusepackFile : IMediaFile
 		// [10-13] Flags with sample rate
 
 		if (data.Length < 16)
-			return MusepackFileReadResult.Failure ("File too short for SV7 header");
+			return MusepackFileReadResult.Failure ("Invalid Musepack file: data too short for SV7 header");
 
 		var file = new MusepackFile ();
 
@@ -186,7 +186,7 @@ public sealed class MusepackFile : IMediaFile
 
 		// Validate version (should be 7 for SV7)
 		if (file.StreamVersion < 4 || file.StreamVersion > 7)
-			return MusepackFileReadResult.Failure ($"Unsupported SV7 version: {file.StreamVersion}");
+			return MusepackFileReadResult.Failure ($"Invalid Musepack file: unsupported SV7 version ({file.StreamVersion})");
 
 		// Frame count (bytes 4-7, LE)
 		file.FrameCount = BinaryPrimitives.ReadUInt32LittleEndian (data.Slice (4, 4));
@@ -227,7 +227,7 @@ public sealed class MusepackFile : IMediaFile
 		// We need to find the SH (Stream Header) packet
 
 		if (data.Length < 8)
-			return MusepackFileReadResult.Failure ("File too short for SV8 header");
+			return MusepackFileReadResult.Failure ("Invalid Musepack file: data too short for SV8 header");
 
 		var file = new MusepackFile {
 			StreamVersion = 8
@@ -304,6 +304,25 @@ public sealed class MusepackFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out MusepackFile? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid Musepack file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with "MPCK" (SV8) or "MP+" (SV7) magic bytes.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 3 bytes for minimum magic (MP+)
+		if (data.Length < 3)
+			return false;
+
+		// Check for SV8 magic "MPCK"
+		if (data.Length >= 4 && data[0] == 'M' && data[1] == 'P' && data[2] == 'C' && data[3] == 'K')
+			return true;
+
+		// Check for SV7 magic "MP+"
+		return data[0] == 'M' && data[1] == 'P' && data[2] == '+';
+	}
 
 	/// <summary>
 	/// Parse SV8 Stream Header (SH) packet payload.

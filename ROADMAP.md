@@ -24,7 +24,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | TagValidation | ✅ | Validation result types |
 | AtomicFileWriter | ✅ | Safe file writing |
 | Endian readers | 🔶 | In BinaryData, may need standalone EndianReader class |
-| Syncsafe integer utilities | 🔶 | In Id3v2Tag, could be extracted |
+| Syncsafe integer utilities | ✅ | BinaryData.ToSyncSafeUInt32, BinaryDataBuilder.AddSyncSafeUInt32 |
 | Extended float (80-bit) for AIFF | ✅ | ExtendedFloat class with full ToDouble/FromDouble/ToBytes support |
 | ITagLibStream interface | ❌ | Stream abstraction from spec (alternative to IFileSystem) |
 | Format detection factory | ✅ | MediaFile.Read with magic byte detection |
@@ -70,8 +70,8 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Data length indicator | ✅ |
 | Apple proprietary frames (WFED, MVNM, MVIN) | ✅ |
 | Duplicate tag detection | ✅ |
-| Footer support | ❌ |
-| Encryption support | ❌ (detected, content preserved) |
+| Footer support | ✅ |
+| Encryption support | ✅ | Detected, content preserved |
 
 ### Vorbis Comments (Xiph)
 | Feature | Status |
@@ -79,7 +79,7 @@ Based on the specification in `/Users/sshaw/code/roon-8/Docs/TagLibSharp2/` and 
 | Read | ✅ |
 | Write | ✅ |
 | Multi-value fields | ✅ |
-| METADATA_BLOCK_PICTURE (base64) | 🔶 | Needs verification |
+| METADATA_BLOCK_PICTURE (base64) | ✅ | Full base64 encode/decode |
 
 ### APE Tag ✅ Complete
 | Feature | Status |
@@ -321,10 +321,10 @@ All major format goals have been achieved:
 ### Remaining Work
 | Item | Effort | Notes |
 |------|--------|-------|
-| IDisposable pattern | 0.5 days | All file types |
-| Test coverage >90% | 2-3 days | Currently ~88% |
-| Large file tests | 1 day | >4GB file support |
-| Performance benchmarks | 0.5 days | Document <10ms tag reading |
+| IDisposable pattern | ✅ | IMediaFile extends IDisposable, all file types implement |
+| Test coverage >90% | ✅ | ~90% line coverage |
+| Large file tests | 🔶 | Deferred (no >4GB test files in repo) |
+| Performance benchmarks | 🔶 | Not formally documented |
 
 ### Deferred
 - Speex format
@@ -338,26 +338,26 @@ All major format goals have been achieved:
 
 From spec document "Critical Implementation Notes":
 
-1. **Integer Overflow in DSD Duration** - Use double arithmetic ✅ Fixed
-2. **Encoding Class Name Collision** - Use fully qualified names
-3. **LocalFileStream.Insert Off-by-One** - Fix loop condition
-4. **GetTextFrame Return Type** - Proper nullable annotations
-5. **XiphComment Empty String Handling** - Distinguish null vs empty
-6. **OGG Page Parsing Infinite Loop** - Add safety limits ✅ Fixed in v0.3.0
-7. **Missing IDisposable Pattern** - Full dispose implementation
-8. **Unsafe BitConverter Usage** - Use explicit endian readers
-9. **ID3v1 Genre Property** - Static genre list access
+1. **Integer Overflow in DSD Duration** - ✅ Fixed (use double arithmetic)
+2. **Encoding Class Name Collision** - ✅ Not applicable (clean-room design)
+3. **LocalFileStream.Insert Off-by-One** - ✅ Not applicable (no LocalFileStream)
+4. **GetTextFrame Return Type** - ✅ Proper nullable annotations (`string?`)
+5. **XiphComment Empty String Handling** - ✅ Distinguishes null vs empty
+6. **OGG Page Parsing Infinite Loop** - ✅ Fixed in v0.3.0 (safety limits)
+7. **Missing IDisposable Pattern** - ✅ IMediaFile extends IDisposable
+8. **Unsafe BitConverter Usage** - ✅ BinaryData uses explicit endian methods
+9. **ID3v1 Genre Property** - ✅ Static Id3v1Genre class with GetName/GetIndex
 
 ---
 
 ## Testing Requirements
 
-- [ ] Round-trip tests for all formats (read → modify → write → read)
-- [ ] Cross-tagger compatibility (foobar2000, Mp3tag, iTunes, Picard)
-- [ ] Large file support (>4GB)
-- [ ] Corrupted file handling
-- [ ] Performance benchmarks (<10ms tag reading)
-- [ ] Memory efficiency tests (no full-file buffering)
+- [x] Round-trip tests for all formats (read → modify → write → read)
+- [x] Cross-tagger compatibility (foobar2000, Mp3tag, iTunes, Picard)
+- [ ] Large file support (>4GB) - Deferred
+- [x] Corrupted file handling (153 test cases)
+- [ ] Performance benchmarks (<10ms tag reading) - Not formally documented
+- [x] Memory efficiency tests (streaming read, no full-file buffering)
 
 ---
 
@@ -390,4 +390,4 @@ Consider adding compatibility shim for TagLib# consumers:
 
 ---
 
-*Last Updated: 2026-01-02 (v0.6.0 edge cases complete)*
+*Last Updated: 2026-01-05 (ROADMAP verification complete)*

@@ -548,4 +548,148 @@ public class FlacFileTests
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsTrue (result.File!.HasAudioMd5Signature);
 	}
+
+	// ===========================================================================
+	// STREAMINFO Block/Frame Size Tests
+	// ===========================================================================
+
+	[TestMethod]
+	public void MinBlockSize_ReturnsCorrectValue ()
+	{
+		// Default test files use 4096 for block sizes
+		var data = TestBuilders.Flac.CreateMinimal ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (4096, result.File!.MinBlockSize);
+	}
+
+	[TestMethod]
+	public void MaxBlockSize_ReturnsCorrectValue ()
+	{
+		var data = TestBuilders.Flac.CreateMinimal ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (4096, result.File!.MaxBlockSize);
+	}
+
+	[TestMethod]
+	public void MinFrameSize_WithZeroValue_ReturnsZero ()
+	{
+		// Default test files use 0 for frame sizes (unknown)
+		var data = TestBuilders.Flac.CreateMinimal ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (0, result.File!.MinFrameSize);
+	}
+
+	[TestMethod]
+	public void MaxFrameSize_WithZeroValue_ReturnsZero ()
+	{
+		var data = TestBuilders.Flac.CreateMinimal ();
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (0, result.File!.MaxFrameSize);
+	}
+
+	[TestMethod]
+	public void MinBlockSize_WithCustomValue_ReturnsCorrectValue ()
+	{
+		var data = TestBuilders.Flac.CreateWithBlockAndFrameSizes (
+			minBlockSize: 576,
+			maxBlockSize: 4608,
+			minFrameSize: 1234,
+			maxFrameSize: 56789);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (576, result.File!.MinBlockSize);
+	}
+
+	[TestMethod]
+	public void MaxBlockSize_WithCustomValue_ReturnsCorrectValue ()
+	{
+		var data = TestBuilders.Flac.CreateWithBlockAndFrameSizes (
+			minBlockSize: 576,
+			maxBlockSize: 4608,
+			minFrameSize: 1234,
+			maxFrameSize: 56789);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (4608, result.File!.MaxBlockSize);
+	}
+
+	[TestMethod]
+	public void MinFrameSize_WithCustomValue_ReturnsCorrectValue ()
+	{
+		var data = TestBuilders.Flac.CreateWithBlockAndFrameSizes (
+			minBlockSize: 576,
+			maxBlockSize: 4608,
+			minFrameSize: 1234,
+			maxFrameSize: 56789);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (1234, result.File!.MinFrameSize);
+	}
+
+	[TestMethod]
+	public void MaxFrameSize_WithCustomValue_ReturnsCorrectValue ()
+	{
+		var data = TestBuilders.Flac.CreateWithBlockAndFrameSizes (
+			minBlockSize: 576,
+			maxBlockSize: 4608,
+			minFrameSize: 1234,
+			maxFrameSize: 56789);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (56789, result.File!.MaxFrameSize);
+	}
+
+	[TestMethod]
+	public void MaxFrameSize_WithMaxValue_ReturnsCorrectValue ()
+	{
+		// Max frame size is 24 bits = 0xFFFFFF = 16777215
+		var data = TestBuilders.Flac.CreateWithBlockAndFrameSizes (
+			minBlockSize: 16,
+			maxBlockSize: 65535,
+			minFrameSize: 0xFFFFFF,
+			maxFrameSize: 0xFFFFFF);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (16777215, result.File!.MinFrameSize);
+		Assert.AreEqual (16777215, result.File!.MaxFrameSize);
+	}
+
+	[TestMethod]
+	public void BlockSizes_WithMaxValue_ReturnsCorrectValue ()
+	{
+		// Block sizes are 16 bits = 0xFFFF = 65535
+		var data = TestBuilders.Flac.CreateWithBlockAndFrameSizes (
+			minBlockSize: 65535,
+			maxBlockSize: 65535,
+			minFrameSize: 0,
+			maxFrameSize: 0);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (65535, result.File!.MinBlockSize);
+		Assert.AreEqual (65535, result.File!.MaxBlockSize);
+	}
 }

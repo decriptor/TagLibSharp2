@@ -58,7 +58,6 @@ var aliasProps = new Dictionary<string, string> {
 
 // Obsolete properties that shouldn't count against coverage
 var obsoleteProps = new HashSet<string> {
-	"MusicIpId", // MusicIP service discontinued
 };
 
 // Computed properties (not stored, derived from other data)

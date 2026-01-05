@@ -171,9 +171,9 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
-	/// Gets or sets the total track count.
+	/// Gets or sets the total number of tracks.
 	/// </summary>
-	public uint? TrackCount {
+	public uint? TotalTracks {
 		get => Tag?.TotalTracks;
 		set => EnsureTag ().TotalTracks = value;
 	}
@@ -187,9 +187,9 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
-	/// Gets or sets the total disc count.
+	/// Gets or sets the total number of discs.
 	/// </summary>
-	public uint? DiscCount {
+	public uint? TotalDiscs {
 		get => Tag?.TotalDiscs;
 		set => EnsureTag ().TotalDiscs = value;
 	}
@@ -539,6 +539,46 @@ public sealed class Mp4File : IMediaFile
 #pragma warning restore CA1056
 
 	/// <summary>
+	/// Gets or sets whether this file is a podcast episode.
+	/// </summary>
+	public bool IsPodcast {
+		get => Tag?.IsPodcast ?? false;
+		set => EnsureTag ().IsPodcast = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the podcast episode GUID.
+	/// </summary>
+	public string? PodcastEpisodeGuid {
+		get => Tag?.PodcastEpisodeGuid;
+		set => EnsureTag ().PodcastEpisodeGuid = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the podcast category.
+	/// </summary>
+	public string? PodcastCategory {
+		get => Tag?.PodcastCategory;
+		set => EnsureTag ().PodcastCategory = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the podcast keywords.
+	/// </summary>
+	public string? PodcastKeywords {
+		get => Tag?.PodcastKeywords;
+		set => EnsureTag ().PodcastKeywords = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the content rating (Clean/Explicit/None).
+	/// </summary>
+	public Mp4ContentRating ContentRating {
+		get => Tag?.ContentRating ?? Mp4ContentRating.None;
+		set => EnsureTag ().ContentRating = value;
+	}
+
+	/// <summary>
 	/// Gets the pictures (cover art) in this file.
 	/// </summary>
 #pragma warning disable CA1819 // Properties should not return arrays - API compatibility
@@ -636,7 +676,7 @@ public sealed class Mp4File : IMediaFile
 	public static Mp4FileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < Mp4Box.HeaderSize)
-			return Mp4FileReadResult.Failure ("File too small to contain valid MP4 boxes");
+			return Mp4FileReadResult.Failure ("Invalid MP4 file: data too short");
 
 		// Parse all top-level boxes
 		var boxes = new List<Mp4Box> ();
@@ -667,7 +707,7 @@ public sealed class Mp4File : IMediaFile
 		}
 
 		if (moov is null)
-			return Mp4FileReadResult.Failure ("Missing moov box - not a valid MP4 file");
+			return Mp4FileReadResult.Failure ("Invalid MP4 file: missing moov box");
 
 		// Extract audio properties from moov/trak/mdia
 		var (properties, audioCodec) = ExtractAudioProperties (moov);
@@ -703,6 +743,22 @@ public sealed class Mp4File : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out Mp4File? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid MP4 file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data contains an ftyp box at the expected location.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 8 bytes for a minimal box header
+		if (data.Length < 8)
+			return false;
+
+		// First box should be ftyp - check at offset 4 for "ftyp"
+		// Box format: size (4 bytes) + type (4 bytes)
+		return data[4] == 'f' && data[5] == 't' && data[6] == 'y' && data[7] == 'p';
+	}
 
 	static string ExtractFileType (Mp4Box ftypBox)
 	{

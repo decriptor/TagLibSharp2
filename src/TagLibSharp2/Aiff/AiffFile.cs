@@ -24,6 +24,7 @@ namespace TagLibSharp2.Aiff;
 public sealed class AiffFile : IMediaFile
 {
 	bool _disposed;
+	IFileSystem? _sourceFileSystem;
 
 	/// <summary>
 	/// Size of the FORM header (FORM + size + form type).
@@ -176,6 +177,27 @@ public sealed class AiffFile : IMediaFile
 		TryRead (data.Span, out file);
 
 	/// <summary>
+	/// Checks if the data appears to be a valid AIFF file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with "FORM" and contains "AIFF" or "AIFC" form type.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 12 bytes: FORM (4) + size (4) + form type (4)
+		if (data.Length < 12)
+			return false;
+
+		// Check "FORM" magic
+		if (data[0] != 'F' || data[1] != 'O' || data[2] != 'R' || data[3] != 'M')
+			return false;
+
+		// Check form type at offset 8 - must be "AIFF" or "AIFC"
+		var isAiff = data[8] == 'A' && data[9] == 'I' && data[10] == 'F' && data[11] == 'F';
+		var isAifc = data[8] == 'A' && data[9] == 'I' && data[10] == 'F' && data[11] == 'C';
+		return isAiff || isAifc;
+	}
+
+	/// <summary>
 	/// Reads an AIFF file from binary data with detailed error information.
 	/// </summary>
 	/// <param name="data">The file data.</param>
@@ -183,24 +205,24 @@ public sealed class AiffFile : IMediaFile
 	public static AiffFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < HeaderSize)
-			return AiffFileReadResult.Failure ("Data too short for AIFF header");
+			return AiffFileReadResult.Failure ("Invalid AIFF file: data too short for header");
 
 		// Check FORM magic
 		if (data[0] != 'F' || data[1] != 'O' || data[2] != 'R' || data[3] != 'M')
-			return AiffFileReadResult.Failure ("Invalid AIFF magic (expected 'FORM')");
+			return AiffFileReadResult.Failure ("Invalid AIFF file: missing magic (expected 'FORM')");
 
 		// Read form type
 		var formType = new BinaryData (data.Slice (8, 4).ToArray ()).ToStringLatin1 ();
 
 		// Validate form type
 		if (formType != "AIFF" && formType != "AIFC")
-			return AiffFileReadResult.Failure ($"Invalid form type (expected 'AIFF' or 'AIFC', got '{formType}')");
+			return AiffFileReadResult.Failure ($"Invalid AIFF file: invalid form type (expected 'AIFF' or 'AIFC', got '{formType}')");
 
 		// Use internal parsing from here
 		var file = new AiffFile ();
 		if (!file.Parse (new BinaryData (data.ToArray ()))) {
 			file.Dispose ();
-			return AiffFileReadResult.Failure ("Failed to parse AIFF file structure");
+			return AiffFileReadResult.Failure ("Invalid AIFF file: failed to parse file structure");
 		}
 
 		return AiffFileReadResult.Success (file);
@@ -214,13 +236,16 @@ public sealed class AiffFile : IMediaFile
 	/// <returns>A result containing the parsed file or error information.</returns>
 	public static AiffFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
-		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		var readResult = FileHelper.SafeReadAllBytes (path, fs);
 		if (!readResult.IsSuccess)
 			return AiffFileReadResult.Failure (readResult.Error!);
 
 		var result = Read (readResult.Data!.Value.Span);
-		if (result.IsSuccess)
+		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fs;
+		}
 		return result;
 	}
 
@@ -236,15 +261,18 @@ public sealed class AiffFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fileSystem, cancellationToken)
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fs, cancellationToken)
 			.ConfigureAwait (false);
 
 		if (!readResult.IsSuccess)
 			return AiffFileReadResult.Failure (readResult.Error!);
 
 		var result = Read (readResult.Data!.Value.Span);
-		if (result.IsSuccess)
+		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fs;
+		}
 		return result;
 	}
 
@@ -423,7 +451,8 @@ public sealed class AiffFile : IMediaFile
 		if (string.IsNullOrEmpty (SourcePath))
 			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		return SaveToFileAsync (SourcePath!, fileSystem, cancellationToken);
+		var fs = fileSystem ?? _sourceFileSystem;
+		return SaveToFileAsync (SourcePath!, fs, cancellationToken);
 	}
 }
 

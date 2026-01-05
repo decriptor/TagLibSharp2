@@ -167,14 +167,14 @@ public sealed class MonkeysAudioFile : IMediaFile
 	public static MonkeysAudioFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MagicSize)
-			return MonkeysAudioFileReadResult.Failure ("File too short to contain MAC magic");
+			return MonkeysAudioFileReadResult.Failure ("Invalid Monkey's Audio file: data too short for magic");
 
 		// Verify magic "MAC "
 		if (!data[..MagicSize].SequenceEqual (Magic))
-			return MonkeysAudioFileReadResult.Failure ("Invalid magic: expected 'MAC '");
+			return MonkeysAudioFileReadResult.Failure ("Invalid Monkey's Audio file: missing magic (expected 'MAC ')");
 
 		if (data.Length < MagicSize + 2)
-			return MonkeysAudioFileReadResult.Failure ("File too short to contain version");
+			return MonkeysAudioFileReadResult.Failure ("Invalid Monkey's Audio file: data too short for version");
 
 		var version = BinaryPrimitives.ReadUInt16LittleEndian (data.Slice (MagicSize, 2));
 
@@ -225,6 +225,21 @@ public sealed class MonkeysAudioFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out MonkeysAudioFile? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid Monkey's Audio file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with "MAC " magic bytes.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 4 bytes for magic
+		if (data.Length < 4)
+			return false;
+
+		// Check for "MAC " magic
+		return data[0] == 'M' && data[1] == 'A' && data[2] == 'C' && data[3] == ' ';
+	}
 
 	private static ParseResult ParseNewFormat (ReadOnlySpan<byte> data, MonkeysAudioFile file)
 	{

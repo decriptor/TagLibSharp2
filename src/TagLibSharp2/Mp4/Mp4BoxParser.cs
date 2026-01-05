@@ -21,7 +21,7 @@ internal static class Mp4BoxParser
 		// iTunes metadata atoms (ilst children that contain data sub-boxes)
 		"©nam", "©ART", "©alb", "©day", "©cmt", "©gen", "©wrt", "©grp",
 		"©lyr", "©too", "©pub", "©enc", "cprt", "aART", "desc", "ldes",
-		"trkn", "disk", "tmpo", "cpil", "pgap", // track, disc, tempo, etc.
+		"trkn", "disk", "tmpo", "cpil", "pgap", "rtng", // track, disc, tempo, rating, etc.
 		"soal", "soaa", "soar", "soco", "sonm", // sort fields
 		"©mvn", "©mvi", "©mvc", "©wrk", "shwm", // classical music
 		"purl", "egid", "catg", "keyw", "pcst", // podcast

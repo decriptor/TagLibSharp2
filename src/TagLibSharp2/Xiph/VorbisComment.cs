@@ -702,12 +702,22 @@ public sealed class VorbisComment : Tag
 	/// <summary>
 	/// Gets or sets the total number of discs.
 	/// </summary>
+	/// <remarks>
+	/// Reads from TOTALDISCS with fallback to DISCTOTAL for compatibility.
+	/// Writes to TOTALDISCS.
+	/// </remarks>
 	public override uint? TotalDiscs {
 		get {
-			var value = GetValue ("TOTALDISCS");
+			var value = GetValue ("TOTALDISCS") ?? GetValue ("DISCTOTAL");
 			return !string.IsNullOrEmpty (value) && uint.TryParse (value, out var total) ? total : null;
 		}
 		set => SetValue ("TOTALDISCS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+	}
+
+	/// <inheritdoc/>
+	public override string? DiscSubtitle {
+		get => GetValue ("DISCSUBTITLE");
+		set => SetValue ("DISCSUBTITLE", value);
 	}
 
 	/// <summary>

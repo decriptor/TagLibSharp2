@@ -356,6 +356,21 @@ public sealed class DsfFile : IMediaFile
 		TryRead (data.Span, out file);
 
 	/// <summary>
+	/// Checks if the data appears to be a valid DSF file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with "DSD " magic bytes.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 4 bytes for magic
+		if (data.Length < 4)
+			return false;
+
+		// Check for "DSD " magic
+		return data[0] == 'D' && data[1] == 'S' && data[2] == 'D' && data[3] == ' ';
+	}
+
+	/// <summary>
 	/// Reads a DSF file from the specified path.
 	/// </summary>
 	/// <param name="path">The path to the file.</param>

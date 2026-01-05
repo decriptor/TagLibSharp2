@@ -401,6 +401,25 @@ public sealed class DffFile : IMediaFile
 	public static bool TryRead (BinaryData data, out DffFile? file) =>
 		TryRead (data.Span, out file);
 
+	/// <summary>
+	/// Checks if the data appears to be a valid DFF file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with "FRM8" and contains "DSD " form type.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 16 bytes: FRM8 (4) + size (8) + DSD  (4)
+		if (data.Length < 16)
+			return false;
+
+		// Check "FRM8" magic
+		if (data[0] != 'F' || data[1] != 'R' || data[2] != 'M' || data[3] != '8')
+			return false;
+
+		// Check "DSD " form type at offset 12
+		return data[12] == 'D' && data[13] == 'S' && data[14] == 'D' && data[15] == ' ';
+	}
+
 	private static void ParsePropChunk (ReadOnlySpan<byte> data, DffFile file, ref bool foundFs, ref bool foundChnl, ref bool foundCmpr)
 	{
 		if (data.Length < 4) return;

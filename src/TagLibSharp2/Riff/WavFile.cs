@@ -26,6 +26,7 @@ namespace TagLibSharp2.Riff;
 public sealed class WavFile : IMediaFile
 {
 	bool _disposed;
+	IFileSystem? _sourceFileSystem;
 
 	/// <summary>
 	/// FourCC for the fmt (format) chunk.
@@ -223,10 +224,10 @@ public sealed class WavFile : IMediaFile
 	public static WavFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (!RiffFile.TryParse (new BinaryData (data.ToArray ()), out var riff))
-			return WavFileReadResult.Failure ("Invalid RIFF file structure");
+			return WavFileReadResult.Failure ("Invalid WAV file: invalid RIFF structure");
 
 		if (riff.FormType != "WAVE")
-			return WavFileReadResult.Failure ($"Invalid form type (expected 'WAVE', got '{riff.FormType}')");
+			return WavFileReadResult.Failure ($"Invalid WAV file: invalid form type (expected 'WAVE', got '{riff.FormType}')");
 
 		var wav = new WavFile (riff);
 
@@ -293,6 +294,25 @@ public sealed class WavFile : IMediaFile
 		TryRead (data.Span, out file);
 
 	/// <summary>
+	/// Checks if the data appears to be a valid WAV file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with "RIFF" and contains "WAVE" form type.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 12 bytes: RIFF (4) + size (4) + WAVE (4)
+		if (data.Length < 12)
+			return false;
+
+		// Check "RIFF" magic
+		if (data[0] != 'R' || data[1] != 'I' || data[2] != 'F' || data[3] != 'F')
+			return false;
+
+		// Check "WAVE" form type at offset 8
+		return data[8] == 'W' && data[9] == 'A' && data[10] == 'V' && data[11] == 'E';
+	}
+
+	/// <summary>
 	/// Reads a WAV file from a file path.
 	/// </summary>
 	/// <param name="path">The file path.</param>
@@ -300,13 +320,16 @@ public sealed class WavFile : IMediaFile
 	/// <returns>A result containing the parsed file or error information.</returns>
 	public static WavFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
-		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		var readResult = FileHelper.SafeReadAllBytes (path, fs);
 		if (!readResult.IsSuccess)
 			return WavFileReadResult.Failure (readResult.Error!);
 
 		var result = Read (readResult.Data!.Value.Span);
-		if (result.IsSuccess)
+		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fs;
+		}
 		return result;
 	}
 
@@ -322,15 +345,18 @@ public sealed class WavFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fileSystem, cancellationToken)
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fs, cancellationToken)
 			.ConfigureAwait (false);
 
 		if (!readResult.IsSuccess)
 			return WavFileReadResult.Failure (readResult.Error!);
 
 		var result = Read (readResult.Data!.Value.Span);
-		if (result.IsSuccess)
+		if (result.IsSuccess) {
 			result.File!.SourcePath = path;
+			result.File._sourceFileSystem = fs;
+		}
 		return result;
 	}
 
@@ -432,7 +458,8 @@ public sealed class WavFile : IMediaFile
 		if (string.IsNullOrEmpty (SourcePath))
 			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		return SaveToFileAsync (SourcePath!, fileSystem, cancellationToken);
+		var fs = fileSystem ?? _sourceFileSystem;
+		return SaveToFileAsync (SourcePath!, fs, cancellationToken);
 	}
 }
 

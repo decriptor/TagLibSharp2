@@ -394,4 +394,65 @@ public class ApeTagExtendedTests
 		var tag = new ApeTag { Copyright = "2024 Test Records" };
 		Assert.AreEqual ("2024 Test Records", tag.Copyright);
 	}
+
+	// ===========================================
+	// AlbumArtist Fallback Tests
+	// ===========================================
+
+	[TestMethod]
+	public void AlbumArtist_GetSet_UsesAlbumArtistWithSpace ()
+	{
+		var tag = new ApeTag { AlbumArtist = "Various Artists" };
+
+		Assert.AreEqual ("Various Artists", tag.AlbumArtist);
+		Assert.AreEqual ("Various Artists", tag.GetValue ("Album Artist"));
+	}
+
+	[TestMethod]
+	public void AlbumArtist_FallsBackToAlbumArtistNoSpace ()
+	{
+		var tag = new ApeTag ();
+
+		// Some taggers use ALBUMARTIST (no space) instead of "Album Artist"
+		tag.SetValue ("ALBUMARTIST", "Various Artists");
+
+		Assert.AreEqual ("Various Artists", tag.AlbumArtist);
+	}
+
+	[TestMethod]
+	public void AlbumArtist_PrefersAlbumArtistWithSpace ()
+	{
+		var tag = new ApeTag ();
+
+		// When both exist, prefer "Album Artist" (with space) per APE spec
+		tag.SetValue ("Album Artist", "Preferred Artist");
+		tag.SetValue ("ALBUMARTIST", "Fallback Artist");
+
+		Assert.AreEqual ("Preferred Artist", tag.AlbumArtist);
+	}
+
+	// ===========================================
+	// DiscSubtitle Tests
+	// ===========================================
+
+	[TestMethod]
+	public void DiscSubtitle_GetSet_Works ()
+	{
+		var tag = new ApeTag { DiscSubtitle = "The Early Years" };
+
+		Assert.AreEqual ("The Early Years", tag.DiscSubtitle);
+		Assert.AreEqual ("The Early Years", tag.GetValue ("DiscSubtitle"));
+	}
+
+	[TestMethod]
+	public void DiscSubtitle_RoundTrip_PreservesValue ()
+	{
+		var original = new ApeTag { DiscSubtitle = "Disc 1: Origins" };
+
+		var rendered = original.Render ();
+		var result = ApeTag.Parse (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Disc 1: Origins", result.Tag!.DiscSubtitle);
+	}
 }

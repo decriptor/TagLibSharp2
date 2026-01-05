@@ -882,4 +882,30 @@ public class Id3v2TagExtendedMetadataTests
 		Assert.AreNotSame (first, second);
 		Assert.IsNull (second);
 	}
+
+	// ===========================================
+	// DiscSubtitle (TSST frame)
+	// ===========================================
+
+	[TestMethod]
+	public void DiscSubtitle_GetSet_Works ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+
+		tag.DiscSubtitle = "The Early Years";
+
+		Assert.AreEqual ("The Early Years", tag.DiscSubtitle);
+	}
+
+	[TestMethod]
+	public void DiscSubtitle_RoundTrip_PreservesValue ()
+	{
+		var original = new Id3v2Tag (Id3v2Version.V24) { DiscSubtitle = "Disc 1: Origins" };
+
+		var rendered = original.Render ();
+		var result = Id3v2Tag.Read (rendered.Span);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Disc 1: Origins", result.Tag!.DiscSubtitle);
+	}
 }

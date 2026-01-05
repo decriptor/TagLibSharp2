@@ -9,6 +9,65 @@ namespace TagLibSharp2.Id3.Id3v2;
 /// <summary>
 /// Represents an ID3v2 tag containing frames with metadata.
 /// </summary>
+/// <remarks>
+/// <para>
+/// ID3v2 tags store metadata as typed "frames". Standard frames include text frames
+/// (TALB, TPE1, etc.), pictures (APIC), comments (COMM), and user-defined frames (TXXX).
+/// </para>
+///
+/// <para><b>Basic Property Access</b></para>
+/// <para>
+/// Common metadata is exposed via Tag base class properties (Title, Artist, Album, etc.).
+/// These map to the corresponding ID3v2 frames automatically.
+/// </para>
+///
+/// <para><b>Frame Management</b></para>
+/// <para>
+/// For advanced use cases, access frames directly through the typed collections:
+/// <see cref="Frames"/>, <see cref="Pictures"/>, <see cref="Comments"/>,
+/// <see cref="UserTextFrames"/>, etc.
+/// </para>
+/// </remarks>
+/// <example>
+/// <para><b>Reading basic metadata:</b></para>
+/// <code>
+/// var tag = mp3File.Tag;
+/// Console.WriteLine($"Title: {tag.Title}");
+/// Console.WriteLine($"Artist: {tag.Artist}");
+/// Console.WriteLine($"Album: {tag.Album}");
+/// </code>
+///
+/// <para><b>Accessing pictures:</b></para>
+/// <code>
+/// foreach (var picture in tag.Pictures)
+/// {
+///     Console.WriteLine($"Type: {picture.PictureType}, Size: {picture.PictureData.Length}");
+/// }
+/// // Add a new picture
+/// tag.Pictures = [.. tag.Pictures, new PictureFrame(coverArtBytes, "image/jpeg", PictureType.FrontCover)];
+/// </code>
+///
+/// <para><b>Working with user-defined text frames (TXXX):</b></para>
+/// <code>
+/// // Read custom tag
+/// var customTag = tag.UserTextFrames.FirstOrDefault(f => f.Description == "CUSTOM_FIELD");
+///
+/// // Add/update custom tag
+/// tag.SetUserTextFrame("CUSTOM_FIELD", "custom value");
+/// </code>
+///
+/// <para><b>Working with comments (COMM):</b></para>
+/// <code>
+/// // Add a comment
+/// tag.Comments = [.. tag.Comments, new CommentFrame("eng", "My comment text", "Comment description")];
+/// </code>
+///
+/// <para><b>Copying tags between files:</b></para>
+/// <code>
+/// // Copy all metadata from source to destination
+/// sourceTag.CopyTo(destinationTag);
+/// </code>
+/// </example>
 public sealed class Id3v2Tag : Tag
 {
 	const int FrameHeaderSizeV23 = 10;  // v2.3 and v2.4: 4-byte ID + 4-byte size + 2-byte flags
@@ -552,6 +611,12 @@ public sealed class Id3v2Tag : Tag
 	public override string? Subtitle {
 		get => GetTextFrame ("TIT3");
 		set => SetTextFrame ("TIT3", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? DiscSubtitle {
+		get => GetTextFrame ("TSST");
+		set => SetTextFrame ("TSST", value);
 	}
 
 	/// <inheritdoc/>

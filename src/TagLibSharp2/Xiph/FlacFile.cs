@@ -69,6 +69,74 @@ public sealed class FlacFile : IMediaFile
 	public BinaryData StreamInfoData { get; }
 
 	/// <summary>
+	/// Gets the minimum block size in samples used in the file.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// FLAC audio is divided into blocks of samples. This is the minimum number of samples
+	/// per block used anywhere in the file. The value is stored in STREAMINFO bytes 0-1.
+	/// </para>
+	/// <para>
+	/// For fixed-blocksize streams, this equals <see cref="MaxBlockSize"/>.
+	/// Valid range: 16 to 65535.
+	/// </para>
+	/// </remarks>
+	public int MinBlockSize => StreamInfoData.Length >= 2
+		? (StreamInfoData.Span[0] << 8) | StreamInfoData.Span[1]
+		: 0;
+
+	/// <summary>
+	/// Gets the maximum block size in samples used in the file.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// FLAC audio is divided into blocks of samples. This is the maximum number of samples
+	/// per block used anywhere in the file. The value is stored in STREAMINFO bytes 2-3.
+	/// </para>
+	/// <para>
+	/// For fixed-blocksize streams, this equals <see cref="MinBlockSize"/>.
+	/// Valid range: 16 to 65535.
+	/// </para>
+	/// </remarks>
+	public int MaxBlockSize => StreamInfoData.Length >= 4
+		? (StreamInfoData.Span[2] << 8) | StreamInfoData.Span[3]
+		: 0;
+
+	/// <summary>
+	/// Gets the minimum frame size in bytes, or 0 if unknown.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// A frame is the basic unit of encoding, containing a frame header, subframes for each
+	/// channel, and zero-padding to byte alignment. This is the minimum frame size in the file.
+	/// The value is stored in STREAMINFO bytes 4-6 as a 24-bit big-endian integer.
+	/// </para>
+	/// <para>
+	/// A value of 0 means the minimum frame size is unknown (common for streaming encodes).
+	/// </para>
+	/// </remarks>
+	public int MinFrameSize => StreamInfoData.Length >= 7
+		? (StreamInfoData.Span[4] << 16) | (StreamInfoData.Span[5] << 8) | StreamInfoData.Span[6]
+		: 0;
+
+	/// <summary>
+	/// Gets the maximum frame size in bytes, or 0 if unknown.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// A frame is the basic unit of encoding, containing a frame header, subframes for each
+	/// channel, and zero-padding to byte alignment. This is the maximum frame size in the file.
+	/// The value is stored in STREAMINFO bytes 7-9 as a 24-bit big-endian integer.
+	/// </para>
+	/// <para>
+	/// A value of 0 means the maximum frame size is unknown (common for streaming encodes).
+	/// </para>
+	/// </remarks>
+	public int MaxFrameSize => StreamInfoData.Length >= 10
+		? (StreamInfoData.Span[7] << 16) | (StreamInfoData.Span[8] << 8) | StreamInfoData.Span[9]
+		: 0;
+
+	/// <summary>
 	/// Gets the MD5 signature of the unencoded audio data from the STREAMINFO block.
 	/// </summary>
 	/// <remarks>
@@ -314,35 +382,35 @@ public sealed class FlacFile : IMediaFile
 	public static FlacFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MagicSize)
-			return FlacFileReadResult.Failure ("Data too short for FLAC header");
+			return FlacFileReadResult.Failure ("Invalid FLAC file: data too short for header");
 
 		// Verify magic
 		if (data[0] != FlacMagic[0] || data[1] != FlacMagic[1] ||
 			data[2] != FlacMagic[2] || data[3] != FlacMagic[3])
-			return FlacFileReadResult.Failure ("Invalid FLAC magic (expected 'fLaC')");
+			return FlacFileReadResult.Failure ("Invalid FLAC file: missing magic (expected 'fLaC')");
 
 		var offset = MagicSize;
 
 		// Read STREAMINFO (must be first)
 		if (offset + FlacMetadataBlockHeader.HeaderSize > data.Length)
-			return FlacFileReadResult.Failure ("Data too short for STREAMINFO header");
+			return FlacFileReadResult.Failure ("Invalid FLAC file: data too short for STREAMINFO header");
 
 		var headerResult = FlacMetadataBlockHeader.Read (data.Slice (offset, FlacMetadataBlockHeader.HeaderSize));
 		if (!headerResult.IsSuccess)
 			return FlacFileReadResult.Failure (headerResult.Error!);
 
 		if (headerResult.Header.BlockType != FlacBlockType.StreamInfo)
-			return FlacFileReadResult.Failure ("First block must be STREAMINFO");
+			return FlacFileReadResult.Failure ("Invalid FLAC file: first block must be STREAMINFO");
 
 		// Per RFC 9639, STREAMINFO is always exactly 34 bytes
 		const int StreamInfoSize = 34;
 		if (headerResult.Header.DataLength != StreamInfoSize)
-			return FlacFileReadResult.Failure ($"Invalid STREAMINFO size (expected {StreamInfoSize}, got {headerResult.Header.DataLength})");
+			return FlacFileReadResult.Failure ($"Invalid FLAC file: invalid STREAMINFO size (expected {StreamInfoSize}, got {headerResult.Header.DataLength})");
 
 		offset += FlacMetadataBlockHeader.HeaderSize;
 
 		if (offset + headerResult.Header.DataLength > data.Length)
-			return FlacFileReadResult.Failure ("STREAMINFO data extends beyond file");
+			return FlacFileReadResult.Failure ("Invalid FLAC file: STREAMINFO data extends beyond file");
 
 		var streamInfoSlice = data.Slice (offset, headerResult.Header.DataLength);
 		var streamInfoData = new BinaryData (streamInfoSlice);
@@ -423,6 +491,16 @@ public sealed class FlacFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out FlacFile? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid FLAC file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with the FLAC magic bytes "fLaC".</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data) =>
+		data.Length >= MagicSize &&
+		data[0] == FlacMagic[0] && data[1] == FlacMagic[1] &&
+		data[2] == FlacMagic[2] && data[3] == FlacMagic[3];
 
 	VorbisComment EnsureVorbisComment ()
 	{

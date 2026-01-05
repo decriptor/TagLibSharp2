@@ -75,7 +75,7 @@ public class Mp4CompatibilityTests
 		file.Year = "2025";
 		file.Genre = "Rock";
 		file.Track = 5;
-		file.TrackCount = 12;
+		file.TotalTracks = 12;
 
 		// Render and re-read
 		var rendered = file.Render (data);
@@ -89,7 +89,7 @@ public class Mp4CompatibilityTests
 		Assert.AreEqual ("2025", reFile.Year);
 		Assert.AreEqual ("Rock", reFile.Genre);
 		Assert.AreEqual (5u, reFile.Track);
-		Assert.AreEqual (12u, reFile.TrackCount);
+		Assert.AreEqual (12u, reFile.TotalTracks);
 	}
 
 	/// <summary>
@@ -188,11 +188,11 @@ public class Mp4CompatibilityTests
 
 		// Set track number with total
 		file.Track = 5;
-		file.TrackCount = 12;
+		file.TotalTracks = 12;
 
 		// Set disc number with total
 		file.DiscNumber = 1;
-		file.DiscCount = 2;
+		file.TotalDiscs = 2;
 
 		var rendered = file.Render (data);
 		var reResult = Mp4File.Read (rendered.Span);
@@ -200,9 +200,9 @@ public class Mp4CompatibilityTests
 
 		// Verify binary format preserved values correctly
 		Assert.AreEqual (5u, reFile.Track);
-		Assert.AreEqual (12u, reFile.TrackCount);
+		Assert.AreEqual (12u, reFile.TotalTracks);
 		Assert.AreEqual (1u, reFile.DiscNumber);
-		Assert.AreEqual (2u, reFile.DiscCount);
+		Assert.AreEqual (2u, reFile.TotalDiscs);
 	}
 
 	/// <summary>
@@ -223,7 +223,7 @@ public class Mp4CompatibilityTests
 		var reFile = reResult.File!;
 
 		Assert.AreEqual (7u, reFile.Track);
-		Assert.IsNull (reFile.TrackCount);
+		Assert.IsNull (reFile.TotalTracks);
 	}
 
 	/// <summary>
@@ -244,7 +244,7 @@ public class Mp4CompatibilityTests
 		var reFile = reResult.File!;
 
 		Assert.AreEqual (3u, reFile.DiscNumber);
-		Assert.IsNull (reFile.DiscCount);
+		Assert.IsNull (reFile.TotalDiscs);
 	}
 
 	/// <summary>

@@ -243,12 +243,12 @@ public sealed class OggOpusFile : IMediaFile
 			return OggOpusFileReadResult.Failure (packetsResult.Error!);
 
 		if (packetsResult.Packets.Count < 1)
-			return OggOpusFileReadResult.Failure ("No packets found in Ogg stream");
+			return OggOpusFileReadResult.Failure ("Invalid Ogg Opus file: no packets found");
 
 		// Packet 0: OpusHead identification header
 		var opusHeadPacket = packetsResult.Packets[0];
 		if (!IsOpusHead (opusHeadPacket))
-			return OggOpusFileReadResult.Failure ("Not an Opus stream (expected OpusHead)");
+			return OggOpusFileReadResult.Failure ("Invalid Ogg Opus file: not an Opus stream (expected OpusHead)");
 
 		var headResult = ParseOpusHead (opusHeadPacket);
 		if (!headResult.IsSuccess)
@@ -312,6 +312,42 @@ public sealed class OggOpusFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out OggOpusFile? file, bool validateCrc = false) =>
 		TryRead (data.Span, out file, validateCrc);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid Ogg Opus file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with OggS and contains an OpusHead identification header.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 36 bytes: OggS header (27) + segment table (1) + OpusHead (8)
+		if (data.Length < 36)
+			return false;
+
+		// Check "OggS" magic
+		if (data[0] != 'O' || data[1] != 'g' || data[2] != 'g' || data[3] != 'S')
+			return false;
+
+		// Get segment count (at offset 26)
+		var segmentCount = data[26];
+		if (segmentCount == 0)
+			return false;
+
+		// First packet starts after header (27) + segment table (segmentCount)
+		var packetOffset = 27 + segmentCount;
+		if (data.Length < packetOffset + 8)
+			return false;
+
+		// Check for OpusHead magic: "OpusHead"
+		return data[packetOffset] == 'O' &&
+			   data[packetOffset + 1] == 'p' &&
+			   data[packetOffset + 2] == 'u' &&
+			   data[packetOffset + 3] == 's' &&
+			   data[packetOffset + 4] == 'H' &&
+			   data[packetOffset + 5] == 'e' &&
+			   data[packetOffset + 6] == 'a' &&
+			   data[packetOffset + 7] == 'd';
+	}
 
 	/// <summary>
 	/// Result of parsing OpusHead header.

@@ -98,7 +98,7 @@ public class Mp4TagTests
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (5u, result.File!.Track);
-		Assert.AreEqual (12u, result.File.TrackCount);
+		Assert.AreEqual (12u, result.File.TotalTracks);
 	}
 
 	[TestMethod]
@@ -109,12 +109,12 @@ public class Mp4TagTests
 		var file = result.File!;
 
 		file.Track = 7;
-		file.TrackCount = 15;
+		file.TotalTracks = 15;
 
 		var rendered = file.Render (data);
 		var reResult = Mp4File.Read (rendered.Span);
 		Assert.AreEqual (7u, reResult.File!.Track);
-		Assert.AreEqual (15u, reResult.File.TrackCount);
+		Assert.AreEqual (15u, reResult.File.TotalTracks);
 	}
 
 	[TestMethod]
@@ -126,7 +126,7 @@ public class Mp4TagTests
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (2u, result.File!.DiscNumber);
-		Assert.AreEqual (3u, result.File.DiscCount);
+		Assert.AreEqual (3u, result.File.TotalDiscs);
 	}
 
 	[TestMethod]
@@ -137,12 +137,12 @@ public class Mp4TagTests
 		var file = result.File!;
 
 		file.DiscNumber = 1;
-		file.DiscCount = 2;
+		file.TotalDiscs = 2;
 
 		var rendered = file.Render (data);
 		var reResult = Mp4File.Read (rendered.Span);
 		Assert.AreEqual (1u, reResult.File!.DiscNumber);
-		Assert.AreEqual (2u, reResult.File.DiscCount);
+		Assert.AreEqual (2u, reResult.File.TotalDiscs);
 	}
 
 	[TestMethod]
@@ -1140,5 +1140,182 @@ public class Mp4TagTests
 		file.PodcastFeedUrl = null;
 
 		Assert.IsNull (file.PodcastFeedUrl);
+	}
+
+	[TestMethod]
+	public void IsPodcast_GetSet_WorksCorrectly ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		Assert.IsFalse (file.IsPodcast);
+
+		file.IsPodcast = true;
+
+		Assert.IsTrue (file.IsPodcast);
+
+		var rendered = file.Render (data);
+		var reResult = Mp4File.Read (rendered.Span);
+		Assert.IsTrue (reResult.File!.IsPodcast);
+	}
+
+	[TestMethod]
+	public void IsPodcast_SetFalse_ClearsValue ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.IsPodcast = true;
+		file.IsPodcast = false;
+
+		Assert.IsFalse (file.IsPodcast);
+	}
+
+	[TestMethod]
+	public void PodcastEpisodeGuid_GetSet_WorksCorrectly ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastEpisodeGuid = "ep-123-abc-456";
+
+		Assert.AreEqual ("ep-123-abc-456", file.PodcastEpisodeGuid);
+
+		var rendered = file.Render (data);
+		var reResult = Mp4File.Read (rendered.Span);
+		Assert.AreEqual ("ep-123-abc-456", reResult.File!.PodcastEpisodeGuid);
+	}
+
+	[TestMethod]
+	public void PodcastEpisodeGuid_SetNull_ClearsValue ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastEpisodeGuid = "test-guid";
+		file.PodcastEpisodeGuid = null;
+
+		Assert.IsNull (file.PodcastEpisodeGuid);
+	}
+
+	[TestMethod]
+	public void PodcastCategory_GetSet_WorksCorrectly ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastCategory = "Technology";
+
+		Assert.AreEqual ("Technology", file.PodcastCategory);
+
+		var rendered = file.Render (data);
+		var reResult = Mp4File.Read (rendered.Span);
+		Assert.AreEqual ("Technology", reResult.File!.PodcastCategory);
+	}
+
+	[TestMethod]
+	public void PodcastCategory_SetNull_ClearsValue ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastCategory = "Music";
+		file.PodcastCategory = null;
+
+		Assert.IsNull (file.PodcastCategory);
+	}
+
+	[TestMethod]
+	public void PodcastKeywords_GetSet_WorksCorrectly ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastKeywords = "coding, programming, tech";
+
+		Assert.AreEqual ("coding, programming, tech", file.PodcastKeywords);
+
+		var rendered = file.Render (data);
+		var reResult = Mp4File.Read (rendered.Span);
+		Assert.AreEqual ("coding, programming, tech", reResult.File!.PodcastKeywords);
+	}
+
+	[TestMethod]
+	public void PodcastKeywords_SetNull_ClearsValue ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.PodcastKeywords = "test, keywords";
+		file.PodcastKeywords = null;
+
+		Assert.IsNull (file.PodcastKeywords);
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// Content Rating
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void ContentRating_GetDefault_ReturnsNone ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		Assert.AreEqual (Mp4ContentRating.None, file.ContentRating);
+	}
+
+	[TestMethod]
+	public void ContentRating_SetExplicit_WorksCorrectly ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.ContentRating = Mp4ContentRating.Explicit;
+
+		Assert.AreEqual (Mp4ContentRating.Explicit, file.ContentRating);
+
+		var rendered = file.Render (data);
+		var reResult = Mp4File.Read (rendered.Span);
+		Assert.AreEqual (Mp4ContentRating.Explicit, reResult.File!.ContentRating);
+	}
+
+	[TestMethod]
+	public void ContentRating_SetClean_WorksCorrectly ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.ContentRating = Mp4ContentRating.Clean;
+
+		Assert.AreEqual (Mp4ContentRating.Clean, file.ContentRating);
+
+		var rendered = file.Render (data);
+		var reResult = Mp4File.Read (rendered.Span);
+		Assert.AreEqual (Mp4ContentRating.Clean, reResult.File!.ContentRating);
+	}
+
+	[TestMethod]
+	public void ContentRating_SetNone_ClearsValue ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+
+		file.ContentRating = Mp4ContentRating.Explicit;
+		file.ContentRating = Mp4ContentRating.None;
+
+		Assert.AreEqual (Mp4ContentRating.None, file.ContentRating);
 	}
 }

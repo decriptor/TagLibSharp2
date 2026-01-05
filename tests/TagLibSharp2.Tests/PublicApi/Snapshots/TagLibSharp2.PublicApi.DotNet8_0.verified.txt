@@ -2183,12 +2183,6 @@ namespace TagLibSharp2.Mp4
         public static bool operator !=(TagLibSharp2.Mp4.Mp4BoxReadResult left, TagLibSharp2.Mp4.Mp4BoxReadResult right) { }
         public static bool operator ==(TagLibSharp2.Mp4.Mp4BoxReadResult left, TagLibSharp2.Mp4.Mp4BoxReadResult right) { }
     }
-    public enum Mp4ContentRating
-    {
-        None = 0,
-        Explicit = 1,
-        Clean = 2,
-    }
     public sealed class Mp4File : System.IDisposable, TagLibSharp2.Core.IMediaFile
     {
         public string? AcoustIdFingerprint { get; set; }
@@ -2207,7 +2201,6 @@ namespace TagLibSharp2.Mp4
         public string? Composer { get; set; }
         public string? ComposerSort { get; set; }
         public string? Conductor { get; set; }
-        public TagLibSharp2.Mp4.Mp4ContentRating ContentRating { get; set; }
         public string? DateTagged { get; set; }
         public uint? DiscNumber { get; set; }
         public System.TimeSpan Duration { get; }
@@ -2216,7 +2209,6 @@ namespace TagLibSharp2.Mp4
         public string? Genre { get; set; }
         public string? InitialKey { get; set; }
         public bool IsGapless { get; set; }
-        public bool IsPodcast { get; set; }
         public string? Isrc { get; set; }
         public string? Language { get; set; }
         public string? MediaType { get; set; }
@@ -2231,10 +2223,7 @@ namespace TagLibSharp2.Mp4
         public string? MusicBrainzReleaseType { get; set; }
         public string? OriginalReleaseDate { get; set; }
         public TagLibSharp2.Core.IPicture[] Pictures { get; }
-        public string? PodcastCategory { get; set; }
-        public string? PodcastEpisodeGuid { get; set; }
         public string? PodcastFeedUrl { get; set; }
-        public string? PodcastKeywords { get; set; }
         public TagLibSharp2.Core.AudioProperties Properties { get; }
         public string? R128AlbumGain { get; set; }
         public double? R128AlbumGainDb { get; set; }
@@ -2326,7 +2315,6 @@ namespace TagLibSharp2.Mp4
         public override string? Composer { get; set; }
         public override string? ComposerSort { get; set; }
         public override string? Conductor { get; set; }
-        public TagLibSharp2.Mp4.Mp4ContentRating ContentRating { get; set; }
         public override string? Copyright { get; set; }
         public override string? DateTagged { get; set; }
         public override string? Description { get; set; }
@@ -2339,7 +2327,6 @@ namespace TagLibSharp2.Mp4
         public override string? InitialKey { get; set; }
         public override bool IsCompilation { get; set; }
         public bool IsGapless { get; set; }
-        public bool IsPodcast { get; set; }
         public override string? Isrc { get; set; }
         public override string? Language { get; set; }
         public override string? Lyrics { get; set; }
@@ -2361,10 +2348,7 @@ namespace TagLibSharp2.Mp4
         public override string? MusicBrainzWorkId { get; set; }
         public override string? OriginalReleaseDate { get; set; }
         public override TagLibSharp2.Core.IPicture[] Pictures { get; set; }
-        public string? PodcastCategory { get; set; }
-        public string? PodcastEpisodeGuid { get; set; }
         public override string? PodcastFeedUrl { get; set; }
-        public string? PodcastKeywords { get; set; }
         public override string? Publisher { get; set; }
         public override string? R128AlbumGain { get; set; }
         public override string? R128TrackGain { get; set; }
@@ -3056,11 +3040,7 @@ namespace TagLibSharp2.Xiph
         public TagLibSharp2.Core.MediaFormat Format { get; }
         public string? Genre { get; set; }
         public bool HasAudioMd5Signature { get; }
-        public int MaxBlockSize { get; }
-        public int MaxFrameSize { get; }
         public int MetadataSize { get; }
-        public int MinBlockSize { get; }
-        public int MinFrameSize { get; }
         public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Xiph.FlacPicture> Pictures { get; }
         public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Xiph.FlacPreservedBlock> PreservedBlocks { get; }
         public TagLibSharp2.Core.AudioProperties Properties { get; }

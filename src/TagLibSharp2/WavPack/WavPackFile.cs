@@ -159,14 +159,14 @@ public sealed class WavPackFile : IMediaFile
 	public static WavPackFileReadResult Read (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < MagicSize)
-			return WavPackFileReadResult.Failure ("File too short to contain wvpk magic");
+			return WavPackFileReadResult.Failure ("Invalid WavPack file: data too short for magic");
 
 		// Verify magic "wvpk"
 		if (!data[..MagicSize].SequenceEqual (Magic))
-			return WavPackFileReadResult.Failure ("Invalid magic: expected 'wvpk'");
+			return WavPackFileReadResult.Failure ("Invalid WavPack file: missing magic (expected 'wvpk')");
 
 		if (data.Length < BlockHeaderSize)
-			return WavPackFileReadResult.Failure ("File too short for WavPack block header");
+			return WavPackFileReadResult.Failure ("Invalid WavPack file: data too short for block header");
 
 		var file = new WavPackFile ();
 
@@ -242,6 +242,21 @@ public sealed class WavPackFile : IMediaFile
 	/// <returns>True if parsing succeeded; otherwise, false.</returns>
 	public static bool TryRead (BinaryData data, out WavPackFile? file) =>
 		TryRead (data.Span, out file);
+
+	/// <summary>
+	/// Checks if the data appears to be a valid WavPack file without fully parsing it.
+	/// </summary>
+	/// <param name="data">The data to check.</param>
+	/// <returns>True if the data starts with "wvpk" magic bytes.</returns>
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		// Need at least 4 bytes for magic
+		if (data.Length < 4)
+			return false;
+
+		// Check for "wvpk" magic
+		return data[0] == 'w' && data[1] == 'v' && data[2] == 'p' && data[3] == 'k';
+	}
 
 	private void CalculateProperties ()
 	{
