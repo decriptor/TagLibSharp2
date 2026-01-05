@@ -176,16 +176,6 @@ public sealed class AiffFile : IMediaFile
 		TryRead (data.Span, out file);
 
 	/// <summary>
-	/// Attempts to parse an AIFF file from binary data.
-	/// </summary>
-	/// <param name="data">The file data.</param>
-	/// <param name="file">The parsed file, or null if parsing failed.</param>
-	/// <returns>True if parsing succeeded; otherwise, false.</returns>
-	[Obsolete ("Use TryRead instead.")]
-	public static bool TryParse (BinaryData data, out AiffFile? file) =>
-		TryRead (data.Span, out file);
-
-	/// <summary>
 	/// Reads an AIFF file from binary data with detailed error information.
 	/// </summary>
 	/// <param name="data">The file data.</param>

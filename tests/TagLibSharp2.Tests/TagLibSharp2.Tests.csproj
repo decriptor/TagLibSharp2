@@ -12,6 +12,8 @@
 	<ItemGroup>
 		<PackageReference Include="MSTest" />
 		<PackageReference Include="coverlet.collector" PrivateAssets="all" />
+		<PackageReference Include="PublicApiGenerator" />
+		<PackageReference Include="Verify.MSTest" />
 	</ItemGroup>
 
 	<ItemGroup>

@@ -916,17 +916,6 @@ public abstract class Tag
 	public virtual string? AmazonId { get => null; set { } }
 
 	/// <summary>
-	/// Gets or sets the MusicIP PUID (Portable Unique Identifier).
-	/// </summary>
-	/// <remarks>
-	/// <b>Obsolete:</b> MusicIP service was discontinued. Use AcoustID fingerprints instead.
-	/// This property is maintained for compatibility with legacy tagged files.
-	/// Not all tag formats support this field. Default implementation returns null.
-	/// </remarks>
-	[System.Obsolete ("MusicIP PUID is obsolete. MusicIP service was discontinued. Use AcoustID fingerprints instead.")]
-	public virtual string? MusicIpId { get => null; set { } }
-
-	/// <summary>
 	/// Gets or sets the roles of the performers.
 	/// </summary>
 	/// <remarks>

@@ -419,35 +419,6 @@ public class VorbisCommentExtendedMetadataTests
 	}
 
 	// ===========================================
-	// MusicIpId (Obsolete)
-	// ===========================================
-
-#pragma warning disable CS0618 // Type or member is obsolete
-	[TestMethod]
-	public void MusicIpId_GetSet_Works ()
-	{
-		var comment = new VorbisComment ("test");
-
-		comment.MusicIpId = "f3b89eb0-c53d-4a0c-b4e8-1a0b9c3e2d4f";
-
-		Assert.AreEqual ("f3b89eb0-c53d-4a0c-b4e8-1a0b9c3e2d4f", comment.MusicIpId);
-		Assert.AreEqual ("f3b89eb0-c53d-4a0c-b4e8-1a0b9c3e2d4f", comment.GetValue ("MUSICIP_PUID"));
-	}
-
-	[TestMethod]
-	public void MusicIpId_RoundTrip_PreservesValue ()
-	{
-		var original = new VorbisComment ("test") { MusicIpId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890" };
-
-		var rendered = original.Render ();
-		var result = VorbisComment.Read (rendered.Span);
-
-		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual ("a1b2c3d4-e5f6-7890-abcd-ef1234567890", result.Tag!.MusicIpId);
-	}
-#pragma warning restore CS0618
-
-	// ===========================================
 	// PerformersRole Tests
 	// ===========================================
 

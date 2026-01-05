@@ -868,13 +868,6 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <inheritdoc/>
-	[System.Obsolete ("MusicIP PUID is obsolete. MusicIP service was discontinued. Use AcoustID fingerprints instead.")]
-	public override string? MusicIpId {
-		get => GetUserText ("MusicIP PUID");
-		set => SetUserText ("MusicIP PUID", value);
-	}
-
-	/// <inheritdoc/>
 	public override string? AcoustIdId {
 		get => GetUserText ("ACOUSTID_ID");
 		set => SetUserText ("ACOUSTID_ID", value);

@@ -630,13 +630,6 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <inheritdoc/>
-	[System.Obsolete ("MusicIP PUID is obsolete. MusicIP service was discontinued. Use AcoustID fingerprints instead.")]
-	public override string? MusicIpId {
-		get => GetValue ("MUSICIP_PUID");
-		set => SetValue ("MUSICIP_PUID", value);
-	}
-
-	/// <inheritdoc/>
 	public override string? AcoustIdId {
 		get => GetValue ("ACOUSTID_ID");
 		set => SetValue ("ACOUSTID_ID", value);
