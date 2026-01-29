@@ -12,6 +12,6 @@
     <!-- Testing -->
     <PackageVersion Include="MSTest" Version="4.0.2" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
-    <PackageVersion Include="Verify.MSTest" Version="31.9.3" />
+    <PackageVersion Include="Verify.MSTest" Version="31.10.0" />
   </ItemGroup>
 </Project>
