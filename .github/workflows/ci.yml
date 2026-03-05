@@ -85,7 +85,7 @@ jobs:
           exit 0
 
       - name: Upload test results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results-${{ matrix.os }}
@@ -93,7 +93,7 @@ jobs:
           retention-days: 7
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: matrix.os == 'ubuntu-latest'
         with:
           name: coverage
@@ -133,7 +133,7 @@ jobs:
         run: dotnet pack --configuration Release --no-restore --output ./artifacts
 
       - name: Upload NuGet package
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: nuget-package
           path: ./artifacts/*.nupkg
