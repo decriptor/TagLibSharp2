@@ -386,7 +386,7 @@ public static class MediaFile
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
-		return MediaFileResult.Success (result.File!, result.File!.VorbisComment, MediaFormat.Flac);
+		return MediaFileResult.Success (result.File!, result.File!.Tag, MediaFormat.Flac);
 	}
 
 	static MediaFileResult OpenOggVorbis (ReadOnlyMemory<byte> data)
@@ -413,11 +413,7 @@ public static class MediaFile
 		if (!result.IsSuccess)
 			return MediaFileResult.Failure (result.Error!);
 
-		// Prefer ID3v2 tag, fall back to ID3v1
-		Tag? tag = result.File!.Id3v2Tag is not null
-			? result.File.Id3v2Tag
-			: result.File.Id3v1Tag;
-		return MediaFileResult.Success (result.File, tag, MediaFormat.Mp3);
+		return MediaFileResult.Success (result.File!, result.File!.Tag, MediaFormat.Mp3);
 	}
 
 	static MediaFileResult OpenWav (ReadOnlyMemory<byte> data)
