@@ -41,11 +41,15 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
+      - name: Restore .NET tools
+        run: dotnet tool restore
+
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
       - name: Test
-        run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx" --collect:"XPlat Code Coverage"
+        shell: bash
+        run: dotnet dotnet-coverage collect --output-format cobertura --output TestResults/coverage.cobertura.xml "dotnet test --no-build --configuration Release --verbosity normal --logger \"trx;LogFileName=test-results.trx\""
 
       - name: Test Summary
         if: always() && matrix.os == 'ubuntu-latest'
