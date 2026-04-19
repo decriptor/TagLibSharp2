@@ -87,7 +87,9 @@ public class FlacTagTests
 	[TestMethod]
 	public void Tag_SetPictures_WritesToNativePictureBlocks ()
 	{
-		var data = TestBuilders.Flac.CreateMinimal ();
+		// Seed with a VorbisComment so Tag is non-null (the reader maps a
+		// file with no metadata to Tag == null -- see Tag_AbsentMetadata_ReturnsNull).
+		var data = TestBuilders.Flac.CreateWithVorbisComment ("seed", "seed");
 		var file = FlacFile.Read (data).File!;
 
 		var picture = new FlacPicture ("image/jpeg", PictureType.FrontCover, "",
@@ -223,22 +225,24 @@ public class FlacTagTests
 	[TestMethod]
 	public void Tag_AllTextFields_DelegateToVorbisComment ()
 	{
-		var file = FlacFile.Read (TestBuilders.Flac.CreateMinimal ()).File!;
-		Assert.IsNull (file.VorbisComment, "precondition: no VorbisComment yet");
+		// Start from a file with a VorbisComment so Tag is non-null;
+		// the facade still auto-creates the comment on first write, but
+		// accessing Tag on a truly empty FLAC returns null (see
+		// Tag_AbsentMetadata_ReturnsNull).
+		var data = TestBuilders.Flac.CreateWithVorbisComment ("seed", "seed");
+		var file = FlacFile.Read (data).File!;
 
-		// Writes auto-create the VorbisComment, then all subsequent reads match.
 		file.Tag!.Artist = "A";
 		file.Tag.Year = "2026";
 		file.Tag.Comment = "C";
 		file.Tag.Genre = "Rock";
 		file.Tag.Track = 3;
 
-		Assert.IsNotNull (file.VorbisComment, "VorbisComment created on first write");
-		Assert.AreEqual ("A", file.Tag.Artist);
-		Assert.AreEqual ("2026", file.Tag.Year);
-		Assert.AreEqual ("C", file.Tag.Comment);
-		Assert.AreEqual ("Rock", file.Tag.Genre);
-		Assert.AreEqual ((uint)3, file.Tag.Track);
+		Assert.AreEqual ("A", file.VorbisComment!.Artist);
+		Assert.AreEqual ("2026", file.VorbisComment.Year);
+		Assert.AreEqual ("C", file.VorbisComment.Comment);
+		Assert.AreEqual ("Rock", file.VorbisComment.Genre);
+		Assert.AreEqual ((uint)3, file.VorbisComment.Track);
 	}
 
 	/// <summary>
@@ -248,29 +252,59 @@ public class FlacTagTests
 	[TestMethod]
 	public void Tag_TagType_AdvertisesXiphAndFlacMetadata ()
 	{
-		var file = FlacFile.Read (TestBuilders.Flac.CreateMinimal ()).File!;
+		var data = TestBuilders.Flac.CreateWithVorbisComment ("seed", "seed");
+		var file = FlacFile.Read (data).File!;
 
 		Assert.AreEqual (TagTypes.Xiph | TagTypes.FlacMetadata, file.Tag!.TagType);
 	}
 
 	/// <summary>
-	/// <see cref="FlacTag"/> is a view over the file — it is not itself a
-	/// serializable block — so <c>Render</c> returns empty and <c>Clear</c>
-	/// is a no-op. Callers that need to persist changes do so through
-	/// <see cref="FlacFile.Render"/>.
+	/// A FLAC file with no VorbisComment and no PICTURE blocks exposes
+	/// <c>Tag == null</c>, matching the "tag absent" convention used across
+	/// other <see cref="IMediaFile"/> implementations in this repo.
 	/// </summary>
 	[TestMethod]
-	public void Tag_RenderAndClear_AreViewLevelNoOps ()
+	public void Tag_AbsentMetadata_ReturnsNull ()
 	{
-		var data = TestBuilders.Flac.CreateWithVorbisComment ("Keep Me", "Keep Artist");
+		var file = FlacFile.Read (TestBuilders.Flac.CreateMinimal ()).File!;
+
+		Assert.IsNull (file.VorbisComment);
+		Assert.AreEqual (0, file.Pictures.Count);
+		Assert.IsNull (file.Tag);
+	}
+
+	/// <summary>
+	/// <see cref="FlacTag.Render"/> throws because the tag's state is spread
+	/// across multiple FLAC metadata blocks and is rendered as part of the full
+	/// file layout. Callers should render via <see cref="FlacFile.Render"/>.
+	/// </summary>
+	[TestMethod]
+	public void Tag_Render_ThrowsNotSupported ()
+	{
+		var data = TestBuilders.Flac.CreateWithVorbisComment ("x", "y");
 		var file = FlacFile.Read (data).File!;
 
-		Assert.IsTrue (file.Tag!.Render ().IsEmpty, "Render on the view returns empty");
+		Assert.ThrowsExactly<NotSupportedException> (() => file.Tag!.Render ());
+	}
 
-		file.Tag.Clear ();
+	/// <summary>
+	/// <see cref="FlacTag.Clear"/> clears every metadata source this view surfaces:
+	/// the VorbisComment fields (including embedded METADATA_BLOCK_PICTURE entries)
+	/// and the native PICTURE blocks held on the file.
+	/// </summary>
+	[TestMethod]
+	public void Tag_Clear_ClearsCommentAndPictureBlocks ()
+	{
+		var seed = TestBuilders.Flac.CreateWithVorbisComment ("Wipe Me", "Wipe Artist");
+		var file = FlacFile.Read (seed).File!;
+		file.AddPicture (new FlacPicture ("image/jpeg", PictureType.FrontCover, "",
+			new BinaryData (new byte[] { 0x01 }), 10, 10, 24, 0));
 
-		Assert.AreEqual ("Keep Me", file.VorbisComment!.Title,
-			"Clear on the view does not wipe the underlying VorbisComment");
+		file.Tag!.Clear ();
+
+		Assert.IsTrue (string.IsNullOrEmpty (file.VorbisComment!.Title),
+			"VorbisComment text fields cleared");
+		Assert.AreEqual (0, file.Pictures.Count, "Native PICTURE blocks removed");
 	}
 
 	/// <summary>

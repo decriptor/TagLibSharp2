@@ -150,45 +150,58 @@ public class CombinedTagTests
 	}
 
 	/// <summary>
-	/// The base <see cref="CombinedTag"/> exposes writes as no-ops so that it
-	/// cannot accidentally mutate underlying tags without a subclass making an
-	/// explicit decision. Format-specific subclasses override individual
-	/// setters when write-through is the correct behavior.
+	/// Setters write through to every non-null underlying tag so content stays
+	/// consistent across formats. For MP3, that means a single
+	/// <c>file.Tag.Title = "x"</c> updates both ID3v2 and ID3v1, matching the
+	/// round-trip expectation that saving a file emits matching values in both.
+	/// Per-format length/encoding limits (e.g. ID3v1's 30-byte cap,
+	/// https://id3.org/ID3v1) still apply when each member stores the value.
 	/// </summary>
 	[TestMethod]
-	public void Setters_AreNoOpsOnBaseFacade ()
+	public void Setters_WriteThroughToEveryMember ()
 	{
-		var primary = new Id3v2Tag { Title = "Original" };
-		var combined = new CombinedTag (primary);
+		var primary = new Id3v2Tag { Title = "Original 2", Track = 1 };
+		var secondary = new Id3v1Tag { Title = "Original 1", Track = 2 };
+		var combined = new CombinedTag (primary, secondary);
 
 		combined.Title = "Changed";
 		combined.Track = 42;
-		combined.Pictures = [];
 
-		Assert.AreEqual ("Original", primary.Title, "Base CombinedTag.Title setter does not mutate members");
-		Assert.IsNull (primary.Track, "Base CombinedTag.Track setter does not mutate members");
+		Assert.AreEqual ("Changed", primary.Title);
+		Assert.AreEqual ("Changed", secondary.Title);
+		Assert.AreEqual ((uint)42, primary.Track);
+		Assert.AreEqual ((uint)42, secondary.Track);
 	}
 
+	/// <summary>
+	/// A <see cref="CombinedTag"/> is a view — it has no standalone binary
+	/// representation. Callers should render the owning file or a specific
+	/// underlying tag; calling <see cref="Tag.Render"/> on the facade throws
+	/// to surface the misuse instead of silently returning empty bytes.
+	/// </summary>
 	[TestMethod]
-	public void Render_ReturnsEmptyBinaryData ()
+	public void Render_ThrowsNotSupported ()
 	{
 		var combined = new CombinedTag (new Id3v2Tag { Title = "x" });
 
-		var rendered = combined.Render ();
-
-		Assert.IsTrue (rendered.IsEmpty,
-			"CombinedTag is a view; it does not own bytes and Render returns empty");
+		Assert.ThrowsExactly<NotSupportedException> (() => combined.Render ());
 	}
 
+	/// <summary>
+	/// <see cref="Tag.Clear"/> on the facade clears every non-null underlying
+	/// tag. Callers expect "clear the tag" to actually zero out the metadata,
+	/// not silently succeed with the old values intact.
+	/// </summary>
 	[TestMethod]
-	public void Clear_IsNoOp ()
+	public void Clear_ClearsEveryUnderlyingMember ()
 	{
-		var primary = new Id3v2Tag { Title = "Keep Me" };
-		var combined = new CombinedTag (primary);
+		var primary = new Id3v2Tag { Title = "Wipe Me" };
+		var secondary = new Id3v1Tag { Title = "Also Wipe Me" };
+		var combined = new CombinedTag (primary, secondary);
 
 		combined.Clear ();
 
-		Assert.AreEqual ("Keep Me", primary.Title,
-			"Base CombinedTag.Clear does not mutate members");
+		Assert.IsTrue (string.IsNullOrEmpty (primary.Title));
+		Assert.IsTrue (string.IsNullOrEmpty (secondary.Title));
 	}
 }

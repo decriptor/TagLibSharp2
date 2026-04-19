@@ -112,8 +112,26 @@ public sealed class FlacTag : Tag
 #pragma warning restore CA1819
 
 	/// <inheritdoc/>
-	public override BinaryData Render () => BinaryData.Empty;
+	/// <exception cref="NotSupportedException">
+	/// A FLAC file's tag state lives in multiple metadata blocks (VORBIS_COMMENT plus
+	/// zero or more PICTURE blocks) and is rendered as part of the full file layout.
+	/// It has no standalone binary representation. Render the owning
+	/// <see cref="FlacFile"/> instead.
+	/// </exception>
+	public override BinaryData Render () =>
+		throw new NotSupportedException (
+			"FlacTag is a view over multiple FLAC metadata blocks and has no standalone binary "
+			+ "representation. Render the owning FlacFile instead (FlacFile.Render).");
 
 	/// <inheritdoc/>
-	public override void Clear () { }
+	/// <remarks>
+	/// Clears every metadata source this view surfaces: the VorbisComment fields
+	/// (including any METADATA_BLOCK_PICTURE entries) and the native PICTURE blocks
+	/// held on the <see cref="FlacFile"/>.
+	/// </remarks>
+	public override void Clear ()
+	{
+		_file.VorbisComment?.Clear ();
+		_file.RemoveAllPictures ();
+	}
 }

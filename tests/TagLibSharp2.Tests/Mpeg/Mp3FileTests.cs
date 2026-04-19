@@ -124,6 +124,51 @@ public sealed class Mp3FileTests
 			"Genre should fall back to ID3v1 when ID3v2 has no Genre");
 	}
 
+	/// <summary>
+	/// An MP3 file with no ID3v2 and no ID3v1 must expose <c>Tag == null</c>,
+	/// matching the "tag is absent" convention used by other
+	/// <see cref="IMediaFile"/> implementations in this repo. A Mp3File that
+	/// always materialized a facade would lie about the absence of metadata.
+	/// </summary>
+	[TestMethod]
+	public void Tag_NoTagsPresent_ReturnsNull ()
+	{
+		var audioOnly = new byte[256];
+
+		var result = Mp3File.Read (audioOnly);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNull (result.File!.Id3v2Tag);
+		Assert.IsNull (result.File.Id3v1Tag);
+		Assert.IsNull (result.File.Tag);
+	}
+
+	/// <summary>
+	/// Writing through the combined Tag view updates both ID3v2 and ID3v1 so the
+	/// file saves with consistent metadata in both tags. ID3v1's format-specific
+	/// limits still apply (30-byte cap per https://id3.org/ID3v1), but the
+	/// values round-trip as far as each format allows.
+	/// </summary>
+	[TestMethod]
+	public void Tag_Setter_WritesThroughToBothIdTags ()
+	{
+		var id3v2 = new Id3v2Tag { Title = "Before" };
+		var id3v1 = new Id3v1Tag { Title = "Before" };
+		var v2Data = id3v2.Render ();
+		var v1Data = id3v1.Render ();
+
+		var audioData = new byte[256];
+		var fullData = new byte[v2Data.Length + audioData.Length + v1Data.Length];
+		v2Data.Span.CopyTo (fullData);
+		v1Data.Span.CopyTo (fullData.AsSpan (v2Data.Length + audioData.Length));
+
+		var file = Mp3File.Read (fullData).File!;
+		file.Tag!.Title = "After";
+
+		Assert.AreEqual ("After", file.Id3v2Tag!.Title, "ID3v2 updated");
+		Assert.AreEqual ("After", file.Id3v1Tag!.Title, "ID3v1 updated");
+	}
+
 	[TestMethod]
 	public void Read_BothTags_ParsesBoth ()
 	{

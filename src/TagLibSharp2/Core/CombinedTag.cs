@@ -14,9 +14,16 @@ namespace TagLibSharp2.Core;
 /// PictureData).
 /// </para>
 /// <para>
-/// Writes are no-ops on this base facade; callers wanting mutation should operate
-/// on the underlying tags directly. Format-specific subclasses (e.g. the FLAC tag
-/// view) override individual members to forward writes to the appropriate storage.
+/// Setters write through to <b>every</b> non-null underlying tag so that content
+/// stays consistent across formats. This matches user expectations on files that
+/// carry redundant metadata (e.g. an MP3 with both ID3v2 and ID3v1) and prevents
+/// post-save drift where one tag has the new value and the other has the old one.
+/// Format-specific limits still apply per tag (ID3v1 truncates to 30 bytes, etc.).
+/// </para>
+/// <para>
+/// <see cref="Render"/> throws because a <see cref="CombinedTag"/> is a view, not
+/// a serializable block: render the owning file or a specific underlying tag instead.
+/// <see cref="Clear"/> clears every non-null underlying tag.
 /// </para>
 /// <para>
 /// The motivating case is an MP3 file that carries both an ID3v2 tag
@@ -62,6 +69,14 @@ public class CombinedTag : Tag
 	uint? FirstNonNullUInt (Func<Tag, uint?> selector) =>
 		FirstNonDefault<uint?> (selector, v => !v.HasValue);
 
+	void WriteToAll (Action<Tag> setter)
+	{
+		foreach (var tag in _tags) {
+			if (tag is not null)
+				setter (tag);
+		}
+	}
+
 	/// <inheritdoc/>
 	public override TagTypes TagType {
 		get {
@@ -77,43 +92,43 @@ public class CombinedTag : Tag
 	/// <inheritdoc/>
 	public override string? Title {
 		get => FirstNonEmptyString (t => t.Title);
-		set { }
+		set => WriteToAll (t => t.Title = value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Artist {
 		get => FirstNonEmptyString (t => t.Artist);
-		set { }
+		set => WriteToAll (t => t.Artist = value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Album {
 		get => FirstNonEmptyString (t => t.Album);
-		set { }
+		set => WriteToAll (t => t.Album = value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Year {
 		get => FirstNonEmptyString (t => t.Year);
-		set { }
+		set => WriteToAll (t => t.Year = value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Comment {
 		get => FirstNonEmptyString (t => t.Comment);
-		set { }
+		set => WriteToAll (t => t.Comment = value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Genre {
 		get => FirstNonEmptyString (t => t.Genre);
-		set { }
+		set => WriteToAll (t => t.Genre = value);
 	}
 
 	/// <inheritdoc/>
 	public override uint? Track {
 		get => FirstNonNullUInt (t => t.Track);
-		set { }
+		set => WriteToAll (t => t.Track = value);
 	}
 
 	/// <inheritdoc/>
@@ -132,13 +147,25 @@ public class CombinedTag : Tag
 			}
 			return [.. merged];
 		}
-		set { }
+		set => WriteToAll (t => t.Pictures = value ?? []);
 	}
 #pragma warning restore CA1819
 
 	/// <inheritdoc/>
-	public override BinaryData Render () => BinaryData.Empty;
+	/// <exception cref="NotSupportedException">
+	/// <see cref="CombinedTag"/> is a view over multiple tags and does not produce its
+	/// own serialized representation. Render the owning file or a specific underlying
+	/// tag instead.
+	/// </exception>
+	public override BinaryData Render () =>
+		throw new NotSupportedException (
+			"CombinedTag is a view over multiple tags; it has no standalone binary representation. "
+			+ "Render the owning file (e.g. Mp3File.Render) or a specific underlying tag instead.");
 
 	/// <inheritdoc/>
-	public override void Clear () { }
+	/// <remarks>
+	/// Clears every non-null underlying tag, leaving each instance in place but empty.
+	/// </remarks>
+	public override void Clear () =>
+		WriteToAll (t => t.Clear ());
 }

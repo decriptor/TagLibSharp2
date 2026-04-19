@@ -274,7 +274,22 @@ public sealed class FlacFile : IMediaFile
 	FlacTag? _tag;
 
 	/// <inheritdoc />
-	public Tag? Tag => _tag ??= new FlacTag (this);
+	/// <remarks>
+	/// Returns null when the file has neither a VorbisComment nor any PICTURE blocks,
+	/// matching the "tag is absent" semantics used by other <see cref="IMediaFile"/>
+	/// implementations. Once instantiated, the <see cref="FlacTag"/> is cached so a
+	/// later setter call (e.g. <c>file.Tag.Title = "..."</c> after creating a
+	/// VorbisComment) sees the same view.
+	/// </remarks>
+	public Tag? Tag {
+		get {
+			if (_tag is not null)
+				return _tag;
+			if (VorbisComment is null && _pictures.Count == 0)
+				return null;
+			return _tag = new FlacTag (this);
+		}
+	}
 
 	/// <inheritdoc />
 	IMediaProperties? IMediaFile.AudioProperties => Properties;
