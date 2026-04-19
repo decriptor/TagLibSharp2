@@ -88,7 +88,7 @@ public sealed class Mp3File : IMediaFile
 	public bool HasId3v2Tag => Id3v2Tag is not null;
 
 	/// <inheritdoc />
-	public Tag? Tag => (Tag?)Id3v2Tag ?? Id3v1Tag;
+	public Tag? Tag => new CombinedTag (Id3v2Tag, Id3v1Tag);
 
 	/// <inheritdoc />
 	IMediaProperties? IMediaFile.AudioProperties => Properties;

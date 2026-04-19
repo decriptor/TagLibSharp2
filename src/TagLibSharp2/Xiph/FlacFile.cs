@@ -271,8 +271,10 @@ public sealed class FlacFile : IMediaFile
 	/// </summary>
 	public AudioProperties Properties { get; }
 
+	FlacTag? _tag;
+
 	/// <inheritdoc />
-	public Tag? Tag => VorbisComment;
+	public Tag? Tag => _tag ??= new FlacTag (this);
 
 	/// <inheritdoc />
 	IMediaProperties? IMediaFile.AudioProperties => Properties;
