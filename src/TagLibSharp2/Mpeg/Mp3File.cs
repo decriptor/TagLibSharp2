@@ -88,7 +88,15 @@ public sealed class Mp3File : IMediaFile
 	public bool HasId3v2Tag => Id3v2Tag is not null;
 
 	/// <inheritdoc />
-	public Tag? Tag => new CombinedTag (Id3v2Tag, Id3v1Tag);
+	/// <inheritdoc />
+	/// <remarks>
+	/// Returns a <see cref="CombinedTag"/> composing the ID3v2 and ID3v1 tags when at
+	/// least one is present. ID3v2 takes priority; ID3v1 supplies fallback values for
+	/// fields not set in v2 (and receives mirrored writes so both tags stay in sync
+	/// on save). Returns null when neither tag is present.
+	/// </remarks>
+	public Tag? Tag =>
+		(Id3v2Tag is null && Id3v1Tag is null) ? null : new CombinedTag (Id3v2Tag, Id3v1Tag);
 
 	/// <inheritdoc />
 	IMediaProperties? IMediaFile.AudioProperties => Properties;
