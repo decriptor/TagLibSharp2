@@ -778,11 +778,6 @@ public sealed class ApeTag : Tag
 				$"APE tag size ({footer.TagSize}) exceeds data length ({apeRegionLength})");
 		}
 
-		if (footer.TagSize > int.MaxValue) {
-			return ApeTagParseResult.Failure (
-				$"APE tag size overflow: {footer.TagSize}");
-		}
-
 		// TagSize includes the footer and not a header.
 		var itemsSize = (int)footer.TagSize - ApeTagFooter.Size;
 		var itemsStart = location.TagEnd - (int)footer.TagSize;

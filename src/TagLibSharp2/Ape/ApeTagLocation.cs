@@ -23,7 +23,7 @@ internal readonly struct ApeTagLocation
 	public const int Id3v1Size = 128;
 
 	/// <summary>
-	/// Gets a value indicating whether a footer was parsed.
+	/// Gets a value indicating whether a usable footer was found.
 	/// </summary>
 	public bool Found { get; }
 
