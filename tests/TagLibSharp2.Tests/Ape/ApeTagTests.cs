@@ -565,6 +565,40 @@ public class ApeTagTests
 		Assert.AreEqual ("value", result.Tag!.GetValue (maxKey));
 	}
 
+	[TestMethod]
+	public void Parse_ItemCountMaxValueOnTinyTag_ReturnsFailureWithoutThrowing ()
+	{
+		// TagSize fits the footer alone; ItemCount cannot fit in those item bytes.
+		var footer = CreateValidFooter (version: 2000, tagSize: 32, itemCount: uint.MaxValue, flags: 0);
+
+		var result = ApeTag.Parse (footer);
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNull (result.Tag);
+	}
+
+	[TestMethod]
+	public void Parse_FollowedById3v1_ParsesApeItem ()
+	{
+		var tag = new ApeTag {
+			Title = "Test Song"
+		};
+		var rendered = tag.Render ();
+
+		var id3v1 = new byte[128];
+		"TAG"u8.CopyTo (id3v1);
+
+		var combined = new byte[rendered.Length + id3v1.Length];
+		rendered.Span.CopyTo (combined);
+		id3v1.CopyTo (combined, rendered.Length);
+
+		var result = ApeTag.Parse (combined);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (1, result.Tag!.ItemCount);
+		Assert.AreEqual ("Test Song", result.Tag.Title);
+	}
+
 	#endregion
 
 	#region TagTypes Integration Tests

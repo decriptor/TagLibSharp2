@@ -760,16 +760,29 @@ public sealed class ApeTag : Tag
 
 	/// <summary>
 	/// Parses an APE tag from binary data.
+	/// The footer is the last 32 bytes, unless an ID3v1 tag follows it.
 	/// </summary>
 	public static ApeTagParseResult Parse (ReadOnlySpan<byte> data)
 	{
-		if (data.Length < ApeTagFooter.Size) {
+		// ID3v1 is the last 128 bytes and starts with "TAG". The footer is the 32 bytes before it.
+		// Require the APE preamble there: "APETAGEX" itself contains "TAG", so a short tag must not shift.
+		const int id3v1Size = 128;
+		var id3Suffix = 0;
+		if (data.Length >= id3v1Size + ApeTagFooter.Size &&
+			data.Slice (data.Length - id3v1Size, 3).SequenceEqual ("TAG"u8)) {
+			var footerBeforeId3 = data.Slice (data.Length - id3v1Size - ApeTagFooter.Size, ApeTagFooter.Size);
+			if (footerBeforeId3[..ApeTagFooter.Magic.Length].SequenceEqual (ApeTagFooter.Magic)) {
+				id3Suffix = id3v1Size;
+			}
+		}
+
+		if (data.Length < ApeTagFooter.Size + id3Suffix) {
 			return ApeTagParseResult.Failure (
 				$"Data too short for APE tag: {data.Length} bytes");
 		}
 
-		// Try to parse footer from end of data
-		var footerData = data[^ApeTagFooter.Size..];
+		var footerStart = data.Length - id3Suffix - ApeTagFooter.Size;
+		var footerData = data.Slice (footerStart, ApeTagFooter.Size);
 		var footerResult = ApeTagFooter.Parse (footerData);
 
 		if (!footerResult.IsSuccess) {
@@ -777,11 +790,12 @@ public sealed class ApeTag : Tag
 		}
 
 		var footer = footerResult.Footer!;
+		var apeRegionLength = data.Length - id3Suffix;
 
-		// Validate tag size
-		if (footer.TagSize > data.Length) {
+		// Validate tag size against the bytes that belong to the APE tag.
+		if (footer.TagSize > (uint)apeRegionLength) {
 			return ApeTagParseResult.Failure (
-				$"APE tag size ({footer.TagSize}) exceeds data length ({data.Length})");
+				$"APE tag size ({footer.TagSize}) exceeds data length ({apeRegionLength})");
 		}
 
 		if (footer.TagSize > int.MaxValue) {
@@ -789,18 +803,23 @@ public sealed class ApeTag : Tag
 				$"APE tag size overflow: {footer.TagSize}");
 		}
 
-		// Calculate items data location
-		// TagSize includes footer but not header
+		// TagSize includes the footer and not a header.
 		var itemsSize = (int)footer.TagSize - ApeTagFooter.Size;
-		var itemsStart = data.Length - (int)footer.TagSize;
+		var itemsStart = data.Length - id3Suffix - (int)footer.TagSize;
 
 		if (itemsStart < 0 || itemsSize < 0) {
 			return ApeTagParseResult.Failure ("Invalid APE tag layout");
 		}
 
-		// Parse items
+		// Each item is at least one byte, so a larger count cannot fit.
+		// Reject before allocating: a count above int.MaxValue casts negative and throws.
+		if (footer.ItemCount > (uint)itemsSize || footer.ItemCount > (uint)int.MaxValue) {
+			return ApeTagParseResult.Failure (
+				$"APE item count ({footer.ItemCount}) exceeds item data ({itemsSize} bytes)");
+		}
+
 		var items = new Dictionary<string, ApeTagItem> (
-			(int)footer.ItemCount,
+			(int)Math.Min (footer.ItemCount, 256u),
 			StringComparer.OrdinalIgnoreCase);
 
 		var itemsData = data.Slice (itemsStart, itemsSize);
