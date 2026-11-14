@@ -7,8 +7,8 @@ namespace TagLibSharp2.Ogg;
 /// Shared utilities for parsing and building Ogg pages.
 /// </summary>
 /// <remarks>
-/// This class contains common functionality used by both <see cref="OggVorbisFile"/>
-/// and <see cref="OggOpusFile"/> to avoid code duplication.
+/// This class contains common functionality used by <see cref="OggVorbisFile"/>,
+/// <see cref="OggOpusFile"/>, and <see cref="OggFlacFile"/> to avoid code duplication.
 /// </remarks>
 internal static class OggPageHelper
 {
@@ -20,7 +20,12 @@ internal static class OggPageHelper
 	/// Each segment can hold up to 255 bytes, so the maximum page payload is 65,025 bytes.
 	/// Packets larger than this must be split across multiple pages using continuation.
 	/// </remarks>
-	const int MaxSegmentsPerPage = 255;
+	internal const int MaxSegmentsPerPage = 255;
+
+	/// <summary>
+	/// Maximum payload of one Ogg page, in bytes.
+	/// </summary>
+	const int MaxBytesPerPage = MaxSegmentsPerPage * 255;
 
 	/// <summary>
 	/// Maximum allowed packet size when extracting headers (16 MB).
@@ -31,6 +36,19 @@ internal static class OggPageHelper
 	/// large album art rarely exceeds 10 MB.
 	/// </remarks>
 	const int MaxPacketSize = 16 * 1024 * 1024;
+
+	/// <summary>
+	/// Pages read while reassembling header packets. Shared by Vorbis, Opus, and FLAC.
+	/// </summary>
+	/// <remarks>
+	/// https://xiph.org/ogg/doc/framing.html: a lacing value of 255 continues a packet, and a
+	/// full page holds 255 such segments (<see cref="MaxBytesPerPage"/> bytes). A packet of
+	/// <see cref="MaxPacketSize"/> fills 258 of those pages and still needs the next page for
+	/// the remaining bytes, or for a lacing value of 0 when the length is an exact multiple
+	/// of <see cref="MaxBytesPerPage"/>. One further page lets that packet follow a one-page
+	/// header (Vorbis identification, OpusHead, or the FLAC mapping header).
+	/// </remarks>
+	internal const int MaxHeaderPages = (MaxPacketSize / MaxBytesPerPage) + 2;
 	/// <summary>
 	/// Reads an Ogg page and extracts individual packets based on segment table.
 	/// </summary>
@@ -502,13 +520,47 @@ internal static class OggPageHelper
 	/// <returns>A result containing the extracted packets, or an error.</returns>
 	/// <remarks>
 	/// This method reads Ogg pages and reassembles packets that may span multiple pages.
-	/// It handles continuation flags and multi-page packets correctly.
+	/// It handles continuation flags and multi-page packets correctly. Reading stops after
+	/// <see cref="MaxHeaderPages"/> pages, which is enough for one <see cref="MaxPacketSize"/>
+	/// packet plus the page that terminates it.
 	/// </remarks>
 	public static HeaderPacketsResult ExtractHeaderPackets (
 		ReadOnlySpan<byte> data,
 		int maxPackets,
 		bool validateCrc = false,
-		int maxPacketSize = MaxPacketSize)
+		int maxPacketSize = MaxPacketSize) =>
+		ScanPackets (data, maxPackets, validateCrc, maxPacketSize, stopAtFlacAudio: false);
+
+	/// <summary>
+	/// Reassembles packets and stops at the first packet whose first byte is 0xFF.
+	/// </summary>
+	/// <param name="data">The binary data to parse.</param>
+	/// <param name="maxPackets">Maximum number of packets to extract before stopping.</param>
+	/// <param name="validateCrc">Whether to validate CRC checksums.</param>
+	/// <param name="maxPacketSize">Maximum allowed packet size in bytes. Defaults to 16 MB.</param>
+	/// <returns>
+	/// The packets before audio, and <see cref="HeaderPacketsResult.BytesConsumed"/> set to the
+	/// file offset of the audio page. The audio packet itself is not returned.
+	/// </returns>
+	/// <remarks>
+	/// RFC 9639 section 10.1 requires the first FLAC audio packet to start on a fresh page.
+	/// A FLAC frame sync begins with 0xFF (section 9.1). A continued metadata packet is not
+	/// audio, even when a later byte of that packet is 0xFF. Lacing, granule position, and CRC
+	/// follow the same rules as <see cref="ExtractHeaderPackets"/>.
+	/// </remarks>
+	public static HeaderPacketsResult ExtractPacketsUntilAudio (
+		ReadOnlySpan<byte> data,
+		int maxPackets,
+		bool validateCrc = false,
+		int maxPacketSize = MaxPacketSize) =>
+		ScanPackets (data, maxPackets, validateCrc, maxPacketSize, stopAtFlacAudio: true);
+
+	static HeaderPacketsResult ScanPackets (
+		ReadOnlySpan<byte> data,
+		int maxPackets,
+		bool validateCrc,
+		int maxPacketSize,
+		bool stopAtFlacAudio)
 	{
 		var packets = new List<byte[]> ();
 		var packetBuffer = new List<byte> ();
@@ -517,16 +569,18 @@ internal static class OggPageHelper
 		uint serialNumber = 0;
 		var isFirstPage = true;
 
-		while (offset < data.Length && packets.Count < maxPackets && pageCount < 50) {
+		while (offset < data.Length && packets.Count < maxPackets && pageCount < MaxHeaderPages) {
+			var pageStart = offset;
 			var pageResult = ReadOggPageWithSegments (data.Slice (offset), validateCrc);
 			if (!pageResult.IsSuccess) {
 				if (pageCount == 0)
 					return HeaderPacketsResult.Failure ($"Invalid Ogg file: {pageResult.Error}");
+				if (stopAtFlacAudio && packetBuffer.Count > 0)
+					return HeaderPacketsResult.Failure (
+						"Ogg FLAC packet continues past a readable page",
+						packets, serialNumber, offset);
 				break;
 			}
-
-			offset += pageResult.BytesConsumed;
-			pageCount++;
 
 			// First page must have BOS flag
 			if (isFirstPage) {
@@ -536,57 +590,113 @@ internal static class OggPageHelper
 				isFirstPage = false;
 			}
 
+			if (stopAtFlacAudio && pageResult.Page.IsContinuation && packetBuffer.Count == 0)
+				return HeaderPacketsResult.Failure (
+					"Ogg continuation page has no open packet",
+					packets, serialNumber, pageStart);
+
+			if (stopAtFlacAudio && !pageResult.Page.IsContinuation && packetBuffer.Count > 0)
+				return HeaderPacketsResult.Failure (
+					"Ogg FLAC packet was not finished before the next page",
+					packets, serialNumber, pageStart);
+
+			// RFC 9639 section 10.1: the first audio packet begins a fresh page. Do not consume it.
+			if (stopAtFlacAudio
+				&& !pageResult.Page.IsContinuation
+				&& packetBuffer.Count == 0
+				&& pageResult.Segments.Count > 0
+				&& pageResult.Segments[0].Length > 0
+				&& pageResult.Segments[0][0] == 0xFF)
+				return HeaderPacketsResult.Success (packets, serialNumber, pageStart);
+
+			offset += pageResult.BytesConsumed;
+			pageCount++;
+
 			// Handle continuation from previous page
 			var segmentIndex = 0;
 			if (pageResult.Page.IsContinuation && packetBuffer.Count > 0) {
-				if (pageResult.Segments.Count > 0) {
-					// Check size limit before adding to buffer
-					if (packetBuffer.Count + pageResult.Segments[0].Length > maxPacketSize)
-						return HeaderPacketsResult.Failure ($"Packet size exceeds maximum allowed size of {maxPacketSize / (1024 * 1024)} MB");
+				if (pageResult.Segments.Count == 0) {
+					if (stopAtFlacAudio)
+						return HeaderPacketsResult.Failure (
+							"Ogg continuation page has no lacing values",
+							packets, serialNumber, pageStart);
+				} else {
+					if (ExceedsPacketSize (packetBuffer.Count, pageResult.Segments[0].Length, maxPacketSize))
+						return PacketTooLarge (stopAtFlacAudio, packets, serialNumber, offset, maxPacketSize);
 
 					packetBuffer.AddRange (pageResult.Segments[0]);
 					if (pageResult.IsPacketComplete[0]) {
 						packets.Add (packetBuffer.ToArray ());
 						packetBuffer.Clear ();
 					}
+
 					segmentIndex = 1;
 				}
 			}
 
 			// Process remaining segments
 			for (var i = segmentIndex; i < pageResult.Segments.Count && packets.Count < maxPackets; i++) {
+				var segment = pageResult.Segments[i];
+				if (stopAtFlacAudio && packetBuffer.Count > 0)
+					return HeaderPacketsResult.Failure (
+						"Unexpected lacing after an open packet",
+						packets, serialNumber, pageStart);
+
+				// A 0xFF packet that does not start this page cannot be spliced as audio.
+				if (stopAtFlacAudio && segment.Length > 0 && segment[0] == 0xFF)
+					return HeaderPacketsResult.Failure (
+						"FLAC audio packet does not begin a fresh page",
+						packets, serialNumber, pageStart);
+
 				if (pageResult.IsPacketComplete[i]) {
 					if (packetBuffer.Count > 0) {
-						// Check size limit before adding to buffer
-						if (packetBuffer.Count + pageResult.Segments[i].Length > maxPacketSize)
-							return HeaderPacketsResult.Failure ($"Packet size exceeds maximum allowed size of {maxPacketSize / (1024 * 1024)} MB");
+						if (ExceedsPacketSize (packetBuffer.Count, segment.Length, maxPacketSize))
+							return PacketTooLarge (stopAtFlacAudio, packets, serialNumber, offset, maxPacketSize);
 
-						packetBuffer.AddRange (pageResult.Segments[i]);
+						packetBuffer.AddRange (segment);
 						packets.Add (packetBuffer.ToArray ());
 						packetBuffer.Clear ();
 					} else {
-						// Direct add - check size
-						if (pageResult.Segments[i].Length > maxPacketSize)
-							return HeaderPacketsResult.Failure ($"Packet size exceeds maximum allowed size of {maxPacketSize / (1024 * 1024)} MB");
+						if (segment.Length > maxPacketSize)
+							return PacketTooLarge (stopAtFlacAudio, packets, serialNumber, offset, maxPacketSize);
 
-						packets.Add (pageResult.Segments[i]);
+						packets.Add (segment);
 					}
 				} else {
-					// Check size limit for incomplete packet accumulation
-					if (pageResult.Segments[i].Length > maxPacketSize)
-						return HeaderPacketsResult.Failure ($"Packet size exceeds maximum allowed size of {maxPacketSize / (1024 * 1024)} MB");
+					if (segment.Length > maxPacketSize)
+						return PacketTooLarge (stopAtFlacAudio, packets, serialNumber, offset, maxPacketSize);
 
 					packetBuffer.Clear ();
-					packetBuffer.AddRange (pageResult.Segments[i]);
+					packetBuffer.AddRange (segment);
 				}
 			}
 
-			// Check accumulated buffer size after processing each page
 			if (packetBuffer.Count > maxPacketSize)
-				return HeaderPacketsResult.Failure ($"Packet size exceeds maximum allowed size of {maxPacketSize / (1024 * 1024)} MB");
+				return PacketTooLarge (stopAtFlacAudio, packets, serialNumber, offset, maxPacketSize);
 		}
 
+		if (stopAtFlacAudio && packetBuffer.Count > 0)
+			return HeaderPacketsResult.Failure (
+				"Ogg FLAC packet is missing its terminating lacing value",
+				packets, serialNumber, offset);
+
 		return HeaderPacketsResult.Success (packets, serialNumber, offset);
+	}
+
+	static bool ExceedsPacketSize (int buffered, int fragmentLength, int maxPacketSize) =>
+		(long)buffered + fragmentLength > maxPacketSize;
+
+	static HeaderPacketsResult PacketTooLarge (
+		bool keepPackets,
+		List<byte[]> packets,
+		uint serialNumber,
+		int bytesConsumed,
+		int maxPacketSize)
+	{
+		var error = $"Packet size exceeds maximum allowed size of {maxPacketSize / (1024 * 1024)} MB";
+		return keepPackets
+			? HeaderPacketsResult.Failure (error, packets, serialNumber, bytesConsumed)
+			: HeaderPacketsResult.Failure (error);
 	}
 
 	/// <summary>
@@ -701,4 +811,7 @@ internal readonly struct HeaderPacketsResult
 
 	public static HeaderPacketsResult Failure (string error) =>
 		new (false, error, Array.Empty<byte[]> (), 0, 0);
+
+	public static HeaderPacketsResult Failure (string error, List<byte[]> packets, uint serialNumber, int bytesConsumed) =>
+		new (false, error, packets, serialNumber, bytesConsumed);
 }

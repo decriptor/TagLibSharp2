@@ -235,6 +235,29 @@ public class OggFlacFileRoundTripTests
 	}
 
 	[TestMethod]
+	public void TitleSave_RoundTripsCommentAndPictureWithoutSecondWalk ()
+	{
+		var picture = new byte[] { 0x10, 0x20, 0x30, 0x40, 0x50 };
+		var original = CreateOggFlacWithPicture (picture);
+		var read = OggFlacFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNotNull (read.File);
+		Assert.AreEqual ("Original Title", read.File.VorbisComment?.Title);
+		Assert.AreEqual (1, read.File.PacketWalkCount, "Read should walk packets once");
+
+		read.File.EnsureVorbisComment ().Title = "Saved Title";
+		var rendered = read.File.Render (original);
+		Assert.IsGreaterThan (0, rendered.Length);
+		Assert.AreEqual (1, read.File.PacketWalkCount, "Render walked an unchanged file again");
+
+		var reread = OggFlacFile.Read (rendered);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("Saved Title", reread.File!.VorbisComment?.Title);
+		Assert.IsTrue (reread.File.TryGetMetadataBlock (6, out var stored));
+		CollectionAssert.AreEqual (picture, stored);
+	}
+
+	[TestMethod]
 	public void LargePicture_RoundTripsAfterTitleChange ()
 	{
 		// A picture packet just over one Ogg page (65025 bytes). The second page is
