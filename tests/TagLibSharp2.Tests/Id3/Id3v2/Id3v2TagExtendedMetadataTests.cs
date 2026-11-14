@@ -413,6 +413,45 @@ public class Id3v2TagExtendedMetadataTests
 	}
 
 	[TestMethod]
+	public void OriginalReleaseDate_ShortYear_IsNotStored ()
+	{
+		var v23 = new Id3v2Tag (Id3v2Version.V23);
+		v23.OriginalReleaseDate = "19";
+		Assert.IsNull (v23.OriginalReleaseDate);
+		Assert.IsNull (v23.GetTextFrame ("TORY"));
+
+		var v24 = new Id3v2Tag (Id3v2Version.V24);
+		v24.OriginalReleaseDate = "19";
+		Assert.IsNull (v24.OriginalReleaseDate);
+		Assert.IsNull (v24.GetTextFrame ("TDOR"));
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_Getter_RejectsShortYear ()
+	{
+		var v23 = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("TORY", "19", TestConstants.Id3v2.Version3));
+		var v24 = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("TDOR", "19", TestConstants.Id3v2.Version4));
+
+		Assert.IsTrue (v23.IsSuccess);
+		Assert.IsNull (v23.Tag!.OriginalReleaseDate);
+		Assert.IsTrue (v24.IsSuccess);
+		Assert.IsNull (v24.Tag!.OriginalReleaseDate);
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_V23_UsesYearForm ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V23);
+		tag.OriginalReleaseDate = "1969-09-26";
+		Assert.AreEqual ("1969", tag.OriginalReleaseDate);
+		Assert.AreEqual ("1969", tag.GetTextFrame ("TORY"));
+
+		var read = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("TORY", "1969-09-26", TestConstants.Id3v2.Version3));
+		Assert.IsTrue (read.IsSuccess);
+		Assert.AreEqual ("1969", read.Tag!.OriginalReleaseDate);
+	}
+
+	[TestMethod]
 	public void OriginalReleaseDate_SetNull_ClearsField ()
 	{
 		var tag = new Id3v2Tag (Id3v2Version.V24);

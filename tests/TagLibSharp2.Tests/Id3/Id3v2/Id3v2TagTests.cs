@@ -150,6 +150,84 @@ public class Id3v2TagTests
 	}
 
 	[TestMethod]
+	public void Read_MultipleGenreReferences_ResolvesEachName ()
+	{
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "(51)(39)", TestConstants.Id3v2.Version3);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreNotEqual ("(39)", result.Tag!.Genre);
+		Assert.AreEqual ("Techno-Industrial", result.Tag.Genre);
+		Assert.HasCount (2, result.Tag.Genres);
+		Assert.AreEqual ("Techno-Industrial", result.Tag.Genres[0]);
+		Assert.AreEqual ("Noise", result.Tag.Genres[1]);
+	}
+
+	[TestMethod]
+	public void Read_EscapedGenreRefinement_IsNotAnotherReference ()
+	{
+		// "((" starts a refinement whose text begins with '(', not a second reference.
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "(55)((I think...)", TestConstants.Id3v2.Version3);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("(I think...)", result.Tag!.Genre);
+		Assert.HasCount (2, result.Tag.Genres);
+		Assert.AreEqual ("Dream", result.Tag.Genres[0]);
+		Assert.AreEqual ("(I think...)", result.Tag.Genres[1]);
+	}
+
+	[TestMethod]
+	public void Read_GenreReferenceWithRefinement_IncludesParentAndRefinement ()
+	{
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "(4)Eurodisco", TestConstants.Id3v2.Version3);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Eurodisco", result.Tag!.Genre);
+		Assert.HasCount (2, result.Tag.Genres);
+		Assert.AreEqual ("Disco", result.Tag.Genres[0]);
+		Assert.AreEqual ("Eurodisco", result.Tag.Genres[1]);
+	}
+
+	[TestMethod]
+	public void Read_RemixAndCoverTokens_ResolveNames ()
+	{
+		var remix = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "(RX)", TestConstants.Id3v2.Version3));
+		var cover = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "(CR)", TestConstants.Id3v2.Version3));
+
+		Assert.IsTrue (remix.IsSuccess);
+		Assert.AreEqual ("Remix", remix.Tag!.Genre);
+		Assert.HasCount (1, remix.Tag.Genres);
+		Assert.AreEqual ("Remix", remix.Tag.Genres[0]);
+
+		Assert.IsTrue (cover.IsSuccess);
+		Assert.AreEqual ("Cover", cover.Tag!.Genre);
+		Assert.HasCount (1, cover.Tag.Genres);
+		Assert.AreEqual ("Cover", cover.Tag.Genres[0]);
+	}
+
+	[TestMethod]
+	public void Read_V24NumericGenre_ResolvesId3v1Name ()
+	{
+		var numeric = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "13", TestConstants.Id3v2.Version4));
+		var freeText = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "Industrial Metal", TestConstants.Id3v2.Version4));
+
+		Assert.IsTrue (numeric.IsSuccess);
+		Assert.AreEqual ("Pop", numeric.Tag!.Genre);
+		Assert.HasCount (1, numeric.Tag.Genres);
+		Assert.AreEqual ("Pop", numeric.Tag.Genres[0]);
+
+		Assert.IsTrue (freeText.IsSuccess);
+		Assert.AreEqual ("Industrial Metal", freeText.Tag!.Genre);
+		Assert.HasCount (1, freeText.Tag.Genres);
+		Assert.AreEqual ("Industrial Metal", freeText.Tag.Genres[0]);
+	}
+
+	[TestMethod]
 	public void Read_ZeroLengthFrame_KeepsTheFramesAfterIt ()
 	{
 		var title = TestBuilders.Id3v2.CreateTextFrame (TestConstants.FrameIds.Title, "Kept", TestConstants.Id3v2.Version3);

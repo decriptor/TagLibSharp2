@@ -236,17 +236,24 @@ public sealed class Id3v2Tag : Tag
 	/// </remarks>
 	public override string? OriginalReleaseDate {
 		get {
-			// Try version-appropriate frame first, then fallback
+			// TDOR is an ID3v2.4 timestamp. TORY uses the four-digit TYER form.
 			if (Version == 4) {
-				return GetTextFrame ("TDOR") ?? GetTextFrame ("TORY");
+				var tdor = GetTextFrame ("TDOR");
+				if (tdor is not null)
+					return NormalizeReleaseTimestamp (tdor);
+				return NormalizeYear (GetTextFrame ("TORY"));
 			}
-			return GetTextFrame ("TORY") ?? GetTextFrame ("TDOR");
+
+			var tory = GetTextFrame ("TORY");
+			if (tory is not null)
+				return NormalizeYear (tory);
+			return NormalizeReleaseTimestamp (GetTextFrame ("TDOR"));
 		}
 		set {
 			if (Version == 4)
-				SetTextFrame ("TDOR", value);
+				SetTextFrame ("TDOR", NormalizeReleaseTimestamp (value));
 			else
-				SetTextFrame ("TORY", value);
+				SetTextFrame ("TORY", NormalizeYear (value));
 		}
 	}
 
@@ -477,7 +484,7 @@ public sealed class Id3v2Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Genre {
-		get => ResolveGenreReference (GetTextFrame ("TCON"));
+		get => ResolveGenreDisplay (GetTextFrame ("TCON"), Version);
 		set => SetTextFrame ("TCON", value);
 	}
 
@@ -1170,13 +1177,16 @@ public sealed class Id3v2Tag : Tag
 		// The header may claim a larger size than what's actually present in the data.
 		var availableData = data.Length - Id3v2Header.HeaderSize;
 		var remaining = (int)Math.Min (header.TagSize, (uint)availableData);
+		var storedBodyLength = remaining;
 
 		// v2.3 unsynchronises the whole tag. v2.4 unsynchronises each frame, and the
 		// syncsafe size counts the stored bytes, so stripping first would break sizes.
 		ReadOnlySpan<byte> frameData;
+		ReadOnlySpan<byte> storedBody = default;
 		byte[]? unsyncBuffer = null;
 		if (header.IsUnsynchronized && header.MajorVersion < 4) {
-			unsyncBuffer = RemoveUnsynchronization (tagData.Slice (0, remaining));
+			storedBody = tagData.Slice (0, storedBodyLength);
+			unsyncBuffer = RemoveUnsynchronization (storedBody);
 			frameData = unsyncBuffer;
 			remaining = unsyncBuffer.Length;
 		} else {
@@ -1366,10 +1376,19 @@ public sealed class Id3v2Tag : Tag
 		// (e.g., WMP writes v2.3, then iTunes writes v2.4)
 		// A declared size past the buffer is not tag. Claim only the header plus the
 		// frames actually parsed, so the audio that follows a short file is kept.
+		// Whole-tag unsync deletes FF 00 pairs, so the de-unsynced end is not a
+		// stored offset. Walk those pairs instead of using the buffer length.
 		int bytesConsumed;
-		if (header.TotalSize > (uint)data.Length && unsyncBuffer is null)
-			bytesConsumed = data.Length - frameData.Length;
-		else
+		if (header.TotalSize > (uint)data.Length) {
+			if (unsyncBuffer is null)
+				bytesConsumed = data.Length - frameData.Length;
+			else {
+				var decodedConsumed = unsyncBuffer.Length - frameData.Length;
+				if (decodedConsumed < 0)
+					decodedConsumed = 0;
+				bytesConsumed = Id3v2Header.HeaderSize + StoredBytesForDecodedPrefix (storedBody, decodedConsumed);
+			}
+		} else
 			bytesConsumed = (int)Math.Min (header.TotalSize, (uint)data.Length);
 		if (bytesConsumed < Id3v2Header.HeaderSize)
 			bytesConsumed = Math.Min (Id3v2Header.HeaderSize, data.Length);
@@ -1563,10 +1582,10 @@ public sealed class Id3v2Tag : Tag
 			var values = GetTextFrameValues ("TCON");
 			if (values.Count == 0)
 				return [];
-			var resolved = new string[values.Count];
+			var resolved = new List<string> (values.Count);
 			for (var i = 0; i < values.Count; i++)
-				resolved[i] = ResolveGenreReference (values[i]) ?? values[i];
-			return resolved;
+				AddResolvedGenres (resolved, values[i], Version);
+			return resolved.Count > 0 ? [.. resolved] : [];
 		}
 		set {
 			if (value is null || value.Length == 0) {
@@ -1911,12 +1930,12 @@ public sealed class Id3v2Tag : Tag
 		return null;
 	}
 
-	/// <summary>
-	/// Sets or creates a comment with an empty description.
-	/// </summary>
 	static bool IsToolPrivateComment (string? description) =>
 		description is "iTunPGAP" or "iTunNORM" or "iTunSMPB";
 
+	/// <summary>
+	/// Sets or creates a comment with an empty description.
+	/// </summary>
 	void SetComment (string? value)
 	{
 		// Remove existing comments with empty description
@@ -2606,37 +2625,168 @@ public sealed class Id3v2Tag : Tag
 	/// <summary>
 	/// Reads a 4-byte syncsafe integer.
 	/// </summary>
-	static string? ResolveGenreReference (string? raw)
+	static string? ResolveGenreDisplay (string? raw, int version)
 	{
-		if (string.IsNullOrEmpty (raw) || raw[0] != '(')
-			return raw;
+		if (raw is null || raw.Length == 0)
+			return null;
 
-#if NETSTANDARD2_0
-		var close = raw.IndexOf (')');
-#else
-		var close = raw.IndexOf (')', StringComparison.Ordinal);
-#endif
-		if (close <= 1)
-			return raw;
+		var genres = new List<string> (2);
+		return CollectGenres (raw, version, genres);
+	}
 
-		var number = raw.Substring (1, close - 1);
-		if (!byte.TryParse (number, out var index))
-			return raw;
+	static void AddResolvedGenres (List<string> target, string raw, int version)
+	{
+		if (raw.Length == 0)
+			return;
 
-		var refinement = close + 1 < raw.Length ? raw.Substring (close + 1) : null;
-		if (!string.IsNullOrEmpty (refinement))
+		CollectGenres (raw, version, target);
+	}
+
+	// ID3v2.3 TCON: "(n)" is an ID3v1 reference, "(n)text" is that reference plus a
+	// refinement, and "((" begins a refinement whose text starts with '('. "(RX)" and
+	// "(CR)" are Remix and Cover. ID3v2.4 also accepts a bare numeric string.
+	static string? CollectGenres (string raw, int version, List<string> target)
+	{
+		var start = target.Count;
+		if (raw.Length >= 2 && raw[0] == '(' && raw[1] == '(') {
+			var text = raw.Substring (1);
+			target.Add (text);
+			return text;
+		}
+
+		if (raw[0] != '(') {
+			var text = ResolveNumericGenre (raw, version) ?? raw;
+			target.Add (text);
+			return text;
+		}
+
+		var index = 0;
+		string? refinement = null;
+		var sawReference = false;
+		while (index < raw.Length) {
+			if (raw[index] != '(' || (index + 1 < raw.Length && raw[index + 1] == '(')) {
+				refinement = raw[index] == '(' ? raw.Substring (index + 1) : raw.Substring (index);
+				break;
+			}
+
+			var close = raw.IndexOf (')', index + 1);
+			if (close < 0) {
+				refinement = raw.Substring (index);
+				break;
+			}
+
+			var token = raw.Substring (index + 1, close - index - 1);
+			if (!TryResolveGenreToken (token, out var name)) {
+				refinement = raw.Substring (index);
+				break;
+			}
+
+			sawReference = true;
+			if (name is not null)
+				target.Add (name);
+			index = close + 1;
+		}
+
+		if (!sawReference) {
+			target.Add (raw);
+			return raw;
+		}
+
+		if (refinement is { Length: > 0 })
+			target.Add (refinement);
+
+		if (target.Count == start) {
+			target.Add (raw);
+			return raw;
+		}
+
+		if (refinement is { Length: > 0 })
 			return refinement;
 
-		return Id3v1Genre.GetName (index) ?? raw;
+		return target[start];
+	}
+
+	static string? ResolveNumericGenre (string raw, int version)
+	{
+		if (version != 4 || !IsAllDigits (raw))
+			return null;
+
+		if (!byte.TryParse (raw, out var index))
+			return null;
+
+		return Id3v1Genre.GetName (index);
+	}
+
+	static bool TryResolveGenreToken (string token, out string? name)
+	{
+		if (token == "RX") {
+			name = "Remix";
+			return true;
+		}
+
+		if (token == "CR") {
+			name = "Cover";
+			return true;
+		}
+
+		if (!byte.TryParse (token, out var index)) {
+			name = null;
+			return false;
+		}
+
+		name = Id3v1Genre.GetName (index);
+		return true;
+	}
+
+	static bool IsAllDigits (string value)
+	{
+		if (value.Length == 0)
+			return false;
+
+		for (var i = 0; i < value.Length; i++) {
+			var c = value[i];
+			if (c < '0' || c > '9')
+				return false;
+		}
+
+		return true;
 	}
 
 	static string? NormalizeYear (string? raw)
 	{
-		if (string.IsNullOrEmpty (raw) || raw.Length < 4)
+		if (raw is null || raw.Length < 4)
 			return null;
 
 		var year = raw.Substring (0, 4);
 		return uint.TryParse (year, out _) ? year : null;
+	}
+
+	static string? NormalizeReleaseTimestamp (string? raw)
+	{
+		if (NormalizeYear (raw) is null)
+			return null;
+
+		return raw;
+	}
+
+	// stored is the unsynchronised tag body. decodedCount is how many bytes remain
+	// after FF 00 pairs are removed. The returned length includes those inserted zeros.
+	static int StoredBytesForDecodedPrefix (ReadOnlySpan<byte> stored, int decodedCount)
+	{
+		if (decodedCount <= 0)
+			return 0;
+
+		var decoded = 0;
+		var index = 0;
+		while (index < stored.Length && decoded < decodedCount) {
+			var value = stored[index];
+			index++;
+			decoded++;
+			if (value == 0xFF && index < stored.Length && stored[index] == 0x00)
+				index++;
+		}
+
+		return index;
 	}
 
 	static int ReadSyncsafeInt32 (ReadOnlySpan<byte> data)
@@ -2655,7 +2805,7 @@ public sealed class Id3v2Tag : Tag
 		const int MaxDecompressedBytes = 16 * 1024 * 1024;
 		if (data.Length < 2 || expectedSize <= 0 || expectedSize > MaxDecompressedBytes)
 			return null;
-		if (expectedSize > data.Length * 1000)
+		if ((long)expectedSize > (long)data.Length * 1000L)
 			return null;
 
 		try {
@@ -2669,10 +2819,24 @@ public sealed class Id3v2Tag : Tag
 
 			using var input = new System.IO.MemoryStream (deflateData.ToArray ());
 			using var deflate = new System.IO.Compression.DeflateStream (input, System.IO.Compression.CompressionMode.Decompress);
-			using var output = new System.IO.MemoryStream (expectedSize);
 
-			deflate.CopyTo (output);
-			return output.ToArray ();
+			var limit = expectedSize < MaxDecompressedBytes ? expectedSize : MaxDecompressedBytes;
+			var buffer = new byte[limit + 1];
+			var total = 0;
+			while (total < buffer.Length) {
+				var read = deflate.Read (buffer, total, buffer.Length - total);
+				if (read == 0)
+					break;
+				total += read;
+			}
+
+			// One byte past the cap means the stream was not exhausted.
+			if (total == 0 || total > limit)
+				return null;
+
+			var inflated = new byte[total];
+			Array.Copy (buffer, 0, inflated, 0, total);
+			return inflated;
 		} catch (System.IO.InvalidDataException) {
 			return null;
 		} catch (System.IO.IOException) {

@@ -114,6 +114,72 @@ public class Id3v2FrameFlagsTests
 		Assert.AreEqual ("Compressed title text for version 2.3", result.Tag!.Title);
 	}
 
+	[TestMethod]
+	public void Read_CompressedFrame_DeclaredSizeWithinCap_KeepsIncompressiblePayload ()
+	{
+		// Compressed length * 1000 does not fit in an int (about 2.2MB). The declared
+		// size stays under 16MB and matches the inflated payload, so the frame is kept.
+		const int TextLength = 2_200_000;
+		var chars = new char[TextLength];
+		Array.Fill (chars, 'B');
+		chars[0] = 'K';
+		chars[1] = 'E';
+		chars[2] = 'E';
+		chars[3] = 'P';
+		chars[TextLength - 3] = 'E';
+		chars[TextLength - 2] = 'N';
+		chars[TextLength - 1] = 'D';
+		var text = new string (chars);
+		var frameContent = new byte[1 + TextLength];
+		frameContent[0] = TestConstants.Id3v2.EncodingLatin1;
+		Encoding.Latin1.GetBytes (text).CopyTo (frameContent, 1);
+
+		var compressed = CompressZlib (frameContent, CompressionLevel.NoCompression);
+		Assert.IsTrue (compressed.Length > int.MaxValue / 1000, "Fixture must overflow an int multiply by 1000.");
+		Assert.IsTrue (frameContent.Length < 16 * 1024 * 1024);
+
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			compressed,
+			frameContent.Length,
+			TestConstants.Id3v2.Version4);
+		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.Title);
+		Assert.AreEqual (TextLength, result.Tag.Title.Length);
+		Assert.StartsWith ("KEEP", result.Tag.Title);
+		Assert.EndsWith ("END", result.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_CompressedFrame_ExpansionPastDeclaredSize_DoesNotReturnOversizedText ()
+	{
+		const int Declared = 64;
+		const int Extra = 4 * 1024;
+		var frameContent = new byte[Declared + Extra];
+		frameContent[0] = TestConstants.Id3v2.EncodingLatin1;
+		for (var i = 1; i < frameContent.Length; i++)
+			frameContent[i] = (byte)'A';
+
+		var compressed = CompressZlib (frameContent, CompressionLevel.Optimal);
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			compressed,
+			Declared,
+			TestConstants.Id3v2.Version4);
+		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		var title = result.Tag!.Title;
+		Assert.IsTrue (title is null || title.Length <= Declared);
+		Assert.IsTrue (title is null || title.Length < frameContent.Length - 1);
+	}
+
 	// ===========================================================================
 	// ID3v2.3/2.4 Frame Flags - Grouping Identity Tests
 	// ===========================================================================
@@ -445,14 +511,60 @@ public class Id3v2FrameFlagsTests
 		return output;
 	}
 
-	static byte[] CompressZlib (byte[] data)
+	static byte[] CreateCompressedFrameWithDeclaredSize (string frameId, byte[] compressedData, int declaredSize, byte version)
+	{
+		byte[] frame;
+		if (version == TestConstants.Id3v2.Version4) {
+			var dataLengthIndicator = new byte[4];
+			dataLengthIndicator[0] = (byte)((declaredSize >> 21) & 0x7F);
+			dataLengthIndicator[1] = (byte)((declaredSize >> 14) & 0x7F);
+			dataLengthIndicator[2] = (byte)((declaredSize >> 7) & 0x7F);
+			dataLengthIndicator[3] = (byte)(declaredSize & 0x7F);
+
+			var totalContentSize = dataLengthIndicator.Length + compressedData.Length;
+			frame = new byte[TestConstants.Id3v2.FrameHeaderSize + totalContentSize];
+			Encoding.ASCII.GetBytes (frameId).CopyTo (frame, 0);
+			frame[4] = (byte)((totalContentSize >> 21) & 0x7F);
+			frame[5] = (byte)((totalContentSize >> 14) & 0x7F);
+			frame[6] = (byte)((totalContentSize >> 7) & 0x7F);
+			frame[7] = (byte)(totalContentSize & 0x7F);
+			frame[8] = 0x00;
+			frame[9] = 0x09;
+			Array.Copy (dataLengthIndicator, 0, frame, TestConstants.Id3v2.FrameHeaderSize, dataLengthIndicator.Length);
+			Array.Copy (compressedData, 0, frame, TestConstants.Id3v2.FrameHeaderSize + dataLengthIndicator.Length, compressedData.Length);
+		} else {
+			var decompressedSize = new byte[4];
+			decompressedSize[0] = (byte)((declaredSize >> 24) & 0xFF);
+			decompressedSize[1] = (byte)((declaredSize >> 16) & 0xFF);
+			decompressedSize[2] = (byte)((declaredSize >> 8) & 0xFF);
+			decompressedSize[3] = (byte)(declaredSize & 0xFF);
+
+			var totalContentSize = decompressedSize.Length + compressedData.Length;
+			frame = new byte[TestConstants.Id3v2.FrameHeaderSize + totalContentSize];
+			Encoding.ASCII.GetBytes (frameId).CopyTo (frame, 0);
+			frame[4] = (byte)((totalContentSize >> 24) & 0xFF);
+			frame[5] = (byte)((totalContentSize >> 16) & 0xFF);
+			frame[6] = (byte)((totalContentSize >> 8) & 0xFF);
+			frame[7] = (byte)(totalContentSize & 0xFF);
+			frame[8] = 0x00;
+			frame[9] = 0x80;
+			Array.Copy (decompressedSize, 0, frame, TestConstants.Id3v2.FrameHeaderSize, decompressedSize.Length);
+			Array.Copy (compressedData, 0, frame, TestConstants.Id3v2.FrameHeaderSize + decompressedSize.Length, compressedData.Length);
+		}
+
+		return frame;
+	}
+
+	static byte[] CompressZlib (byte[] data) => CompressZlib (data, CompressionLevel.Optimal);
+
+	static byte[] CompressZlib (byte[] data, CompressionLevel level)
 	{
 		using var output = new MemoryStream ();
 		// Write zlib header (CMF=0x78, FLG=0x9C for default compression)
 		output.WriteByte (0x78);
 		output.WriteByte (0x9C);
 
-		using (var deflate = new DeflateStream (output, CompressionLevel.Optimal, leaveOpen: true))
+		using (var deflate = new DeflateStream (output, level, leaveOpen: true))
 			deflate.Write (data, 0, data.Length);
 
 		// Calculate Adler-32 checksum
