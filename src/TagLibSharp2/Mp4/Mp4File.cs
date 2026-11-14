@@ -1,6 +1,8 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
+using System.Text;
 using TagLibSharp2.Core;
 
 namespace TagLibSharp2.Mp4;
@@ -1151,14 +1153,19 @@ public sealed class Mp4File : IMediaFile
 		// Parse all top-level boxes to find their positions and content
 		var boxes = new List<(Mp4Box Box, int Start, int Length)> ();
 		var offset = 0;
+		var tailStart = -1;
 		while (offset < originalData.Length) {
 			var remaining = originalData[offset..];
-			if (remaining.Length < Mp4Box.HeaderSize)
+			if (remaining.Length < Mp4Box.HeaderSize) {
+				tailStart = offset;
 				break;
+			}
 
 			var result = Mp4Box.Parse (remaining);
-			if (!result.IsSuccess)
+			if (!result.IsSuccess) {
+				tailStart = offset;
 				break;
+			}
 
 			boxes.Add ((result.Box!, offset, result.BytesConsumed));
 			offset += result.BytesConsumed;
@@ -1176,24 +1183,108 @@ public sealed class Mp4File : IMediaFile
 		if (moovIndex < 0)
 			return BinaryData.Empty;
 
-		// Build the new moov box with updated metadata
+		var oldMoovStart = boxes[moovIndex].Start;
+		var oldMoovLength = boxes[moovIndex].Length;
 		var newMoov = RebuildMoovWithMetadata (boxes[moovIndex].Box);
+		var delta = newMoov.Length - oldMoovLength;
+		var oldMoovEnd = oldMoovStart + oldMoovLength;
+		var mdatFollowsMoov = false;
+		for (int i = 0; i < boxes.Count; i++) {
+			if (boxes[i].Box.Type == "mdat" && boxes[i].Start >= oldMoovEnd)
+				mdatFollowsMoov = true;
+		}
+		if (tailStart >= oldMoovEnd)
+			mdatFollowsMoov = true;
+		if (mdatFollowsMoov && delta != 0)
+			newMoov = AdjustChunkOffsets (newMoov, oldMoovEnd, delta);
 
 		// Reassemble the file
 		using var builder = new BinaryDataBuilder ();
 
 		for (int i = 0; i < boxes.Count; i++) {
 			if (i == moovIndex) {
-				// Use our rebuilt moov
 				builder.Add (newMoov);
 			} else {
-				// Copy original box data
 				var (_, start, length) = boxes[i];
 				builder.Add (new BinaryData (originalData.Slice (start, length)));
 			}
 		}
 
+		if (tailStart >= 0)
+			builder.Add (new BinaryData (originalData[tailStart..]));
+
 		return builder.ToBinaryData ();
+	}
+
+	/// <summary>
+	/// Adds <paramref name="delta"/> to stco and co64 entries that point at or
+	/// after the old end of moov. ISO 14496-12 chunk offsets are file offsets.
+	/// </summary>
+	static BinaryData AdjustChunkOffsets (BinaryData moov, int threshold, int delta)
+	{
+		var bytes = moov.ToArray ();
+		PatchChunkOffsets (bytes, threshold, delta);
+		return new BinaryData (bytes);
+	}
+
+	static void PatchChunkOffsets (Span<byte> box, int threshold, int delta)
+	{
+		if (box.Length < 8)
+			return;
+
+		var size32 = BinaryPrimitives.ReadUInt32BigEndian (box);
+		var header = size32 == 1 ? 16 : 8;
+		if (box.Length < header)
+			return;
+
+		var size = size32 == 0 || size32 > (uint)box.Length ? box.Length : (int)size32;
+		if (size < header)
+			return;
+
+		var type = Encoding.ASCII.GetString (box.Slice (4, 4));
+		var payload = box.Slice (header, size - header);
+		if (type == "stco")
+			PatchOffsets (payload, 4, threshold, delta);
+		else if (type == "co64")
+			PatchOffsets (payload, 8, threshold, delta);
+		else if (type is "moov" or "trak" or "mdia" or "minf" or "stbl" or "edts")
+			WalkBoxes (payload, threshold, delta);
+	}
+
+	static void WalkBoxes (Span<byte> payload, int threshold, int delta)
+	{
+		var offset = 0;
+		while (offset + 8 <= payload.Length) {
+			var size32 = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (offset));
+			var size = size32 < 8 || size32 > (uint)(payload.Length - offset)
+				? payload.Length - offset
+				: (int)size32;
+			if (size < 8)
+				break;
+			PatchChunkOffsets (payload.Slice (offset, size), threshold, delta);
+			offset += size;
+		}
+	}
+
+	static void PatchOffsets (Span<byte> payload, int width, int threshold, int delta)
+	{
+		if (payload.Length < 8)
+			return;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
+		var pos = 8;
+		for (var i = 0; i < count && pos + width <= payload.Length; i++) {
+			if (width == 4) {
+				var value = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos));
+				if (value >= (uint)threshold)
+					BinaryPrimitives.WriteUInt32BigEndian (payload.Slice (pos), (uint)(value + delta));
+			} else {
+				var value = BinaryPrimitives.ReadUInt64BigEndian (payload.Slice (pos));
+				if (value >= (ulong)threshold)
+					BinaryPrimitives.WriteUInt64BigEndian (payload.Slice (pos), (ulong)((long)value + delta));
+			}
+			pos += width;
+		}
 	}
 
 	/// <summary>
