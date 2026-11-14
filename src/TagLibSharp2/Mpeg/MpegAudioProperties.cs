@@ -225,10 +225,10 @@ public sealed class MpegAudioProperties : IMediaProperties
 		_ => "MPEG"
 	};
 
+	// Codec returns "MP3" for every Layer III file before this is called.
 	static string FormatLayer (MpegLayer layer) => layer switch {
 		MpegLayer.Layer1 => "Layer I",
 		MpegLayer.Layer2 => "Layer II",
-		MpegLayer.Layer3 => "Layer III",
 		_ => "Audio"
 	};
 }
