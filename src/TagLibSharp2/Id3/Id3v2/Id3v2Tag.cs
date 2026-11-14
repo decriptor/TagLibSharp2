@@ -227,8 +227,9 @@ public sealed class Id3v2Tag : Tag
 	/// <remarks>
 	/// ID3v2.4 TDRC is a timestamp (yyyy-MM-ddTHH:mm:ss, precision may be reduced).
 	/// https://id3.org/id3v2.4.0-structure says timestamps are UTC. iTunes appends Z.
-	/// Copy uses the same acceptance as the year setter: a value that starts with
-	/// four digits is copied in full. Anything else copies the four-digit year.
+	/// For v2.4, copy returns NormalizeReleaseTimestamp of TDRC. That keeps any string
+	/// that starts with four digits, including values that are not the strict timestamp
+	/// grammar. Anything else copies the four-digit year.
 	/// </remarks>
 	private protected override string? CopyableDate {
 		get {
