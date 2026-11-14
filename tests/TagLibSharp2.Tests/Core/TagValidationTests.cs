@@ -130,18 +130,16 @@ public class TagValidationTests
 	}
 
 	[TestMethod]
-	public void Validate_InvalidYear_ReturnsWarning ()
+	public void Validate_InvalidYear_IsNotStored ()
 	{
+		// A year is four digits (TYER) or the year portion of a TDRC timestamp.
+		// "500" is not a year, so the property does not keep it.
 		var tag = new Id3v2Tag {
 			Year = "500"
 		};
 
-		var result = tag.Validate ();
-
-		Assert.IsTrue (result.HasWarnings);
-		var warnings = result.GetIssues (ValidationSeverity.Warning).ToList ();
-		Assert.HasCount (1, warnings);
-		Assert.AreEqual ("Year", warnings[0].Field);
+		Assert.IsNull (tag.Year);
+		Assert.IsFalse (tag.Validate ().GetIssues (ValidationSeverity.Warning).Any (i => i.Field == "Year"));
 	}
 
 	[TestMethod]

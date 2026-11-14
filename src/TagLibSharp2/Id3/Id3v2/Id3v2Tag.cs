@@ -218,12 +218,13 @@ public sealed class Id3v2Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Year {
-		get => Version == 4 ? GetTextFrame ("TDRC") : GetTextFrame ("TYER");
+		get => NormalizeYear (Version == 4 ? GetTextFrame ("TDRC") : GetTextFrame ("TYER"));
 		set {
+			var year = NormalizeYear (value);
 			if (Version == 4)
-				SetTextFrame ("TDRC", value);
+				SetTextFrame ("TDRC", year);
 			else
-				SetTextFrame ("TYER", value);
+				SetTextFrame ("TYER", year);
 		}
 	}
 
@@ -476,7 +477,7 @@ public sealed class Id3v2Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Genre {
-		get => GetTextFrame ("TCON");
+		get => ResolveGenreReference (GetTextFrame ("TCON"));
 		set => SetTextFrame ("TCON", value);
 	}
 
@@ -1170,11 +1171,11 @@ public sealed class Id3v2Tag : Tag
 		var availableData = data.Length - Id3v2Header.HeaderSize;
 		var remaining = (int)Math.Min (header.TagSize, (uint)availableData);
 
-		// If unsynchronization is applied globally (v2.3 style), remove it from the entire tag data
-		// Note: v2.4 can have per-frame unsynchronization, but global is still supported
+		// v2.3 unsynchronises the whole tag. v2.4 unsynchronises each frame, and the
+		// syncsafe size counts the stored bytes, so stripping first would break sizes.
 		ReadOnlySpan<byte> frameData;
 		byte[]? unsyncBuffer = null;
-		if (header.IsUnsynchronized) {
+		if (header.IsUnsynchronized && header.MajorVersion < 4) {
 			unsyncBuffer = RemoveUnsynchronization (tagData.Slice (0, remaining));
 			frameData = unsyncBuffer;
 			remaining = unsyncBuffer.Length;
@@ -1354,9 +1355,19 @@ public sealed class Id3v2Tag : Tag
 		// Check for duplicate ID3v2 tag following this one
 		// This can happen when multiple taggers write separate tags to the same file
 		// (e.g., WMP writes v2.3, then iTunes writes v2.4)
-		var hasDuplicateTag = HasDuplicateTagAfter (data, (int)header.TotalSize);
+		// A declared size past the buffer is not tag. Claim only the header plus the
+		// frames actually parsed, so the audio that follows a short file is kept.
+		int bytesConsumed;
+		if (header.TotalSize > (uint)data.Length && unsyncBuffer is null)
+			bytesConsumed = data.Length - frameData.Length;
+		else
+			bytesConsumed = (int)Math.Min (header.TotalSize, (uint)data.Length);
+		if (bytesConsumed < Id3v2Header.HeaderSize)
+			bytesConsumed = Math.Min (Id3v2Header.HeaderSize, data.Length);
 
-		return TagReadResult<Id3v2Tag>.Success (tag, (int)header.TotalSize, hasDuplicateTag);
+		var hasDuplicateTag = HasDuplicateTagAfter (data, bytesConsumed);
+
+		return TagReadResult<Id3v2Tag>.Success (tag, bytesConsumed, hasDuplicateTag);
 	}
 
 	/// <summary>
@@ -1541,7 +1552,12 @@ public sealed class Id3v2Tag : Tag
 	public override string[] Genres {
 		get {
 			var values = GetTextFrameValues ("TCON");
-			return values.Count > 0 ? [.. values] : [];
+			if (values.Count == 0)
+				return [];
+			var resolved = new string[values.Count];
+			for (var i = 0; i < values.Count; i++)
+				resolved[i] = ResolveGenreReference (values[i]) ?? values[i];
+			return resolved;
 		}
 		set {
 			if (value is null || value.Length == 0) {
@@ -1870,19 +1886,28 @@ public sealed class Id3v2Tag : Tag
 		if (_comments.Count == 0)
 			return null;
 
-		// Prefer comments with empty description (default comment)
+		// Prefer comments with empty description (the user-facing comment).
 		for (var i = 0; i < _comments.Count; i++) {
 			if (string.IsNullOrEmpty (_comments[i].Description))
 				return _comments[i].Text;
 		}
 
-		// Fall back to first comment
-		return _comments[0].Text;
+		// iTunes stores gapless and normalization data in COM frames. Those are
+		// not the comment. Any other described comment can still be shown.
+		for (var i = 0; i < _comments.Count; i++) {
+			if (!IsToolPrivateComment (_comments[i].Description))
+				return _comments[i].Text;
+		}
+
+		return null;
 	}
 
 	/// <summary>
 	/// Sets or creates a comment with an empty description.
 	/// </summary>
+	static bool IsToolPrivateComment (string? description) =>
+		description is "iTunPGAP" or "iTunNORM" or "iTunSMPB";
+
 	void SetComment (string? value)
 	{
 		// Remove existing comments with empty description
@@ -2572,6 +2597,39 @@ public sealed class Id3v2Tag : Tag
 	/// <summary>
 	/// Reads a 4-byte syncsafe integer.
 	/// </summary>
+	static string? ResolveGenreReference (string? raw)
+	{
+		if (string.IsNullOrEmpty (raw) || raw[0] != '(')
+			return raw;
+
+#if NETSTANDARD2_0
+		var close = raw.IndexOf (')');
+#else
+		var close = raw.IndexOf (')', StringComparison.Ordinal);
+#endif
+		if (close <= 1)
+			return raw;
+
+		var number = raw.Substring (1, close - 1);
+		if (!byte.TryParse (number, out var index))
+			return raw;
+
+		var refinement = close + 1 < raw.Length ? raw.Substring (close + 1) : null;
+		if (!string.IsNullOrEmpty (refinement))
+			return refinement;
+
+		return Id3v1Genre.GetName (index) ?? raw;
+	}
+
+	static string? NormalizeYear (string? raw)
+	{
+		if (string.IsNullOrEmpty (raw) || raw.Length < 4)
+			return null;
+
+		var year = raw.Substring (0, 4);
+		return uint.TryParse (year, out _) ? year : null;
+	}
+
 	static int ReadSyncsafeInt32 (ReadOnlySpan<byte> data)
 	{
 		return ((data[0] & 0x7F) << 21) |
@@ -2585,7 +2643,10 @@ public sealed class Id3v2Tag : Tag
 	/// </summary>
 	static byte[]? DecompressZlib (ReadOnlySpan<byte> data, int expectedSize)
 	{
-		if (data.Length < 2)
+		const int MaxDecompressedBytes = 16 * 1024 * 1024;
+		if (data.Length < 2 || expectedSize <= 0 || expectedSize > MaxDecompressedBytes)
+			return null;
+		if (expectedSize > data.Length * 1000)
 			return null;
 
 		try {
@@ -2604,10 +2665,12 @@ public sealed class Id3v2Tag : Tag
 			deflate.CopyTo (output);
 			return output.ToArray ();
 		} catch (System.IO.InvalidDataException) {
-			// Invalid or corrupt compressed data
 			return null;
 		} catch (System.IO.IOException) {
-			// I/O error during decompression
+			return null;
+		} catch (OutOfMemoryException) {
+			return null;
+		} catch (ArgumentOutOfRangeException) {
 			return null;
 		}
 	}

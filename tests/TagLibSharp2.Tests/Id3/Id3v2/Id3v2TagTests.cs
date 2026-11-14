@@ -138,6 +138,18 @@ public class Id3v2TagTests
 	}
 
 	[TestMethod]
+	public void Read_TagWithNumericGenreReference_ResolvesId3v1Name ()
+	{
+		// ID3v2.3 TCON "(13)" is genre 13 in the ID3v1 list, which is Pop.
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame (TestConstants.FrameIds.Genre, "(13)", TestConstants.Id3v2.Version3);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Pop", result.Tag!.Genre);
+	}
+
+	[TestMethod]
 	public void Read_NoMagic_ReturnsNotFound ()
 	{
 		var data = new byte[] { (byte)'X', (byte)'Y', (byte)'Z', 4, 0, 0, 0, 0, 0, 0 };

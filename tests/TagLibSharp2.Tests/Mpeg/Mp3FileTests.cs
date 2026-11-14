@@ -18,6 +18,31 @@ public sealed class Mp3FileTests
 {
 
 	[TestMethod]
+	public void Render_DeclaredId3SizePastEndOfFile_KeepsFollowingAudio ()
+	{
+		var data = new byte[16];
+		data[0] = (byte)'I';
+		data[1] = (byte)'D';
+		data[2] = (byte)'3';
+		data[3] = 3;
+		data[6] = 0x7F;
+		data[7] = 0x7F;
+		data[8] = 0x7F;
+		data[9] = 0x7F;
+		data[10] = 0xFF;
+		data[11] = 0xFB;
+		data[12] = 0x90;
+		data[13] = 0x00;
+
+		var read = Mp3File.Read (data);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsTrue (read.File!.Id3v2Size < data.Length);
+
+		var rendered = read.File.Render (data);
+		Assert.IsTrue (rendered.Span.IndexOf (new byte[] { 0xFF, 0xFB, 0x90, 0x00 }) >= 0);
+	}
+
+	[TestMethod]
 	public void Read_EmptyData_ReturnsFailure ()
 	{
 		var result = Mp3File.Read ([]);

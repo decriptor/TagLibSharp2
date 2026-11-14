@@ -146,6 +146,20 @@ public class Id3v2HeaderTests
 
 
 	[TestMethod]
+	public void Read_FooterFlagOnV23_IsNotAFooter ()
+	{
+		// Bit 4 is the v2.4 footer. v2.3 does not define it. Treating it as a
+		// footer makes TotalSize 10 bytes too big and a save skips the MPEG sync.
+		var data = CreateHeader (version: 3, revision: 0, flags: 0x10, size: 0);
+
+		var result = Id3v2Header.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsFalse (result.Header.HasFooter);
+		Assert.AreEqual (10u, result.Header.TotalSize);
+	}
+
+	[TestMethod]
 	public void TotalSize_WithoutFooter_IncludesHeaderOnly ()
 	{
 		var data = CreateHeader (version: 4, revision: 0, flags: 0, size: 1000);
