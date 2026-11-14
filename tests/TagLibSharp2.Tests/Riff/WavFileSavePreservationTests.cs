@@ -224,37 +224,64 @@ public class WavFileSavePreservationTests
 	[TestMethod]
 	public void Read_ChunkSizeNearIntMax_DoesNotThrow ()
 	{
-		AssertNearMaxChunkOmitted (sentinelContainer: false);
-		AssertNearMaxChunkOmitted (sentinelContainer: true);
+		AssertNearMaxChunkKept (sentinelContainer: false);
+		AssertNearMaxChunkKept (sentinelContainer: true);
 	}
 
 	[TestMethod]
-	public void Read_TruncatedDataChunk_DoesNotThrowAndDropsChunk ()
+	public void Read_TruncatedDataChunk_KeepsPresentBytesAndSaves ()
 	{
 		const uint declared = 0x00100000;
 		var original = CreateWaveWithDataChunkSize (declared);
 		var read = WavFile.Read (original);
 		Assert.IsTrue (read.IsSuccess, read.Error);
 		Assert.IsNotNull (read.File);
-		Assert.AreEqual (TimeSpan.Zero, read.File.Properties.Duration);
+
+		// fmt is 8-bit mono at 8000 Hz, so duration is the four sample bytes, not ckSize.
+		var present = TimeSpan.FromSeconds (4.0 / 8000);
+		Assert.AreEqual (present, read.File.Properties.Duration);
+		Assert.AreNotEqual (TimeSpan.FromSeconds ((double)declared / 8000), read.File.Properties.Duration);
 
 		Assert.IsTrue (RiffFile.TryParse (new BinaryData (original), out var riff));
 		Assert.IsNotNull (riff.GetChunk ("fmt "));
-		Assert.IsFalse (riff.GetChunk ("data").HasValue, "truncated data chunk whose ckSize does not fit was kept");
+		var data = riff.GetChunk ("data");
+		Assert.IsTrue (data.HasValue, "truncated data chunk was dropped");
+		Assert.AreEqual (4, data.Value.Data.Length);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/clip.wav", original);
+		var fromFile = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (fromFile.IsSuccess, fromFile.Error);
+		var save = fromFile.File!.SaveToFile ("/clip.wav", fs);
+		Assert.IsTrue (save.IsSuccess, save.Error);
+	}
+
+	[TestMethod]
+	public void SaveToFile_TruncatedDataChunk_WritesRenderedRiffSize ()
+	{
+		const uint declared = 0x00100000;
+		var original = CreateWaveWithDataChunkSize (declared);
+		var read = WavFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNotNull (read.File);
+		read.File.InfoTag = new RiffInfoTag { Title = "Retitled" };
+
+		var rendered = read.File.Render ();
+		Assert.IsTrue (rendered.Length < declared, $"render allocated or wrote the declared data size ({rendered.Length})");
+		Assert.AreEqual ((uint)(rendered.Length - 8), rendered.ToUInt32LE (4));
+
+		Assert.IsTrue (RiffFile.TryParse (rendered, out var riff));
+		var data = riff.GetChunk ("data");
+		Assert.IsTrue (data.HasValue);
+		Assert.AreEqual (4u, data.Value.DataSize);
+		CollectionAssert.AreEqual (new byte[] { 0x11, 0x22, 0x33, 0x44 }, data.Value.Data.ToArray ());
+		Assert.AreEqual ("Retitled", WavFile.Read (rendered).File?.InfoTag?.Title);
 	}
 
 	[TestMethod]
 	public void Read_ChunkSize7FFFFFF0_DoesNotThrow ()
 	{
-		var data = CreateWaveWithNearMaxChunk (sentinelContainer: false);
-		var read = WavFile.Read (data);
-		Assert.IsTrue (read.IsSuccess, read.Error);
-
-		Assert.IsTrue (RiffFile.TryParse (new BinaryData (data), out var riff));
-		Assert.IsNotNull (riff.GetChunk ("fmt "));
-		Assert.IsNotNull (riff.GetChunk ("data"));
-		foreach (var chunk in riff.AllChunks)
-			Assert.AreNotEqual (0x7FFFFFF0u, chunk.DataSize, "ckSize 0x7FFFFFF0 was kept");
+		AssertNearMaxChunkKept (sentinelContainer: false);
 	}
 
 	[TestMethod]
@@ -446,17 +473,36 @@ public class WavFileSavePreservationTests
 		Assert.IsFalse (riff.GetChunk ("id3 ").HasValue, "empty Id3v2Tag did not replace the unparsed chunk");
 	}
 
-	static void AssertNearMaxChunkOmitted (bool sentinelContainer)
+	static void AssertNearMaxChunkKept (bool sentinelContainer)
 	{
 		var data = CreateWaveWithNearMaxChunk (sentinelContainer);
 		var read = WavFile.Read (data);
 		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNotNull (read.File);
+		Assert.AreEqual (TimeSpan.FromSeconds (4.0 / 8000), read.File.Properties.Duration);
 
 		Assert.IsTrue (RiffFile.TryParse (new BinaryData (data), out var riff));
 		Assert.IsNotNull (riff.GetChunk ("fmt "));
-		Assert.IsNotNull (riff.GetChunk ("data"));
-		foreach (var chunk in riff.AllChunks)
-			Assert.AreNotEqual (0x7FFFFFF0u, chunk.DataSize, sentinelContainer ? "sentinel container kept the oversized chunk" : "normal RIFF size kept the oversized chunk");
+		var audio = riff.GetChunk ("data");
+		Assert.IsTrue (audio.HasValue, "data chunk was dropped");
+		Assert.AreEqual (4, audio.Value.Data.Length);
+
+		var junk = riff.GetChunk ("JUNK");
+		Assert.IsTrue (junk.HasValue, sentinelContainer
+			? "sentinel container dropped ckSize 0x7FFFFFF0"
+			: "ckSize 0x7FFFFFF0 was dropped");
+		Assert.AreEqual (0x7FFFFFF0u, junk.Value.DataSize);
+		Assert.AreEqual (0, junk.Value.Data.Length, "declared ckSize was stored as sample bytes");
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/clip.wav", data);
+		var fromFile = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (fromFile.IsSuccess, fromFile.Error);
+		var save = fromFile.File!.SaveToFile ("/clip.wav", fs);
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var written = fs.ReadAllBytes ("/clip.wav");
+		Assert.IsTrue (written.Length < 1024, $"save wrote the declared size ({written.Length})");
+		Assert.AreEqual ((uint)(written.Length - 8), new BinaryData (written).ToUInt32LE (4));
 	}
 
 	static void AssertSaveLeavesBytes (byte[] original, Func<WavFile, MockFileSystem, FileWriteResult> save)

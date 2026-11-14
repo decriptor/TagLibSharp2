@@ -62,6 +62,7 @@ public sealed class WavFile : IMediaFile
 	/// <remarks>
 	/// This is the native metadata format for WAV files.
 	/// May be null if no LIST INFO chunk is present.
+	/// Every LIST INFO is merged into this tag. The first list wins, and save writes exactly one INFO list.
 	/// </remarks>
 	public RiffInfoTag? InfoTag { get; set; }
 
@@ -483,7 +484,8 @@ public sealed class WavFile : IMediaFile
 	}
 
 	/// <summary>
-	/// A data ckSize that does not fit the container, including one past <see cref="int.MaxValue"/>, leaves no data chunk.
+	/// True when a data chunk was parsed. A short payload still counts.
+	/// A ckSize above <see cref="int.MaxValue"/> is not a chunk.
 	/// </summary>
 	bool HasDataChunk => _riff.GetChunk (DataChunkId) is not null;
 

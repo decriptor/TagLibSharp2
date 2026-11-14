@@ -159,18 +159,15 @@ public class RiffFile
 				break;
 
 			// ckSize is the data length and does not include the pad byte.
-			// Drop the chunk when that declared length does not fit. A size whose
-			// end passes int.MaxValue is the same case and must not be kept.
+			// A short read is kept; TryParse stored only the bytes in the buffer.
 			var dataSize = chunk.DataSize;
 			var dataEnd = (long)offset + RiffChunk.HeaderSize + dataSize;
-			if (dataEnd > limit)
-				break;
-
 			file._chunks.Add (chunk);
 
 			var pad = (dataSize & 1) != 0 ? 1L : 0L;
 			var next = dataEnd + pad;
-			if (next >= limit || next > int.MaxValue)
+			// limit is an int, so next >= limit also rejects a next past int.MaxValue.
+			if (next >= limit)
 				break;
 
 			offset = (int)next;
