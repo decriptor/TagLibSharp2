@@ -157,6 +157,146 @@ public class Mp4SaveLayoutTests
 		Assert.AreEqual ((ulong)payloadOffset, ReadCo64 (rendered.Span));
 	}
 
+	[TestMethod]
+	public void Render_UdtaAfterBadBoxInMoov_KeepsOneNewTitleAndChunkOffset ()
+	{
+		// ISO 14496-12: moov holds at most one udta. The size-7 box stops parsing, so the old udta is unread tail.
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var mvhd = Box ("mvhd", new byte[4]);
+		var bad = BadBox ();
+		var udta = Udta ("Old");
+		var trak = Wrap (Box ("stco", StcoBody (0)), "stbl", "minf", "mdia", "trak");
+		var moov = Box ("moov", Concat (mvhd, bad, udta, trak));
+		var mdat = Box ("mdat", Marker);
+		var payloadOffset = (uint)(ftyp.Length + moov.Length + 8);
+		trak = Wrap (Box ("stco", StcoBody (payloadOffset)), "stbl", "minf", "mdia", "trak");
+		moov = Box ("moov", Concat (mvhd, bad, udta, trak));
+		var file = Concat (ftyp, moov, mdat);
+
+		var read = Mp4File.Read (file);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNull (read.File!.Title);
+		read.File.Title = "New";
+		var rendered = read.File.Render (file);
+		var again = Mp4File.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New", again.File!.Title);
+		Assert.AreEqual (1, Count (rendered.Span, "udta"u8), "moov must contain one udta");
+		Assert.IsTrue (IndexOf (rendered.Span, "Old"u8) < 0, "old title survived");
+		var mvhdAt = IndexOf (rendered.Span, "mvhd"u8);
+		var udtaAt = IndexOf (rendered.Span, "udta"u8);
+		Assert.IsTrue (mvhdAt >= 0 && udtaAt > mvhdAt, "udta must follow mvhd");
+		Assert.AreEqual ((uint)MarkerAt (rendered.Span), ReadStco (rendered.Span));
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_BadChildInsideTrak_KeepsFollowingQqqqBox ()
+	{
+		// trak = [tkhd, size-7 box, QQQQ]. The size-7 box stops child parsing; QQQQ is that trak's unread tail.
+		var qqqq = Box ("QQQQ", [0xAB, 0xCD, 0xEF, 0x01]);
+		var trak = Box ("trak", Concat (Box ("tkhd", new byte[4]), BadBox (), qqqq));
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var moov = Box ("moov", Concat (Box ("mvhd", new byte[4]), trak));
+		var file = Concat (ftyp, moov, Box ("mdat", Marker));
+
+		var rendered = RenderWithTitle (file);
+		var at = IndexOf (rendered.Span, "QQQQ"u8);
+		Assert.IsTrue (at >= 0, "QQQQ lost");
+		Assert.IsTrue (rendered.Span.Slice (at + 4, 4).SequenceEqual (new byte[] { 0xAB, 0xCD, 0xEF, 0x01 }));
+	}
+
+	[TestMethod]
+	public void Render_MediaBoxNotNamedMdat_MovesChunkOffset ()
+	{
+		// The bytes after moov are in 'free', not 'mdat'. They still move when moov grows.
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var trak = Wrap (Box ("stco", StcoBody (0)), "stbl", "minf", "mdia", "trak");
+		var moov = Box ("moov", trak);
+		var media = Box ("free", Marker);
+		var payloadOffset = (uint)(ftyp.Length + moov.Length + 8);
+		trak = Wrap (Box ("stco", StcoBody (payloadOffset)), "stbl", "minf", "mdia", "trak");
+		moov = Box ("moov", trak);
+		var file = Concat (ftyp, moov, media);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span));
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_ExternalDataReference_DoesNotMoveChunkOffsets ()
+	{
+		// A dref entry with the self-contained flag clear addresses another file. ISO 14496-12 §8.7.2 / §8.7.5.
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var external = TrakWithDref (0, selfContained: false, useCo64: true);
+		var contained = TrakWithDref (0, selfContained: true, useCo64: false);
+		var absent = Wrap (Box ("stco", StcoBody (0)), "stbl", "minf", "mdia", "trak");
+		var moov = Box ("moov", Concat (external, contained, absent));
+		var mdat = Box ("mdat", Marker);
+		var payloadOffset = (uint)(ftyp.Length + moov.Length + 8);
+		Assert.IsTrue (payloadOffset >= ftyp.Length + moov.Length);
+		external = TrakWithDref (payloadOffset, selfContained: false, useCo64: true);
+		contained = TrakWithDref (payloadOffset, selfContained: true, useCo64: false);
+		absent = Wrap (Box ("stco", StcoBody (payloadOffset)), "stbl", "minf", "mdia", "trak");
+		moov = Box ("moov", Concat (external, contained, absent));
+		var file = Concat (ftyp, moov, mdat);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreNotEqual (payloadOffset, markerAt);
+		Assert.AreEqual ((ulong)payloadOffset, ReadCo64 (rendered.Span), "external co64 must stay");
+		Assert.AreEqual (markerAt, ReadStcoOccurrence (rendered.Span, 0), "self-contained stco must move");
+		Assert.AreEqual (markerAt, ReadStcoOccurrence (rendered.Span, 1), "trak with no dref must move");
+	}
+
+	[TestMethod]
+	public void Render_IllegalLargesize_DoesNotHideLaterStco ()
+	{
+		// size==1 with largesize 12 is below the 16-byte extended header, but 12 fits in the parent.
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var blob = IllegalLargesizeThenStco (0);
+		var moov = Box ("moov", Concat (Box ("mvhd", new byte[4]), blob));
+		var mdat = Box ("mdat", Marker);
+		var payloadOffset = (uint)(ftyp.Length + moov.Length + 8);
+		blob = IllegalLargesizeThenStco (payloadOffset);
+		moov = Box ("moov", Concat (Box ("mvhd", new byte[4]), blob));
+		var file = Concat (ftyp, moov, mdat);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span));
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_BadFirstMoovChild_PutsUdtaAfterMvhd ()
+	{
+		// The first child is not a box, so mvhd and the old udta are both unread. udta must not be emitted first.
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var trak = Wrap (Box ("stco", StcoBody (0)), "stbl", "minf", "mdia", "trak");
+		var moov = Box ("moov", Concat (BadBox (), Box ("mvhd", new byte[4]), trak, Udta ("Old")));
+		var mdat = Box ("mdat", Marker);
+		var payloadOffset = (uint)(ftyp.Length + moov.Length + 8);
+		trak = Wrap (Box ("stco", StcoBody (payloadOffset)), "stbl", "minf", "mdia", "trak");
+		moov = Box ("moov", Concat (BadBox (), Box ("mvhd", new byte[4]), trak, Udta ("Old")));
+		var file = Concat (ftyp, moov, mdat);
+
+		var read = Mp4File.Read (file);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.Title = "New";
+		var rendered = read.File.Render (file);
+		Assert.IsFalse (rendered.IsEmpty);
+		Assert.AreEqual (1, Count (rendered.Span, "udta"u8));
+		Assert.IsTrue (IndexOf (rendered.Span, "Old"u8) < 0, "old title survived");
+		var mvhdAt = IndexOf (rendered.Span, "mvhd"u8);
+		var udtaAt = IndexOf (rendered.Span, "udta"u8);
+		Assert.IsTrue (mvhdAt >= 0 && udtaAt > mvhdAt, "udta must follow mvhd");
+		Assert.AreEqual ((uint)MarkerAt (rendered.Span), ReadStco (rendered.Span));
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
 	static BinaryData RenderWithTitle (byte[] file)
 	{
 		var read = Mp4File.Read (file);
@@ -302,5 +442,93 @@ public class Mp4SaveLayoutTests
 				return i;
 		}
 		return -1;
+	}
+
+	static byte[] BadBox ()
+	{
+		var bad = new byte[7];
+		BinaryPrimitives.WriteUInt32BigEndian (bad, 7);
+		return bad;
+	}
+
+	static byte[] Udta (string title)
+	{
+		var text = Encoding.UTF8.GetBytes (title);
+		var dataBody = new byte[8 + text.Length];
+		dataBody[3] = 1;
+		text.CopyTo (dataBody.AsSpan (8));
+		var nam = BoxBytes ([0xA9, (byte)'n', (byte)'a', (byte)'m'], Box ("data", dataBody));
+		var hdlr = new byte[25];
+		"mdir"u8.CopyTo (hdlr.AsSpan (8));
+		"appl"u8.CopyTo (hdlr.AsSpan (12));
+		var meta = Box ("meta", Concat (new byte[4], Box ("hdlr", hdlr), Box ("ilst", nam)));
+		// Padding makes this udta a different size from the rebuilt one, so moov (and stco) must move.
+		return Box ("udta", Concat (meta, Box ("free", new byte[32])));
+	}
+
+	static byte[] BoxBytes (byte[] type, byte[] body)
+	{
+		var box = new byte[8 + body.Length];
+		BinaryPrimitives.WriteUInt32BigEndian (box, (uint)box.Length);
+		type.CopyTo (box, 4);
+		body.CopyTo (box.AsSpan (8));
+		return box;
+	}
+
+	static byte[] FullBox (string type, uint flags, byte[] data)
+	{
+		var body = new byte[4 + data.Length];
+		body[1] = (byte)((flags >> 16) & 0xFF);
+		body[2] = (byte)((flags >> 8) & 0xFF);
+		body[3] = (byte)(flags & 0xFF);
+		data.CopyTo (body.AsSpan (4));
+		return Box (type, body);
+	}
+
+	static byte[] TrakWithDref (uint offset, bool selfContained, bool useCo64)
+	{
+		var url = selfContained
+			? FullBox ("url ", 1, [])
+			: FullBox ("url ", 0, "ext.bin\0"u8.ToArray ());
+		var drefBody = new byte[4 + url.Length];
+		BinaryPrimitives.WriteUInt32BigEndian (drefBody, 1);
+		url.CopyTo (drefBody.AsSpan (4));
+		var dinf = Box ("dinf", FullBox ("dref", 0, drefBody));
+		var chunks = useCo64 ? Box ("co64", Co64Body (offset)) : Box ("stco", StcoBody (offset));
+		var minf = Box ("minf", Concat (dinf, Box ("stbl", chunks)));
+		return Box ("trak", Concat (Box ("tkhd", new byte[4]), Box ("mdia", minf)));
+	}
+
+	static byte[] IllegalLargesizeThenStco (uint chunkOffset)
+	{
+		var stco = Box ("stco", StcoBody (chunkOffset));
+		// 16-byte size==1 header whose largesize is 12, overlapping a 12-byte free box, then stco.
+		var head = new byte[24];
+		BinaryPrimitives.WriteUInt32BigEndian (head, 1);
+		Encoding.ASCII.GetBytes ("XXXX").CopyTo (head, 4);
+		BinaryPrimitives.WriteUInt64BigEndian (head.AsSpan (8), 12);
+		Encoding.ASCII.GetBytes ("free").CopyTo (head, 16);
+		return Concat (head, stco);
+	}
+
+	static uint ReadStcoOccurrence (ReadOnlySpan<byte> data, int occurrence, int entry = 0)
+	{
+		var start = 0;
+		var seen = 0;
+		while (start <= data.Length - 4) {
+			var rel = IndexOf (data.Slice (start), "stco"u8);
+			if (rel < 0)
+				break;
+			if (seen == occurrence) {
+				var at = start + rel + 12 + (entry * 4);
+				Assert.IsTrue (at + 4 <= data.Length);
+				return BinaryPrimitives.ReadUInt32BigEndian (data.Slice (at, 4));
+			}
+			seen++;
+			start += rel + 4;
+		}
+
+		Assert.Fail ($"stco occurrence {occurrence} missing");
+		return 0;
 	}
 }
