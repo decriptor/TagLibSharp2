@@ -290,7 +290,8 @@ public class Mp4SaveLayoutTests
 	[TestMethod]
 	public void Render_MixedDataReference_MovesChunkOffset ()
 	{
-		// stsd references dref entry 1 (self-contained) and entry 2 (external). The self-contained chunks still move.
+		// One chunk and no stsc. stsd references dref entry 1 (self-contained) and entry 2 (external).
+		// The trak is patched as a whole, so this offset moves.
 		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
 		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
 		var file = FileWithChunkTrak (offset => TrakWithDinfAndStbl (offset, dref, stsd), out var payloadOffset);
@@ -298,6 +299,39 @@ public class Mp4SaveLayoutTests
 		var rendered = RenderWithTitle (file);
 		var markerAt = (uint)MarkerAt (rendered.Span);
 		Assert.AreEqual (markerAt, ReadStco (rendered.Span), "self-contained sample offsets must move");
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_MixedDataReference_TwoChunks_MovesBothOffsets ()
+	{
+		// stsc assigns chunk 1 to the self-contained sample entry and chunk 2 to the external one.
+		// ISO 14496-12 §8.7.4 could patch per chunk. This trak is patched as a whole, so both offsets move.
+		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
+		var file = FileWithChunkTrak (
+			offset => TrakWithTwoChunks (offset, offset + 4, dref, stsd, StscBox ()),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span, 0), "self-contained chunk moves");
+		Assert.AreEqual (markerAt + 4, ReadStco (rendered.Span, 1), "external chunk moves with the trak");
+		Assert.AreNotEqual (payloadOffset + 4, ReadStco (rendered.Span, 1));
+	}
+
+	[TestMethod]
+	public void Render_ExternalDrefBeforeSelfContained_MovesChunkOffset ()
+	{
+		// dref order is [external, self-contained]. stsd selects entry 2.
+		// The external entry being first must not freeze this trak. ISO 14496-12 §8.5.2.
+		var dref = DrefBox (DataEntryUrl (false), DataEntryUrl (true));
+		var stsd = StsdBox (SampleEntry (2));
+		var file = FileWithChunkTrak (offset => TrakWithDinfAndStbl (offset, dref, stsd), out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span), "the self-contained index must move");
 		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
 	}
 
@@ -338,6 +372,53 @@ public class Mp4SaveLayoutTests
 		var rendered = RenderWithTitle (file);
 		var markerAt = (uint)MarkerAt (rendered.Span);
 		Assert.AreEqual (markerAt, ReadStco (rendered.Span), "a missing index is self-contained");
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_EmptyStsdWithExternalDref_DoesNotMoveChunkOffset ()
+	{
+		// stsd is present with entry_count 0, so it yields no data_reference_index.
+		// An external dref entry still means this trak is not self-contained. ISO 14496-12 §8.7.2.
+		var dref = DrefBox (DataEntryUrl (false));
+		var file = FileWithChunkTrak (offset => TrakWithDinfAndStbl (offset, dref, StsdBox ()), out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		Assert.AreEqual (payloadOffset, ReadStco (rendered.Span), "empty stsd plus an external dref must not move offsets");
+		Assert.AreNotEqual ((uint)MarkerAt (rendered.Span), ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_TruncatedStsd_DoesNotReadNextBoxAsDataReferenceIndex ()
+	{
+		// The sample entry declares 64 bytes, but stsd ends after 16. Those last 8 bytes are the
+		// next box header, and the uint16 at the data_reference_index position is 1. dref entry 1
+		// is external, so reading the next box would leave the chunk offset unchanged.
+		var dref = DrefBox (DataEntryUrl (false));
+		var file = FileWithChunkTrak (offset => TrakWithDinfAndStbl (offset, dref, TruncatedStsd ()), out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span), "a truncated stsd must not select the external dref");
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_TruncatedDrefEntry_DoesNotReadNextBoxAsFlags ()
+	{
+		// The url entry declares 64 bytes, but dref ends after 16. The bytes at the flags
+		// position are the next box (size 0), whose low bit is clear. That is not the self-contained flag.
+		var entry = new byte[16];
+		BinaryPrimitives.WriteUInt32BigEndian (entry, 64);
+		Encoding.ASCII.GetBytes ("url ").CopyTo (entry, 4);
+		BinaryPrimitives.WriteUInt32BigEndian (entry.AsSpan (8), 0);
+		Encoding.ASCII.GetBytes ("nxtb").CopyTo (entry, 12);
+		var dref = DrefBox (entry);
+		var file = FileWithChunkTrak (offset => TrakWithDinfAndStbl (offset, dref, null), out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span), "a truncated dref entry must not mark the trak external");
 		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
 	}
 
@@ -615,6 +696,24 @@ public class Mp4SaveLayoutTests
 		return FullBox ("stsd", 0, data);
 	}
 
+	static byte[] TruncatedStsd ()
+	{
+		// Declared sample-entry size is 64. Only 16 bytes are in this stsd.
+		// Bytes 8..15 are the next box: size 8, type 'nx' + 0x0001 at the index position.
+		var entry = new byte[16];
+		BinaryPrimitives.WriteUInt32BigEndian (entry, 64);
+		Encoding.ASCII.GetBytes ("mp4a").CopyTo (entry, 4);
+		BinaryPrimitives.WriteUInt32BigEndian (entry.AsSpan (8), 8);
+		entry[12] = (byte)'n';
+		entry[13] = (byte)'x';
+		entry[14] = 0x00;
+		entry[15] = 0x01;
+		var data = new byte[4 + entry.Length];
+		BinaryPrimitives.WriteUInt32BigEndian (data, 1);
+		entry.CopyTo (data.AsSpan (4));
+		return FullBox ("stsd", 0, data);
+	}
+
 	static byte[] CountedEntries (byte[][] entries)
 	{
 		var length = 4;
@@ -636,6 +735,28 @@ public class Mp4SaveLayoutTests
 		var stbl = Box ("stbl", stsd is null ? chunks : Concat (stsd, chunks));
 		var minf = Box ("minf", Concat (Box ("dinf", dref), stbl));
 		return Box ("trak", Concat (Box ("tkhd", new byte[4]), Box ("mdia", minf)));
+	}
+
+	static byte[] TrakWithTwoChunks (uint firstOffset, uint secondOffset, byte[] dref, byte[] stsd, byte[] stsc)
+	{
+		var chunks = Box ("stco", StcoBody (firstOffset, secondOffset));
+		var stbl = Box ("stbl", Concat (stsd, stsc, chunks));
+		var minf = Box ("minf", Concat (Box ("dinf", dref), stbl));
+		return Box ("trak", Concat (Box ("tkhd", new byte[4]), Box ("mdia", minf)));
+	}
+
+	static byte[] StscBox ()
+	{
+		// Two rows: chunk 1 uses sample description 1, chunk 2 uses sample description 2.
+		var rows = new byte[4 + 24];
+		BinaryPrimitives.WriteUInt32BigEndian (rows, 2);
+		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (8), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (12), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (16), 2);
+		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (20), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (24), 2);
+		return FullBox ("stsc", 0, rows);
 	}
 
 	static byte[] TrakWithDref (uint offset, bool selfContained, bool useCo64)

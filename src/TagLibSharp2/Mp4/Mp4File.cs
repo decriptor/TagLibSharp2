@@ -1214,7 +1214,8 @@ public sealed class Mp4File : IMediaFile
 	/// Adds <paramref name="delta"/> to stco and co64 entries that point at or
 	/// after the old end of moov. ISO 14496-12 chunk offsets are file offsets.
 	/// A trak is left unchanged only when every sample entry it references is external.
-	/// With no sample description, any external data reference still leaves the trak unchanged.
+	/// Mixed references patch the trak as a whole, so every chunk offset moves.
+	/// If stsd is missing, empty, or yields no indexes, any external dref leaves the trak unchanged.
 	/// </summary>
 	static BinaryData AdjustChunkOffsets (BinaryData moov, int threshold, int delta)
 	{
@@ -1237,7 +1238,7 @@ public sealed class Mp4File : IMediaFile
 		else if (type.SequenceEqual ("co64"u8))
 			PatchOffsets (payload, 8, threshold, delta);
 		else if (type.SequenceEqual ("trak"u8)) {
-			// §8.5.2 / §8.7.2: skip only when every referenced sample entry is an external dref.
+			// §8.5.2 / §8.7.2: one decision per trak. Mixed references still patch every chunk offset.
 			if (!TrakReferencesExternalMedia (payload))
 				WalkBoxes (payload, threshold, delta);
 		} else if (IsOffsetContainer (type))
@@ -1255,18 +1256,23 @@ public sealed class Mp4File : IMediaFile
 	/// True when chunk offsets in this trak address another file.
 	/// ISO 14496-12 §8.5.2 stores a 1-based data_reference_index in each sample entry.
 	/// §8.7.2: the indexed dref entry is external when its self-contained flag is clear.
+	/// The decision is per trak, not per chunk. Sample entries that mix self-contained and
+	/// external references are patched as a whole, so every chunk offset moves. That is wrong
+	/// for a QuickTime reference movie with two chunks; per-chunk stsc patching is not done here.
 	/// Skip patching only when every referenced entry is external.
 	/// A missing or out-of-range index is treated as self-contained.
 	/// An entry that does not contain its flags is unknown and is not external by itself.
-	/// With no stsd, any external dref entry still leaves the trak unchanged.
+	/// If stsd is missing, empty, or yields no data_reference_index values, any external dref
+	/// entry leaves the trak unchanged. No dref still means self-contained.
 	/// </summary>
 	static bool TrakReferencesExternalMedia (ReadOnlySpan<byte> trakPayload)
 	{
 		var external = new List<bool> ();
 		var references = new List<int> ();
-		var sawStsd = false;
-		CollectTrackLayout (trakPayload, external, references, ref sawStsd);
-		if (!sawStsd) {
+		CollectTrackLayout (trakPayload, external, references);
+		// No stsd, an empty stsd, or a description that produced no indexes: do not assume
+		// the samples are in this file when any dref entry is external.
+		if (references.Count == 0) {
 			foreach (var isExternal in external) {
 				if (isExternal)
 					return true;
@@ -1274,9 +1280,6 @@ public sealed class Mp4File : IMediaFile
 
 			return false;
 		}
-
-		if (references.Count == 0)
-			return false;
 
 		foreach (var index in references) {
 			if (index < 1 || index > external.Count || !external[index - 1])
@@ -1286,7 +1289,7 @@ public sealed class Mp4File : IMediaFile
 		return true;
 	}
 
-	static void CollectTrackLayout (ReadOnlySpan<byte> payload, List<bool> external, List<int> references, ref bool sawStsd)
+	static void CollectTrackLayout (ReadOnlySpan<byte> payload, List<bool> external, List<int> references)
 	{
 		var offset = 0;
 		while (offset + 8 <= payload.Length) {
@@ -1303,14 +1306,26 @@ public sealed class Mp4File : IMediaFile
 			var body = payload.Slice (offset + header, size - header);
 			if (type.SequenceEqual ("dref"u8))
 				ReadDrefEntries (body, external);
-			else if (type.SequenceEqual ("stsd"u8)) {
-				sawStsd = true;
+			else if (type.SequenceEqual ("stsd"u8))
 				ReadStsdReferences (body, references);
-			} else if (IsTrackLayoutParent (type))
-				CollectTrackLayout (body, external, references, ref sawStsd);
+			else if (IsTrackLayoutParent (type))
+				CollectTrackLayout (body, external, references);
 
 			offset += size;
 		}
+	}
+
+	/// <summary>
+	/// True when the 32-bit size is explicit and larger than <paramref name="box"/>.
+	/// Size 0 extends to the end of the parent, and size 1 is largesize; <see cref="TryMeasureBox"/> decides those.
+	/// </summary>
+	static bool ExplicitSizePastParent (ReadOnlySpan<byte> box)
+	{
+		if (box.Length < 4)
+			return false;
+
+		var declared = BinaryPrimitives.ReadUInt32BigEndian (box);
+		return declared > 1 && declared > (uint)box.Length;
 	}
 
 	static bool IsTrackLayoutParent (ReadOnlySpan<byte> type) =>
@@ -1327,7 +1342,12 @@ public sealed class Mp4File : IMediaFile
 		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
 		var pos = 8;
 		for (var i = 0u; i < count; i++) {
-			if (pos >= payload.Length || !TryMeasureBox (payload.Slice (pos), out var size, out var header))
+			if (pos >= payload.Length || payload.Length - pos < 8)
+				break;
+			// An explicit size past this dref is truncated. The next box's bytes are not flags.
+			if (ExplicitSizePastParent (payload.Slice (pos)))
+				break;
+			if (!TryMeasureBox (payload.Slice (pos), out var size, out var header))
 				break;
 			if (size < header || size > payload.Length - pos)
 				break;
@@ -1353,12 +1373,21 @@ public sealed class Mp4File : IMediaFile
 		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
 		var pos = 8;
 		for (var i = 0u; i < count; i++) {
-			if (pos >= payload.Length || !TryMeasureBox (payload.Slice (pos), out var size, out var header)) {
+			if (pos >= payload.Length || payload.Length - pos < 8) {
 				references.Add (0);
 				return;
 			}
 
-			if (size < header || size > payload.Length - pos) {
+			// Truncated stsd: the sample entry's explicit size runs past this box.
+			// Do not read the next box's bytes as data_reference_index.
+			if (ExplicitSizePastParent (payload.Slice (pos))) {
+				references.Add (0);
+				return;
+			}
+
+			if (!TryMeasureBox (payload.Slice (pos), out var size, out var header)
+				|| size < header
+				|| size > payload.Length - pos) {
 				references.Add (0);
 				return;
 			}
