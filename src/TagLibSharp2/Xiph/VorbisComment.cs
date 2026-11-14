@@ -160,24 +160,16 @@ public sealed class VorbisComment : Tag
 #pragma warning restore CA1819
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// When <c>TRACKNUMBER</c> is <c>n/m</c> and neither <c>TOTALTRACKS</c> nor <c>TRACKTOTAL</c> is numeric,
+	/// the total is kept in <c>TOTALTRACKS</c>. The stored track number is the number part only.
+	/// </remarks>
 	public override uint? Track {
-		get {
-			var value = GetValue ("TRACKNUMBER");
-			if (string.IsNullOrEmpty (value))
-				return null;
-
-			// Handle "5/12" format
-#if NETSTANDARD2_0
-			var slashIndex = value!.IndexOf ('/');
-#else
-			var slashIndex = value!.IndexOf ('/', StringComparison.Ordinal);
-#endif
-			if (slashIndex > 0)
-				value = value.Substring (0, slashIndex);
-
-			return uint.TryParse (value, out var track) ? track : null;
+		get => ParseLeadingNumber (GetValue ("TRACKNUMBER"));
+		set {
+			PreserveEmbeddedTotal ("TRACKNUMBER", "TOTALTRACKS", "TRACKTOTAL");
+			SetValue ("TRACKNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 		}
-		set => SetValue ("TRACKNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
 
 	/// <inheritdoc/>
@@ -213,24 +205,16 @@ public sealed class VorbisComment : Tag
 #pragma warning restore CA1819
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// When <c>DISCNUMBER</c> is <c>n/m</c> and neither <c>TOTALDISCS</c> nor <c>DISCTOTAL</c> is numeric,
+	/// the total is kept in <c>TOTALDISCS</c>. The stored disc number is the number part only.
+	/// </remarks>
 	public override uint? DiscNumber {
-		get {
-			var value = GetValue ("DISCNUMBER");
-			if (string.IsNullOrEmpty (value))
-				return null;
-
-			// Handle "2/3" format
-#if NETSTANDARD2_0
-			var slashIndex = value!.IndexOf ('/');
-#else
-			var slashIndex = value!.IndexOf ('/', StringComparison.Ordinal);
-#endif
-			if (slashIndex > 0)
-				value = value.Substring (0, slashIndex);
-
-			return uint.TryParse (value, out var disc) ? disc : null;
+		get => ParseLeadingNumber (GetValue ("DISCNUMBER"));
+		set {
+			PreserveEmbeddedTotal ("DISCNUMBER", "TOTALDISCS", "DISCTOTAL");
+			SetValue ("DISCNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 		}
-		set => SetValue ("DISCNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
 
 	/// <inheritdoc/>
@@ -265,7 +249,7 @@ public sealed class VorbisComment : Tag
 			var value = GetValue ("BPM");
 			if (string.IsNullOrEmpty (value))
 				return null;
-			return uint.TryParse (value, out var bpm) ? bpm : null;
+			return TryParseUInt (value, out var bpm) ? bpm : null;
 		}
 		set => SetValue ("BPM", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
@@ -295,7 +279,7 @@ public sealed class VorbisComment : Tag
 	public override uint? MovementNumber {
 		get {
 			var value = GetValue ("MOVEMENTNUMBER");
-			return !string.IsNullOrEmpty (value) && uint.TryParse (value, out var num) ? num : null;
+			return TryParseUInt (value, out var num) ? num : null;
 		}
 		set => SetValue ("MOVEMENTNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
@@ -303,11 +287,14 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Reads the first numeric MOVEMENTTOTAL, then MOVEMENTCOUNT. An empty or non-numeric field is skipped.
-	/// Writes MOVEMENTTOTAL.
+	/// Writes MOVEMENTTOTAL and removes MOVEMENTCOUNT.
 	/// </remarks>
 	public override uint? MovementTotal {
 		get => ParseUIntField ("MOVEMENTTOTAL") ?? ParseUIntField ("MOVEMENTCOUNT");
-		set => SetValue ("MOVEMENTTOTAL", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+		set {
+			SetValue ("MOVEMENTTOTAL", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+			RemoveAll ("MOVEMENTCOUNT");
+		}
 	}
 
 	/// <inheritdoc/>
@@ -669,35 +656,22 @@ public sealed class VorbisComment : Tag
 	/// <remarks>
 	/// Reads the first numeric TOTALTRACKS, then TRACKTOTAL, then a TRACKNUMBER value of the form "5/12".
 	/// An empty or non-numeric field is skipped. Writes TOTALTRACKS and removes TRACKTOTAL.
+	/// Setting the value canonicalizes the stored total to TOTALTRACKS.
+	/// A TRACKNUMBER of the form n/m is rewritten to n so the slash total is not read back.
 	/// </remarks>
 	public override uint? TotalTracks {
 		get {
 			// TOTALTRACKS is what this library writes. TRACKTOTAL is what rippers write.
-			var total = ParseUIntField ("TOTALTRACKS") ?? ParseUIntField ("TRACKTOTAL");
-			if (total is not null)
-				return total;
-
-			// Fall back to parsing TRACKNUMBER "5/12" format
-			var trackValue = GetValue ("TRACKNUMBER");
-			if (string.IsNullOrEmpty (trackValue))
-				return null;
-
-#if NETSTANDARD2_0
-			var slashIndex = trackValue!.IndexOf ('/');
-#else
-			var slashIndex = trackValue!.IndexOf ('/', StringComparison.Ordinal);
-#endif
-			if (slashIndex > 0) {
-				var totalPart = trackValue.Substring (slashIndex + 1);
-				if (uint.TryParse (totalPart, out var totalFromTrack))
-					return totalFromTrack;
-			}
-
-			return null;
+			// The slash form is last so TRACKTOTAL stays preferred over n/m.
+			return ParseUIntField ("TOTALTRACKS")
+				?? ParseUIntField ("TRACKTOTAL")
+				?? ParseEmbeddedTotal (GetValue ("TRACKNUMBER"));
 		}
 		set {
+			// Setting the value canonicalizes the stored total to TOTALTRACKS.
 			SetValue ("TOTALTRACKS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 			RemoveAll ("TRACKTOTAL");
+			StripEmbeddedTotal ("TRACKNUMBER");
 		}
 	}
 
@@ -705,14 +679,24 @@ public sealed class VorbisComment : Tag
 	/// Gets or sets the total number of discs.
 	/// </summary>
 	/// <remarks>
-	/// Reads the first numeric TOTALDISCS, then DISCTOTAL. An empty or non-numeric field is skipped.
-	/// Writes TOTALDISCS and removes DISCTOTAL.
+	/// Reads the first numeric TOTALDISCS, then DISCTOTAL, then a DISCNUMBER value of the form "2/3".
+	/// An empty or non-numeric field is skipped. Writes TOTALDISCS and removes DISCTOTAL.
+	/// Setting the value canonicalizes the stored total to TOTALDISCS.
+	/// A DISCNUMBER of the form n/m is rewritten to n so the slash total is not read back.
 	/// </remarks>
 	public override uint? TotalDiscs {
-		get => ParseUIntField ("TOTALDISCS") ?? ParseUIntField ("DISCTOTAL");
+		get {
+			// TOTALDISCS is what this library writes. DISCTOTAL is the alias rippers write.
+			// The slash form is last so DISCTOTAL stays preferred over n/m.
+			return ParseUIntField ("TOTALDISCS")
+				?? ParseUIntField ("DISCTOTAL")
+				?? ParseEmbeddedTotal (GetValue ("DISCNUMBER"));
+		}
 		set {
+			// Setting the value canonicalizes the stored total to TOTALDISCS.
 			SetValue ("TOTALDISCS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 			RemoveAll ("DISCTOTAL");
+			StripEmbeddedTotal ("DISCNUMBER");
 		}
 	}
 
@@ -778,16 +762,106 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <summary>
-	/// Reads the first value of a field as an unsigned integer.
+	/// Reads the first unsigned integer among a field's values.
 	/// </summary>
 	/// <param name="name">The field name (case-insensitive).</param>
-	/// <returns>The parsed value, or null when the field is missing, empty, or not an unsigned integer.</returns>
+	/// <returns>The first parsed value, or null when none of the values are an unsigned integer.</returns>
 	uint? ParseUIntField (string name)
 	{
-		var value = GetValue (name);
-		if (string.IsNullOrEmpty (value))
+		var values = GetValues (name);
+		for (var i = 0; i < values.Count; i++) {
+			if (TryParseUInt (values[i], out var parsed))
+				return parsed;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Parses an invariant unsigned integer. Empty and non-numeric text is rejected.
+	/// </summary>
+	static bool TryParseUInt (string? value, out uint parsed)
+	{
+		if (string.IsNullOrEmpty (value)) {
+			parsed = 0;
+			return false;
+		}
+
+		return uint.TryParse (
+			value,
+			System.Globalization.NumberStyles.Integer,
+			System.Globalization.CultureInfo.InvariantCulture,
+			out parsed);
+	}
+
+	/// <summary>
+	/// Reads the number before a slash, or the whole value when there is no slash.
+	/// </summary>
+	static uint? ParseLeadingNumber (string? value)
+	{
+		if (value is null || value.Length == 0)
 			return null;
-		return uint.TryParse (value, out var parsed) ? parsed : null;
+
+		var slashIndex = IndexOfSlash (value);
+		if (slashIndex > 0)
+			value = value.Substring (0, slashIndex);
+
+		return TryParseUInt (value, out var number) ? number : null;
+	}
+
+	/// <summary>
+	/// Reads the total from a value of the form n/m. The slash is required.
+	/// </summary>
+	static uint? ParseEmbeddedTotal (string? value)
+	{
+		if (value is null || value.Length == 0)
+			return null;
+
+		var slashIndex = IndexOfSlash (value);
+		if (slashIndex <= 0 || slashIndex >= value.Length - 1)
+			return null;
+
+		return TryParseUInt (value.Substring (slashIndex + 1), out var total) ? total : null;
+	}
+
+	/// <summary>
+	/// Copies an n/m total onto the canonical field when neither that field nor its alias already parses.
+	/// </summary>
+	void PreserveEmbeddedTotal (string numberField, string canonicalField, string aliasField)
+	{
+		if (ParseUIntField (canonicalField) is not null || ParseUIntField (aliasField) is not null)
+			return;
+
+		var total = ParseEmbeddedTotal (GetValue (numberField));
+		if (total is not uint preserved)
+			return;
+
+		SetValue (canonicalField, preserved.ToString (System.Globalization.CultureInfo.InvariantCulture));
+	}
+
+	/// <summary>
+	/// Rewrites n/m to n when m parses, so a later read cannot resurrect the slash total.
+	/// </summary>
+	void StripEmbeddedTotal (string numberField)
+	{
+		var value = GetValue (numberField);
+		if (value is null || value.Length == 0 || ParseEmbeddedTotal (value) is null)
+			return;
+
+		var slashIndex = IndexOfSlash (value);
+		if (slashIndex <= 0)
+			return;
+
+		SetValue (numberField, value.Substring (0, slashIndex));
+	}
+
+	static int IndexOfSlash (string value)
+	{
+#if NETSTANDARD2_0
+		return value.IndexOf ('/');
+#else
+		return value.IndexOf ('/', StringComparison.Ordinal);
+#endif
 	}
 
 	/// <summary>

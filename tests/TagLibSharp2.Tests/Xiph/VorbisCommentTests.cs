@@ -379,6 +379,109 @@ public class VorbisCommentTests
 	}
 
 	[TestMethod]
+	public void TotalDiscs_FromDiscNumber_ParsesSlashFormat ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		Assert.AreEqual (3u, comment.TotalDiscs);
+		Assert.AreEqual (2u, comment.DiscNumber);
+	}
+
+	[TestMethod]
+	public void TotalDiscs_UnusableFields_FallsBackToDiscNumberSlash ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALDISCS", "abc");
+		comment.SetValue ("DISCTOTAL", "nope");
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		Assert.AreEqual (2u, comment.DiscNumber);
+		Assert.AreEqual (3u, comment.TotalDiscs);
+	}
+
+	[TestMethod]
+	public void TotalDiscs_PrefersDiscTotalOverSlash ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("DISCTOTAL", "5");
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		Assert.AreEqual (5u, comment.TotalDiscs);
+		Assert.AreEqual (2u, comment.DiscNumber);
+	}
+
+	[TestMethod]
+	public void DiscNumber_Set_PreservesSlashTotalAsTotalDiscs ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		comment.DiscNumber = 1;
+
+		Assert.AreEqual (1u, comment.DiscNumber);
+		Assert.AreEqual (3u, comment.TotalDiscs);
+		Assert.AreEqual ("1", comment.GetValue ("DISCNUMBER"));
+		Assert.AreEqual ("3", comment.GetValue ("TOTALDISCS"));
+	}
+
+	[TestMethod]
+	public void TotalDiscs_SetNull_StripsSlashTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		comment.TotalDiscs = null;
+
+		Assert.IsNull (comment.TotalDiscs);
+		Assert.AreEqual (2u, comment.DiscNumber);
+		Assert.AreEqual ("2", comment.GetValue ("DISCNUMBER"));
+		Assert.IsNull (comment.GetValue ("DISCTOTAL"));
+	}
+
+	[TestMethod]
+	public void TotalDiscs_Set_StripsSlashFromDiscNumber ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		comment.TotalDiscs = 4;
+
+		Assert.AreEqual (4u, comment.TotalDiscs);
+		Assert.AreEqual (2u, comment.DiscNumber);
+		Assert.AreEqual ("2", comment.GetValue ("DISCNUMBER"));
+		Assert.AreEqual ("4", comment.GetValue ("TOTALDISCS"));
+	}
+
+	[TestMethod]
+	public void DiscNumber_Set_ReplacesUnusableTotalDiscsWithSlashTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALDISCS", "abc");
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		comment.DiscNumber = 1;
+
+		Assert.AreEqual (1u, comment.DiscNumber);
+		Assert.AreEqual (3u, comment.TotalDiscs);
+		Assert.AreEqual ("3", comment.GetValue ("TOTALDISCS"));
+	}
+
+	[TestMethod]
+	public void DiscNumber_SetNull_PreservesSlashTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("DISCNUMBER", "2/3");
+
+		comment.DiscNumber = null;
+
+		Assert.IsNull (comment.DiscNumber);
+		Assert.AreEqual (3u, comment.TotalDiscs);
+		Assert.IsNull (comment.GetValue ("DISCNUMBER"));
+		Assert.AreEqual ("3", comment.GetValue ("TOTALDISCS"));
+	}
+
+	[TestMethod]
 	public void TotalTracks_FromTrackNumber_ParsesCorrectly ()
 	{
 		var comment = new VorbisComment ();
@@ -462,6 +565,140 @@ public class VorbisCommentTests
 		comment.SetValue ("TRACKNUMBER", "5/12");
 
 		Assert.AreEqual (5u, comment.Track);
+		Assert.AreEqual (12u, comment.TotalTracks);
+	}
+
+	[TestMethod]
+	public void Track_Set_PreservesSlashTotalAsTotalTracks ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		comment.Track = 6;
+
+		Assert.AreEqual (6u, comment.Track);
+		Assert.AreEqual (12u, comment.TotalTracks);
+		Assert.AreEqual ("6", comment.GetValue ("TRACKNUMBER"));
+		Assert.AreEqual ("12", comment.GetValue ("TOTALTRACKS"));
+	}
+
+	[TestMethod]
+	public void Track_SetNull_PreservesSlashTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		comment.Track = null;
+
+		Assert.IsNull (comment.Track);
+		Assert.AreEqual (12u, comment.TotalTracks);
+		Assert.IsNull (comment.GetValue ("TRACKNUMBER"));
+		Assert.AreEqual ("12", comment.GetValue ("TOTALTRACKS"));
+	}
+
+	[TestMethod]
+	public void Track_Set_DoesNotOverwriteExistingTotalTracks ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALTRACKS", "20");
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		comment.Track = 6;
+
+		Assert.AreEqual (6u, comment.Track);
+		Assert.AreEqual (20u, comment.TotalTracks);
+		Assert.AreEqual ("20", comment.GetValue ("TOTALTRACKS"));
+		Assert.AreEqual ("6", comment.GetValue ("TRACKNUMBER"));
+	}
+
+	[TestMethod]
+	public void Track_Set_ReplacesUnusableTotalTracksWithSlashTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALTRACKS", "abc");
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		comment.Track = 6;
+
+		Assert.AreEqual (6u, comment.Track);
+		Assert.AreEqual (12u, comment.TotalTracks);
+		Assert.AreEqual ("12", comment.GetValue ("TOTALTRACKS"));
+		Assert.AreEqual ("6", comment.GetValue ("TRACKNUMBER"));
+	}
+
+	[TestMethod]
+	public void TotalTracks_Set_StripsSlashFromTrackNumber ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		comment.TotalTracks = 9;
+
+		Assert.AreEqual (9u, comment.TotalTracks);
+		Assert.AreEqual (5u, comment.Track);
+		Assert.AreEqual ("5", comment.GetValue ("TRACKNUMBER"));
+		Assert.AreEqual ("9", comment.GetValue ("TOTALTRACKS"));
+		Assert.IsNull (comment.GetValue ("TRACKTOTAL"));
+	}
+
+	[TestMethod]
+	public void Track_Set_KeepsExistingTrackTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKTOTAL", "20");
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		comment.Track = 6;
+
+		Assert.AreEqual (6u, comment.Track);
+		Assert.AreEqual (20u, comment.TotalTracks);
+		Assert.IsNull (comment.GetValue ("TOTALTRACKS"));
+		Assert.AreEqual ("20", comment.GetValue ("TRACKTOTAL"));
+		Assert.AreEqual ("6", comment.GetValue ("TRACKNUMBER"));
+	}
+
+	[TestMethod]
+	public void TotalTracks_SetNull_StripsSlashTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		comment.TotalTracks = null;
+
+		Assert.IsNull (comment.TotalTracks);
+		Assert.AreEqual (5u, comment.Track);
+		Assert.AreEqual ("5", comment.GetValue ("TRACKNUMBER"));
+		Assert.IsNull (comment.GetValue ("TOTALTRACKS"));
+		Assert.IsNull (comment.GetValue ("TRACKTOTAL"));
+	}
+
+	[TestMethod]
+	public void TotalTracks_DuplicateNonNumericThenNumeric_ReturnsFirstNumeric ()
+	{
+		var comment = new VorbisComment ();
+		comment.AddField ("TOTALTRACKS", "abc");
+		comment.AddField ("TOTALTRACKS", "12");
+
+		Assert.AreEqual (12u, comment.TotalTracks);
+	}
+
+	[TestMethod]
+	public void TotalTracks_EmptyThenNumericDuplicate_ReturnsNumeric ()
+	{
+		var comment = new VorbisComment ();
+		comment.AddField ("TOTALTRACKS", "");
+		comment.AddField ("TOTALTRACKS", "12");
+
+		Assert.AreEqual (12u, comment.TotalTracks);
+	}
+
+	[TestMethod]
+	public void TotalTracks_DuplicateNumeric_ReturnsFirstNumeric ()
+	{
+		var comment = new VorbisComment ();
+		comment.AddField ("TOTALTRACKS", "12");
+		comment.AddField ("TOTALTRACKS", "99");
+
 		Assert.AreEqual (12u, comment.TotalTracks);
 	}
 
