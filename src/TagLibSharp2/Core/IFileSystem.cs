@@ -87,7 +87,8 @@ public interface IFileSystem
 
 	/// <summary>
 	/// Moves a file from one path to another, overwriting the destination if it exists.
-	/// Replacing an existing file is same-volume only.
+	/// Replacing an existing file must be one step, or the destination must be left untouched
+	/// if the replace fails. Replacing an existing file is same-volume only.
 	/// </summary>
 	/// <param name="sourcePath">The source file path.</param>
 	/// <param name="destinationPath">The destination file path.</param>
