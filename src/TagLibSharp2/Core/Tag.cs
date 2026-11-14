@@ -162,9 +162,9 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// Defaults to <see cref="Year"/>. A format whose public year is only four digits
-	/// overrides this to carry a full timestamp.
+	/// overrides this to carry a full timestamp. Same-assembly subclasses only.
 	/// </remarks>
-	protected virtual string? CopyableDate => Year;
+	private protected virtual string? CopyableDate => Year;
 
 	/// <summary>
 	/// Reads <see cref="CopyableDate"/> from another tag in this assembly.
@@ -1200,8 +1200,9 @@ public abstract class Tag
 				target.Artist = Artist;
 			if (Album is not null)
 				target.Album = Album;
-			if (CopyableDate is not null)
-				target.Year = CopyableDate;
+			var copyableDate = CopyableDate;
+			if (copyableDate is not null)
+				target.Year = copyableDate;
 			if (Comment is not null)
 				target.Comment = Comment;
 			if (Genre is not null)
