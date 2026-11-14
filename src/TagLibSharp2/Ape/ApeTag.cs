@@ -760,37 +760,17 @@ public sealed class ApeTag : Tag
 
 	/// <summary>
 	/// Parses an APE tag from binary data.
-	/// The footer is the last 32 bytes, unless an ID3v1 tag follows it.
+	/// A full footer at EOF is used when it parses. Otherwise the footer is at EOF-160 when ID3v1 follows.
 	/// </summary>
 	public static ApeTagParseResult Parse (ReadOnlySpan<byte> data)
 	{
-		// ID3v1 is the last 128 bytes and starts with "TAG". The footer is the 32 bytes before it.
-		// Require the APE preamble there: "APETAGEX" itself contains "TAG", so a short tag must not shift.
-		const int id3v1Size = 128;
-		var id3Suffix = 0;
-		if (data.Length >= id3v1Size + ApeTagFooter.Size &&
-			data.Slice (data.Length - id3v1Size, 3).SequenceEqual ("TAG"u8)) {
-			var footerBeforeId3 = data.Slice (data.Length - id3v1Size - ApeTagFooter.Size, ApeTagFooter.Size);
-			if (footerBeforeId3[..ApeTagFooter.Magic.Length].SequenceEqual (ApeTagFooter.Magic)) {
-				id3Suffix = id3v1Size;
-			}
+		var location = ApeTagLocation.Locate (data);
+		if (!location.Found) {
+			return ApeTagParseResult.Failure (location.Error!);
 		}
 
-		if (data.Length < ApeTagFooter.Size + id3Suffix) {
-			return ApeTagParseResult.Failure (
-				$"Data too short for APE tag: {data.Length} bytes");
-		}
-
-		var footerStart = data.Length - id3Suffix - ApeTagFooter.Size;
-		var footerData = data.Slice (footerStart, ApeTagFooter.Size);
-		var footerResult = ApeTagFooter.Parse (footerData);
-
-		if (!footerResult.IsSuccess) {
-			return ApeTagParseResult.Failure (footerResult.Error!);
-		}
-
-		var footer = footerResult.Footer!;
-		var apeRegionLength = data.Length - id3Suffix;
+		var footer = location.Footer!;
+		var apeRegionLength = location.TagEnd;
 
 		// Validate tag size against the bytes that belong to the APE tag.
 		if (footer.TagSize > (uint)apeRegionLength) {
@@ -805,7 +785,7 @@ public sealed class ApeTag : Tag
 
 		// TagSize includes the footer and not a header.
 		var itemsSize = (int)footer.TagSize - ApeTagFooter.Size;
-		var itemsStart = data.Length - id3Suffix - (int)footer.TagSize;
+		var itemsStart = location.TagEnd - (int)footer.TagSize;
 
 		if (itemsStart < 0 || itemsSize < 0) {
 			return ApeTagParseResult.Failure ("Invalid APE tag layout");
@@ -818,6 +798,8 @@ public sealed class ApeTag : Tag
 				$"APE item count ({footer.ItemCount}) exceeds item data ({itemsSize} bytes)");
 		}
 
+		// Do not size the dictionary from ItemCount. A count that fits in the item bytes
+		// can still be huge; 0xFF payloads fail in the item parser either way, and the cap stays.
 		var items = new Dictionary<string, ApeTagItem> (
 			(int)Math.Min (footer.ItemCount, 256u),
 			StringComparer.OrdinalIgnoreCase);

@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
 using TagLibSharp2.Tests.Core;
 using TagLibSharp2.WavPack;
@@ -374,6 +375,40 @@ public class WavPackFileTests
 		var reparsed = WavPackFile.Read (rendered);
 		Assert.IsTrue (reparsed.IsSuccess);
 		Assert.IsNull (reparsed.File!.ApeTag);
+	}
+
+	[TestMethod]
+	public void Render_Id3v1AfterApe_RewritesOneTagAndRemoveLeavesAudio ()
+	{
+		var audio = CreateMinimalWavPackFile ();
+		var data = CreateAudioWithApeThenId3v1 (audio, "Original");
+		var result = WavPackFile.Read (data);
+		Assert.IsTrue (result.IsSuccess, result.Error);
+
+		var file = result.File!;
+		file.ApeTag!.Title = "New Title";
+		var rendered = file.Render (data);
+
+		Assert.AreEqual (1, CountSequence (rendered, "APETAGEX"u8));
+		Assert.IsTrue (rendered.AsSpan (rendered.Length - 128 - ApeTagFooter.Size, 8).SequenceEqual ("APETAGEX"u8));
+		Assert.IsTrue (rendered.AsSpan (rendered.Length - 128, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (rendered.AsSpan (rendered.Length - 125, 6).SequenceEqual ("KeepMe"u8));
+		CollectionAssert.AreEqual (audio, rendered[..audio.Length]);
+
+		var reparsed = WavPackFile.Read (rendered);
+		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
+		Assert.AreEqual ("New Title", reparsed.File!.ApeTag!.Title);
+
+		file.RemoveApeTag ();
+		var removed = file.Render (data);
+		Assert.AreEqual (0, CountSequence (removed, "APETAGEX"u8));
+		Assert.AreEqual (audio.Length + 128, removed.Length);
+		CollectionAssert.AreEqual (audio, removed[..audio.Length]);
+		Assert.IsTrue (removed.AsSpan (audio.Length, 3).SequenceEqual ("TAG"u8));
+
+		var stripped = WavPackFile.Read (removed);
+		Assert.IsTrue (stripped.IsSuccess, stripped.Error);
+		Assert.IsNull (stripped.File!.ApeTag);
 	}
 
 	#endregion
@@ -827,6 +862,30 @@ public class WavPackFileTests
 		ms.Write (new byte[8]);
 
 		return ms.ToArray ();
+	}
+
+	private static byte[] CreateAudioWithApeThenId3v1 (byte[] audio, string title)
+	{
+		var ape = new ApeTag { Title = title }.RenderWithOptions (includeHeader: true).ToArray ();
+		var id3 = new byte[128];
+		"TAG"u8.CopyTo (id3);
+		"KeepMe"u8.CopyTo (id3.AsSpan (3));
+
+		var data = new byte[audio.Length + ape.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		ape.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + ape.Length);
+		return data;
+	}
+
+	private static int CountSequence (ReadOnlySpan<byte> data, ReadOnlySpan<byte> needle)
+	{
+		var count = 0;
+		for (var i = 0; i <= data.Length - needle.Length; i++) {
+			if (data.Slice (i, needle.Length).SequenceEqual (needle))
+				count++;
+		}
+		return count;
 	}
 
 	private static byte[] CreateApeTagItem (string key, string value)

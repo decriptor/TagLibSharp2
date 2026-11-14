@@ -578,6 +578,24 @@ public class ApeTagTests
 	}
 
 	[TestMethod]
+	public void Parse_ItemCountFittingInItemBytes_ReturnsFailureWithoutThrowing ()
+	{
+		// Count is not greater than the item-byte length, so the size check does not reject it.
+		// 0xFF is not a sequence of items. A few hundred KB is enough; do not build a multi-gigabyte buffer.
+		// Dropping the 256 capacity cap still fails: the item parser rejects 0xFF before a success path.
+		const int itemBytes = 256 * 1024;
+		var data = new byte[itemBytes + ApeTagFooter.Size];
+		Array.Fill (data, (byte)0xFF, 0, itemBytes);
+		CreateValidFooter (version: 2000, tagSize: (uint)(itemBytes + ApeTagFooter.Size), itemCount: (uint)itemBytes, flags: 0)
+			.CopyTo (data, itemBytes);
+
+		var result = ApeTag.Parse (data);
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNull (result.Tag);
+	}
+
+	[TestMethod]
 	public void Parse_FollowedById3v1_ParsesApeItem ()
 	{
 		var tag = new ApeTag {
@@ -597,6 +615,34 @@ public class ApeTagTests
 		Assert.IsTrue (result.IsSuccess);
 		Assert.AreEqual (1, result.Tag!.ItemCount);
 		Assert.AreEqual ("Test Song", result.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Parse_RealFooterAtEof_IgnoresPlantedEmptyFooterBeforeTag ()
+	{
+		// Real one-item tag at EOF. An empty valid footer sits at EOF-160 and "TAG" at EOF-128.
+		// "APETAGEX" contains "TAG" at offset 3, not offset 0, so that marker is ID3v1 only at offset 0.
+		var real = new ApeTag { Title = "Real Item" }.Render ().ToArray ();
+		Assert.IsTrue (real.Length < 128);
+
+		var emptyFooter = ApeTagFooter.Create (tagSize: 32, itemCount: 0).Render ();
+		var beforeReal = new byte[128 - real.Length];
+		"TAG"u8.CopyTo (beforeReal);
+
+		var data = new byte[emptyFooter.Length + beforeReal.Length + real.Length];
+		emptyFooter.CopyTo (data, 0);
+		beforeReal.CopyTo (data, emptyFooter.Length);
+		real.CopyTo (data, emptyFooter.Length + beforeReal.Length);
+
+		Assert.IsTrue (data.AsSpan (data.Length - 160, 8).SequenceEqual ("APETAGEX"u8));
+		Assert.IsTrue (data.AsSpan (data.Length - 128, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (data.AsSpan (data.Length - ApeTagFooter.Size, 8).SequenceEqual ("APETAGEX"u8));
+
+		var result = ApeTag.Parse (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (1, result.Tag!.ItemCount);
+		Assert.AreEqual ("Real Item", result.Tag.Title);
 	}
 
 	#endregion
