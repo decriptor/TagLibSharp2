@@ -131,6 +131,17 @@ public sealed class WavFile : IMediaFile
 	/// <inheritdoc />
 	public MediaFormat Format => MediaFormat.Wav;
 
+	/// <summary>
+	/// True when an id3 chunk was present and <see cref="Id3v2Tag.Read"/> did not accept it.
+	/// A parsed tag that the caller later clears is not this case.
+	/// </summary>
+	bool _keepUnparsedId3;
+
+	/// <summary>
+	/// True when a bext chunk was present and shorter than <see cref="BextTag.MinimumSize"/>.
+	/// </summary>
+	bool _keepUnparsedBext;
+
 	WavFile (RiffFile riff)
 	{
 		_riff = riff;
@@ -255,16 +266,24 @@ public sealed class WavFile : IMediaFile
 
 		// Parse ID3v2 chunk
 		var id3Chunk = riff.GetChunk (Id3ChunkId);
-		if (id3Chunk.HasValue && id3Chunk.Value.Data.Length > 0) {
-			var id3Result = Id3v2Tag.Read (id3Chunk.Value.Data.Span);
-			if (id3Result.IsSuccess)
-				wav.Id3v2Tag = id3Result.Tag;
+		if (id3Chunk.HasValue) {
+			if (id3Chunk.Value.Data.Length > 0) {
+				var id3Result = Id3v2Tag.Read (id3Chunk.Value.Data.Span);
+				if (id3Result.IsSuccess)
+					wav.Id3v2Tag = id3Result.Tag;
+				else
+					wav._keepUnparsedId3 = true;
+			} else {
+				wav._keepUnparsedId3 = true;
+			}
 		}
 
 		// Parse bext chunk (BWF Broadcast Extension)
 		var bextChunk = riff.GetChunk (BextChunkId);
 		if (bextChunk.HasValue && bextChunk.Value.Data.Length >= BextTag.MinimumSize)
 			wav.BextTag = Riff.BextTag.Parse (bextChunk.Value.Data);
+		else if (bextChunk.HasValue)
+			wav._keepUnparsedBext = true;
 
 		return WavFileReadResult.Success (wav);
 	}
@@ -391,7 +410,7 @@ public sealed class WavFile : IMediaFile
 				continue;
 
 			if (chunk.FourCC == Id3ChunkId) {
-				if (Id3v2Tag is null)
+				if (_keepUnparsedId3 && Id3v2Tag is null)
 					riff.SetChunk (chunk);
 				continue;
 			}
@@ -444,12 +463,12 @@ public sealed class WavFile : IMediaFile
 	bool HasDataChunk => _riff.GetChunk (DataChunkId) is not null;
 
 	/// <summary>
-	/// Copy the original bext chunk when it did not parse, or when rebuilding would drop bytes
-	/// <see cref="BextTag"/> does not model. An edited tag is rendered instead.
+	/// Copy the original bext chunk when it did not parse, or when a parsed tag is unchanged.
+	/// A caller who sets <see cref="BextTag"/> to null removed a parsed tag.
 	/// </summary>
 	bool ShouldCopyBextChunk () =>
 		_riff.GetChunk (BextChunkId) is not null
-		&& (BextTag is null || BextTag.MatchesSource ());
+		&& ((_keepUnparsedBext && BextTag is null) || BextTag is { } tag && tag.MatchesSource ());
 
 	FileWriteResult? MissingDataChunkFailure ()
 	{
