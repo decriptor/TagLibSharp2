@@ -51,8 +51,7 @@ public sealed class DefaultFileSystem : IFileSystem
 	public void WriteAllBytes (string path, ReadOnlySpan<byte> data)
 	{
 		using var stream = new FileStream (path, FileMode.Create, FileAccess.Write, FileShare.None);
-		WriteAll (stream, data);
-		FlushToDisk (stream);
+		WriteAndFlush (stream, data);
 	}
 
 	/// <inheritdoc/>
@@ -65,13 +64,32 @@ public sealed class DefaultFileSystem : IFileSystem
 			FileShare.None,
 			4096,
 			FileOptions.Asynchronous);
+		await WriteAndFlushAsync (stream, data, cancellationToken).ConfigureAwait (false);
+	}
+
+	/// <summary>
+	/// Writes <paramref name="data"/> and flushes it to disk before the caller replaces the destination.
+	/// </summary>
+	internal static void WriteAndFlush (FileStream stream, ReadOnlySpan<byte> data)
+	{
+		WriteAll (stream, data);
+		FlushToDisk (stream);
+	}
+
+	/// <summary>
+	/// Writes <paramref name="data"/> and flushes it to disk before the caller replaces the destination.
+	/// </summary>
+	internal static async Task WriteAndFlushAsync (
+		FileStream stream,
+		ReadOnlyMemory<byte> data,
+		CancellationToken cancellationToken = default)
+	{
 #if NETSTANDARD2_0
 		var buffer = data.ToArray ();
 		await stream.WriteAsync (buffer, 0, buffer.Length, cancellationToken).ConfigureAwait (false);
 #else
 		await stream.WriteAsync (data, cancellationToken).ConfigureAwait (false);
 #endif
-		// Flush(bool) has no async overload; the replace must not start before the flush returns.
 		FlushToDisk (stream);
 	}
 
@@ -88,10 +106,11 @@ public sealed class DefaultFileSystem : IFileSystem
 	/// <summary>
 	/// Flushes a temp file to disk before it replaces the destination.
 	/// </summary>
-	internal static void FlushToDisk (FileStream stream)
+	static void FlushToDisk (FileStream stream)
 	{
 		// Stream.Flush(bool) does not exist on these targets. FileStream.Flush(bool) does,
 		// including netstandard2.0 and netstandard2.1, so every build can request a disk flush.
+		// Flush(bool) has no async overload; the replace must not start before the flush returns.
 		stream.Flush (flushToDisk: true);
 	}
 

@@ -10,14 +10,16 @@ namespace TagLibSharp2.Core;
 /// <para>
 /// Data is written to a temporary file in the same directory as the target, then that
 /// file replaces the target. The default file system flushes the temp file to disk
-/// before the replace. If the write fails before the replace and the target is still
-/// present, the target is left unchanged and the temp file is removed.
+/// before the replace. That flush-to-disk adds a disk sync on every save (on the order
+/// of milliseconds). If the write fails before the replace, the target is left unchanged
+/// and the temp file is removed.
 /// </para>
 /// <para>
 /// A crash can still leave the temporary file, including a partial one if it happens
 /// during the write. A replace can also fail after the destination has already been
-/// removed; the temp file is then moved onto the destination, or kept (and its path
-/// reported) if that move also fails.
+/// removed. The temp file is moved back only when that destination existed before the
+/// replace and is missing afterward; otherwise the temp file is deleted. If the move
+/// back fails, the temp file is kept and its path is reported.
 /// </para>
 /// </remarks>
 public static class AtomicFileWriter
@@ -38,12 +40,14 @@ public static class AtomicFileWriter
 
 		var tempPath = GetTempPath (path, fileSystem);
 		var replaceAttempted = false;
+		var destinationExisted = false;
 
 		try {
 			// Write to temp file
 			fileSystem.WriteAllBytes (tempPath, data);
 
 			// Atomically replace the target file
+			destinationExisted = fileSystem.FileExists (path);
 			replaceAttempted = true;
 			fileSystem.Move (tempPath, path);
 
@@ -55,7 +59,8 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"I/O error writing file: {ex.Message}",
-				replaceAttempted);
+				replaceAttempted,
+				destinationExisted);
 		} catch (UnauthorizedAccessException ex) {
 			return FinishAfterFailure (
 				tempPath,
@@ -63,7 +68,8 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"Access denied: {ex.Message}",
-				replaceAttempted);
+				replaceAttempted,
+				destinationExisted);
 		}
 	}
 
@@ -85,6 +91,7 @@ public static class AtomicFileWriter
 
 		var tempPath = GetTempPath (path, fileSystem);
 		var replaceAttempted = false;
+		var destinationExisted = false;
 
 		try {
 			// Write to temp file
@@ -94,6 +101,7 @@ public static class AtomicFileWriter
 			cancellationToken.ThrowIfCancellationRequested ();
 
 			// Atomically replace the target file
+			destinationExisted = fileSystem.FileExists (path);
 			replaceAttempted = true;
 			fileSystem.Move (tempPath, path);
 
@@ -108,7 +116,8 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"I/O error writing file: {ex.Message}",
-				replaceAttempted);
+				replaceAttempted,
+				destinationExisted);
 		} catch (UnauthorizedAccessException ex) {
 			return FinishAfterFailure (
 				tempPath,
@@ -116,7 +125,8 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"Access denied: {ex.Message}",
-				replaceAttempted);
+				replaceAttempted,
+				destinationExisted);
 		}
 	}
 
@@ -155,10 +165,12 @@ public static class AtomicFileWriter
 		IFileSystem fileSystem,
 		int bytesWritten,
 		string message,
-		bool replaceAttempted)
+		bool replaceAttempted,
+		bool destinationExisted)
 	{
-		// A failure before Move cannot have removed the destination, so the temp file is not the only copy.
-		if (!replaceAttempted) {
+		// A failure before Move cannot have removed the destination. A destination that did not
+		// exist has no original to restore, so a failed publish must not leave the temp behind.
+		if (!replaceAttempted || !destinationExisted) {
 			CleanupTempFile (tempPath, fileSystem);
 			return FileWriteResult.Failure (message);
 		}
