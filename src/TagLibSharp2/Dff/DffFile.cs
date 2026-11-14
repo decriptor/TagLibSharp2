@@ -306,7 +306,10 @@ public sealed class DffFile : IMediaFile
 					break;
 
 				case "ID3 ":
-					file._id3Offset = offset;
+					// Only an ID3 chunk at or after the audio is the metadata suffix.
+					// An earlier ID3 chunk must not become the cut point for save.
+					if (foundAudio)
+						file._id3Offset = offset;
 					file._id3Size = (int)chunkSize;
 					if (!chunkExtendsData) {
 						var id3Data = data.Slice (offset + 12, (int)chunkSize);
