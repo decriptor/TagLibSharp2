@@ -729,6 +729,48 @@ public class OggPageHelperTests
 		CollectionAssert.AreEqual (packet, result.Packets[0]);
 	}
 
+	[TestMethod]
+	public void ExtractHeaderPackets_MaxSizeCommentBetweenHeaders_Reassembles ()
+	{
+		// https://xiph.org/ogg/doc/framing.html — a lacing value of 255 continues a packet.
+		// A 16 MiB packet fills (size / 65025) pages and still needs the page that terminates it.
+		// Vorbis reads that packet after a one-page identification header and before setup.
+		const int maxPacketSize = 16 * 1024 * 1024;
+		const int maxBytesPerPage = 255 * 255;
+		var commentPages = (maxPacketSize / maxBytesPerPage) + 1;
+		var comment = new byte[maxPacketSize];
+		comment[0] = 0x3C;
+		comment[maxBytesPerPage] = 0xA5;
+		comment[^1] = 0x5A;
+
+		const uint serial = 1;
+		var ident = OggPageHelper.BuildOggPage (
+			[TestBuilders.Ogg.CreateIdentificationPacket ()],
+			OggPageFlags.BeginOfStream, 0, serial, 0);
+		var (commentBuilt, nextSequence) = OggPageHelper.BuildMultiPagePacket (
+			comment, OggPageFlags.None, 0, serial, 1);
+		Assert.AreEqual (commentPages, commentBuilt.Length,
+			"A 16 MiB packet is full pages plus the terminating page");
+
+		var setup = new byte[] { 5, (byte)'v', (byte)'o', (byte)'r', (byte)'b', (byte)'i', (byte)'s', 0x42 };
+		var setupPage = OggPageHelper.BuildOggPage (
+			[setup], OggPageFlags.None, 0, serial, nextSequence);
+
+		using var builder = new BinaryDataBuilder ();
+		builder.Add (ident);
+		foreach (var page in commentBuilt)
+			builder.Add (page);
+		builder.Add (setupPage);
+
+		var result = OggPageHelper.ExtractHeaderPackets (builder.ToArray (), maxPackets: 3);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (3, result.Packets.Count,
+			$"A 16 MiB comment spans {commentBuilt.Length} pages between two headers; the cap dropped a page");
+		CollectionAssert.AreEqual (comment, result.Packets[1]);
+		CollectionAssert.AreEqual (setup, result.Packets[2]);
+	}
+
 	static byte[] CreateContinuedPage (uint sequence, ReadOnlySpan<byte> payload, bool finished)
 	{
 		// An unfinished page ends in a lacing value of 255. The finishing page ends below 255.

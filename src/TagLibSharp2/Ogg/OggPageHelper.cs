@@ -38,17 +38,30 @@ internal static class OggPageHelper
 	const int MaxPacketSize = 16 * 1024 * 1024;
 
 	/// <summary>
-	/// Pages read while reassembling header packets. Shared by Vorbis, Opus, and FLAC.
+	/// Pages read while reassembling Vorbis and Opus header packets.
 	/// </summary>
 	/// <remarks>
 	/// https://xiph.org/ogg/doc/framing.html: a lacing value of 255 continues a packet, and a
 	/// full page holds 255 such segments (<see cref="MaxBytesPerPage"/> bytes). A packet of
-	/// <see cref="MaxPacketSize"/> fills 258 of those pages and still needs the next page for
-	/// the remaining bytes, or for a lacing value of 0 when the length is an exact multiple
-	/// of <see cref="MaxBytesPerPage"/>. One further page lets that packet follow a one-page
-	/// header (Vorbis identification, OpusHead, or the FLAC mapping header).
+	/// <see cref="MaxPacketSize"/> fills (<see cref="MaxPacketSize"/> / <see cref="MaxBytesPerPage"/>)
+	/// of those pages and needs one more page to terminate it, including a lacing value of 0 when
+	/// the length is an exact multiple of <see cref="MaxBytesPerPage"/>. Vorbis places that packet
+	/// after a one-page identification header and before a one-page setup header. One less stops
+	/// on the comment and drops the setup page. FLAC does not use this cap;
+	/// see <see cref="MaxFlacHeaderPages"/>.
 	/// </remarks>
-	internal const int MaxHeaderPages = (MaxPacketSize / MaxBytesPerPage) + 2;
+	internal const int MaxHeaderPages = (MaxPacketSize / MaxBytesPerPage) + 3;
+
+	/// <summary>
+	/// Pages the Ogg FLAC metadata walk may read before the first audio page.
+	/// </summary>
+	/// <remarks>
+	/// RFC 9639 section 10.1 lets metadata packets span pages. A picture from flac --ogg can use
+	/// far more pages than <see cref="MaxHeaderPages"/>. The per-packet size cap still bounds
+	/// memory. Reaching this budget before the audio page is a failed walk, not an audio offset.
+	/// </remarks>
+	internal const int MaxFlacHeaderPages = 10_000;
+
 	/// <summary>
 	/// Reads an Ogg page and extracts individual packets based on segment table.
 	/// </summary>
@@ -521,15 +534,15 @@ internal static class OggPageHelper
 	/// <remarks>
 	/// This method reads Ogg pages and reassembles packets that may span multiple pages.
 	/// It handles continuation flags and multi-page packets correctly. Reading stops after
-	/// <see cref="MaxHeaderPages"/> pages, which is enough for one <see cref="MaxPacketSize"/>
-	/// packet plus the page that terminates it.
+	/// <see cref="MaxHeaderPages"/> pages, which covers one <see cref="MaxPacketSize"/> packet,
+	/// the page that terminates it, and the one-page headers on either side.
 	/// </remarks>
 	public static HeaderPacketsResult ExtractHeaderPackets (
 		ReadOnlySpan<byte> data,
 		int maxPackets,
 		bool validateCrc = false,
 		int maxPacketSize = MaxPacketSize) =>
-		ScanPackets (data, maxPackets, validateCrc, maxPacketSize, stopAtFlacAudio: false);
+		ScanPackets (data, maxPackets, validateCrc, maxPacketSize, stopAtFlacAudio: false, MaxHeaderPages);
 
 	/// <summary>
 	/// Reassembles packets and stops at the first packet whose first byte is 0xFF.
@@ -553,14 +566,15 @@ internal static class OggPageHelper
 		int maxPackets,
 		bool validateCrc = false,
 		int maxPacketSize = MaxPacketSize) =>
-		ScanPackets (data, maxPackets, validateCrc, maxPacketSize, stopAtFlacAudio: true);
+		ScanPackets (data, maxPackets, validateCrc, maxPacketSize, stopAtFlacAudio: true, MaxFlacHeaderPages);
 
 	static HeaderPacketsResult ScanPackets (
 		ReadOnlySpan<byte> data,
 		int maxPackets,
 		bool validateCrc,
 		int maxPacketSize,
-		bool stopAtFlacAudio)
+		bool stopAtFlacAudio,
+		int maxPages)
 	{
 		var packets = new List<byte[]> ();
 		var packetBuffer = new List<byte> ();
@@ -569,7 +583,7 @@ internal static class OggPageHelper
 		uint serialNumber = 0;
 		var isFirstPage = true;
 
-		while (offset < data.Length && packets.Count < maxPackets && pageCount < MaxHeaderPages) {
+		while (offset < data.Length && packets.Count < maxPackets && pageCount < maxPages) {
 			var pageStart = offset;
 			var pageResult = ReadOggPageWithSegments (data.Slice (offset), validateCrc);
 			if (!pageResult.IsSuccess) {
@@ -678,6 +692,13 @@ internal static class OggPageHelper
 		if (stopAtFlacAudio && packetBuffer.Count > 0)
 			return HeaderPacketsResult.Failure (
 				"Ogg FLAC packet is missing its terminating lacing value",
+				packets, serialNumber, offset);
+
+		// A finished packet is not the audio page. flac --ogg can end a picture on this page
+		// and still have a padding block before audio (RFC 9639 section 10.1).
+		if (stopAtFlacAudio && offset < data.Length && (pageCount >= maxPages || packets.Count >= maxPackets))
+			return HeaderPacketsResult.Failure (
+				"Ogg FLAC metadata exceeds the page limit",
 				packets, serialNumber, offset);
 
 		return HeaderPacketsResult.Success (packets, serialNumber, offset);
