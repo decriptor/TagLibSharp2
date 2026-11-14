@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Core;
+using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Riff;
 using TagLibSharp2.Tests.Core;
 
@@ -121,6 +122,42 @@ public class WavFileSavePreservationTests
 		Assert.IsTrue (savedBext.HasValue, "parsed bext was dropped");
 		CollectionAssert.AreEqual (bext, savedBext.Value.Data.ToArray ());
 		Assert.AreEqual ("Retitled", WavFile.Read (saved).File?.InfoTag?.Title);
+	}
+
+	[TestMethod]
+	public void SaveToFile_ClearingParsedId3AndBext_RemovesThoseChunks ()
+	{
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/clip.wav", CreateWaveWithChunks (("bext", CreateBextWithLoudness ())));
+
+		var read = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.InfoTag = new RiffInfoTag { Title = "InfoOld" };
+		read.File.Id3v2Tag = new Id3v2Tag { Title = "Id3Old" };
+		var written = read.File.SaveToFile ("/clip.wav", fs);
+		Assert.IsTrue (written.IsSuccess, written.Error);
+
+		var again = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("Id3Old", again.File!.Title);
+		Assert.IsNotNull (again.File.Id3v2Tag);
+		Assert.IsNotNull (again.File.BextTag);
+
+		again.File.InfoTag!.Title = "InfoNew";
+		again.File.Id3v2Tag = null;
+		again.File.BextTag = null;
+		var cleared = again.File.SaveToFile ("/clip.wav", fs);
+		Assert.IsTrue (cleared.IsSuccess, cleared.Error);
+
+		var roundTrip = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (roundTrip.IsSuccess, roundTrip.Error);
+		Assert.AreEqual ("InfoNew", roundTrip.File!.Title);
+		Assert.IsNull (roundTrip.File.Id3v2Tag);
+		Assert.IsNull (roundTrip.File.BextTag);
+
+		Assert.IsTrue (RiffFile.TryParse (new BinaryData (fs.ReadAllBytes ("/clip.wav")), out var riff));
+		Assert.IsFalse (riff.GetChunk ("id3 ").HasValue, "cleared ID3 chunk was written back");
+		Assert.IsFalse (riff.GetChunk ("bext").HasValue, "cleared bext chunk was written back");
 	}
 
 	[TestMethod]
