@@ -146,4 +146,60 @@ public class RiffFileTests
 		Assert.IsTrue (RiffFile.TryParse (CreateMinimalWavRiff (), out var file));
 		Assert.AreEqual (4u, file.FileSize);
 	}
+
+	[TestMethod]
+	public void TryParse_FileSizeSentinel_ParsesFmtAndDataChunks ()
+	{
+		var data = CreateWaveWithDeclaredSize (0xFFFFFFFF);
+		Assert.IsTrue (RiffFile.TryParse (data, out var file));
+
+		Assert.AreEqual (0xFFFFFFFFu, file.FileSize);
+		Assert.AreEqual (2, file.AllChunks.Count);
+
+		var fmt = file.GetChunk ("fmt ");
+		Assert.IsNotNull (fmt);
+		Assert.AreEqual (16u, fmt.Value.DataSize);
+
+		var dataChunk = file.GetChunk ("data");
+		Assert.IsNotNull (dataChunk);
+		Assert.AreEqual (4u, dataChunk.Value.DataSize);
+		Assert.IsTrue (dataChunk.Value.Data.Equals (new BinaryData ([0x11, 0x22, 0x33, 0x44])));
+	}
+
+	[TestMethod]
+	public void TryParse_FileSizeHighBit_ParsesFmtAndDataChunks ()
+	{
+		var data = CreateWaveWithDeclaredSize (0x80000000);
+		Assert.IsTrue (RiffFile.TryParse (data, out var file));
+
+		Assert.AreEqual (2, file.AllChunks.Count);
+		Assert.IsNotNull (file.GetChunk ("fmt "));
+		Assert.IsNotNull (file.GetChunk ("data"));
+	}
+
+	static BinaryData CreateWaveWithDeclaredSize (uint declaredSize)
+	{
+		using var body = new BinaryDataBuilder (64);
+		body.AddStringLatin1 ("WAVE");
+
+		body.AddStringLatin1 ("fmt ");
+		body.AddUInt32LE (16);
+		body.AddUInt16LE (1);
+		body.AddUInt16LE (1);
+		body.AddUInt32LE (8000);
+		body.AddUInt32LE (8000);
+		body.AddUInt16LE (1);
+		body.AddUInt16LE (8);
+
+		body.AddStringLatin1 ("data");
+		body.AddUInt32LE (4);
+		body.Add (0x11, 0x22, 0x33, 0x44);
+
+		var bodyData = body.ToBinaryData ();
+		using var file = new BinaryDataBuilder (8 + bodyData.Length);
+		file.AddStringLatin1 ("RIFF");
+		file.AddUInt32LE (declaredSize);
+		file.Add (bodyData);
+		return file.ToBinaryData ();
+	}
 }
