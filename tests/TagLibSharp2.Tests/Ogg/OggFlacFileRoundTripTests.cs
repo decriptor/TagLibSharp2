@@ -528,6 +528,44 @@ public class OggFlacFileRoundTripTests
 	}
 
 	[TestMethod]
+	public async Task SaveToFileAsync_CommentBlockPast24Bits_LeavesFileUnchanged ()
+	{
+		// Same overflow as the sync save: a base64 picture pushes the Vorbis comment past 0xFFFFFF bytes.
+		var original = TestBuilders.OggFlac.CreateWithMetadata (title: "T");
+		var mock = new MockFileSystem ();
+		const string path = "/album.oga";
+		mock.AddFile (path, original);
+
+		var read = OggFlacFile.ReadFromFile (path, mock);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		var tag = read.File!.VorbisComment!;
+		var commentWithoutPicture = tag.Render ().Length;
+		var blockOverhead = MeasuredPictureBlockOverhead (tag);
+		tag.RemoveAllPictures ();
+
+		var pictureBytes = PictureBytesPast24BitLimit (commentWithoutPicture, blockOverhead);
+		var contentLength = blockOverhead + pictureBytes;
+		var base64Length = 4 * ((contentLength + 2) / 3);
+		var commentLength = commentWithoutPicture + 4 + "METADATA_BLOCK_PICTURE=".Length + base64Length;
+		Assert.IsGreaterThan (0xFFFFFF, commentLength, "Picture did not expand the comment past 24 bits");
+		Assert.IsLessThanOrEqualTo (0xFFFFFF + 4, commentLength, "Picture is larger than the one overflow case");
+
+		tag.AddPicture (new FlacPicture (
+			"image/jpeg", PictureType.FrontCover, "", BinaryData.WrapUnsafe (new byte[pictureBytes]), 0, 0, 0, 0));
+
+		var save = await read.File.SaveToFileAsync (path, mock);
+		if (save.IsSuccess) {
+			Assert.Fail (
+				$"SaveToFileAsync returned success for a Vorbis comment of {commentLength} bytes. " +
+				$"A 24-bit length would wrap to {commentLength & 0xFFFFFF}.");
+		}
+
+		Assert.IsFalse (save.IsSuccess, save.Error);
+		Assert.IsTrue (save.Error!.Contains ("render", StringComparison.OrdinalIgnoreCase), save.Error);
+		CollectionAssert.AreEqual (original, mock.ReadAllBytes (path));
+	}
+
+	[TestMethod]
 	public void LegalMaximumMetadataBlock_IsAccepted ()
 	{
 		const int dataLength = 0xFFFFFF;
@@ -626,7 +664,7 @@ public class OggFlacFileRoundTripTests
 		var unfinished = new byte[70000];
 		unfinished[0] = 0x04;
 		var (pages, _) = OggPageHelper.BuildMultiPagePacket (unfinished, OggPageFlags.None, 0, serialNumber: 1, startSequence: 1);
-		Assert.AreEqual (255, pages[0][26], "Setup page must be a full page, not a finished comment");
+		Assert.AreEqual (255, pages[0][26], "Comment page must be a full page, not a finished comment");
 
 		var read = OggFlacFile.Read (Concat (header, pages[0]));
 		Assert.IsTrue (read.IsSuccess, read.Error);

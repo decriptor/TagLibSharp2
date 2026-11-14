@@ -345,6 +345,22 @@ public class OggVorbisFileRoundTripTests
 		var written = read.File.Render (original);
 		Assert.IsGreaterThan (0, written.Length, "Render returned empty for a setup packet over 255 segments");
 
+		// RFC 3533: page_sequence_number increases on each logical bitstream so a lost page is visible.
+		var offset = 0;
+		var pageIndex = 0;
+		while (offset < written.Length) {
+			var page = OggPage.Read (written.Span.Slice (offset));
+			Assert.IsTrue (page.IsSuccess, page.Error);
+			Assert.IsGreaterThan (0, page.BytesConsumed, "Ogg page reader made no progress");
+			Assert.AreEqual ((uint)pageIndex, page.Page.SequenceNumber,
+				$"Saved page {pageIndex} has sequence {page.Page.SequenceNumber}; expected 0, 1, 2, ... with no gaps");
+			offset += page.BytesConsumed;
+			pageIndex++;
+		}
+
+		Assert.AreEqual (written.Length, offset, "Saved file ends inside an Ogg page");
+		Assert.IsGreaterThan (2, pageIndex, "70 KB setup must span more than one Ogg page");
+
 		var setupOut = OggPacketAssembler.Read (written.Span)
 			.Single (packet => packet.Data.Length > 6 && packet.Data[0] == 5 && packet.Data[1] == (byte)'v');
 		Assert.IsGreaterThan (1, setupOut.Lacings.Count, "Setup packet must span pages");
