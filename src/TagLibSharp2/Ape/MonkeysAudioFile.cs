@@ -424,49 +424,12 @@ public sealed class MonkeysAudioFile : IMediaFile
 	/// </summary>
 	public byte[] Render (ReadOnlySpan<byte> originalData)
 	{
-		// Find and remove existing APE tag from audio data
-		var audioEnd = FindAudioEnd (originalData);
-		var audioData = originalData[..audioEnd].ToArray ();
-
-		using var ms = new MemoryStream ();
-		ms.Write (audioData, 0, audioData.Length);
-
-		// Append APE tag if present
-		if (ApeTag is not null) {
-			var tagData = ApeTag.Render ().ToArray ();
-			ms.Write (tagData, 0, tagData.Length);
-		}
-
-		return ms.ToArray ();
+		byte[] tagData = ApeTag is null ? [] : ApeTag.Render ().ToArray ();
+		return ApeTagLocation.Rewrite (originalData, FindAudioEnd (originalData), tagData);
 	}
 
-	private static int FindAudioEnd (ReadOnlySpan<byte> data)
-	{
-		// Look for APEv2 tag footer at end of file
-		if (data.Length < ApeTagFooter.Size)
-			return data.Length;
-
-		var footerData = data[^ApeTagFooter.Size..];
-		var footerResult = ApeTagFooter.Parse (footerData);
-
-		if (!footerResult.IsSuccess)
-			return data.Length;
-
-		var footer = footerResult.Footer!;
-
-		// TagSize includes footer but not header
-		// Use long to prevent integer overflow for very large tags
-		var tagSize = (long)footer.TagSize;
-
-		// Check if there's a header (adds ApeTagFooter.Size bytes before items)
-		var hasHeader = footer.HasHeader;
-		var totalTagSize = hasHeader ? tagSize + ApeTagFooter.Size : tagSize;
-
-		if (totalTagSize > data.Length)
-			return data.Length;
-
-		return data.Length - (int)totalTagSize;
-	}
+	private static int FindAudioEnd (ReadOnlySpan<byte> data) =>
+		ApeTagLocation.Locate (data).AudioEnd;
 
 	// ===== File I/O =====
 
