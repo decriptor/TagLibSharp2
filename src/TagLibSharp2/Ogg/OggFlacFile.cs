@@ -141,6 +141,21 @@ public sealed class OggFlacFile : IMediaFile
 	}
 
 	/// <summary>
+	/// Returns every preserved metadata payload of <paramref name="type"/>, in file order.
+	/// Pictures are type 6. Test hook.
+	/// </summary>
+	internal List<byte[]> MetadataBlockPayloads (byte type)
+	{
+		var payloads = new List<byte[]> ();
+		foreach (var block in _metadataBlocks) {
+			if (block.Type == type)
+				payloads.Add (block.Data);
+		}
+
+		return payloads;
+	}
+
+	/// <summary>
 	/// Gets the source file path if the file was read from disk.
 	/// </summary>
 	public string? SourcePath => _sourcePath;
@@ -509,11 +524,11 @@ public sealed class OggFlacFile : IMediaFile
 	{
 		PacketWalkCount++;
 
-		// One page can finish at most 255 packets. Stay above that so scanning stops at the
-		// audio packet or at MaxHeaderPages, not at a short packet count.
+		// One page can finish at most 255 packets. Stay above the page budget so scanning
+		// stops at the audio packet or at MaxFlacHeaderPages, not at a short packet count.
 		var scan = OggPageHelper.ExtractPacketsUntilAudio (
 			data,
-			maxPackets: OggPageHelper.MaxHeaderPages * OggPageHelper.MaxSegmentsPerPage,
+			maxPackets: OggPageHelper.MaxFlacHeaderPages * OggPageHelper.MaxSegmentsPerPage,
 			maxPacketSize: MaxFlacMetadataPacketSize);
 
 		var blocks = new List<FlacMetadataBlock> ();

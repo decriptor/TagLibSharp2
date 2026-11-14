@@ -696,6 +696,206 @@ public class OggFlacFileRoundTripTests
 			"A walk that fails before any comment packet is complete may still succeed, with no comment");
 	}
 
+	[TestMethod]
+	public void PageBudgetBeforeAudio_SaveLeavesFileUnchanged ()
+	{
+		// RFC 9639 section 10.1: header packets finish before the first audio page.
+		// Stopping at the page budget with a finished packet is not that audio page.
+		const int metadataPages = 10_000;
+		var original = CreateMetadataPagesThenAudio (metadataPages, lastMarker: 0x5A);
+		var mock = new MockFileSystem ();
+		const string path = "/budget.oga";
+		mock.AddFile (path, original);
+
+		var read = OggFlacFile.ReadFromFile (path, mock);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureVorbisComment ().Title = "Changed";
+
+		var save = read.File.SaveToFile (path, mock);
+		Assert.IsFalse (save.IsSuccess, save.Error);
+		CollectionAssert.AreEqual (original, mock.ReadAllBytes (path));
+	}
+
+	[TestMethod]
+	public void CommentAndMaxPicture_UnderPageBudget_RoundTrips ()
+	{
+		// 0xFFFFFF is the largest FLAC metadata block (RFC 9639 section 8.1). With a comment
+		// page it is more than 260 Ogg pages and still under the FLAC page budget.
+		var picture = new byte[0xFFFFFF];
+		picture[0] = 0x11;
+		picture[65021] = 0xFF;
+		picture[^1] = 0x22;
+		AssertPictureRoundTrip (CreateOggFlacWithPicture (picture), picture, second: null);
+	}
+
+	[TestMethod]
+	public void TwoLargePictures_UnderPageBudget_RoundTrip ()
+	{
+		// Short pages keep the file small while the page count stays over the Vorbis cap
+		// and under the FLAC budget. Each picture is its own continued packet.
+		var first = RepeatedPicture (pages: 200, marker: 0x31);
+		var second = RepeatedPicture (pages: 200, marker: 0x32);
+		var original = CreateOggFlacWithShortPictures (first, second);
+		AssertPictureRoundTrip (original, first, second);
+	}
+
+	[TestMethod]
+	public void ManyMetadataBlocks_UnderPageBudget_RoundTrip ()
+	{
+		// One block per page, one short of the budget, then the audio page. The last block
+		// is still metadata, so a walk that stops early must not report success.
+		const int metadataPages = 9_999;
+		var original = CreateMetadataPagesThenAudio (metadataPages, lastMarker: 0x77);
+		var read = OggFlacFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsTrue (read.File!.TryGetMetadataBlock (6, out var stored), read.Error);
+		Assert.AreEqual (0x77, stored[^1]);
+
+		read.File.EnsureVorbisComment ().Title = "Kept";
+		var rendered = read.File.Render (original);
+		Assert.IsGreaterThan (0, rendered.Length, "A metadata stream under the page budget was not written");
+
+		var again = OggFlacFile.Read (rendered);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("Kept", again.File!.VorbisComment?.Title);
+		Assert.IsTrue (again.File.TryGetMetadataBlock (6, out var reread), again.Error);
+		Assert.AreEqual (0x77, reread[^1]);
+	}
+
+	[TestMethod]
+	public void AudioPacket_DoesNotBeginAFreshPage_SaveLeavesFileUnchanged ()
+	{
+		// RFC 9639 section 10.1: the first audio packet begins a fresh page. A continued
+		// packet is not that page, and neither is a later packet on a metadata page.
+		AssertSaveLeavesBytesUnchanged (ContinuedMetadataThenAudioOnSamePage (), "/continued-audio.oga");
+		AssertSaveLeavesBytesUnchanged (MetadataAndAudioOnSamePage (), "/shared-audio.oga");
+	}
+
+	static void AssertPictureRoundTrip (byte[] original, byte[] picture, byte[]? second)
+	{
+		var read = OggFlacFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureVorbisComment ().Title = "Changed Title";
+
+		var rendered = read.File.Render (original);
+		Assert.IsGreaterThan (0, rendered.Length, "Render dropped a picture that fits in the FLAC page budget");
+
+		var again = OggFlacFile.Read (rendered);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("Changed Title", again.File!.VorbisComment?.Title);
+		Assert.IsTrue (again.File.TryGetMetadataBlock (6, out var stored));
+		CollectionAssert.AreEqual (picture, stored);
+		if (second is not null) {
+			var pictures = again.File.MetadataBlockPayloads (6);
+			Assert.AreEqual (2, pictures.Count);
+			CollectionAssert.AreEqual (second, pictures[1]);
+		}
+	}
+
+	static void AssertSaveLeavesBytesUnchanged (byte[] original, string path)
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile (path, original);
+		var read = OggFlacFile.ReadFromFile (path, mock);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureVorbisComment ().Title = "Changed";
+
+		var save = read.File.SaveToFile (path, mock);
+		Assert.IsFalse (save.IsSuccess, save.Error);
+		CollectionAssert.AreEqual (original, mock.ReadAllBytes (path));
+	}
+
+	static byte[] ContinuedMetadataThenAudioOnSamePage ()
+	{
+		var comment = new byte[256];
+		comment[0] = 0x04;
+		comment[3] = 252;
+		// Four bytes so the 24-bit length is 0. A longer frame would be rejected as a
+		// metadata block even after the fresh-page check is removed.
+		var audio = new byte[] { 0xFF, 0x00, 0x00, 0x00 };
+
+		using var output = new MemoryStream ();
+		uint sequence = 0;
+		WritePages (output, CreateHeaderPacket (1), OggPageFlags.BeginOfStream, ref sequence);
+
+		var first = new byte[255];
+		Array.Copy (comment, first, 255);
+		WriteOnePage (output, first, [255], OggPageFlags.None, ulong.MaxValue, sequence++);
+
+		var rest = new byte[1 + audio.Length];
+		rest[0] = comment[255];
+		audio.CopyTo (rest, 1);
+		WriteOnePage (output, rest, [1, (byte)audio.Length], OggPageFlags.Continuation, 0, sequence++);
+		return output.ToArray ();
+	}
+
+	static byte[] MetadataAndAudioOnSamePage ()
+	{
+		var comment = new VorbisComment ("TagLibSharp2") { Title = "Kept" };
+		var commentPacket = WrapFlacBlock (0x04, comment.Render ().ToArray ());
+		var audio = new byte[] { 0xFF, 0x00, 0x00, 0x00 };
+		var header = OggPageHelper.BuildOggPage (
+			[CreateHeaderPacket (1)], OggPageFlags.BeginOfStream, 0, serialNumber: 1, sequenceNumber: 0);
+		var shared = OggPageHelper.BuildOggPage (
+			[commentPacket, audio], OggPageFlags.None, 0, serialNumber: 1, sequenceNumber: 1);
+		return Concat (header, shared);
+	}
+
+	static byte[] CreateMetadataPagesThenAudio (int metadataPages, byte lastMarker)
+	{
+		using var output = new MemoryStream ();
+		uint sequence = 0;
+		WritePages (output, CreateHeaderPacket (1), OggPageFlags.BeginOfStream, ref sequence);
+		for (var i = 1; i < metadataPages - 1; i++)
+			WritePages (output, WrapFlacBlock (0x01, [(byte)(i & 0xFF)]), OggPageFlags.None, ref sequence);
+
+		var picture = new byte[] { 0x10, lastMarker };
+		WritePages (output, WrapFlacBlock (0x06, picture), OggPageFlags.None, ref sequence);
+		WritePages (output, [0xFF, 0xF8, 0xC9, 0x12, 0x00], OggPageFlags.EndOfStream, ref sequence);
+		return output.ToArray ();
+	}
+
+	static byte[] RepeatedPicture (int pages, byte marker)
+	{
+		var picture = new byte[((pages - 1) * 255) + 10];
+		picture[0] = marker;
+		picture[^1] = marker;
+		return picture;
+	}
+
+	static byte[] CreateOggFlacWithShortPictures (byte[] first, byte[] second)
+	{
+		var comment = new VorbisComment ("TagLibSharp2") { Title = "Original Title" };
+		var commentPacket = WrapFlacBlock (0x04, comment.Render ().ToArray ());
+		using var output = new MemoryStream ();
+		uint sequence = 0;
+		WritePages (output, CreateHeaderPacket (2), OggPageFlags.BeginOfStream, ref sequence);
+		WritePages (output, commentPacket, OggPageFlags.None, ref sequence);
+		WriteContinuedSegmentPages (output, WrapFlacBlock (0x06, first), OggPageFlags.None, ref sequence);
+		WriteContinuedSegmentPages (output, WrapFlacBlock (0x86, second), OggPageFlags.None, ref sequence);
+		WritePages (output, [0xFF, 0xF8, 0xC9, 0x12, 0x00], OggPageFlags.EndOfStream, ref sequence);
+		return output.ToArray ();
+	}
+
+	static void WriteContinuedSegmentPages (Stream output, byte[] packet, OggPageFlags firstFlags, ref uint sequence)
+	{
+		var offset = 0;
+		var first = true;
+		while (offset < packet.Length) {
+			var remaining = packet.Length - offset;
+			var take = Math.Min (255, remaining);
+			var finishes = take < 255;
+			var payload = new byte[take];
+			Array.Copy (packet, offset, payload, 0, take);
+			var flags = first ? firstFlags : OggPageFlags.Continuation;
+			WriteOnePage (output, payload, [(byte)take], flags, finishes ? 0 : ulong.MaxValue, sequence++);
+			offset += take;
+			first = false;
+			if (finishes)
+				break;
+		}
+	}
+
 	static void AssertEndsOnZeroLacing (OggPacketAssembler.Packet packet, int packetLength)
 	{
 		Assert.AreEqual (packetLength, packet.Data.Length, "Measured packet size does not match the lacing boundary");
