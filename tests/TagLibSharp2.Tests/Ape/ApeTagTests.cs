@@ -907,6 +907,149 @@ public class ApeTagTests
 		Assert.AreEqual ("New Title", reread.Tag!.Title);
 	}
 
+	[TestMethod]
+	public void Rewrite_OverclaimedFooterWithoutHeaderAtEof_KeepsAudioPrefix ()
+	{
+		// Footer TagSize reaches into the audio and there is no header at that start.
+		// The body is not an APE tag, so a save must not delete the over-claimed bytes.
+		var audio = MarkerAudio (80, 0xE1);
+		var data = BuildOverclaimedFooterFile (audio, lyrics: null, id3: null, claimedItemBytes: 48);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.IsTrue (saved.Length >= audio.Length, "save shrank the file below the audio");
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+	}
+
+	[TestMethod]
+	public void Rewrite_OverclaimedFooterWithoutHeaderBeforeId3v1_KeepsAudioPrefix ()
+	{
+		var audio = MarkerAudio (80, 0xE2);
+		var data = BuildOverclaimedFooterFile (audio, lyrics: null, id3: CreateId3v1Suffix (), claimedItemBytes: 48);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size + 3, 6).SequenceEqual ("KeepMe"u8));
+	}
+
+	[TestMethod]
+	public void Rewrite_OverclaimedFooterWithoutHeaderBeforeLyrics3_KeepsAudioPrefix ()
+	{
+		var audio = MarkerAudio (80, 0xE3);
+		var lyrics = CreateMinimalLyrics3 ();
+		var data = BuildOverclaimedFooterFile (audio, lyrics, CreateId3v1Suffix (), claimedItemBytes: 48);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size - lyrics.Length, lyrics.Length).SequenceEqual (lyrics));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+	}
+
+	[TestMethod]
+	public void Rewrite_Lyrics3v1BeforeId3v1_PreservesSpan ()
+	{
+		// v1 has no size field. The block is LYRICSBEGIN through LYRICSEND, immediately before TAG.
+		var audio = MarkerAudio (80, 0xD4);
+		var lyrics = CreateLyrics3V1 ("Line");
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + lyrics.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		lyrics.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + lyrics.Length);
+
+		var location = ApeTagLocation.Locate (data);
+		Assert.AreEqual (audio.Length, location.AudioEnd);
+		Assert.AreEqual (audio.Length, location.LyricsOffset);
+		Assert.AreEqual (lyrics.Length, location.LyricsLength);
+
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New Title" }.Render ());
+
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size - lyrics.Length, lyrics.Length).SequenceEqual (lyrics));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size + 3, 6).SequenceEqual ("KeepMe"u8));
+
+		var reread = ApeTag.Parse (saved);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("New Title", reread.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Rewrite_LyricsEndFartherThanSearchBound_DoesNotDeleteAudio ()
+	{
+		// LYRICSBEGIN more than 64 KB before LYRICSEND is not a v1 tag. Do not treat the span as lyrics.
+		var audio = MarkerAudio (80, 0xD5);
+		var gap = new byte[(64 * 1024) + 32];
+		Array.Fill (gap, (byte)0x22);
+		"LYRICSBEGIN"u8.CopyTo (gap);
+		var end = "LYRICSEND"u8.ToArray ();
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + gap.Length + end.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		gap.CopyTo (data, audio.Length);
+		end.CopyTo (data, audio.Length + gap.Length);
+		id3.CopyTo (data, audio.Length + gap.Length + end.Length);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.AreEqual (data.Length - ApeTagLocation.Id3v1Size, location.AudioEnd);
+		Assert.AreEqual (-1, location.LyricsOffset);
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+	}
+
+	[TestMethod]
+	public void Rewrite_Lyrics3SizeMismatch_DoesNotDeleteAudio ()
+	{
+		// 000099 points 99 bytes before the size field, into the audio, and those bytes are not LYRICSBEGIN.
+		// Trusting the size without that check would end the audio there.
+		var audio = MarkerAudio (96, 0xD6);
+		var lyrics = CreateMinimalLyrics3 ();
+		"000099"u8.CopyTo (lyrics.AsSpan (11));
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + lyrics.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		lyrics.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + lyrics.Length);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.AreEqual (data.Length - ApeTagLocation.Id3v1Size, location.AudioEnd);
+		Assert.AreEqual (-1, location.LyricsOffset);
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+	}
+
+	[TestMethod]
+	public void Rewrite_BadFooterBeforeLyricsBegin_DoesNotDeleteAudio ()
+	{
+		// Reserved bytes are not zero, so this is not a footer. Its TagSize must not eat the audio in front of LYRICSBEGIN.
+		var audio = MarkerAudio (80, 0xD7);
+		var badFooter = ApeTagFooter.Create (tagSize: 200, itemCount: 1).Render ();
+		badFooter[24] = 1;
+		var lyrics = CreateMinimalLyrics3 ();
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + badFooter.Length + lyrics.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		badFooter.CopyTo (data, audio.Length);
+		lyrics.CopyTo (data, audio.Length + badFooter.Length);
+		id3.CopyTo (data, audio.Length + badFooter.Length + lyrics.Length);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.AreEqual (audio.Length + badFooter.Length, location.AudioEnd);
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (audio.Length, badFooter.Length).SequenceEqual (badFooter));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size - lyrics.Length, lyrics.Length).SequenceEqual (lyrics));
+	}
+
 	#endregion
 
 	#region TagTypes Integration Tests
@@ -939,12 +1082,56 @@ public class ApeTagTests
 		return data;
 	}
 
+	private static byte[] MarkerAudio (int length, byte marker)
+	{
+		var audio = new byte[length];
+		audio[0] = marker;
+		for (var i = 1; i < audio.Length; i++)
+			audio[i] = 0x51;
+
+		return audio;
+	}
+
+	/// <summary>
+	/// Audio, then a footer with no header flag whose TagSize claims <paramref name="claimedItemBytes"/>
+	/// of the audio. Those bytes are not an APE item.
+	/// </summary>
+	private static byte[] BuildOverclaimedFooterFile (byte[] audio, byte[]? lyrics, byte[]? id3, int claimedItemBytes)
+	{
+		var footer = ApeTagFooter.Create (
+			tagSize: (uint)(claimedItemBytes + ApeTagFooter.Size),
+			itemCount: 1).Render ();
+		var lyricsLength = lyrics?.Length ?? 0;
+		var id3Length = id3?.Length ?? 0;
+		var data = new byte[audio.Length + footer.Length + lyricsLength + id3Length];
+		audio.CopyTo (data, 0);
+		footer.CopyTo (data, audio.Length);
+		if (lyrics is not null)
+			lyrics.CopyTo (data, audio.Length + footer.Length);
+		if (id3 is not null)
+			id3.CopyTo (data, audio.Length + footer.Length + lyricsLength);
+		return data;
+	}
+
 	private static byte[] CreateId3v1Suffix ()
 	{
 		var id3 = new byte[ApeTagLocation.Id3v1Size];
 		"TAG"u8.CopyTo (id3);
 		"KeepMe"u8.CopyTo (id3.AsSpan (3));
 		return id3;
+	}
+
+	/// <summary>
+	/// Lyrics3 v1 block: LYRICSBEGIN, the text, and LYRICSEND. There is no size field.
+	/// </summary>
+	private static byte[] CreateLyrics3V1 (string text)
+	{
+		var body = System.Text.Encoding.Latin1.GetBytes (text);
+		var block = new byte[11 + body.Length + 9];
+		"LYRICSBEGIN"u8.CopyTo (block);
+		body.CopyTo (block.AsSpan (11));
+		"LYRICSEND"u8.CopyTo (block.AsSpan (11 + body.Length));
+		return block;
 	}
 
 	/// <summary>

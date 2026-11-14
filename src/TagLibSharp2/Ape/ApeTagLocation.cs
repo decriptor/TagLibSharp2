@@ -11,10 +11,14 @@ namespace TagLibSharp2.Ape;
 /// Otherwise, if the last 128 bytes start with "TAG", those bytes are ID3v1 and are not audio.
 /// When LYRICS200 sits immediately before that tag and the 6 digits before it measure a body
 /// that starts at LYRICSBEGIN, the Lyrics3 v2 block is not audio and is not the APE footer.
+/// Lyrics3 v1 is the same kind of block when LYRICSEND sits immediately before TAG and
+/// LYRICSBEGIN is within 64 KB before that marker. v1 has no size field.
 /// The APE footer, if any, is the 32 bytes immediately before LYRICSBEGIN.
 /// With no Lyrics3 block, the footer is the 32 bytes at EOF-160.
-/// When that structure is not a footer, or its size does not fit, the suffix is still ID3v1
-/// and audio ends at length-128, or at LYRICSBEGIN when a Lyrics3 block is present.
+/// When that structure is not a footer, its size does not fit, or the bytes at the size's start
+/// do not parse as the tag, the suffix is still ID3v1 and audio ends at length-128,
+/// or at LYRICSBEGIN when a Lyrics3 block is present. An unparseable tag with a size that fits
+/// stays as dead bytes in front of the replacement tag, including its footer.
 /// Tag size includes the footer and excludes a header. The extra 32 header bytes count only when
 /// the computed header start is "APETAGEX".
 /// "APETAGEX" contains the letters TAG at offset 3, not offset 0, so the preamble is not ID3v1.
@@ -38,8 +42,15 @@ internal readonly struct ApeTagLocation
 
 	/// <summary>
 	/// Lyrics3 v2 ends with this many bytes ("LYRICS200"), immediately before ID3v1.
+	/// Lyrics3 v1 uses the same length for "LYRICSEND".
 	/// </summary>
 	private const int LyricsEndLength = 9;
+
+	/// <summary>
+	/// Lyrics3 v1 has no size field. Search back at most this far for LYRICSBEGIN.
+	/// The tag is not huge; a longer gap is left as audio.
+	/// </summary>
+	private const int LyricsV1SearchLimit = 64 * 1024;
 
 	/// <summary>
 	/// Gets a value indicating whether a usable footer was found.
@@ -72,7 +83,7 @@ internal readonly struct ApeTagLocation
 	public int Id3v1Offset { get; }
 
 	/// <summary>
-	/// Gets the offset of a Lyrics3 v2 block (LYRICSBEGIN through LYRICS200) between the APE tag and ID3v1, or -1.
+	/// Gets the offset of a Lyrics3 block (LYRICSBEGIN through LYRICS200 or LYRICSEND) between the APE tag and ID3v1, or -1.
 	/// </summary>
 	public int LyricsOffset { get; }
 
@@ -221,17 +232,19 @@ internal readonly struct ApeTagLocation
 		var tagEnd = footerOffset + ApeTagFooter.Size;
 		// TagSize includes the footer and excludes a header. Add the header only when those bytes are APETAGEX.
 		var total = (long)footer.TagSize + HeaderSpan (data, footer, tagEnd);
-		var bounded = total >= ApeTagFooter.Size && total <= tagEnd;
+		// A size that fits is not the tag when those bytes do not parse. Keep the footer
+		// and the over-claimed span; the next branches end the audio at the footer or the lyrics/ID3 boundary.
+		var sizeFits = total >= ApeTagFooter.Size && total <= tagEnd;
+		var bounded = sizeFits && ItemsMatch (data, footer, tagEnd);
+		var boundError = sizeFits
+			? $"APE tag items do not parse ({footer.TagSize} bytes ending at {tagEnd})"
+			: $"APE tag size ({footer.TagSize}) exceeds data length ({tagEnd})";
 		if (!bounded && lyricsOffset >= 0) {
-			return LyricsAndId3 (
-				data.Length,
-				lyricsOffset,
-				lyricsLength,
-				$"APE tag size ({footer.TagSize}) exceeds data length ({tagEnd})");
+			return LyricsAndId3 (data.Length, lyricsOffset, lyricsLength, boundError);
 		}
 
 		if (!bounded && tagEnd == data.Length - Id3v1Size && HasTrailingId3v1 (data)) {
-			return Id3Only (data.Length, $"APE tag size ({footer.TagSize}) exceeds data length ({tagEnd})");
+			return Id3Only (data.Length, boundError);
 		}
 
 		var audioEnd = bounded ? tagEnd - (int)total : data.Length;
@@ -250,9 +263,12 @@ internal readonly struct ApeTagLocation
 	}
 
 	/// <summary>
-	/// Lyrics3 v2 sits immediately before ID3v1. The 9 bytes before TAG are LYRICS200.
-	/// The 6 ASCII digits before that are the decimal size of the body, which includes LYRICSBEGIN
-	/// and excludes the size field and LYRICS200.
+	/// Lyrics3 sits immediately before ID3v1.
+	/// v2: the 9 bytes before TAG are LYRICS200, and the 6 ASCII digits before that are the decimal size
+	/// of the body, which includes LYRICSBEGIN and excludes the size field and LYRICS200.
+	/// v1: the 9 bytes before TAG are LYRICSEND. There is no size field. The block is the nearest
+	/// LYRICSBEGIN within <see cref="LyricsV1SearchLimit"/> through LYRICSEND.
+	/// A size that does not land on LYRICSBEGIN, or LYRICSEND with no begin inside that bound, is not lyrics.
 	/// </summary>
 	private static bool TryReadLyrics3 (ReadOnlySpan<byte> data, out int lyricsOffset, out int lyricsLength)
 	{
@@ -261,11 +277,30 @@ internal readonly struct ApeTagLocation
 
 		var id3Offset = data.Length - Id3v1Size;
 		var endOffset = id3Offset - LyricsEndLength;
-		var sizeOffset = endOffset - LyricsSizeLength;
-		if (sizeOffset < LyricsBeginLength)
+		if (endOffset < 0)
 			return false;
 
-		if (!data.Slice (endOffset, LyricsEndLength).SequenceEqual ("LYRICS200"u8))
+		if (data.Slice (endOffset, LyricsEndLength).SequenceEqual ("LYRICS200"u8))
+			return TryReadLyrics3V2 (data, id3Offset, endOffset, out lyricsOffset, out lyricsLength);
+
+		if (data.Slice (endOffset, LyricsEndLength).SequenceEqual ("LYRICSEND"u8))
+			return TryReadLyrics3V1 (data, id3Offset, endOffset, out lyricsOffset, out lyricsLength);
+
+		return false;
+	}
+
+	private static bool TryReadLyrics3V2 (
+		ReadOnlySpan<byte> data,
+		int id3Offset,
+		int endOffset,
+		out int lyricsOffset,
+		out int lyricsLength)
+	{
+		lyricsOffset = -1;
+		lyricsLength = 0;
+
+		var sizeOffset = endOffset - LyricsSizeLength;
+		if (sizeOffset < LyricsBeginLength)
 			return false;
 
 		var bodySize = 0;
@@ -288,6 +323,71 @@ internal readonly struct ApeTagLocation
 		lyricsOffset = begin;
 		lyricsLength = id3Offset - begin;
 		return true;
+	}
+
+	private static bool TryReadLyrics3V1 (
+		ReadOnlySpan<byte> data,
+		int id3Offset,
+		int endOffset,
+		out int lyricsOffset,
+		out int lyricsLength)
+	{
+		lyricsOffset = -1;
+		lyricsLength = 0;
+
+		// Search back from LYRICSEND. The nearest LYRICSBEGIN within 64 KB starts the block.
+		ReadOnlySpan<byte> beginMarker = "LYRICSBEGIN"u8;
+		var searchFrom = endOffset - LyricsV1SearchLimit;
+		if (searchFrom < 0)
+			searchFrom = 0;
+
+		var begin = -1;
+		for (var i = endOffset - beginMarker.Length; i >= searchFrom; i--) {
+			if (data.Slice (i, beginMarker.Length).SequenceEqual (beginMarker)) {
+				begin = i;
+				break;
+			}
+		}
+
+		if (begin < 0)
+			return false;
+
+		lyricsOffset = begin;
+		lyricsLength = id3Offset - begin;
+		return true;
+	}
+
+	/// <summary>
+	/// True when <paramref name="footer"/>'s item region, ending at <paramref name="tagEnd"/>, parses
+	/// as that many items. An empty tag is only the footer. A size that fits but does not parse is not a tag.
+	/// </summary>
+	private static bool ItemsMatch (ReadOnlySpan<byte> data, ApeTagFooter footer, int tagEnd)
+	{
+		if (footer.TagSize < (uint)ApeTagFooter.Size || tagEnd < ApeTagFooter.Size || footer.TagSize > (uint)tagEnd)
+			return false;
+
+		var itemsSize = (int)footer.TagSize - ApeTagFooter.Size;
+		if (footer.ItemCount == 0)
+			return itemsSize == 0;
+
+		const int minItemSize = ApeTagItem.MinHeaderSize + ApeTagItem.MinKeyLength + 1;
+		if ((ulong)footer.ItemCount * (ulong)minItemSize > (ulong)itemsSize)
+			return false;
+
+		var itemsStart = tagEnd - (int)footer.TagSize;
+		var items = data.Slice (itemsStart, itemsSize);
+		var offset = 0;
+		var parsed = 0u;
+		while (offset < items.Length && parsed < footer.ItemCount) {
+			var item = ApeTagItem.Parse (items[offset..]);
+			if (!item.IsSuccess || item.BytesConsumed <= 0)
+				return false;
+
+			offset += item.BytesConsumed;
+			parsed++;
+		}
+
+		return parsed == footer.ItemCount;
 	}
 
 	private static int HeaderSpan (ReadOnlySpan<byte> data, ApeTagFooter footer, int tagEnd)
