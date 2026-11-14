@@ -44,8 +44,10 @@ public readonly struct RiffChunk : IEquatable<RiffChunk>
 	/// <remarks>
 	/// This is the declared size. A truncated chunk's <see cref="DataSize"/> can be
 	/// larger than the bytes in <see cref="Data"/>; saving writes those bytes instead.
+	/// The sum is a long so a <see cref="DataSize"/> within 9 of <see cref="int.MaxValue"/>
+	/// (header plus an optional pad byte) does not wrap negative.
 	/// </remarks>
-	public int TotalSize => HeaderSize + (int)DataSize + ((int)DataSize & 1);
+	public long TotalSize => HeaderSize + (long)DataSize + (DataSize & 1);
 
 	/// <summary>
 	/// Bytes written for this chunk: header, data bytes present, and the pad.

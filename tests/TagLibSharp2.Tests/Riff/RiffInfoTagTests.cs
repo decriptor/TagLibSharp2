@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Core;
 using TagLibSharp2.Riff;
 
@@ -221,5 +222,25 @@ public class RiffInfoTagTests
 		Assert.AreEqual (original.Title, roundTripped.Title);
 		Assert.AreEqual (original.Artist, roundTripped.Artist);
 		Assert.AreEqual (original.Album, roundTripped.Album);
+	}
+
+	[TestMethod]
+	public void Parse_FieldSizeAboveIntMax_DoesNotThrow ()
+	{
+		// INFO plus one field whose size does not fit the buffer and does not fit in an int.
+		var data = new byte[16];
+		"INFO"u8.CopyTo (data);
+		"INAM"u8.CopyTo (data.AsSpan (4));
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (8), uint.MaxValue);
+
+		RiffInfoTag? tag = null;
+		try {
+			tag = RiffInfoTag.Parse (new BinaryData (data));
+		} catch (Exception ex) {
+			Assert.Fail ($"Parse threw {ex.GetType ().Name}: {ex.Message}");
+		}
+
+		Assert.IsNotNull (tag);
+		Assert.IsNull (tag.Title);
 	}
 }

@@ -63,6 +63,7 @@ public sealed class WavFile : IMediaFile
 	/// This is the native metadata format for WAV files.
 	/// May be null if no LIST INFO chunk is present.
 	/// Every LIST INFO is merged into this tag. The first list wins, and save writes exactly one INFO list.
+	/// Save writes that merged list at the end, not in its original position.
 	/// </remarks>
 	public RiffInfoTag? InfoTag { get; set; }
 

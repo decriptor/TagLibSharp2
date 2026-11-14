@@ -42,7 +42,11 @@ public class AiffChunk
 	/// <summary>
 	/// Gets the total size including header and padding.
 	/// </summary>
-	public int TotalSize => HeaderSize + (int)Size + ((Size % 2 == 1) ? 1 : 0);
+	/// <remarks>
+	/// The sum is a long so a <see cref="Size"/> within 9 of <see cref="int.MaxValue"/>
+	/// (header plus an optional pad byte) does not wrap negative.
+	/// </remarks>
+	public long TotalSize => HeaderSize + (long)Size + (Size % 2 == 1 ? 1 : 0);
 
 	AiffChunk (string fourCC, uint size, BinaryData data)
 	{
