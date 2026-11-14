@@ -842,8 +842,9 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <summary>
-	/// Rewrites every n/m value of <paramref name="numberField"/> to n when m parses.
-	/// Values that are not n/m, and every other field, stay where they are so a later read cannot resurrect the slash total.
+	/// Rewrites each repeated <paramref name="numberField"/> value in place and does not drop the other values.
+	/// An n/m value whose total parses becomes n. A value that is not n/m stays, and every other field stays,
+	/// so a later read cannot resurrect the slash total.
 	/// </summary>
 	/// <param name="numberField">The field whose repeated values may embed a total, such as TRACKNUMBER.</param>
 	void StripEmbeddedTotal (string numberField)
