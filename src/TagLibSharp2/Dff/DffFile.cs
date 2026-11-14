@@ -760,10 +760,12 @@ public sealed class DffFile : IMediaFile
 			offset = chunkEnd;
 		}
 
-		// A chunk header is 12 bytes. Read stops on a shorter tail, so those bytes are not a chunk.
+		// A chunk header is 12 bytes. The walk stops on a shorter tail, so those bytes are not a chunk.
 		// Copying them in front of a new ID3 makes the tag the tail's ckDataSize and it will not re-read.
 		// The same remainder is left by zero padding whose length is not a multiple of 12.
-		if (offset < original.Length && !(appendingId3 && original.Length - offset < 12))
+		// After the walk that remainder is always under 12 bytes, so drop it only when an ID3 chunk
+		// will be appended. Clearing the tag appends nothing, and the tail stays.
+		if (offset < original.Length && !appendingId3)
 			destination.Write (original, offset, original.Length - offset);
 	}
 
