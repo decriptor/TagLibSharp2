@@ -8,14 +8,16 @@ namespace TagLibSharp2.Core;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Atomic writes work by writing to a temporary file first, then renaming
-/// the temp file to the target path. This ensures that either the original
-/// file remains intact (if the write fails) or the new file is complete
-/// (if the write succeeds). There is never a partial or corrupted file.
+/// Data is written to a temporary file in the same directory as the target, then that
+/// file replaces the target. The default file system flushes the temp file to disk
+/// before the replace. If the write fails before the replace and the target is still
+/// present, the target is left unchanged and the temp file is removed.
 /// </para>
 /// <para>
-/// The temp file is created in the same directory as the target to ensure
-/// the rename operation is atomic (same filesystem).
+/// A crash can still leave the temporary file, including a partial one if it happens
+/// during the write. A replace can also fail after the destination has already been
+/// removed; the temp file is then moved onto the destination, or kept (and its path
+/// reported) if that move also fails.
 /// </para>
 /// </remarks>
 public static class AtomicFileWriter
@@ -35,22 +37,33 @@ public static class AtomicFileWriter
 		fileSystem ??= DefaultFileSystem.Instance;
 
 		var tempPath = GetTempPath (path, fileSystem);
+		var replaceAttempted = false;
 
 		try {
 			// Write to temp file
 			fileSystem.WriteAllBytes (tempPath, data);
 
 			// Atomically replace the target file
+			replaceAttempted = true;
 			fileSystem.Move (tempPath, path);
 
 			return FileWriteResult.Success (data.Length);
 		} catch (IOException ex) {
-			// Clean up temp file on failure
-			CleanupTempFile (tempPath, fileSystem);
-			return FileWriteResult.Failure ($"I/O error writing file: {ex.Message}");
+			return FinishAfterFailure (
+				tempPath,
+				path,
+				fileSystem,
+				data.Length,
+				$"I/O error writing file: {ex.Message}",
+				replaceAttempted);
 		} catch (UnauthorizedAccessException ex) {
-			CleanupTempFile (tempPath, fileSystem);
-			return FileWriteResult.Failure ($"Access denied: {ex.Message}");
+			return FinishAfterFailure (
+				tempPath,
+				path,
+				fileSystem,
+				data.Length,
+				$"Access denied: {ex.Message}",
+				replaceAttempted);
 		}
 	}
 
@@ -71,6 +84,7 @@ public static class AtomicFileWriter
 		fileSystem ??= DefaultFileSystem.Instance;
 
 		var tempPath = GetTempPath (path, fileSystem);
+		var replaceAttempted = false;
 
 		try {
 			// Write to temp file
@@ -80,6 +94,7 @@ public static class AtomicFileWriter
 			cancellationToken.ThrowIfCancellationRequested ();
 
 			// Atomically replace the target file
+			replaceAttempted = true;
 			fileSystem.Move (tempPath, path);
 
 			return FileWriteResult.Success (data.Length);
@@ -87,19 +102,81 @@ public static class AtomicFileWriter
 			CleanupTempFile (tempPath, fileSystem);
 			return FileWriteResult.Failure ("Operation was cancelled");
 		} catch (IOException ex) {
-			CleanupTempFile (tempPath, fileSystem);
-			return FileWriteResult.Failure ($"I/O error writing file: {ex.Message}");
+			return FinishAfterFailure (
+				tempPath,
+				path,
+				fileSystem,
+				data.Length,
+				$"I/O error writing file: {ex.Message}",
+				replaceAttempted);
 		} catch (UnauthorizedAccessException ex) {
-			CleanupTempFile (tempPath, fileSystem);
-			return FileWriteResult.Failure ($"Access denied: {ex.Message}");
+			return FinishAfterFailure (
+				tempPath,
+				path,
+				fileSystem,
+				data.Length,
+				$"Access denied: {ex.Message}",
+				replaceAttempted);
 		}
+	}
+
+	/// <summary>
+	/// After a failed replace, deletes the temp file only when the destination still exists.
+	/// When the destination is missing, moves the temp file onto it.
+	/// </summary>
+	/// <returns><c>true</c> when the temp file was moved onto the missing destination.</returns>
+	internal static bool TryRecoverTempFile (
+		string tempPath,
+		string destinationPath,
+		IFileSystem fileSystem,
+		out string? keptTempError)
+	{
+		keptTempError = null;
+		if (fileSystem.FileExists (destinationPath)) {
+			CleanupTempFile (tempPath, fileSystem);
+			return false;
+		}
+
+		try {
+			fileSystem.Move (tempPath, destinationPath);
+			return true;
+		} catch (IOException ex) {
+			keptTempError = $"Temporary file kept at '{tempPath}'. {ex.Message}";
+			return false;
+		} catch (UnauthorizedAccessException ex) {
+			keptTempError = $"Temporary file kept at '{tempPath}'. {ex.Message}";
+			return false;
+		}
+	}
+
+	static FileWriteResult FinishAfterFailure (
+		string tempPath,
+		string destinationPath,
+		IFileSystem fileSystem,
+		int bytesWritten,
+		string message,
+		bool replaceAttempted)
+	{
+		// A failure before Move cannot have removed the destination, so the temp file is not the only copy.
+		if (!replaceAttempted) {
+			CleanupTempFile (tempPath, fileSystem);
+			return FileWriteResult.Failure (message);
+		}
+
+		if (TryRecoverTempFile (tempPath, destinationPath, fileSystem, out var keptTempError))
+			return FileWriteResult.Success (bytesWritten);
+
+		if (keptTempError is not null)
+			return FileWriteResult.Failure ($"{message}. {keptTempError}");
+
+		return FileWriteResult.Failure (message);
 	}
 
 	static string GetTempPath (string targetPath, IFileSystem fileSystem)
 	{
 		var directory = fileSystem.GetDirectoryName (targetPath) ?? ".";
-		var fileName = fileSystem.GetFileName (targetPath);
-		var tempFileName = $"{TempFilePrefix}{Guid.NewGuid ():N}_{fileName}{TempFileSuffix}";
+		// Fixed short name. Including the destination name overflows the 255-unit component limit.
+		var tempFileName = $"{TempFilePrefix}{Guid.NewGuid ():N}{TempFileSuffix}";
 		return fileSystem.CombinePath (directory, tempFileName);
 	}
 
