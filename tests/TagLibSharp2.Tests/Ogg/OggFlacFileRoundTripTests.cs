@@ -3,6 +3,7 @@
 
 using TagLibSharp2.Core;
 using TagLibSharp2.Ogg;
+using TagLibSharp2.Tests.Core;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Ogg;
@@ -455,5 +456,347 @@ public class OggFlacFileRoundTripTests
 		Assert.AreEqual ("Artist Name", reloaded.Artist);
 		Assert.AreEqual ("Album Name", reloaded.Album);
 		Assert.AreEqual ("Unicode test", reloaded.Comment);
+	}
+
+	[TestMethod]
+	[DataRow (65025)]
+	[DataRow (130050)]
+	public void PicturePacket_MultipleOf65025_RoundTripsWithZeroLacing (int packetLength)
+	{
+		// 255 * 255 bytes fills a page. The packet still needs a lacing value of 0 on the next
+		// page. The payload guess is packetLength - 4; the assertion is the measured packet.
+		var picture = new byte[packetLength - 4];
+		picture[0] = 0x21;
+		picture[^1] = 0x43;
+		if (picture.Length > 65021)
+			picture[65021] = 0xFF;
+
+		var original = CreateOggFlacWithPicture (picture);
+		var read = OggFlacFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureVorbisComment ().Title = "Boundary";
+
+		var rendered = read.File.Render (original);
+		Assert.IsGreaterThan (0, rendered.Length);
+		var picturePacket = OggPacketAssembler.Read (rendered)
+			.Single (packet => packet.Data.Length > 0 && (packet.Data[0] & 0x7F) == 6);
+		AssertEndsOnZeroLacing (picturePacket, packetLength);
+
+		var reread = OggFlacFile.Read (rendered);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("Boundary", reread.File!.VorbisComment?.Title);
+		Assert.IsTrue (reread.File.TryGetMetadataBlock (6, out var stored));
+		CollectionAssert.AreEqual (picture, stored);
+	}
+
+	[TestMethod]
+	public void SaveToFile_CommentBlockPast24Bits_LeavesFileUnchanged ()
+	{
+		// A picture is stored as base64 inside the Vorbis comment. Past 0xFFFFFF bytes the
+		// 24-bit block length cannot be written. About 12.6 MB of image bytes is enough.
+		var original = TestBuilders.OggFlac.CreateWithMetadata (title: "T");
+		var mock = new MockFileSystem ();
+		const string path = "/album.oga";
+		mock.AddFile (path, original);
+
+		var read = OggFlacFile.ReadFromFile (path, mock);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		var tag = read.File!.VorbisComment!;
+		var commentWithoutPicture = tag.Render ().Length;
+		var blockOverhead = MeasuredPictureBlockOverhead (tag);
+		tag.RemoveAllPictures ();
+
+		var pictureBytes = PictureBytesPast24BitLimit (commentWithoutPicture, blockOverhead);
+		var contentLength = blockOverhead + pictureBytes;
+		var base64Length = 4 * ((contentLength + 2) / 3);
+		var commentLength = commentWithoutPicture + 4 + "METADATA_BLOCK_PICTURE=".Length + base64Length;
+		Assert.IsGreaterThan (0xFFFFFF, commentLength, "Picture did not expand the comment past 24 bits");
+		Assert.IsLessThanOrEqualTo (0xFFFFFF + 4, commentLength, "Picture is larger than the one overflow case");
+
+		tag.AddPicture (new FlacPicture (
+			"image/jpeg", PictureType.FrontCover, "", BinaryData.WrapUnsafe (new byte[pictureBytes]), 0, 0, 0, 0));
+
+		var save = read.File.SaveToFile (path, mock);
+		if (save.IsSuccess) {
+			Assert.Fail (
+				$"SaveToFile returned success for a Vorbis comment of {commentLength} bytes. " +
+				$"A 24-bit length would wrap to {commentLength & 0xFFFFFF}.");
+		}
+
+		Assert.IsTrue (save.Error!.Contains ("render", StringComparison.OrdinalIgnoreCase), save.Error);
+		CollectionAssert.AreEqual (original, mock.ReadAllBytes (path));
+	}
+
+	[TestMethod]
+	public void LegalMaximumMetadataBlock_IsAccepted ()
+	{
+		const int dataLength = 0xFFFFFF;
+		var packet = new byte[4 + dataLength];
+		packet[0] = 0x81;
+		packet[1] = 0xFF;
+		packet[2] = 0xFF;
+		packet[3] = 0xFF;
+		packet[4] = 0xA5;
+		packet[^1] = 0x5A;
+
+		var read = OggFlacFile.Read (BuildPackets (CreateHeaderPacket (1), packet));
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsTrue (read.File!.TryGetMetadataBlock (1, out var stored), read.Error);
+		Assert.AreEqual (dataLength, stored.Length);
+		Assert.AreEqual (0xA5, stored[0]);
+		Assert.AreEqual (0x5A, stored[^1]);
+	}
+
+	[TestMethod]
+	public void MetadataPacketLargerThanMaximumBlock_IsRejected ()
+	{
+		// One byte past 4 + 0xFFFFFF. The declared length still says 0xFFFFFF; the packet does not fit.
+		const int dataLength = 0xFFFFFF;
+		var packet = new byte[4 + dataLength + 1];
+		packet[0] = 0x81;
+		packet[1] = 0xFF;
+		packet[2] = 0xFF;
+		packet[3] = 0xFF;
+		packet[4] = 0xA5;
+		packet[^1] = 0x5A;
+
+		var read = OggFlacFile.Read (BuildPackets (CreateHeaderPacket (1), packet));
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsFalse (
+			read.File!.TryGetMetadataBlock (1, out _),
+			"A packet larger than 4 + 0xFFFFFF is not a legal metadata block");
+	}
+
+	[TestMethod]
+	public void WalkFailureAfterCompleteComment_KeepsCommentAndBlocks ()
+	{
+		var comment = new VorbisComment ("TagLibSharp2") { Title = "Survives" };
+		var commentPacket = WrapFlacBlock (0x04, comment.Render ().ToArray ());
+		var picture = new byte[] { 1, 2, 3, 4 };
+		var picturePacket = WrapFlacBlock (0x06, picture);
+		var header = OggPageHelper.BuildOggPage (
+			[CreateHeaderPacket (2)], OggPageFlags.BeginOfStream, 0, serialNumber: 1, sequenceNumber: 0);
+		var metadata = OggPageHelper.BuildOggPage (
+			[commentPacket, picturePacket], OggPageFlags.None, 0, serialNumber: 1, sequenceNumber: 1);
+		var broken = OggPageHelper.BuildOggPage (
+			[new byte[] { 0x01 }], OggPageFlags.Continuation, 0, serialNumber: 1, sequenceNumber: 2);
+
+		var fileBytes = Concat (header, metadata, broken);
+		var read = OggFlacFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Survives", read.File!.VorbisComment?.Title);
+		Assert.IsTrue (read.File.TryGetMetadataBlock (6, out var stored));
+		CollectionAssert.AreEqual (picture, stored);
+		Assert.AreEqual (0, read.File.Render (fileBytes).Length, "A failed walk is not a file that can be rewritten");
+	}
+
+	[TestMethod]
+	public void SharedMetadataAndAudioPage_KeepsCommentButDoesNotParseAudio ()
+	{
+		// RFC 9639 section 10.1: the first audio packet must start on a new page.
+		var comment = new VorbisComment ("TagLibSharp2") { Title = "Kept" };
+		var commentPacket = WrapFlacBlock (0x04, comment.Render ().ToArray ());
+		var audio = new byte[] { 0xFF, 0xF8, 0xC9, 0x12, 0x00 };
+		var header = OggPageHelper.BuildOggPage (
+			[CreateHeaderPacket (1)], OggPageFlags.BeginOfStream, 0, serialNumber: 1, sequenceNumber: 0);
+		var shared = OggPageHelper.BuildOggPage (
+			[commentPacket, audio], OggPageFlags.None, 0, serialNumber: 1, sequenceNumber: 1);
+		var fileBytes = Concat (header, shared);
+
+		var mock = new MockFileSystem ();
+		const string path = "/shared.oga";
+		mock.AddFile (path, fileBytes);
+		var read = OggFlacFile.ReadFromFile (path, mock);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Kept", read.File!.VorbisComment?.Title);
+
+		read.File.VorbisComment!.Title = "Changed";
+		var save = read.File.SaveToFile (path, mock);
+		Assert.IsFalse (save.IsSuccess, save.Error);
+		CollectionAssert.AreEqual (fileBytes, mock.ReadAllBytes (path));
+	}
+
+	[TestMethod]
+	public void WalkFailureBeforeAnyComment_StillSucceedsWithNoComment ()
+	{
+		// The comment packet never reaches its terminating lacing value, so there is no comment
+		// to keep. The identification header is intact and the read may still succeed.
+		var header = OggPageHelper.BuildOggPage (
+			[CreateHeaderPacket (1)], OggPageFlags.BeginOfStream, 0, serialNumber: 1, sequenceNumber: 0);
+		var unfinished = new byte[70000];
+		unfinished[0] = 0x04;
+		var (pages, _) = OggPageHelper.BuildMultiPagePacket (unfinished, OggPageFlags.None, 0, serialNumber: 1, startSequence: 1);
+		Assert.AreEqual (255, pages[0][26], "Setup page must be a full page, not a finished comment");
+
+		var read = OggFlacFile.Read (Concat (header, pages[0]));
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNull (
+			read.File!.VorbisComment,
+			"A walk that fails before any comment packet is complete may still succeed, with no comment");
+	}
+
+	static void AssertEndsOnZeroLacing (OggPacketAssembler.Packet packet, int packetLength)
+	{
+		Assert.AreEqual (packetLength, packet.Data.Length, "Measured packet size does not match the lacing boundary");
+		const int pageBytes = 255 * 255;
+		Assert.AreEqual (0, packetLength % pageBytes);
+		var fullPages = packetLength / pageBytes;
+		Assert.AreEqual (fullPages + 1, packet.Lacings.Count, "Missing the 0-lacing terminator page");
+		Assert.AreEqual (0, packet.Flags[0] & (byte)OggPageFlags.Continuation);
+
+		for (var i = 0; i < fullPages; i++) {
+			Assert.AreEqual (255, packet.Lacings[i].Length);
+			for (var segment = 0; segment < packet.Lacings[i].Length; segment++)
+				Assert.AreEqual (255, packet.Lacings[i][segment]);
+			Assert.AreEqual (ulong.MaxValue, packet.Granules[i], "Unfinished page must use granule -1");
+			if (i > 0)
+				Assert.AreEqual ((byte)OggPageFlags.Continuation, packet.Flags[i]);
+		}
+
+		Assert.AreEqual (1, packet.Lacings[^1].Length, "Terminator page has a single lacing value");
+		Assert.AreEqual (0, packet.Lacings[^1][0], "Terminating lacing value is 0");
+		Assert.AreEqual ((byte)OggPageFlags.Continuation, packet.Flags[^1]);
+		Assert.AreEqual (0, packet.Flags[^1] & 0x06);
+	}
+
+	static int MeasuredPictureBlockOverhead (VorbisComment tag)
+	{
+		var before = tag.Render ().Length;
+		var probe = new FlacPicture (
+			"image/jpeg", PictureType.FrontCover, "", new BinaryData (new byte[] { 0x01 }), 0, 0, 0, 0);
+		var blockLength = probe.RenderContent ().Length;
+		tag.AddPicture (probe);
+		var growth = tag.Render ().Length - before;
+		var base64Length = 4 * ((blockLength + 2) / 3);
+		Assert.AreEqual (4 + "METADATA_BLOCK_PICTURE=".Length + base64Length, growth,
+			"Picture field overhead changed; measure it instead of guessing");
+		return blockLength - 1;
+	}
+
+	static int PictureBytesPast24BitLimit (int commentWithoutPicture, int blockOverhead)
+	{
+		var fieldName = "METADATA_BLOCK_PICTURE=".Length;
+		var minimumBase64 = 0xFFFFFF - commentWithoutPicture - 4 - fieldName + 1;
+		var base64Length = (minimumBase64 + 3) & ~3;
+		var groups = base64Length / 4;
+		var content = (groups * 3) - 2;
+		return content - blockOverhead;
+	}
+
+	static byte[] BuildPackets (params byte[][] packets)
+	{
+		using var output = new MemoryStream ();
+		uint sequence = 0;
+		for (var i = 0; i < packets.Length; i++) {
+			var flags = i == 0 ? OggPageFlags.BeginOfStream : OggPageFlags.None;
+			WritePages (output, packets[i], flags, ref sequence);
+		}
+
+		return output.ToArray ();
+	}
+
+	static byte[] Concat (params byte[][] parts)
+	{
+		var length = 0;
+		for (var i = 0; i < parts.Length; i++)
+			length += parts[i].Length;
+
+		var result = new byte[length];
+		var offset = 0;
+		for (var i = 0; i < parts.Length; i++) {
+			parts[i].CopyTo (result, offset);
+			offset += parts[i].Length;
+		}
+
+		return result;
+	}
+}
+
+static class OggPacketAssembler
+{
+	internal sealed class Packet
+	{
+		public byte[] Data { get; private set; } = [];
+		public List<byte[]> Lacings { get; } = new ();
+		public List<byte> Flags { get; } = new ();
+		public List<ulong> Granules { get; } = new ();
+
+		public void Finish (List<byte> data)
+		{
+			Data = data.ToArray ();
+		}
+	}
+
+	public static List<Packet> Read (ReadOnlySpan<byte> file)
+	{
+		var packets = new List<Packet> ();
+		var open = new List<byte> ();
+		var lacings = new List<byte[]> ();
+		var flags = new List<byte> ();
+		var granules = new List<ulong> ();
+		var offset = 0;
+
+		while (offset + 27 <= file.Length &&
+			   file[offset] == (byte)'O' && file[offset + 1] == (byte)'g' &&
+			   file[offset + 2] == (byte)'g' && file[offset + 3] == (byte)'S') {
+			var segmentCount = file[offset + 26];
+			var tableEnd = offset + 27 + segmentCount;
+			if (tableEnd > file.Length)
+				break;
+
+			var dataSize = 0;
+			for (var i = 0; i < segmentCount; i++)
+				dataSize += file[offset + 27 + i];
+			if (tableEnd + dataSize > file.Length)
+				break;
+
+			var pageFlags = file[offset + 5];
+			ulong granule = 0;
+			for (var i = 0; i < 8; i++)
+				granule |= (ulong)file[offset + 6 + i] << (8 * i);
+
+			var continued = (pageFlags & (byte)OggPageFlags.Continuation) != 0;
+			if (!continued && (open.Count > 0 || lacings.Count > 0))
+				packets.Add (Finish (open, lacings, flags, granules));
+
+			var lace = new byte[segmentCount];
+			file.Slice (offset + 27, segmentCount).CopyTo (lace);
+			lacings.Add (lace);
+			flags.Add (pageFlags);
+			granules.Add (granule);
+
+			var dataOffset = tableEnd;
+			for (var i = 0; i < segmentCount; i++) {
+				var size = lace[i];
+				if (size > 0) {
+					open.AddRange (file.Slice (dataOffset, size).ToArray ());
+					dataOffset += size;
+				}
+
+				if (size < 255)
+					packets.Add (Finish (open, lacings, flags, granules));
+			}
+
+			offset = tableEnd + dataSize;
+		}
+
+		if (open.Count > 0 || lacings.Count > 0)
+			packets.Add (Finish (open, lacings, flags, granules));
+
+		return packets;
+	}
+
+	static Packet Finish (List<byte> data, List<byte[]> lacings, List<byte> flags, List<ulong> granules)
+	{
+		var packet = new Packet ();
+		packet.Finish (data);
+		packet.Lacings.AddRange (lacings);
+		packet.Flags.AddRange (flags);
+		packet.Granules.AddRange (granules);
+		data.Clear ();
+		lacings.Clear ();
+		flags.Clear ();
+		granules.Clear ();
+		return packet;
 	}
 }

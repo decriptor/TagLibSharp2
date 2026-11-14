@@ -258,4 +258,44 @@ public class OggVorbisFileRoundTripTests
 		Assert.AreEqual ("Album Name", reloaded.Album);
 		Assert.AreEqual ("Unicode test", reloaded.Comment);
 	}
+
+	[TestMethod]
+	public void CommentPacket_Exact65025Bytes_RoundTripsWithZeroLacing ()
+	{
+		// A comment packet of exactly 255 * 255 bytes ends with a lacing value of 0 on the next page.
+		// Dropping that terminator concatenates the setup header or leaves the comment short.
+		const int targetPacket = 255 * 255;
+		var original = TestBuilders.Ogg.CreateMinimalFile (title: "Boundary", artist: "Artist");
+		var read = OggVorbisFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		var tag = read.File!.VorbisComment!;
+
+		var packetBefore = 8 + tag.Render ().Length;
+		const string fieldName = "COMMENT";
+		var valueLength = targetPacket - packetBefore - (4 + fieldName.Length + 1);
+		Assert.IsGreaterThan (0, valueLength);
+		var value = new string ('Q', valueLength);
+		tag.Comment = value;
+		Assert.AreEqual (targetPacket, 8 + tag.Render ().Length, "Failed to size the comment packet to 65025 bytes");
+
+		var written = read.File.Render (original);
+		Assert.IsGreaterThan (0, written.Length);
+		var commentPacket = OggPacketAssembler.Read (written.Span)
+			.Single (packet => packet.Data.Length > 7 && packet.Data[0] == 3 && packet.Data[1] == (byte)'v');
+		Assert.AreEqual (targetPacket, commentPacket.Data.Length);
+		Assert.AreEqual (2, commentPacket.Lacings.Count, "65025-byte packet is one full page plus a terminator");
+		Assert.AreEqual (255, commentPacket.Lacings[0].Length);
+		for (var segment = 0; segment < commentPacket.Lacings[0].Length; segment++)
+			Assert.AreEqual (255, commentPacket.Lacings[0][segment]);
+		Assert.AreEqual (ulong.MaxValue, commentPacket.Granules[0]);
+		Assert.AreEqual (0, commentPacket.Flags[0] & (byte)OggPageFlags.Continuation);
+		Assert.AreEqual (1, commentPacket.Lacings[1].Length);
+		Assert.AreEqual (0, commentPacket.Lacings[1][0], "Terminating lacing value is 0");
+		Assert.AreEqual ((byte)OggPageFlags.Continuation, commentPacket.Flags[1]);
+		Assert.AreEqual (0, commentPacket.Flags[1] & 0x06);
+
+		var again = OggVorbisFile.Read (written.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual (value, again.File!.VorbisComment!.Comment);
+	}
 }
