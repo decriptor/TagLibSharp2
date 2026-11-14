@@ -164,62 +164,25 @@ public class MpegAudioPropertiesTests
 		Assert.AreEqual (MpegLayer.Layer3, props.Layer);
 	}
 
+	// Header byte 1 is sync (0xE0) + version + layer + no CRC. Bitrate index 8, sample rate index 0.
 	[TestMethod]
-	public void Codec_Mpeg1Layer3_IncludesMpeg1 ()
+	[DataRow (0xFF, "MPEG-1 Layer I", DisplayName = "MPEG-1 Layer I")]
+	[DataRow (0xFD, "MPEG-1 Layer II", DisplayName = "MPEG-1 Layer II")]
+	[DataRow (0xFB, "MP3", DisplayName = "MPEG-1 Layer III")]
+	[DataRow (0xF7, "MPEG-2 Layer I", DisplayName = "MPEG-2 Layer I")]
+	[DataRow (0xF5, "MPEG-2 Layer II", DisplayName = "MPEG-2 Layer II")]
+	[DataRow (0xF3, "MP3", DisplayName = "MPEG-2 Layer III")]
+	[DataRow (0xE7, "MPEG-2.5 Layer I", DisplayName = "MPEG-2.5 Layer I")]
+	[DataRow (0xE5, "MPEG-2.5 Layer II", DisplayName = "MPEG-2.5 Layer II")]
+	[DataRow (0xE3, "MP3", DisplayName = "MPEG-2.5 Layer III")]
+	public void Codec_EachVersionAndLayer_ReturnsExactString (int headerByte1, string expectedCodec)
 	{
-		var data = CreateMp3WithXingHeader (1000, 44100, 1152);
-
-		MpegAudioProperties.TryParse (data, 0, out var props);
-
-		Assert.IsNotNull (props);
-		StringAssert.Contains (props!.Codec, "MPEG-1");
-	}
-
-	[TestMethod]
-	public void Codec_Mpeg2Layer2_IncludesVersionAndLayer ()
-	{
-		// MPEG-2 Layer II, 64 kbps, 22050 Hz. The extra byte lets the sync scan see the header.
-		byte[] data = [0xFF, 0xF5, 0x80, 0x00, 0x00];
+		byte[] data = [0xFF, (byte)headerByte1, 0x80, 0x00, 0x00];
 
 		var parsed = MpegAudioProperties.TryParse (new BinaryData (data), 0, out var props);
 
-		Assert.IsTrue (parsed);
-		Assert.IsNotNull (props);
-		StringAssert.Contains (props!.Codec, "MPEG-2");
-		StringAssert.Contains (props.Codec, "Layer II");
-		Assert.IsFalse (props.Codec.Contains ("MPEG-2.5", StringComparison.Ordinal), props.Codec);
-	}
-
-	[TestMethod]
-	public void Codec_Mpeg25Layer3_IncludesVersion ()
-	{
-		// MPEG-2.5 Layer III, 64 kbps, 11025 Hz.
-		byte[] data = [0xFF, 0xE3, 0x80, 0x00, 0x00];
-
-		var parsed = MpegAudioProperties.TryParse (new BinaryData (data), 0, out var props);
-
-		Assert.IsTrue (parsed);
-		StringAssert.Contains (props!.Codec, "MPEG-2.5");
-	}
-
-	[TestMethod]
-	public void Codec_Layer2_ReturnsMpeg1LayerII ()
-	{
-		var data = CreateMp3Layer2 (1000, 44100);
-
-		MpegAudioProperties.TryParse (data, 0, out var props);
-
-		Assert.AreEqual ("MPEG-1 Layer II", props!.Codec);
-	}
-
-	[TestMethod]
-	public void Codec_Layer1_ReturnsMpeg1LayerI ()
-	{
-		var data = CreateMp3Layer1 (1000, 44100);
-
-		MpegAudioProperties.TryParse (data, 0, out var props);
-
-		Assert.AreEqual ("MPEG-1 Layer I", props!.Codec);
+		Assert.IsTrue (parsed, $"header 0xFF 0x{headerByte1:X2}");
+		Assert.AreEqual (expectedCodec, props!.Codec);
 	}
 
 	[TestMethod]
