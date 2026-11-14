@@ -1216,9 +1216,13 @@ public sealed class Mp4File : IMediaFile
 	/// §8.7.4 maps each chunk through stsc to a sample description. That entry's
 	/// data_reference_index (§8.5.2) selects a dref entry. An external entry
 	/// (§8.7.2, self-contained flag clear) stays where it is.
+	/// Per-chunk lookup runs only when that trak has an external dref entry. Rows are
+	/// ordered by first_chunk, so each chunk is resolved by binary search. Every other
+	/// trak shifts each offset at or after <paramref name="threshold"/> in one pass.
 	/// With no stsc, a trak is unchanged only when every referenced entry is external.
-	/// A missing stsd, an empty stsd, or no indexes still leaves the trak unchanged
-	/// when any dref entry is external. No dref means self-contained.
+	/// A missing stsd, an empty stsd, an unreadable sample entry, or no indexes still
+	/// leaves the trak unchanged when any dref entry is external. No dref means self-contained.
+	/// An stsc row that does not resolve does not move an external-only trak.
 	/// Offsets below <paramref name="threshold"/> do not move.
 	/// </summary>
 	static BinaryData AdjustChunkOffsets (BinaryData moov, int threshold, int delta)
@@ -1274,6 +1278,12 @@ public sealed class Mp4File : IMediaFile
 
 	static void PatchStblOffsets (Span<byte> payload, int threshold, int delta, ChunkAdjust adjust)
 	{
+		// No external dref entry: every chunk is in this file. Do not read stsc.
+		if (!HasExternalEntry (adjust.External)) {
+			WalkBoxes (payload, threshold, delta, adjust);
+			return;
+		}
+
 		var references = new List<int> ();
 		var rows = new List<StscRow> ();
 		// dref lives in dinf, not in this stbl. A dref found here must not shift the trak's indexes.
@@ -1282,6 +1292,7 @@ public sealed class Mp4File : IMediaFile
 			adjust = new ChunkAdjust {
 				InTrak = true,
 				PerChunk = true,
+				TrakExternal = adjust.TrakExternal,
 				External = adjust.External,
 				References = references,
 				Rows = rows,
@@ -1291,6 +1302,19 @@ public sealed class Mp4File : IMediaFile
 		}
 
 		WalkBoxes (payload, threshold, delta, adjust);
+	}
+
+	static bool HasExternalEntry (List<bool>? external)
+	{
+		if (external is null)
+			return false;
+
+		foreach (var isExternal in external) {
+			if (isExternal)
+				return true;
+		}
+
+		return false;
 	}
 
 	static bool IsOffsetContainer (ReadOnlySpan<byte> type) =>
@@ -1307,8 +1331,8 @@ public sealed class Mp4File : IMediaFile
 	/// This is the rule for a trak with no stsc rows. §8.7.4 picks the entry per chunk when rows exist.
 	/// A missing or out-of-range index is self-contained, so the trak is not entirely external.
 	/// An entry that does not contain its flags is unknown and is not external by itself.
-	/// If stsd is missing, empty, or yields no data_reference_index values, any external dref
-	/// entry leaves the trak unchanged. No dref still means self-contained.
+	/// If stsd is missing, empty, unreadable, or yields no data_reference_index values, any
+	/// external dref entry leaves the trak unchanged. No dref still means self-contained.
 	/// </summary>
 	static bool ReferencedEntriesAreExternal (List<bool> external, List<int> references)
 	{
@@ -1417,22 +1441,24 @@ public sealed class Mp4File : IMediaFile
 		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
 		var pos = 8;
 		for (var i = 0u; i < count; i++) {
+			// The entry is not in this box. Do not invent an index, and do not keep earlier ones:
+			// an unreadable sample entry plus any external dref leaves the trak unchanged.
 			if (pos >= payload.Length || payload.Length - pos < 8) {
-				references.Add (0);
+				references.Clear ();
 				return;
 			}
 
 			// Truncated stsd: the sample entry's explicit size runs past this box.
 			// Do not read the next box's bytes as data_reference_index.
 			if (ExplicitSizePastParent (payload.Slice (pos))) {
-				references.Add (0);
+				references.Clear ();
 				return;
 			}
 
 			if (!TryMeasureBox (payload.Slice (pos), out var size, out var header)
 				|| size < header
 				|| size > payload.Length - pos) {
-				references.Add (0);
+				references.Clear ();
 				return;
 			}
 
@@ -1553,25 +1579,30 @@ public sealed class Mp4File : IMediaFile
 
 	/// <summary>
 	/// The row with the greatest first_chunk that is still &lt;= <paramref name="chunk"/>.
-	/// Later rows win when first_chunk ties. No such row means the description is missing.
+	/// §8.7.4 orders rows by first_chunk. A later row wins when first_chunk ties.
+	/// No such row means the description is missing.
 	/// </summary>
 	static bool TrySampleDescription (List<StscRow> rows, uint chunk, out uint description)
 	{
 		description = 0;
-		var found = false;
-		var best = 0u;
-		foreach (var row in rows) {
-			if (row.FirstChunk > chunk)
-				continue;
-			if (found && row.FirstChunk < best)
-				continue;
-
-			found = true;
-			best = row.FirstChunk;
-			description = row.SampleDescriptionIndex;
+		var lo = 0;
+		var hi = rows.Count - 1;
+		var found = -1;
+		while (lo <= hi) {
+			var mid = lo + ((hi - lo) / 2);
+			if (rows[mid].FirstChunk <= chunk) {
+				found = mid;
+				lo = mid + 1;
+			} else {
+				hi = mid - 1;
+			}
 		}
 
-		return found;
+		if (found < 0)
+			return false;
+
+		description = rows[found].SampleDescriptionIndex;
+		return true;
 	}
 
 	/// <summary>
@@ -1604,15 +1635,16 @@ public sealed class Mp4File : IMediaFile
 			if (!PerChunk || Rows is null || References is null || External is null)
 				return true;
 
-			// Missing stsc coverage, sample entry, or data_reference_index stays self-contained.
+			// No covering row, or the description or data reference does not resolve.
+			// Self-contained unless this trak is external-only. §8.7.4 / §8.7.2.
 			if (!TrySampleDescription (Rows, chunk, out var description))
-				return true;
+				return !TrakExternal;
 			if (description < 1 || description > (uint)References.Count)
-				return true;
+				return !TrakExternal;
 
 			var dataReference = References[(int)description - 1];
 			if (dataReference < 1 || dataReference > External.Count)
-				return true;
+				return !TrakExternal;
 
 			return !External[dataReference - 1];
 		}
