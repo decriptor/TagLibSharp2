@@ -88,7 +88,6 @@ public sealed class Mp3File : IMediaFile
 	public bool HasId3v2Tag => Id3v2Tag is not null;
 
 	/// <inheritdoc />
-	/// <inheritdoc />
 	/// <remarks>
 	/// Returns a <see cref="CombinedTag"/> composing the ID3v2 and ID3v1 tags when at
 	/// least one is present. ID3v2 takes priority; ID3v1 supplies fallback values for
@@ -114,59 +113,60 @@ public sealed class Mp3File : IMediaFile
 	public MediaFormat Format => MediaFormat.Mp3;
 
 	/// <summary>
-	/// Gets or sets the title. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
+	/// Gets or sets the title. Same rules as <see cref="Tag"/>: ID3v2 wins when
+	/// it has a value, otherwise ID3v1. The setter writes every tag the file already has.
 	/// </summary>
 	public string? Title {
-		get => Id3v2Tag?.Title ?? Id3v1Tag?.Title;
-		set => EnsureId3v2Tag ().Title = value;
+		get => Tag?.Title;
+		set => EnsureTag ().Title = value;
 	}
 
 	/// <summary>
-	/// Gets or sets the artist. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
+	/// Gets or sets the artist. Same rules as <see cref="Tag"/>.
 	/// </summary>
 	public string? Artist {
-		get => Id3v2Tag?.Artist ?? Id3v1Tag?.Artist;
-		set => EnsureId3v2Tag ().Artist = value;
+		get => Tag?.Artist;
+		set => EnsureTag ().Artist = value;
 	}
 
 	/// <summary>
-	/// Gets or sets the album. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
+	/// Gets or sets the album. Same rules as <see cref="Tag"/>.
 	/// </summary>
 	public string? Album {
-		get => Id3v2Tag?.Album ?? Id3v1Tag?.Album;
-		set => EnsureId3v2Tag ().Album = value;
+		get => Tag?.Album;
+		set => EnsureTag ().Album = value;
 	}
 
 	/// <summary>
-	/// Gets or sets the year. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
+	/// Gets or sets the year. Same rules as <see cref="Tag"/>.
 	/// </summary>
 	public string? Year {
-		get => Id3v2Tag?.Year ?? Id3v1Tag?.Year;
-		set => EnsureId3v2Tag ().Year = value;
+		get => Tag?.Year;
+		set => EnsureTag ().Year = value;
 	}
 
 	/// <summary>
-	/// Gets or sets the genre. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
+	/// Gets or sets the genre. Same rules as <see cref="Tag"/>.
 	/// </summary>
 	public string? Genre {
-		get => Id3v2Tag?.Genre ?? Id3v1Tag?.Genre;
-		set => EnsureId3v2Tag ().Genre = value;
+		get => Tag?.Genre;
+		set => EnsureTag ().Genre = value;
 	}
 
 	/// <summary>
-	/// Gets or sets the track number. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
+	/// Gets or sets the track number. Same rules as <see cref="Tag"/>.
 	/// </summary>
 	public uint? Track {
-		get => Id3v2Tag?.Track ?? Id3v1Tag?.Track;
-		set => EnsureId3v2Tag ().Track = value;
+		get => Tag?.Track;
+		set => EnsureTag ().Track = value;
 	}
 
 	/// <summary>
-	/// Gets or sets the comment. Reads from ID3v2 first, then ID3v1. Sets to ID3v2.
+	/// Gets or sets the comment. Same rules as <see cref="Tag"/>.
 	/// </summary>
 	public string? Comment {
-		get => Id3v2Tag?.Comment ?? Id3v1Tag?.Comment;
-		set => EnsureId3v2Tag ().Comment = value;
+		get => Tag?.Comment;
+		set => EnsureTag ().Comment = value;
 	}
 
 	/// <summary>
@@ -413,6 +413,16 @@ public sealed class Mp3File : IMediaFile
 	{
 		Id3v2Tag ??= new Id3v2Tag ();
 		return Id3v2Tag;
+	}
+
+	// A file with no tag gets an ID3v2 tag, which can store the full field.
+	// A file that already has only ID3v1 keeps that tag; the combined view
+	// writes through to it instead of leaving the footer stale.
+	Tag EnsureTag ()
+	{
+		if (Id3v2Tag is null && Id3v1Tag is null)
+			Id3v2Tag = new Id3v2Tag ();
+		return Tag!;
 	}
 
 	/// <summary>

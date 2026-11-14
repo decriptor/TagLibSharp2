@@ -204,4 +204,71 @@ public class CombinedTagTests
 		Assert.IsTrue (string.IsNullOrEmpty (primary.Title));
 		Assert.IsTrue (string.IsNullOrEmpty (secondary.Title));
 	}
+
+	/// <summary>
+	/// Album artist is an ID3v2 TPE2 frame and a Vorbis ALBUMARTIST field.
+	/// ID3v1 has no such field (https://id3.org/ID3v1). The facade must still
+	/// return the primary value, and fall through when the primary is blank.
+	/// </summary>
+	[TestMethod]
+	public void AlbumArtist_PrefersPrimaryThenFallsBack ()
+	{
+		var primary = new Id3v2Tag { AlbumArtist = "Primary" };
+		var secondary = new Id3v2Tag { AlbumArtist = "Secondary" };
+
+		Assert.AreEqual ("Primary", new CombinedTag (primary, secondary).AlbumArtist);
+
+		var emptyPrimary = new Id3v2Tag ();
+		Assert.AreEqual ("Secondary", new CombinedTag (emptyPrimary, secondary).AlbumArtist);
+	}
+
+	/// <summary>
+	/// Performers is the full artist list (ID3v2 TPE1 can repeat; Vorbis allows
+	/// multiple ARTIST fields, https://xiph.org/vorbis/doc/v-comment.html).
+	/// The base Tag implementation collapses that to the first name. The facade
+	/// must not.
+	/// </summary>
+	[TestMethod]
+	public void Performers_ReturnsEveryNameFromThePrimaryTag ()
+	{
+		var primary = new Id3v2Tag { Performers = ["Ada", "Bea"] };
+		var secondary = new Id3v1Tag { Artist = "Only One" };
+
+		var combined = new CombinedTag (primary, secondary);
+
+		Assert.HasCount (2, combined.Performers);
+		Assert.AreEqual ("Ada", combined.Performers[0]);
+		Assert.AreEqual ("Bea", combined.Performers[1]);
+	}
+
+	/// <summary>
+	/// ID3v2 TCMP is the compilation flag. False is a real value, not "missing",
+	/// so a later tag must not override it.
+	/// </summary>
+	[TestMethod]
+	public void IsCompilation_PrimaryFalseWins ()
+	{
+		var primary = new Id3v2Tag { IsCompilation = false };
+		var secondary = new Id3v2Tag { IsCompilation = true };
+
+		Assert.IsFalse (new CombinedTag (primary, secondary).IsCompilation);
+	}
+
+	/// <summary>
+	/// Writing album artist updates the ID3v2 tag. ID3v1 cannot store it, so
+	/// its value stays null (https://id3.org/ID3v1).
+	/// </summary>
+	[TestMethod]
+	public void AlbumArtist_WriteThroughUpdatesId3v2Only ()
+	{
+		var primary = new Id3v2Tag ();
+		var secondary = new Id3v1Tag { Title = "Keep" };
+		var combined = new CombinedTag (primary, secondary);
+
+		combined.AlbumArtist = "Various";
+
+		Assert.AreEqual ("Various", primary.AlbumArtist);
+		Assert.IsNull (secondary.AlbumArtist);
+		Assert.AreEqual ("Keep", secondary.Title);
+	}
 }

@@ -169,6 +169,33 @@ public sealed class Mp3FileTests
 		Assert.AreEqual ("After", file.Id3v1Tag!.Title, "ID3v1 updated");
 	}
 
+	/// <summary>
+	/// The file's Title property and Tag.Title follow the same rule: a blank
+	/// ID3v2 title does not hide the ID3v1 title, and a write updates both tags.
+	/// </summary>
+	[TestMethod]
+	public void FileTitle_MatchesCombinedTag ()
+	{
+		var id3v2 = new Id3v2Tag ();
+		var id3v1 = new Id3v1Tag { Title = "From V1" };
+		var v2Data = id3v2.Render ();
+		var v1Data = id3v1.Render ();
+		var audioData = new byte[64];
+		var fullData = new byte[v2Data.Length + audioData.Length + v1Data.Length];
+		v2Data.Span.CopyTo (fullData);
+		v1Data.Span.CopyTo (fullData.AsSpan (v2Data.Length + audioData.Length));
+
+		var file = Mp3File.Read (fullData).File!;
+
+		Assert.AreEqual ("From V1", file.Title);
+		Assert.AreEqual (file.Tag!.Title, file.Title);
+
+		file.Title = "Both";
+
+		Assert.AreEqual ("Both", file.Id3v2Tag!.Title);
+		Assert.AreEqual ("Both", file.Id3v1Tag!.Title);
+	}
+
 	[TestMethod]
 	public void Read_BothTags_ParsesBoth ()
 	{
