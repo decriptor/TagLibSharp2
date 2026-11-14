@@ -350,7 +350,7 @@ public class MonkeysAudioFileTests
 	public void Render_Id3v1AfterApe_RewritesOneTagAndRemoveLeavesAudio ()
 	{
 		var audio = CreateMinimalApeFile (version: 3990);
-		var data = CreateAudioWithApeThenId3v1 (audio, "Original");
+		var data = ApeTagTestData.CreateAudioWithApeThenId3v1 (audio, "Original");
 		var result = MonkeysAudioFile.Read (data);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 
@@ -358,7 +358,7 @@ public class MonkeysAudioFileTests
 		file.ApeTag!.Title = "New Title";
 		var rendered = file.Render (data);
 
-		Assert.AreEqual (1, CountSequence (rendered, "APETAGEX"u8));
+		Assert.AreEqual (1, ApeTagTestData.CountSequence (rendered, "APETAGEX"u8));
 		Assert.IsTrue (rendered.AsSpan (rendered.Length - 128 - ApeTagFooter.Size, 8).SequenceEqual ("APETAGEX"u8));
 		Assert.IsTrue (rendered.AsSpan (rendered.Length - 128, 3).SequenceEqual ("TAG"u8));
 		Assert.IsTrue (rendered.AsSpan (rendered.Length - 125, 6).SequenceEqual ("KeepMe"u8));
@@ -370,7 +370,7 @@ public class MonkeysAudioFileTests
 
 		file.RemoveApeTag ();
 		var removed = file.Render (data);
-		Assert.AreEqual (0, CountSequence (removed, "APETAGEX"u8));
+		Assert.AreEqual (0, ApeTagTestData.CountSequence (removed, "APETAGEX"u8));
 		Assert.AreEqual (audio.Length + 128, removed.Length);
 		CollectionAssert.AreEqual (audio, removed[..audio.Length]);
 		Assert.IsTrue (removed.AsSpan (audio.Length, 3).SequenceEqual ("TAG"u8));
@@ -628,30 +628,6 @@ public class MonkeysAudioFileTests
 		ms.Write (new byte[8]);
 
 		return ms.ToArray ();
-	}
-
-	private static byte[] CreateAudioWithApeThenId3v1 (byte[] audio, string title)
-	{
-		var ape = new ApeTag { Title = title }.RenderWithOptions (includeHeader: true).ToArray ();
-		var id3 = new byte[128];
-		"TAG"u8.CopyTo (id3);
-		"KeepMe"u8.CopyTo (id3.AsSpan (3));
-
-		var data = new byte[audio.Length + ape.Length + id3.Length];
-		audio.CopyTo (data, 0);
-		ape.CopyTo (data, audio.Length);
-		id3.CopyTo (data, audio.Length + ape.Length);
-		return data;
-	}
-
-	private static int CountSequence (ReadOnlySpan<byte> data, ReadOnlySpan<byte> needle)
-	{
-		var count = 0;
-		for (var i = 0; i <= data.Length - needle.Length; i++) {
-			if (data.Slice (i, needle.Length).SequenceEqual (needle))
-				count++;
-		}
-		return count;
 	}
 
 	private static byte[] CreateApeTagItem (string key, string value)

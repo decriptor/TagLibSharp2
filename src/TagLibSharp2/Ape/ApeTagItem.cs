@@ -265,19 +265,20 @@ public sealed class ApeTagItem
 			}
 		}
 
-		// Extract value
+		// Value length is a uint32. Compare it with the bytes still left before any int add or Slice:
+		// 0x80000000 and 0xFFFFFFF0 cast negative, and int.MaxValue overflows the end offset.
 		var valueStart = keyEnd + 1;
-		var expectedEnd = valueStart + (int)valueSize;
-
-		if (expectedEnd > data.Length) {
+		var available = data.Length - valueStart;
+		if (valueSize > (uint)available) {
 			return ApeTagItemParseResult.Failure (
-				$"APE item value extends beyond data: need {expectedEnd} bytes, have {data.Length}");
+				$"APE item value extends beyond data: value size {valueSize} exceeds {available} bytes remaining");
 		}
 
-		var rawValue = data.Slice (valueStart, (int)valueSize).ToArray ();
+		var valueLength = (int)valueSize;
+		var rawValue = data.Slice (valueStart, valueLength).ToArray ();
 
 		var item = new ApeTagItem (key, rawValue, flags);
-		return ApeTagItemParseResult.Success (item, expectedEnd);
+		return ApeTagItemParseResult.Success (item, valueStart + valueLength);
 	}
 
 	/// <summary>

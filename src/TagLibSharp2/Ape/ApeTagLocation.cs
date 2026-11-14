@@ -7,6 +7,7 @@ namespace TagLibSharp2.Ape;
 /// Locates an APE tag at the end of a buffer. This is the only EOF-32 / EOF-160 rule.
 /// A full footer (magic, version, reserved) at EOF is used when it parses.
 /// Otherwise, if the last 128 bytes start with "TAG", the footer is the 32 bytes at EOF-160.
+/// When that footer does not parse, the suffix is still ID3v1 and audio ends at length-128.
 /// "APETAGEX" contains the letters TAG at offset 3, not offset 0, so the preamble is not ID3v1.
 /// </summary>
 internal readonly struct ApeTagLocation
@@ -27,18 +28,13 @@ internal readonly struct ApeTagLocation
 	public ApeTagFooter? Footer { get; }
 
 	/// <summary>
-	/// Gets the offset of the footer when <see cref="Found"/> is true.
-	/// </summary>
-	public int FooterOffset { get; }
-
-	/// <summary>
 	/// Gets the exclusive end of the APE tag. ID3v1 bytes, when present, start here.
 	/// </summary>
 	public int TagEnd { get; }
 
 	/// <summary>
 	/// Gets the first byte of the tag, including its header when the footer says one is present.
-	/// Equals the buffer length when no bounded tag was found.
+	/// When only ID3v1 is present, this is length-128. Equals the buffer length when no tag suffix was found.
 	/// </summary>
 	public int AudioEnd { get; }
 
@@ -55,7 +51,6 @@ internal readonly struct ApeTagLocation
 	private ApeTagLocation (
 		bool found,
 		ApeTagFooter? footer,
-		int footerOffset,
 		int tagEnd,
 		int audioEnd,
 		int id3v1Offset,
@@ -63,7 +58,6 @@ internal readonly struct ApeTagLocation
 	{
 		Found = found;
 		Footer = footer;
-		FooterOffset = footerOffset;
 		TagEnd = tagEnd;
 		AudioEnd = audioEnd;
 		Id3v1Offset = id3v1Offset;
@@ -74,7 +68,10 @@ internal readonly struct ApeTagLocation
 	/// Finds the APE footer and the audio offset in front of that tag.
 	/// </summary>
 	/// <param name="data">The file bytes.</param>
-	/// <returns>The located tag, or a miss whose <see cref="AudioEnd"/> is <paramref name="data"/>'s length.</returns>
+	/// <returns>
+	/// The located tag, or a miss. <see cref="AudioEnd"/> is length-128 when only ID3v1 follows the audio,
+	/// otherwise the buffer length when no bounded tag was found.
+	/// </returns>
 	public static ApeTagLocation Locate (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < ApeTagFooter.Size) {
@@ -87,30 +84,35 @@ internal readonly struct ApeTagLocation
 			return FoundAt (data, eofFooter.Footer!, data.Length - ApeTagFooter.Size);
 		}
 
-		if (data.Length >= Id3v1Size + ApeTagFooter.Size &&
-			data.Slice (data.Length - Id3v1Size, 3).SequenceEqual ("TAG"u8)) {
-			var beforeId3 = data.Length - Id3v1Size - ApeTagFooter.Size;
-			var id3Footer = ApeTagFooter.Parse (data.Slice (beforeId3, ApeTagFooter.Size));
-			if (id3Footer.IsSuccess) {
-				return FoundAt (data, id3Footer.Footer!, beforeId3);
+		if (HasTrailingId3v1 (data)) {
+			var error = eofFooter.Error!;
+			if (data.Length >= Id3v1Size + ApeTagFooter.Size) {
+				var beforeId3 = data.Length - Id3v1Size - ApeTagFooter.Size;
+				var id3Footer = ApeTagFooter.Parse (data.Slice (beforeId3, ApeTagFooter.Size));
+				if (id3Footer.IsSuccess) {
+					return FoundAt (data, id3Footer.Footer!, beforeId3);
+				}
+
+				error = id3Footer.Error!;
 			}
 
-			return Missing (data.Length, id3Footer.Error!);
+			return Id3Only (data.Length, error);
 		}
 
 		return Missing (data.Length, eofFooter.Error!);
 	}
 
 	/// <summary>
-	/// Writes audio, then the replacement tag, then a trailing ID3v1 block when one followed the old tag.
+	/// Writes audio, then the replacement tag, then a trailing ID3v1 block when <paramref name="location"/> has one.
 	/// </summary>
 	/// <param name="original">The original file bytes.</param>
-	/// <param name="audioEnd">The audio length from <see cref="AudioEnd"/>.</param>
+	/// <param name="location">The location from <see cref="Locate"/> on <paramref name="original"/>.</param>
 	/// <param name="tag">The replacement APE tag, or empty when the tag is being removed.</param>
 	/// <returns>The rewritten file.</returns>
-	public static byte[] Rewrite (ReadOnlySpan<byte> original, int audioEnd, ReadOnlySpan<byte> tag)
+	public static byte[] Rewrite (ReadOnlySpan<byte> original, ApeTagLocation location, ReadOnlySpan<byte> tag)
 	{
-		var id3Offset = Locate (original).Id3v1Offset;
+		var audioEnd = location.AudioEnd;
+		var id3Offset = location.Id3v1Offset;
 		var id3Length = id3Offset >= 0 ? Id3v1Size : 0;
 		var result = new byte[audioEnd + tag.Length + id3Length];
 		original[..audioEnd].CopyTo (result);
@@ -122,6 +124,10 @@ internal readonly struct ApeTagLocation
 		return result;
 	}
 
+	private static bool HasTrailingId3v1 (ReadOnlySpan<byte> data) =>
+		data.Length >= Id3v1Size &&
+		data.Slice (data.Length - Id3v1Size, 3).SequenceEqual ("TAG"u8);
+
 	private static ApeTagLocation FoundAt (ReadOnlySpan<byte> data, ApeTagFooter footer, int footerOffset)
 	{
 		var tagEnd = footerOffset + ApeTagFooter.Size;
@@ -130,9 +136,15 @@ internal readonly struct ApeTagLocation
 		var bounded = total >= ApeTagFooter.Size && total <= tagEnd;
 		var audioEnd = bounded ? tagEnd - (int)total : data.Length;
 		var id3Offset = bounded && tagEnd < data.Length ? tagEnd : -1;
-		return new ApeTagLocation (true, footer, footerOffset, tagEnd, audioEnd, id3Offset, null);
+		return new ApeTagLocation (true, footer, tagEnd, audioEnd, id3Offset, null);
 	}
 
 	private static ApeTagLocation Missing (int length, string error) =>
-		new (false, null, 0, length, length, -1, error);
+		new (false, null, length, length, -1, error);
+
+	private static ApeTagLocation Id3Only (int length, string error)
+	{
+		var id3Offset = length - Id3v1Size;
+		return new (false, null, id3Offset, id3Offset, id3Offset, error);
+	}
 }

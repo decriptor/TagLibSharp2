@@ -791,15 +791,16 @@ public sealed class ApeTag : Tag
 			return ApeTagParseResult.Failure ("Invalid APE tag layout");
 		}
 
-		// Each item is at least one byte, so a larger count cannot fit.
-		// Reject before allocating: a count above int.MaxValue casts negative and throws.
-		if (footer.ItemCount > (uint)itemsSize || footer.ItemCount > (uint)int.MaxValue) {
+		// An item is the 8-byte header, a key of at least 2 bytes, and a NUL (11), not one byte.
+		// A count above int.MaxValue cannot fit that budget inside an int-sized item region.
+		const int minItemSize = ApeTagItem.MinHeaderSize + ApeTagItem.MinKeyLength + 1;
+		if ((ulong)footer.ItemCount * (ulong)minItemSize > (ulong)itemsSize) {
 			return ApeTagParseResult.Failure (
 				$"APE item count ({footer.ItemCount}) exceeds item data ({itemsSize} bytes)");
 		}
 
-		// Do not size the dictionary from ItemCount. A count that fits in the item bytes
-		// can still be huge; 0xFF payloads fail in the item parser either way, and the cap stays.
+		// Do not size the dictionary from ItemCount. A count that fits the 11-byte minimum
+		// can still allocate more than a megabyte; 0xFF payloads fail in the item parser either way.
 		var items = new Dictionary<string, ApeTagItem> (
 			(int)Math.Min (footer.ItemCount, 256u),
 			StringComparer.OrdinalIgnoreCase);

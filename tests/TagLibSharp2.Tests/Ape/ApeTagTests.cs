@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Globalization;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
@@ -575,24 +576,79 @@ public class ApeTagTests
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsNull (result.Tag);
+		Assert.IsNotNull (result.Error);
+		Assert.Contains (uint.MaxValue.ToString (CultureInfo.InvariantCulture), result.Error);
 	}
 
 	[TestMethod]
 	public void Parse_ItemCountFittingInItemBytes_ReturnsFailureWithoutThrowing ()
 	{
-		// Count is not greater than the item-byte length, so the size check does not reject it.
-		// 0xFF is not a sequence of items. A few hundred KB is enough; do not build a multi-gigabyte buffer.
-		// Dropping the 256 capacity cap still fails: the item parser rejects 0xFF before a success path.
-		const int itemBytes = 256 * 1024;
+		// 40_000 items fit an 11-byte minimum (440 KB of 0xFF) but a dictionary of that count is over 1 MB.
+		// The 256 capacity cap must keep Parse's allocation well under 1 MB. Do not build a multi-gigabyte buffer.
+		const int itemCount = 40_000;
+		const int minItemSize = ApeTagItem.MinHeaderSize + ApeTagItem.MinKeyLength + 1;
+		const int itemBytes = itemCount * minItemSize;
 		var data = new byte[itemBytes + ApeTagFooter.Size];
 		Array.Fill (data, (byte)0xFF, 0, itemBytes);
-		CreateValidFooter (version: 2000, tagSize: (uint)(itemBytes + ApeTagFooter.Size), itemCount: (uint)itemBytes, flags: 0)
+		CreateValidFooter (version: 2000, tagSize: (uint)(itemBytes + ApeTagFooter.Size), itemCount: (uint)itemCount, flags: 0)
+			.CopyTo (data, itemBytes);
+
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		var result = ApeTag.Parse (data);
+		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNull (result.Tag);
+		Assert.IsTrue (allocated < 1_000_000, $"Parse allocated {allocated} bytes");
+	}
+
+	[TestMethod]
+	public void Parse_ItemCountFitsOneByteBudgetButNotMinimumItem_ReturnsFailure ()
+	{
+		// Two items fit a 1-byte-per-item budget in 20 bytes, but not an 11-byte minimum item.
+		const int itemBytes = 20;
+		const uint itemCount = 2;
+		var data = new byte[itemBytes + ApeTagFooter.Size];
+		Array.Fill (data, (byte)0xFF, 0, itemBytes);
+		CreateValidFooter (version: 2000, tagSize: (uint)(itemBytes + ApeTagFooter.Size), itemCount: itemCount, flags: 0)
 			.CopyTo (data, itemBytes);
 
 		var result = ApeTag.Parse (data);
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsNull (result.Tag);
+		Assert.IsNotNull (result.Error);
+		Assert.Contains ($"APE item count ({itemCount})", result.Error);
+	}
+
+	[TestMethod]
+	[DataRow (0x80000000u)]
+	[DataRow (0xFFFFFFF0u)]
+	[DataRow (0x7FFFFFFFu)]
+	public void Parse_ValueSizeExceedsRemaining_ReturnsFailureWithoutThrowing (uint valueSize)
+	{
+		var result = ApeTag.Parse (CreateTagWithValueSize (valueSize));
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNull (result.Tag);
+	}
+
+	[TestMethod]
+	public void Locate_Id3v1WithoutApeFooter_ReportsAudioEndBeforeTag ()
+	{
+		var audio = new byte[64];
+		audio[0] = 1;
+		var id3 = new byte[ApeTagLocation.Id3v1Size];
+		"TAG"u8.CopyTo (id3);
+		var data = new byte[audio.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		id3.CopyTo (data, audio.Length);
+
+		var location = ApeTagLocation.Locate (data);
+
+		Assert.IsFalse (location.Found);
+		Assert.AreEqual (audio.Length, location.AudioEnd);
+		Assert.AreEqual (audio.Length, location.Id3v1Offset);
 	}
 
 	[TestMethod]
@@ -662,6 +718,20 @@ public class ApeTagTests
 	#endregion
 
 	#region Test Helpers
+
+	private static byte[] CreateTagWithValueSize (uint valueSize)
+	{
+		var key = "Title"u8;
+		var item = new byte[8 + key.Length + 1];
+		BitConverter.GetBytes (valueSize).CopyTo (item, 0);
+		key.CopyTo (item.AsSpan (8));
+
+		var footer = CreateValidFooter (version: 2000, tagSize: (uint)(item.Length + ApeTagFooter.Size), itemCount: 1, flags: 0);
+		var data = new byte[item.Length + footer.Length];
+		item.CopyTo (data, 0);
+		footer.CopyTo (data, item.Length);
+		return data;
+	}
 
 	private static byte[] CreateValidFooter (uint version, uint tagSize, uint itemCount, uint flags)
 	{
