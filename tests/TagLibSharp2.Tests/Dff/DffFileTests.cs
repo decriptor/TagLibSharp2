@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
+using TagLibSharp2.Id3.Id3v2;
 
 namespace TagLibSharp2.Tests.Dff;
 
@@ -634,6 +635,73 @@ public class DffFileTests
 
 		var rendered = read.File.Render ();
 		Assert.IsTrue (rendered.Span.IndexOf ((byte)0xAB) >= 0);
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_ClearPreAudioId3_KeepsAudioAndClearsTitle (string soundChunkId)
+	{
+		// Two ID3 chunks before the sound data. One offset cannot cover both, and the
+		// first chunk is odd-sized so its pad byte is part of the skipped range.
+		var payload = new byte[] { 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		var leading = Concat (
+			CreateId3Chunk ("FirstTitle", forceOddData: true),
+			CreateId3Chunk ("SecondTitle", forceOddData: false));
+		fileBytes = InsertBeforeChunk (fileBytes, soundChunkId, leading);
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("SecondTitle", read.File!.Id3v2Tag?.Title);
+
+		read.File.Id3v2Tag = null;
+		var rendered = read.File.Render ();
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.IsNull (again.File!.Id3v2Tag?.Title);
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_TruncatedSoundChunk_SecondSaveDoesNotGrow (string soundChunkId)
+	{
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = InsertBeforeChunk (fileBytes, soundChunkId, CreateId3Chunk ("Old", forceOddData: false));
+
+		var sound = FindChunkOffset (fileBytes, soundChunkId);
+		var truncated = fileBytes[..(sound + 12 + payload.Length)];
+		// Declared ckDataSize runs past EOF. The bytes on disk are only the payload.
+		BinaryPrimitives.WriteUInt64BigEndian (truncated.AsSpan (sound + 4, 8), 100_000);
+		BinaryPrimitives.WriteUInt64BigEndian (truncated.AsSpan (4, 8), (ulong)(truncated.Length - 12));
+
+		var read = DffFile.Read (truncated);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Old", read.File!.Id3v2Tag?.Title);
+		read.File.EnsureId3v2Tag ().Title = "New Title";
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New Title", again.File!.Id3v2Tag?.Title);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
+		Assert.AreEqual ((ulong)payload.Length, declared);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var second = again.File.Render ();
+		Assert.AreEqual (rendered.Length, second.Length);
+
+		var reread = DffFile.Read (second.Span);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("New Title", reread.File!.Id3v2Tag?.Title);
 	}
 
 	/// <summary>
@@ -1338,6 +1406,77 @@ public class DffFileTests
 	#endregion
 
 	#region Helper Methods
+
+	private static byte[] CreateSoundFile (string soundChunkId, byte[] payload)
+	{
+		var fileBytes = CreateMinimalDffFile (2822400, 2, sampleCount: (ulong)payload.Length * 4);
+		if (soundChunkId != "DSD ") {
+			var dsd = FindDsdChunkOffset (fileBytes);
+			System.Text.Encoding.ASCII.GetBytes (soundChunkId).CopyTo (fileBytes, dsd);
+		}
+
+		payload.CopyTo (fileBytes.AsSpan (FindChunkOffset (fileBytes, soundChunkId) + 12));
+		return fileBytes;
+	}
+
+	private static byte[] CreateId3Chunk (string title, bool forceOddData)
+	{
+		var id3 = new Id3v2Tag { Title = title }.Render ().ToArray ();
+		if (forceOddData && (id3.Length % 2) == 0) {
+			var odd = new byte[id3.Length + 1];
+			id3.CopyTo (odd, 0);
+			id3 = odd;
+		}
+
+		using var ms = new MemoryStream ();
+		ms.Write ("ID3 "u8);
+		WriteUInt64BE (ms, (ulong)id3.Length);
+		ms.Write (id3, 0, id3.Length);
+		if ((id3.Length % 2) != 0)
+			ms.WriteByte (0);
+
+		return ms.ToArray ();
+	}
+
+	private static byte[] InsertBeforeChunk (byte[] file, string chunkId, byte[] insertion)
+	{
+		var at = FindChunkOffset (file, chunkId);
+		var merged = new byte[file.Length + insertion.Length];
+		file.AsSpan (0, at).CopyTo (merged);
+		insertion.CopyTo (merged.AsSpan (at));
+		file.AsSpan (at).CopyTo (merged.AsSpan (at + insertion.Length));
+		BinaryPrimitives.WriteUInt64BigEndian (merged.AsSpan (4, 8), (ulong)(merged.Length - 12));
+		return merged;
+	}
+
+	private static byte[] Concat (byte[] left, byte[] right)
+	{
+		var combined = new byte[left.Length + right.Length];
+		left.CopyTo (combined, 0);
+		right.CopyTo (combined, left.Length);
+		return combined;
+	}
+
+	private static int FindChunkOffset (byte[] data, string chunkId)
+	{
+		var offset = 16;
+		while (offset + 12 <= data.Length) {
+			var id = System.Text.Encoding.ASCII.GetString (data, offset, 4);
+			if (id == chunkId)
+				return offset;
+
+			var chunkSize = BinaryPrimitives.ReadUInt64BigEndian (data.AsSpan (offset + 4, 8));
+			var available = (ulong)(data.Length - offset - 12);
+			if (chunkSize > available)
+				break;
+
+			offset += 12 + (int)chunkSize;
+			if ((chunkSize % 2) != 0 && offset < data.Length)
+				offset++;
+		}
+
+		throw new InvalidOperationException ($"Chunk {chunkId} not found");
+	}
 
 	private static byte[] CreateMinimalDffFile (
 		uint sampleRate,
