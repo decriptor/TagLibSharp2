@@ -829,6 +829,84 @@ public class ApeTagTests
 		Assert.AreEqual ("Real Item", result.Tag.Title);
 	}
 
+	[TestMethod]
+	public void Parse_Lyrics3BetweenApeAndId3v1_ReadsTitleAndSaveKeepsLyrics ()
+	{
+		// Audio, APE (Title=FromApe), minimal Lyrics3 v2, then ID3v1.
+		// LYRICS200 sits immediately before TAG, so the APE footer is before LYRICSBEGIN, not at EOF-160.
+		var audio = new byte[80];
+		audio[0] = 0xD1;
+		for (var i = 1; i < audio.Length; i++)
+			audio[i] = 0x41;
+
+		var ape = new ApeTag { Title = "FromApe" }.Render ().ToArray ();
+		var lyrics = CreateMinimalLyrics3 ();
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + ape.Length + lyrics.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		ape.CopyTo (data, audio.Length);
+		lyrics.CopyTo (data, audio.Length + ape.Length);
+		id3.CopyTo (data, audio.Length + ape.Length + lyrics.Length);
+
+		var parsed = ApeTag.Parse (data);
+
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.AreEqual ("FromApe", parsed.Tag!.Title);
+
+		parsed.Tag.Title = "New Title";
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, parsed.Tag.Render ());
+
+		Assert.AreEqual (1, ApeTagTestData.CountSequence (saved, "LYRICS200"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size + 3, 6).SequenceEqual ("KeepMe"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size - lyrics.Length, lyrics.Length).SequenceEqual (lyrics));
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+
+		var reread = ApeTag.Parse (saved);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("New Title", reread.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Rewrite_Lyrics3AndId3v1WithoutApe_InsertsApeBeforeLyricsBegin ()
+	{
+		// Lyrics3 and ID3v1 with no APE. A new title is written before LYRICSBEGIN, and TAG stays last.
+		var audio = new byte[80];
+		audio[0] = 0xD2;
+		for (var i = 1; i < audio.Length; i++)
+			audio[i] = 0x42;
+
+		var lyrics = CreateMinimalLyrics3 ();
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + lyrics.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		lyrics.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + lyrics.Length);
+
+		var parsed = ApeTag.Parse (data);
+		Assert.IsFalse (parsed.IsSuccess);
+		Assert.IsNull (parsed.Tag);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New Title" }.Render ());
+
+		var lyricsAt = saved.AsSpan ().IndexOf ("LYRICSBEGIN"u8);
+		var apeAt = saved.AsSpan ().IndexOf ("APETAGEX"u8);
+		Assert.IsTrue (apeAt >= audio.Length, "APE tag replaced audio");
+		Assert.IsTrue (lyricsAt > apeAt, "APE tag is not before LYRICSBEGIN");
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size + 3, 6).SequenceEqual ("KeepMe"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size - lyrics.Length, lyrics.Length).SequenceEqual (lyrics));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size).IndexOf ("APETAGEX"u8) < 0, "APE tag was written after TAG");
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.AreEqual (1, ApeTagTestData.CountSequence (saved, "LYRICS200"u8));
+
+		var reread = ApeTag.Parse (saved);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("New Title", reread.Tag!.Title);
+	}
+
 	#endregion
 
 	#region TagTypes Integration Tests
@@ -867,6 +945,26 @@ public class ApeTagTests
 		"TAG"u8.CopyTo (id3);
 		"KeepMe"u8.CopyTo (id3.AsSpan (3));
 		return id3;
+	}
+
+	/// <summary>
+	/// Minimal Lyrics3 v2 block: LYRICSBEGIN, a 6-digit size of that body, and LYRICS200.
+	/// The size includes LYRICSBEGIN and excludes the size field and the end marker.
+	/// </summary>
+	private static byte[] CreateMinimalLyrics3 ()
+	{
+		ReadOnlySpan<byte> begin = "LYRICSBEGIN"u8;
+		ReadOnlySpan<byte> end = "LYRICS200"u8;
+		var block = new byte[begin.Length + 6 + end.Length];
+		begin.CopyTo (block);
+		var size = begin.Length;
+		for (var i = 5; i >= 0; i--) {
+			block[begin.Length + i] = (byte)('0' + (size % 10));
+			size /= 10;
+		}
+
+		end.CopyTo (block.AsSpan (begin.Length + 6));
+		return block;
 	}
 
 	private static byte[] CreateValidFooter (uint version, uint tagSize, uint itemCount, uint flags)
