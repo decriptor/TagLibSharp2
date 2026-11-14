@@ -41,7 +41,22 @@ public readonly struct RiffChunk : IEquatable<RiffChunk>
 	/// Gets the total size of the chunk including header and padding.
 	/// RIFF chunks are padded to even byte boundaries.
 	/// </summary>
+	/// <remarks>
+	/// This is the declared size. A truncated chunk's <see cref="DataSize"/> can be
+	/// larger than the bytes in <see cref="Data"/>; saving writes those bytes instead.
+	/// </remarks>
 	public int TotalSize => HeaderSize + (int)DataSize + ((int)DataSize & 1);
+
+	/// <summary>
+	/// Bytes written for this chunk: header, data bytes present, and the pad.
+	/// The pad is not part of ckSize. Declared <see cref="DataSize"/> is not allocated.
+	/// </summary>
+	internal int RenderedSize {
+		get {
+			var length = Data.Length;
+			return HeaderSize + length + (length & 1);
+		}
+	}
 
 	/// <summary>
 	/// Gets whether this chunk represents a valid RIFF chunk.
@@ -118,7 +133,7 @@ public readonly struct RiffChunk : IEquatable<RiffChunk>
 	/// <returns>The complete chunk as binary data.</returns>
 	public BinaryData Render ()
 	{
-		using var builder = new BinaryDataBuilder (TotalSize);
+		using var builder = new BinaryDataBuilder (RenderedSize);
 
 		// FourCC
 		builder.AddStringLatin1 (FourCC);

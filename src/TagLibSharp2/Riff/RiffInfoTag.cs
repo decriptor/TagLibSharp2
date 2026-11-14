@@ -281,8 +281,12 @@ public class RiffInfoTag : Tag
 			if (!string.IsNullOrEmpty (fieldId) && fieldId.Length == 4)
 				tag._fields[fieldId] = value;
 
-			// Move to next field (with padding to even boundary)
-			offset += (int)fieldSize + ((int)fieldSize & 1);
+			// Field size does not include the pad. Advance in long; a size near int.MaxValue must not throw.
+			var next = (long)offset + fieldSize + (fieldSize & 1);
+			if (next > int.MaxValue)
+				break;
+
+			offset = (int)next;
 		}
 
 		return tag;
