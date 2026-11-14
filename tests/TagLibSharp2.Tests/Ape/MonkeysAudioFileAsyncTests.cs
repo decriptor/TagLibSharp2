@@ -93,6 +93,42 @@ public class MonkeysAudioFileAsyncTests
 	}
 
 	[TestMethod]
+	public async Task SaveToFileAsync_MismatchedLyricsSizeBeforeId3_DoesNotDeleteAudio ()
+	{
+		// Lyrics3 v2 size digits do not land on LYRICSBEGIN. An async save must not eat the audio.
+		var audio = TestBuilders.MonkeysAudio.CreateMinimal ();
+		var pad = new byte[40];
+		Array.Fill (pad, (byte)0x51);
+		var lyrics = new byte[11 + 6 + 9];
+		"LYRICSBEGIN"u8.CopyTo (lyrics);
+		"000099"u8.CopyTo (lyrics.AsSpan (11));
+		"LYRICS200"u8.CopyTo (lyrics.AsSpan (17));
+		var id3 = new byte[128];
+		"TAG"u8.CopyTo (id3);
+		"KeepMe"u8.CopyTo (id3.AsSpan (3));
+
+		var data = new byte[audio.Length + pad.Length + lyrics.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		pad.CopyTo (data, audio.Length);
+		lyrics.CopyTo (data, audio.Length + pad.Length);
+		id3.CopyTo (data, audio.Length + pad.Length + lyrics.Length);
+
+		var mockFs = new MockFileSystem ();
+		mockFs.AddFile ("/song.ape", data);
+
+		var read = await MonkeysAudioFile.ReadFromFileAsync ("/song.ape", mockFs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+
+		read.File!.EnsureApeTag ().Title = "New";
+		var save = await read.File.SaveToFileAsync (mockFs);
+		Assert.IsTrue (save.IsSuccess, save.Error);
+
+		var saved = mockFs.ReadAllBytes ("/song.ape");
+		Assert.IsTrue (saved.Length >= audio.Length, "save shrank the file below the audio");
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+	}
+
+	[TestMethod]
 	public async Task SaveToFileAsync_NoSourcePath_ReturnsFailure ()
 	{
 		var data = TestBuilders.MonkeysAudio.CreateWithMetadata (title: "Test");
