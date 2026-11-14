@@ -1003,15 +1003,114 @@ public class DffFileTests
 			id3End++;
 
 		Assert.AreEqual (renderedSound + 12 + payload.Length, id3, "ID3 chunk follows the complete sound chunk");
-		Assert.AreEqual (rendered.Length - trailer.Length, id3End, "Trailer is copied after the ID3 chunk");
+		var trailerAt = rendered.Length - trailer.Length;
+		Assert.AreEqual (trailerAt, id3End, "Trailer is copied after the ID3 chunk");
+
+		// FRM8 ckDataSize does not include bytes after the form. TAG and APETAGEX stay outside it.
+		var frm8Size = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (4, 8));
+		Assert.AreEqual ((ulong)(trailerAt - 12), frm8Size, "FRM8 size is the trailer offset minus 12");
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ", false)]
+	[DataRow ("DST ", false)]
+	[DataRow ("DSD ", true)]
+	[DataRow ("DST ", true)]
+	public void Render_ApeTagWithItem_AppendedId3KeepsWholeTag (string soundChunkId, bool includeHeader)
+	{
+		// A footer alone is not the tag. TagSize covers the item, and a header sits before that.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var trailer = new ApeTag { Title = "ApeTitle" }.RenderWithOptions (includeHeader).ToArray ();
+		Assert.IsTrue (trailer.Length > ApeTagFooter.Size);
+		Assert.IsTrue (ApeTagFooter.Parse (trailer.AsSpan (trailer.Length - ApeTagFooter.Size)).IsSuccess);
+
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = Concat (fileBytes, trailer);
+		BinaryPrimitives.WriteUInt64BigEndian (fileBytes.AsSpan (4, 8), (ulong)(fileBytes.Length - 12));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "New Title";
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New Title", again.File!.Id3v2Tag?.Title);
+
+		AssertTrailerAfterId3 (rendered, soundChunkId, payload, trailer);
 	}
 
 	[TestMethod]
 	[DataRow ("DSD ")]
 	[DataRow ("DST ")]
-	public void Render_ClearTag_ShortTail_KeepsTailAndAudio (string soundChunkId)
+	public void Render_ApeFooterTagSizeDoesNotFit_KeepsFooterOnly (string soundChunkId)
 	{
-		// Four bytes are not a chunk. Clearing appends no ID3, so the tail is not dropped.
+		// TagSize past EOF is not a span we can copy. The 32-byte footer still is.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var trailer = ApeTagFooter.Create (uint.MaxValue, 1).Render ();
+		Assert.AreEqual (ApeTagFooter.Size, trailer.Length);
+
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = Concat (fileBytes, trailer);
+		BinaryPrimitives.WriteUInt64BigEndian (fileBytes.AsSpan (4, 8), (ulong)(fileBytes.Length - 12));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "New Title";
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New Title", again.File!.Id3v2Tag?.Title);
+
+		AssertTrailerAfterId3 (rendered, soundChunkId, payload, trailer);
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_ClearTag_Id3v1Trailer_KeepsTrailerOutsideForm (string soundChunkId)
+	{
+		// Clearing removes the DSDIFF ID3 chunk only. The ID3v1 trailer stays at EOF, outside FRM8.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var trailer = new Id3v1Tag { Title = "KeepMe" }.Render ().ToArray ();
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		var id3 = CreateId3Chunk ("Old", forceOddData: false);
+		fileBytes = InsertBeforeChunk (fileBytes, soundChunkId, id3);
+		fileBytes = Concat (fileBytes, trailer);
+		BinaryPrimitives.WriteUInt64BigEndian (fileBytes.AsSpan (4, 8), (ulong)(fileBytes.Length - 12));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Old", read.File!.Id3v2Tag?.Title);
+		read.File.Id3v2Tag = null;
+
+		var rendered = read.File.Render ();
+		Assert.AreEqual (fileBytes.Length - id3.Length, rendered.Length, "Clear removes the DSDIFF ID3 chunk and keeps the trailer");
+		Assert.IsTrue (
+			trailer.AsSpan ().SequenceEqual (rendered.Span.Slice (rendered.Length - trailer.Length, trailer.Length)),
+			"Trailer at EOF is unchanged");
+
+		var trailerAt = rendered.Length - trailer.Length;
+		var frm8Size = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (4, 8));
+		Assert.AreEqual ((ulong)(trailerAt - 12), frm8Size, "FRM8 does not cover the trailer");
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
+		Assert.AreEqual ((ulong)payload.Length, declared);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.IsNull (again.File!.Id3v2Tag);
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_ClearTag_ShortTail_DropsTailFromForm (string soundChunkId)
+	{
+		// Four bytes are not a chunk. Clearing must not leave them inside FRM8.
 		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
 		var tail = new byte[] { 0xD1, 0xD2, 0xD3, 0xD4 };
 		var fileBytes = CreateSoundFile (soundChunkId, payload);
@@ -1026,8 +1125,9 @@ public class DffFileTests
 		read.File.Id3v2Tag = null;
 
 		var rendered = read.File.Render ();
-		Assert.AreEqual (fileBytes.Length - id3.Length, rendered.Length, "Clear removes the ID3 chunk and keeps the short tail");
-		Assert.IsTrue (tail.AsSpan ().SequenceEqual (rendered.Span.Slice (rendered.Length - tail.Length, tail.Length)));
+		Assert.AreEqual (fileBytes.Length - id3.Length - tail.Length, rendered.Length, "Clear removes the ID3 chunk and the short tail");
+		var frm8Size = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (4, 8));
+		Assert.AreEqual ((ulong)(rendered.Length - 12), frm8Size, "FRM8 does not cover a short tail");
 
 		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
 		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
