@@ -401,56 +401,6 @@ public class MpegAudioPropertiesTests
 		return builder.ToBinaryData ();
 	}
 
-	static BinaryData CreateMp3Layer2 (uint frameCount, int sampleRate)
-	{
-		var builder = new BinaryDataBuilder ();
-
-		// MPEG1 Layer 2: 0xFF 0xFD
-		byte byte2 = sampleRate switch {
-			48000 => 0x94,
-			32000 => 0x98,
-			_ => 0x90
-		};
-
-		builder.Add (0xFF, 0xFD, byte2, 0x00);
-		builder.Add (new byte[32]); // Side info
-
-		// Xing header
-		builder.Add (0x58, 0x69, 0x6E, 0x67);
-		builder.AddUInt32BE (0x01);
-		builder.AddUInt32BE (frameCount);
-
-		while (builder.Length < 626) // Layer 2 frame size
-			builder.Add (0);
-
-		return builder.ToBinaryData ();
-	}
-
-	static BinaryData CreateMp3Layer1 (uint frameCount, int sampleRate)
-	{
-		var builder = new BinaryDataBuilder ();
-
-		// MPEG1 Layer 1: 0xFF 0xFF
-		byte byte2 = sampleRate switch {
-			48000 => 0x54, // 160kbps + 48000Hz
-			32000 => 0x58, // 160kbps + 32000Hz
-			_ => 0x50      // 160kbps + 44100Hz
-		};
-
-		builder.Add (0xFF, 0xFF, byte2, 0x00);
-		builder.Add (new byte[32]); // Side info
-
-		// Xing header
-		builder.Add (0x58, 0x69, 0x6E, 0x67);
-		builder.AddUInt32BE (0x01);
-		builder.AddUInt32BE (frameCount);
-
-		while (builder.Length < 416) // Layer 1 frame size
-			builder.Add (0);
-
-		return builder.ToBinaryData ();
-	}
-
 	static BinaryData CreateFreeBitrateMp3 ()
 	{
 		var builder = new BinaryDataBuilder ();
