@@ -388,6 +388,17 @@ public class VorbisCommentTests
 	}
 
 	[TestMethod]
+	public void TotalTracks_FromTrackTotal_ParsesCorrectly ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKNUMBER", "19");
+		comment.SetValue ("TRACKTOTAL", "20");
+
+		Assert.AreEqual (19u, comment.Track);
+		Assert.AreEqual (20u, comment.TotalTracks);
+	}
+
+	[TestMethod]
 	public void Artists_ReturnsAllArtistValues ()
 	{
 		var comment = new VorbisComment ();
