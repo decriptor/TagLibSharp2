@@ -146,6 +146,29 @@ public class Id3v2HeaderTests
 
 
 	[TestMethod]
+	public void Read_ExtendedHeaderFlagOnV22_IsNotAnExtendedHeader ()
+	{
+		// ID3v2.2 uses bit 6 for compression. The extended header flag is v2.3 and v2.4.
+		var data = CreateHeader (version: 2, revision: 0, flags: 0x40, size: 0);
+
+		var result = Id3v2Header.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsFalse (result.Header.HasExtendedHeader);
+	}
+
+	[TestMethod]
+	public void Read_ExtendedHeaderFlagOnV23_IsAnExtendedHeader ()
+	{
+		var data = CreateHeader (version: 3, revision: 0, flags: 0x40, size: 100);
+
+		var result = Id3v2Header.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsTrue (result.Header.HasExtendedHeader);
+	}
+
+	[TestMethod]
 	public void Read_FooterFlagOnV23_IsNotAFooter ()
 	{
 		// Bit 4 is the v2.4 footer. v2.3 does not define it. Treating it as a

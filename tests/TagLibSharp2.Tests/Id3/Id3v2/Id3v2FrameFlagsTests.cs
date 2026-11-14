@@ -180,6 +180,72 @@ public class Id3v2FrameFlagsTests
 		Assert.IsTrue (title is null || title.Length < frameContent.Length - 1);
 	}
 
+	[TestMethod]
+	public void Read_CompressedFrame_ExpansionAboveCap_DoesNotReturnExpandedTitle ()
+	{
+		const int Declared = 16 * 1024 * 1024 + 1;
+		var payload = CompressZlib (new byte[] { TestConstants.Id3v2.EncodingLatin1, (byte)'A' });
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			payload,
+			Declared,
+			TestConstants.Id3v2.Version4);
+		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		var title = result.Tag!.Title;
+		Assert.IsTrue (title is null || title.Length < Declared);
+	}
+
+	[TestMethod]
+	public void Read_CompressedFrame_HugeDataLengthIndicator_StaysUnderAMegabyte ()
+	{
+		// Syncsafe 0x0FFFFFFF over a tiny zlib payload must not allocate hundreds of megabytes.
+		const int Declared = 0x0FFFFFFF;
+		var payload = CompressZlib (new byte[] { TestConstants.Id3v2.EncodingLatin1, (byte)'A' });
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			payload,
+			Declared,
+			TestConstants.Id3v2.Version4);
+		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
+
+		Id3v2Tag.Read (data);
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		var result = Id3v2Tag.Read (data);
+		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+
+		Assert.IsTrue (result.IsSuccess);
+		var title = result.Tag!.Title;
+		Assert.IsTrue (title is null || title.Length < Declared);
+		Assert.IsTrue (allocated < 1024 * 1024, $"Read allocated {allocated} bytes");
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	[DataRow (TestConstants.Id3v2.Version3)]
+	public void Read_CompressedFrame_NotZlib_DoesNotParsePayloadAsText (int version)
+	{
+		var text = Encoding.Latin1.GetBytes ("Not zlib text");
+		var payload = new byte[1 + text.Length];
+		payload[0] = TestConstants.Id3v2.EncodingLatin1;
+		text.CopyTo (payload, 1);
+
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			payload,
+			payload.Length,
+			(byte)version);
+		var data = CreateTagWithFrame ((byte)version, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNull (result.Tag!.Title);
+	}
+
 	// ===========================================================================
 	// ID3v2.3/2.4 Frame Flags - Grouping Identity Tests
 	// ===========================================================================

@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Id3.Id3v2.Frames;
 
 namespace TagLibSharp2.Tests.Id3.Id3v2;
 
@@ -113,6 +114,118 @@ public class Id3v2TagTests
 
 		Assert.IsTrue (resultV24.IsSuccess);
 		Assert.AreEqual ("2024", resultV24.Tag!.Year);
+	}
+
+	[TestMethod]
+	public void Year_SetSameYearOnV24_KeepsExistingTimestamp ()
+	{
+		// TDRC is yyyy-MM-ddTHH:mm:ss; a shorter prefix is still a timestamp.
+		// Setting the year to that same four digits must not chop the frame.
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame (
+			TestConstants.FrameIds.RecordingTime,
+			"1999-11-13T12:00",
+			TestConstants.Id3v2.Version4);
+		var tag = Id3v2Tag.Read (data).Tag!;
+
+		tag.Year = "1999";
+
+		Assert.AreEqual ("1999-11-13T12:00", tag.GetTextFrame ("TDRC"));
+		Assert.AreEqual ("1999", tag.Year);
+	}
+
+	[TestMethod]
+	public void Year_SetInvalidOnV24_LeavesExistingTimestamp ()
+	{
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame (
+			TestConstants.FrameIds.RecordingTime,
+			"1999-11-13T12:00",
+			TestConstants.Id3v2.Version4);
+		var tag = Id3v2Tag.Read (data).Tag!;
+
+		tag.Year = "nope";
+
+		Assert.AreEqual ("1999-11-13T12:00", tag.GetTextFrame ("TDRC"));
+		Assert.AreEqual ("1999", tag.Year);
+	}
+
+	[TestMethod]
+	public void Year_SetOnV23_StoresFourDigitYear ()
+	{
+		// TYER is always four characters.
+		var tag = new Id3v2Tag (Id3v2Version.V23);
+
+		tag.Year = "1999";
+
+		Assert.AreEqual ("1999", tag.GetTextFrame ("TYER"));
+		Assert.AreEqual ("1999", tag.Year);
+	}
+
+	[TestMethod]
+	[DataRow (" 13")]
+	[DataRow ("+13")]
+	[DataRow ("-1")]
+	[DataRow (" 199")]
+	[DataRow ("+199")]
+	public void Read_YearWithSignOrSpace_IsNotAYear (string raw)
+	{
+		// A numeric string is digits only. A sign or surrounding space is not a year.
+		var v23 = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (
+			TestConstants.FrameIds.Year, raw, TestConstants.Id3v2.Version3));
+		var v24 = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (
+			TestConstants.FrameIds.RecordingTime, raw, TestConstants.Id3v2.Version4));
+
+		Assert.IsTrue (v23.IsSuccess);
+		Assert.IsNull (v23.Tag!.Year, raw);
+		Assert.IsTrue (v24.IsSuccess);
+		Assert.IsNull (v24.Tag!.Year, raw);
+	}
+
+	[TestMethod]
+	[DataRow (" 13")]
+	[DataRow ("+13")]
+	[DataRow ("-1")]
+	public void Read_GenreWithSignOrSpace_IsNotAnIndex (string raw)
+	{
+		// "(13)" and v2.4 "13" are genre 13 (Pop). A sign or space is not that index.
+		var bare = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (
+			TestConstants.FrameIds.Genre, raw, TestConstants.Id3v2.Version4));
+		var wrapped = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame (
+			TestConstants.FrameIds.Genre, "(" + raw + ")", TestConstants.Id3v2.Version3));
+
+		Assert.IsTrue (bare.IsSuccess);
+		Assert.AreEqual (raw, bare.Tag!.Genre);
+		Assert.IsFalse (bare.Tag.Genres.Contains ("Pop"));
+
+		Assert.IsTrue (wrapped.IsSuccess);
+		Assert.AreEqual ("(" + raw + ")", wrapped.Tag!.Genre);
+		Assert.IsFalse (wrapped.Tag.Genres.Contains ("Pop"));
+	}
+
+	[TestMethod]
+	public void Comment_ItunesToolFramesOnly_IsNull ()
+	{
+		var tag = new Id3v2Tag (Id3v2Version.V24);
+		tag.AddComment (new CommentFrame ("0", "eng", "iTunPGAP"));
+		tag.AddComment (new CommentFrame ("00000000 00000000", "eng", "iTunNORM"));
+		tag.AddComment (new CommentFrame ("00000000 00000840", "eng", "iTunSMPB"));
+
+		Assert.IsNull (tag.Comment);
+
+		tag.AddComment (new CommentFrame ("Liner notes", "eng", "Description"));
+
+		Assert.AreEqual ("Liner notes", tag.Comment);
+	}
+
+	[TestMethod]
+	public void Comment_DescriptionStartingWithItun_IsIgnored ()
+	{
+		var ignored = new Id3v2Tag (Id3v2Version.V24);
+		ignored.AddComment (new CommentFrame ("secret", "eng", "iTunXYZ"));
+		Assert.IsNull (ignored.Comment);
+
+		var kept = new Id3v2Tag (Id3v2Version.V24);
+		kept.AddComment (new CommentFrame ("visible", "eng", "Liner"));
+		Assert.AreEqual ("visible", kept.Comment);
 	}
 
 	[TestMethod]
