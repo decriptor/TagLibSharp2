@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Text;
 using TagLibSharp2.Core;
 using TagLibSharp2.Mp4;
@@ -428,18 +429,143 @@ public class Mp4SaveLayoutTests
 	}
 
 	[TestMethod]
-	public void Render_TruncatedStsd_DoesNotReadNextBoxAsDataReferenceIndex ()
+	public void Render_TruncatedStsdWithExternalDref_DoesNotMoveChunkOffset ()
 	{
-		// The sample entry declares 64 bytes, but stsd ends after 16. Those last 8 bytes are the
-		// next box header, and the uint16 at the data_reference_index position is 1. dref entry 1
-		// is external, so reading the next box would leave the chunk offset unchanged.
-		var dref = DrefBox (DataEntryUrl (false));
+		// The sample entry declares 64 bytes, but stsd ends after 16. Bytes at the
+		// data_reference_index position are 1. Entry 1 is self-contained, so reading them would
+		// move this chunk. Entry 2 is external. An entry that cannot be read, when any dref entry
+		// is external, stays. ISO 14496-12 §8.5.2 / §8.7.2.
+		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
 		var file = FileWithChunkTrak (offset => TrakWithDinfAndStbl (offset, dref, TruncatedStsd ()), out var payloadOffset);
 
 		var rendered = RenderWithTitle (file);
+		Assert.AreEqual (payloadOffset, ReadStco (rendered.Span), "a truncated stsd with an external dref must not move");
+		Assert.AreNotEqual ((uint)MarkerAt (rendered.Span), ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_UnresolvableStsc_ExternalOnly_DoesNotMoveChunkOffset ()
+	{
+		// stsd has one entry. The stsc row asks for sample description 3, which is not there.
+		// The only dref entry is external, so the chunk stays. ISO 14496-12 §8.7.4.
+		var dref = DrefBox (DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1));
+		var stsc = StscRows ((1, 3));
+		var file = FileWithChunkTrak (
+			offset => TrakWithChunkOffsets (dref, stsd, stsc, false, offset),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		Assert.AreEqual (payloadOffset, ReadStco (rendered.Span), "unresolved sample description on an external-only trak stays");
+		Assert.AreNotEqual ((uint)MarkerAt (rendered.Span), ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_ChunkBeforeFirstStscRow_ExternalOnly_DoesNotMoveChunkOffset ()
+	{
+		// first_chunk is 2, so chunk 1 has no row. §8.7.4 uses no description for it.
+		// External-only: that chunk stays. Chunk 2 resolves to the external entry and stays.
+		var dref = DrefBox (DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1));
+		var stsc = StscRows ((2, 1));
+		var file = FileWithChunkTrak (
+			offset => TrakWithChunkOffsets (dref, stsd, stsc, false, offset, offset + 4),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		Assert.AreEqual (payloadOffset, ReadStco (rendered.Span, 0), "chunk before the first stsc row stays");
+		Assert.AreEqual (payloadOffset + 4, ReadStco (rendered.Span, 1), "resolved external chunk stays");
+		Assert.AreNotEqual ((uint)MarkerAt (rendered.Span), ReadStco (rendered.Span, 0));
+	}
+
+	[TestMethod]
+	public void Render_ChunkBeforeFirstStscRow_MixedTrack_MovesThatChunk ()
+	{
+		// Not external-only. Chunk 1 has no row and moves. Chunk 2 uses the external description and stays.
+		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
+		var stsc = StscRows ((2, 2));
+		var file = FileWithChunkTrak (
+			offset => TrakWithChunkOffsets (dref, stsd, stsc, false, offset, offset + 4),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
 		var markerAt = (uint)MarkerAt (rendered.Span);
-		Assert.AreEqual (markerAt, ReadStco (rendered.Span), "a truncated stsd must not select the external dref");
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span, 0), "chunk before the first stsc row moves");
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span, 0));
+		Assert.AreEqual (payloadOffset + 4, ReadStco (rendered.Span, 1), "external chunk stays");
+	}
+
+	[TestMethod]
+	public void Render_StscDescriptionIndexZero_ExternalOnly_DoesNotMoveChunkOffset ()
+	{
+		// sample_description_index is 1-based. Zero selects no entry. External-only: the offset stays.
+		var dref = DrefBox (DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1));
+		var stsc = StscRows ((1, 0));
+		var file = FileWithChunkTrak (
+			offset => TrakWithChunkOffsets (dref, stsd, stsc, false, offset),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		Assert.AreEqual (payloadOffset, ReadStco (rendered.Span), "description index 0 on an external-only trak stays");
+		Assert.AreNotEqual ((uint)MarkerAt (rendered.Span), ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_StscDescriptionIndexZero_MixedTrack_MovesChunkOffset ()
+	{
+		// Zero selects no entry. This trak is not external-only, so the chunk still moves.
+		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
+		var stsc = StscRows ((1, 0));
+		var file = FileWithChunkTrak (
+			offset => TrakWithChunkOffsets (dref, stsd, stsc, false, offset),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span), "description index 0 on a mixed trak moves");
 		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span));
+	}
+
+	[TestMethod]
+	public void Render_ManySelfContainedChunks_PatchesOffsetsWithinASecond ()
+	{
+		// 100k chunks and 100k stsc rows, every dref entry self-contained. mdat stays a few bytes.
+		// Offsets are synthetic and sit past moov. A per-chunk scan of this table exceeds one second.
+		const int count = 100_000;
+		const uint synthetic = 0x1000_0000;
+		var offsets = new uint[count];
+		var rows = new (uint FirstChunk, uint SampleDescription)[count];
+		for (var i = 0; i < count; i++) {
+			offsets[i] = synthetic + (uint)i;
+			rows[i] = ((uint)i + 1, 1u);
+		}
+
+		var trak = TrakWithChunkOffsets (
+			DrefBox (DataEntryUrl (true)),
+			StsdBox (SampleEntry (1)),
+			StscRows (rows),
+			false,
+			offsets);
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var moov = Box ("moov", trak);
+		var file = Concat (ftyp, moov, Box ("mdat", Marker));
+
+		var read = Mp4File.Read (file);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.Title = "Hello";
+		var watch = Stopwatch.StartNew ();
+		var rendered = read.File.Render (file);
+		watch.Stop ();
+
+		Assert.IsFalse (rendered.IsEmpty);
+		Assert.IsTrue (watch.Elapsed < TimeSpan.FromSeconds (1), $"save took {watch.Elapsed.TotalMilliseconds:0} ms");
+		var delta = BoxLength (rendered.Span, "moov"u8) - BoxLength (file, "moov"u8);
+		Assert.IsTrue (delta > 0);
+		Assert.AreEqual (synthetic + (uint)delta, ReadStco (rendered.Span, 0));
+		Assert.AreEqual (synthetic + (uint)(count - 1) + (uint)delta, ReadStco (rendered.Span, count - 1));
 	}
 
 	[TestMethod]
