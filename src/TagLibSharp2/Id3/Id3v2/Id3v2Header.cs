@@ -59,7 +59,11 @@ public readonly struct Id3v2Header : IEquatable<Id3v2Header>
 	/// <summary>
 	/// Gets a value indicating whether an extended header is present.
 	/// </summary>
-	public bool HasExtendedHeader => Flags.HasFlag (Id3v2HeaderFlags.ExtendedHeader);
+	/// <remarks>
+	/// ID3v2.3 and ID3v2.4 define this flag. ID3v2.2 uses the same bit for compression.
+	/// </remarks>
+	public bool HasExtendedHeader =>
+		(MajorVersion == 3 || MajorVersion == 4) && Flags.HasFlag (Id3v2HeaderFlags.ExtendedHeader);
 
 	/// <summary>
 	/// Gets a value indicating whether this tag is experimental.

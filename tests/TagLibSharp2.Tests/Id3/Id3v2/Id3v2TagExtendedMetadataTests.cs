@@ -452,6 +452,20 @@ public class Id3v2TagExtendedMetadataTests
 	}
 
 	[TestMethod]
+	public void OriginalReleaseDate_InvalidValue_LeavesExistingFrame ()
+	{
+		var v24 = new Id3v2Tag (Id3v2Version.V24);
+		v24.OriginalReleaseDate = "1969-09-26";
+		v24.OriginalReleaseDate = "nope";
+		Assert.AreEqual ("1969-09-26", v24.GetTextFrame ("TDOR"));
+
+		var v23 = new Id3v2Tag (Id3v2Version.V23);
+		v23.OriginalReleaseDate = "1969";
+		v23.OriginalReleaseDate = "nope";
+		Assert.AreEqual ("1969", v23.GetTextFrame ("TORY"));
+	}
+
+	[TestMethod]
 	public void OriginalReleaseDate_SetNull_ClearsField ()
 	{
 		var tag = new Id3v2Tag (Id3v2Version.V24);

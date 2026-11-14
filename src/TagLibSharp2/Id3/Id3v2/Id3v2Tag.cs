@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Globalization;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2.Frames;
 
@@ -219,13 +220,7 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Year {
 		get => NormalizeYear (Version == 4 ? GetTextFrame ("TDRC") : GetTextFrame ("TYER"));
-		set {
-			var year = NormalizeYear (value);
-			if (Version == 4)
-				SetTextFrame ("TDRC", year);
-			else
-				SetTextFrame ("TYER", year);
-		}
+		set => SetDateFrame (Version == 4 ? "TDRC" : "TYER", value, Version == 4, keepMatchingYear: Version == 4);
 	}
 
 	/// <inheritdoc/>
@@ -249,12 +244,7 @@ public sealed class Id3v2Tag : Tag
 				return NormalizeYear (tory);
 			return NormalizeReleaseTimestamp (GetTextFrame ("TDOR"));
 		}
-		set {
-			if (Version == 4)
-				SetTextFrame ("TDOR", NormalizeReleaseTimestamp (value));
-			else
-				SetTextFrame ("TORY", NormalizeYear (value));
-		}
+		set => SetDateFrame (Version == 4 ? "TDOR" : "TORY", value, Version == 4, keepMatchingYear: false);
 	}
 
 	/// <inheritdoc/>
@@ -1598,6 +1588,34 @@ public sealed class Id3v2Tag : Tag
 #pragma warning restore CA1819
 
 	/// <summary>
+	/// Writes a year or timestamp frame.
+	/// </summary>
+	/// <remarks>
+	/// A four-digit year written onto a v2.4 timestamp that already starts with that year
+	/// leaves the timestamp in place. An invalid value also leaves the existing frame.
+	/// Null or empty still clears it.
+	/// </remarks>
+	void SetDateFrame (string frameId, string? value, bool timestamp, bool keepMatchingYear)
+	{
+		if (value is null || value.Length == 0) {
+			SetTextFrame (frameId, null);
+			return;
+		}
+
+		if (keepMatchingYear && value.Length == 4 && IsAllDigits (value)) {
+			var existing = GetTextFrame (frameId);
+			if (existing is not null && existing.StartsWith (value, StringComparison.Ordinal))
+				return;
+		}
+
+		var normalized = timestamp ? NormalizeReleaseTimestamp (value) : NormalizeYear (value);
+		if (normalized is null)
+			return;
+
+		SetTextFrame (frameId, normalized);
+	}
+
+	/// <summary>
 	/// Sets or creates a text frame.
 	/// </summary>
 	/// <param name="frameId">The frame ID.</param>
@@ -1931,7 +1949,7 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	static bool IsToolPrivateComment (string? description) =>
-		description is "iTunPGAP" or "iTunNORM" or "iTunSMPB";
+		description is not null && description.StartsWith ("iTun", StringComparison.Ordinal);
 
 	/// <summary>
 	/// Sets or creates a comment with an empty description.
@@ -2611,20 +2629,21 @@ public sealed class Id3v2Tag : Tag
 			data = unsyncBuffer;
 		}
 
-		// Decompress if compressed
-		if (hasCompression && decompressedSize > 0) {
+		// A compressed frame that does not inflate is not text. Skip it.
+		if (hasCompression) {
+			if (decompressedSize <= 0)
+				return ReadOnlySpan<byte>.Empty;
+
 			var decompressed = DecompressZlib (data, decompressedSize);
-			if (decompressed is not null)
-				return decompressed;
-			// If decompression fails, return what we have
+			if (decompressed is null)
+				return ReadOnlySpan<byte>.Empty;
+
+			return decompressed;
 		}
 
 		return data;
 	}
 
-	/// <summary>
-	/// Reads a 4-byte syncsafe integer.
-	/// </summary>
 	static string? ResolveGenreDisplay (string? raw, int version)
 	{
 		if (raw is null || raw.Length == 0)
@@ -2708,10 +2727,7 @@ public sealed class Id3v2Tag : Tag
 
 	static string? ResolveNumericGenre (string raw, int version)
 	{
-		if (version != 4 || !IsAllDigits (raw))
-			return null;
-
-		if (!byte.TryParse (raw, out var index))
+		if (version != 4 || !TryParseGenreIndex (raw, out var index))
 			return null;
 
 		return Id3v1Genre.GetName (index);
@@ -2729,13 +2745,23 @@ public sealed class Id3v2Tag : Tag
 			return true;
 		}
 
-		if (!byte.TryParse (token, out var index)) {
+		if (!TryParseGenreIndex (token, out var index)) {
 			name = null;
 			return false;
 		}
 
 		name = Id3v1Genre.GetName (index);
 		return true;
+	}
+
+	// A numeric string is digits only. Signs and surrounding spaces are not an index.
+	static bool TryParseGenreIndex (string token, out byte index)
+	{
+		index = 0;
+		if (!IsAllDigits (token))
+			return false;
+
+		return byte.TryParse (token, NumberStyles.None, CultureInfo.InvariantCulture, out index);
 	}
 
 	static bool IsAllDigits (string value)
@@ -2758,7 +2784,10 @@ public sealed class Id3v2Tag : Tag
 			return null;
 
 		var year = raw.Substring (0, 4);
-		return uint.TryParse (year, out _) ? year : null;
+		if (!IsAllDigits (year))
+			return null;
+
+		return uint.TryParse (year, NumberStyles.None, CultureInfo.InvariantCulture, out _) ? year : null;
 	}
 
 	static string? NormalizeReleaseTimestamp (string? raw)
@@ -2789,6 +2818,9 @@ public sealed class Id3v2Tag : Tag
 		return index;
 	}
 
+	/// <summary>
+	/// Reads a 4-byte syncsafe integer.
+	/// </summary>
 	static int ReadSyncsafeInt32 (ReadOnlySpan<byte> data)
 	{
 		return ((data[0] & 0x7F) << 21) |
@@ -2820,8 +2852,8 @@ public sealed class Id3v2Tag : Tag
 			using var input = new System.IO.MemoryStream (deflateData.ToArray ());
 			using var deflate = new System.IO.Compression.DeflateStream (input, System.IO.Compression.CompressionMode.Decompress);
 
-			var limit = expectedSize < MaxDecompressedBytes ? expectedSize : MaxDecompressedBytes;
-			var buffer = new byte[limit + 1];
+			// expectedSize is already within the cap. A full read returns this buffer.
+			var buffer = new byte[expectedSize];
 			var total = 0;
 			while (total < buffer.Length) {
 				var read = deflate.Read (buffer, total, buffer.Length - total);
@@ -2830,9 +2862,15 @@ public sealed class Id3v2Tag : Tag
 				total += read;
 			}
 
-			// One byte past the cap means the stream was not exhausted.
-			if (total == 0 || total > limit)
+			if (total == 0)
 				return null;
+
+			var extra = new byte[1];
+			if (deflate.Read (extra, 0, 1) > 0)
+				return null;
+
+			if (total == buffer.Length)
+				return buffer;
 
 			var inflated = new byte[total];
 			Array.Copy (buffer, 0, inflated, 0, total);
@@ -2840,8 +2878,6 @@ public sealed class Id3v2Tag : Tag
 		} catch (System.IO.InvalidDataException) {
 			return null;
 		} catch (System.IO.IOException) {
-			return null;
-		} catch (OutOfMemoryException) {
 			return null;
 		} catch (ArgumentOutOfRangeException) {
 			return null;

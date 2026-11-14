@@ -28,6 +28,23 @@ public class Id3v2TagUnsyncAndV22Tests
 	}
 
 	[TestMethod]
+	public void Read_V22ExtendedHeaderBit_DoesNotSkipTheTitle ()
+	{
+		// Bit 6 is compression in v2.2, not an extended header. The title still parses.
+		var frame = TestBuilders.Id3v2.CreateTextFrameV22 (TestConstants.FrameIdsV22.Title, "Kept");
+		var header = TestBuilders.Id3v2.CreateHeaderWithFlags (TestConstants.Id3v2.Version2, (uint)frame.Length, 0x40);
+		var data = new byte[header.Length + frame.Length];
+		header.CopyTo (data, 0);
+		frame.CopyTo (data, header.Length);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsFalse (Id3v2Header.Read (data).Header.HasExtendedHeader);
+		Assert.AreEqual ("Kept", result.Tag!.Title);
+	}
+
+	[TestMethod]
 	public void Read_V22TagWithTitle_ParsesTitleFrame ()
 	{
 		var data = TestBuilders.Id3v2.CreateTagWithTextFrameV22 (
