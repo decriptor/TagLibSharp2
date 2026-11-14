@@ -39,7 +39,6 @@ public static class AtomicFileWriter
 		fileSystem ??= DefaultFileSystem.Instance;
 
 		var tempPath = GetTempPath (path, fileSystem);
-		var replaceAttempted = false;
 		var destinationExisted = false;
 
 		try {
@@ -48,7 +47,6 @@ public static class AtomicFileWriter
 
 			// Atomically replace the target file
 			destinationExisted = fileSystem.FileExists (path);
-			replaceAttempted = true;
 			fileSystem.Move (tempPath, path);
 
 			return FileWriteResult.Success (data.Length);
@@ -59,7 +57,6 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"I/O error writing file: {ex.Message}",
-				replaceAttempted,
 				destinationExisted);
 		} catch (UnauthorizedAccessException ex) {
 			return FinishAfterFailure (
@@ -68,7 +65,6 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"Access denied: {ex.Message}",
-				replaceAttempted,
 				destinationExisted);
 		}
 	}
@@ -90,7 +86,6 @@ public static class AtomicFileWriter
 		fileSystem ??= DefaultFileSystem.Instance;
 
 		var tempPath = GetTempPath (path, fileSystem);
-		var replaceAttempted = false;
 		var destinationExisted = false;
 
 		try {
@@ -102,7 +97,6 @@ public static class AtomicFileWriter
 
 			// Atomically replace the target file
 			destinationExisted = fileSystem.FileExists (path);
-			replaceAttempted = true;
 			fileSystem.Move (tempPath, path);
 
 			return FileWriteResult.Success (data.Length);
@@ -116,7 +110,6 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"I/O error writing file: {ex.Message}",
-				replaceAttempted,
 				destinationExisted);
 		} catch (UnauthorizedAccessException ex) {
 			return FinishAfterFailure (
@@ -125,7 +118,6 @@ public static class AtomicFileWriter
 				fileSystem,
 				data.Length,
 				$"Access denied: {ex.Message}",
-				replaceAttempted,
 				destinationExisted);
 		}
 	}
@@ -151,13 +143,16 @@ public static class AtomicFileWriter
 			fileSystem.Move (tempPath, destinationPath);
 			return true;
 		} catch (IOException ex) {
-			keptTempError = $"Temporary file kept at '{tempPath}'. {ex.Message}";
+			keptTempError = DescribeKeptTemp (tempPath, ex.Message);
 			return false;
 		} catch (UnauthorizedAccessException ex) {
-			keptTempError = $"Temporary file kept at '{tempPath}'. {ex.Message}";
+			keptTempError = DescribeKeptTemp (tempPath, ex.Message);
 			return false;
 		}
 	}
+
+	static string DescribeKeptTemp (string tempPath, string exceptionMessage) =>
+		$"Temporary file kept at '{tempPath}': {exceptionMessage}";
 
 	static FileWriteResult FinishAfterFailure (
 		string tempPath,
@@ -165,12 +160,11 @@ public static class AtomicFileWriter
 		IFileSystem fileSystem,
 		int bytesWritten,
 		string message,
-		bool replaceAttempted,
 		bool destinationExisted)
 	{
-		// A failure before Move cannot have removed the destination. A destination that did not
+		// A failure before Move leaves destinationExisted false. A destination that did not
 		// exist has no original to restore, so a failed publish must not leave the temp behind.
-		if (!replaceAttempted || !destinationExisted) {
+		if (!destinationExisted) {
 			CleanupTempFile (tempPath, fileSystem);
 			return FileWriteResult.Failure (message);
 		}
@@ -179,7 +173,7 @@ public static class AtomicFileWriter
 			return FileWriteResult.Success (bytesWritten);
 
 		if (keptTempError is not null)
-			return FileWriteResult.Failure ($"{message}. {keptTempError}");
+			return FileWriteResult.Failure (keptTempError);
 
 		return FileWriteResult.Failure (message);
 	}

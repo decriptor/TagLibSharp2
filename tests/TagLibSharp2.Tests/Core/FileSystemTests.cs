@@ -311,6 +311,40 @@ public sealed class FileSystemTests
 	}
 
 	[TestMethod]
+	public void WriteAllBytes_FlushesTheStreamItIsGiven ()
+	{
+		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
+		try {
+			using (var stream = new FlushRecordingFileStream (path)) {
+				DefaultFileSystem.WriteAllBytes (stream, [1, 2, 3]);
+				Assert.IsTrue (stream.FlushedToDisk);
+			}
+
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (path));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public async Task WriteAllBytesAsync_FlushesTheStreamItIsGiven ()
+	{
+		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
+		try {
+			using (var stream = new FlushRecordingFileStream (path)) {
+				await DefaultFileSystem.WriteAllBytesAsync (stream, new byte[] { 1, 2, 3 });
+				Assert.IsTrue (stream.FlushedToDisk);
+			}
+
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (path));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
 	public async Task WriteAndFlushAsync_WritesBytesAndFlushesToDisk ()
 	{
 		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
@@ -601,7 +635,7 @@ public sealed class FileReadResultTests
 public sealed class AtomicFileWriterTests
 {
 	[TestMethod]
-	public void Write_FlushesTempToDiskBeforeMove ()
+	public void Write_CallsWriteAllBytesBeforeMove ()
 	{
 		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
 		Directory.CreateDirectory (dir);
@@ -813,7 +847,7 @@ public sealed class AtomicFileWriterTests
 		var files = mock.GetAllFiles ();
 		Assert.HasCount (1, files);
 		var tempPath = files.Keys.Single ();
-		StringAssert.Contains (result.Error, tempPath);
+		Assert.AreEqual ($"Temporary file kept at '{tempPath}': retry failed", result.Error);
 		CollectionAssert.AreEqual (new byte[] { 4, 5 }, files[tempPath]);
 		Assert.IsFalse (mock.FileExists ("/song.bin"));
 	}
@@ -903,6 +937,26 @@ public sealed class AtomicFileWriterTests
 	}
 
 	[TestMethod]
+	public async Task WriteAsync_WhenWriteThrowsBeforeReplace_DeletesTemp ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance) { ThrowAfterWrite = true };
+
+			var result = await AtomicFileWriter.WriteAsync (destination, new byte[] { 4, 5 }, fs);
+
+			Assert.IsFalse (result.IsSuccess);
+			Assert.IsFalse (File.Exists (destination));
+			var leftovers = Directory.GetFiles (dir);
+			Assert.AreEqual (0, leftovers.Length, string.Join (", ", leftovers));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
 	public void Write_WhenDefaultFileSystemMoveThrows_LeavesDestinationAndDeletesTemp ()
 	{
 		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
@@ -967,11 +1021,129 @@ public sealed class AtomicFileWriterTests
 		var restored = AtomicFileWriter.TryRecoverTempFile ("/.taglib_temp.tmp", "/song.bin", fs, out var keptTempError);
 
 		Assert.IsFalse (restored);
-		Assert.IsNotNull (keptTempError);
-		StringAssert.Contains (keptTempError, "/.taglib_temp.tmp");
+		Assert.AreEqual ("Temporary file kept at '/.taglib_temp.tmp': retry failed", keptTempError);
 		Assert.IsTrue (mock.FileExists ("/.taglib_temp.tmp"));
 		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/.taglib_temp.tmp"));
 	}
+
+	[TestMethod]
+	public void Write_SymlinkToFile_ReplacesTargetAndLeavesLink ()
+	{
+		if (!IsUnix ())
+			return;
+
+		var root = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		var dataDir = Path.Combine (root, "data");
+		var linkDir = Path.Combine (root, "links");
+		Directory.CreateDirectory (dataDir);
+		Directory.CreateDirectory (linkDir);
+		try {
+			var target = Path.Combine (dataDir, "song.bin");
+			var link = Path.Combine (linkDir, "song.bin");
+			File.WriteAllBytes (target, [1, 2, 3]);
+			File.CreateSymbolicLink (link, Path.GetRelativePath (linkDir, target));
+
+			var result = AtomicFileWriter.Write (link, [4, 5]);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.IsNotNull (new FileInfo (link).LinkTarget);
+			var resolved = File.ResolveLinkTarget (link, returnFinalTarget: true);
+			Assert.IsNotNull (resolved);
+			Assert.AreEqual (Path.GetFullPath (target), Path.GetFullPath (resolved.FullName));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (target));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (link));
+			AssertNoTempFiles (dataDir);
+			AssertNoTempFiles (linkDir);
+		} finally {
+			Directory.Delete (root, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_SymlinkToFileInSameDirectory_ReplacesTargetAndLeavesLink ()
+	{
+		if (!IsUnix ())
+			return;
+
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var target = Path.Combine (dir, "song.bin");
+			var link = Path.Combine (dir, "link.bin");
+			File.WriteAllBytes (target, [1, 2, 3]);
+			File.CreateSymbolicLink (link, "song.bin");
+
+			var result = AtomicFileWriter.Write (link, [4, 5]);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.AreEqual ("song.bin", new FileInfo (link).LinkTarget);
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (target));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (link));
+			AssertNoTempFiles (dir);
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_DanglingSymlink_BecomesRegularFileWithNewBytes ()
+	{
+		if (!IsUnix ())
+			return;
+
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			File.CreateSymbolicLink (destination, "missing-target.bin");
+
+			var result = AtomicFileWriter.Write (destination, [4, 5]);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.IsNull (new FileInfo (destination).LinkTarget);
+			Assert.IsFalse (File.GetAttributes (destination).HasFlag (FileAttributes.ReparsePoint));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
+			AssertNoTempFiles (dir);
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_ExistingFile_PreservesUnixFileMode ()
+	{
+		// Unix file mode is unsupported on Windows, and missing on netstandard2.0.
+		if (!OperatingSystem.IsLinux () && !OperatingSystem.IsMacOS () && !OperatingSystem.IsFreeBSD ())
+			return;
+
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			File.WriteAllBytes (destination, [1, 2, 3]);
+			const UnixFileMode mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead;
+			File.SetUnixFileMode (destination, mode);
+
+			var result = AtomicFileWriter.Write (destination, [4, 5]);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.AreEqual (mode, File.GetUnixFileMode (destination));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	static void AssertNoTempFiles (string directory)
+	{
+		var leftovers = Directory.EnumerateFiles (directory)
+			.Where (path => Path.GetFileName (path).StartsWith (".taglib_", StringComparison.Ordinal))
+			.ToArray ();
+		Assert.AreEqual (0, leftovers.Length, string.Join (", ", leftovers));
+	}
+
+	static bool IsUnix () =>
+		OperatingSystem.IsLinux () || OperatingSystem.IsMacOS () || OperatingSystem.IsFreeBSD ();
 }
 
 [TestClass]
