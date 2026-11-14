@@ -629,12 +629,21 @@ public class DffFileTests
 		"ID3 "u8.CopyTo (merged.AsSpan (dsd));
 		original.AsSpan (dsd).CopyTo (merged.AsSpan (dsd + 12));
 
+		var payloadLength = (int)BinaryPrimitives.ReadUInt64BigEndian (original.AsSpan (dsd + 4, 8));
+		var payload = original.AsSpan (dsd + 12, payloadLength).ToArray ();
+
 		var read = DffFile.Read (merged);
 		Assert.IsTrue (read.IsSuccess, read.Error);
 		read.File!.EnsureId3v2Tag ().Title = "T";
 
 		var rendered = read.File.Render ();
-		Assert.IsTrue (rendered.Span.IndexOf ((byte)0xAB) >= 0);
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("T", again.File!.Id3v2Tag?.Title);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), "DSD ");
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+		Assert.AreEqual (1, CountChunks (rendered.Span, "ID3 "));
 	}
 
 	[TestMethod]
@@ -702,6 +711,160 @@ public class DffFileTests
 		var reread = DffFile.Read (second.Span);
 		Assert.IsTrue (reread.IsSuccess, reread.Error);
 		Assert.AreEqual ("New Title", reread.File!.Id3v2Tag?.Title);
+	}
+
+	[TestMethod]
+	public void Render_ClearPreAudioId3_RebasesDstiOffsets ()
+	{
+		// Two leading ID3 chunks (the first odd, so its pad is removed too) shift the DST
+		// payload. DSTI offsets are absolute file positions and must follow that shift.
+		var payload = new byte[] { 0x11, 0x22, 0xD1, 0xD2, 0xD3, 0xD4, 0x33, 0x44 };
+		var fileBytes = CreateSoundFile ("DST ", payload);
+		var leading = Concat (
+			CreateId3Chunk ("FirstTitle", forceOddData: true),
+			CreateId3Chunk ("SecondTitle", forceOddData: false));
+		fileBytes = InsertBeforeChunk (fileBytes, "DST ", leading);
+
+		var sound = FindChunkOffset (fileBytes, "DST ");
+		var marker = (ulong)(sound + 12 + 2);
+		fileBytes = AppendChunk (fileBytes, CreateDstiChunk ((16, 4), (marker, 4)));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.Id3v2Tag = null;
+		var rendered = read.File.Render ();
+
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.IsNull (again.File!.Id3v2Tag);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), "DST ");
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var dsti = FindChunkOffset (rendered.ToArray (), "DSTI");
+		var kept = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (dsti + 12, 8));
+		var moved = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (dsti + 24, 8));
+		Assert.AreEqual (16UL, kept, "An offset before the removed range must stay put");
+		Assert.AreEqual (4U, BinaryPrimitives.ReadUInt32BigEndian (rendered.Span.Slice (dsti + 32, 4)));
+
+		var expected = (ulong)(renderedSound + 12 + 2);
+		Assert.AreEqual (expected, moved, "DSTI offset after the removed range must be rebased");
+		Assert.IsTrue (payload.AsSpan (2, 4).SequenceEqual (rendered.Span.Slice ((int)moved, 4)),
+			"Rebased index points at the wrong bytes");
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_EditTag_ReplacesEveryId3AndKeepsFollowingChunk (string soundChunkId)
+	{
+		var payload = new byte[] { 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = InsertBeforeChunk (fileBytes, soundChunkId, CreateId3Chunk ("FrontTitle", forceOddData: true));
+
+		ulong marker = 0;
+		if (soundChunkId == "DST ") {
+			var sound = FindChunkOffset (fileBytes, soundChunkId);
+			marker = (ulong)(sound + 12 + 2);
+			fileBytes = AppendChunk (fileBytes, CreateDstiChunk ((16, 4), (marker, 4)));
+		}
+
+		fileBytes = AppendChunk (fileBytes, CreateId3Chunk ("SuffixTitle", forceOddData: false));
+		var trailing = new byte[] { 0xC0, 0x01, 0x02, 0x03 };
+		fileBytes = AppendChunk (fileBytes, CreateChunk ("COMT", trailing, includePad: true));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("SuffixTitle", read.File!.Id3v2Tag?.Title);
+
+		read.File.Id3v2Tag!.Title = "Edited";
+		var rendered = read.File.Render ();
+
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("Edited", again.File!.Id3v2Tag?.Title);
+		Assert.AreEqual (1, CountChunks (rendered.Span, "ID3 "));
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var comt = FindChunkOffset (rendered.ToArray (), "COMT");
+		Assert.IsTrue (trailing.AsSpan ().SequenceEqual (rendered.Span.Slice (comt + 12, trailing.Length)));
+
+		if (soundChunkId == "DST ") {
+			var dsti = FindChunkOffset (rendered.ToArray (), "DSTI");
+			var kept = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (dsti + 12, 8));
+			var moved = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (dsti + 24, 8));
+			Assert.AreEqual (16UL, kept);
+			Assert.AreEqual ((ulong)(renderedSound + 12 + 2), moved);
+			Assert.IsTrue (payload.AsSpan (2, 4).SequenceEqual (rendered.Span.Slice ((int)moved, 4)));
+		}
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_OddFiveBytePayload_RereadsTitleAtEvenId3 (string soundChunkId)
+	{
+		var payload = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		var sound = FindChunkOffset (fileBytes, soundChunkId);
+		Assert.AreEqual (fileBytes.Length, sound + 12 + payload.Length, "Fixture must omit the pad byte");
+		Assert.AreEqual (1, fileBytes.Length % 2);
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "Five";
+		var rendered = read.File.Render ();
+
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("Five", again.File!.Id3v2Tag?.Title);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
+		Assert.AreEqual ((ulong)payload.Length, declared);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var id3 = FindChunkOffset (rendered.ToArray (), "ID3 ");
+		Assert.AreEqual (0, id3 % 2, "ID3 chunk must start at an even offset");
+		Assert.AreEqual (1, CountChunks (rendered.Span, "ID3 "));
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_TruncatedChunkAfterSound_RewritesThatChunkSize (string soundChunkId)
+	{
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		var comtData = new byte[] { 0x11, 0x22, 0x33 };
+		var comt = CreateChunk ("COMT", comtData, includePad: false);
+		BinaryPrimitives.WriteUInt64BigEndian (comt.AsSpan (4, 8), 100_000);
+		fileBytes = AppendChunk (fileBytes, comt);
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "Later";
+		var rendered = read.File.Render ();
+
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("Later", again.File!.Id3v2Tag?.Title);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		var soundDeclared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
+		Assert.AreEqual ((ulong)payload.Length, soundDeclared);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var renderedComt = FindChunkOffset (rendered.ToArray (), "COMT");
+		var comtDeclared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedComt + 4, 8));
+		Assert.AreEqual ((ulong)comtData.Length, comtDeclared);
+		Assert.IsTrue (comtData.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedComt + 12, comtData.Length)));
+
+		var id3 = FindChunkOffset (rendered.ToArray (), "ID3 ");
+		Assert.AreEqual (0, id3 % 2);
+		Assert.AreEqual (renderedComt + 12 + comtData.Length + 1, id3, "Odd truncated chunk keeps a pad before ID3");
 	}
 
 	/// <summary>
@@ -1455,6 +1618,61 @@ public class DffFileTests
 		left.CopyTo (combined, 0);
 		right.CopyTo (combined, left.Length);
 		return combined;
+	}
+
+	private static byte[] AppendChunk (byte[] file, byte[] chunk)
+	{
+		var merged = new byte[file.Length + chunk.Length];
+		file.CopyTo (merged, 0);
+		chunk.CopyTo (merged, file.Length);
+		BinaryPrimitives.WriteUInt64BigEndian (merged.AsSpan (4, 8), (ulong)(merged.Length - 12));
+		return merged;
+	}
+
+	private static byte[] CreateChunk (string id, byte[] data, bool includePad)
+	{
+		using var ms = new MemoryStream ();
+		var idBytes = System.Text.Encoding.ASCII.GetBytes (id);
+		ms.Write (idBytes, 0, idBytes.Length);
+		WriteUInt64BE (ms, (ulong)data.Length);
+		ms.Write (data, 0, data.Length);
+		if (includePad && (data.Length % 2) != 0)
+			ms.WriteByte (0);
+
+		return ms.ToArray ();
+	}
+
+	private static byte[] CreateDstiChunk (params (ulong Offset, uint Length)[] entries)
+	{
+		using var ms = new MemoryStream ();
+		foreach (var entry in entries) {
+			WriteUInt64BE (ms, entry.Offset);
+			WriteUInt32BE (ms, entry.Length);
+		}
+
+		return CreateChunk ("DSTI", ms.ToArray (), includePad: true);
+	}
+
+	private static int CountChunks (ReadOnlySpan<byte> data, string chunkId)
+	{
+		var count = 0;
+		var offset = 16;
+		while (offset + 12 <= data.Length) {
+			var id = System.Text.Encoding.ASCII.GetString (data.Slice (offset, 4));
+			var chunkSize = BinaryPrimitives.ReadUInt64BigEndian (data.Slice (offset + 4, 8));
+			if (id == chunkId)
+				count++;
+
+			var available = (ulong)(data.Length - offset - 12);
+			if (chunkSize > available)
+				break;
+
+			offset += 12 + (int)chunkSize;
+			if ((chunkSize % 2) != 0 && offset < data.Length)
+				offset++;
+		}
+
+		return count;
 	}
 
 	private static int FindChunkOffset (byte[] data, string chunkId)
