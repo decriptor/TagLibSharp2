@@ -246,14 +246,13 @@ public class FlacFileTests
 	}
 
 	// RFC 9639: 36-bit big-endian sample count (low 4 bits of byte 13 plus bytes 14-17).
-	// A signed shift of a byte >= 0x80 sign-extends. TimeSpan.FromSeconds then throws
-	// OverflowException and Read fails.
+	// Bit 31 of the low word is set. Read reports the full duration.
 	[TestMethod]
 	[DataRow (1UL << 31)]
 	[DataRow (0xFFFFFFFFUL)]
 	[DataRow ((1UL << 32) | (1UL << 31))]
 	[DataRow (0xFFFFFFFFFUL)]
-	public void Read_SignedShiftOfByteAtLeast0x80_SignExtendsAndThrowsOverflowException (ulong totalSamples)
+	public void Read_SampleCountWithBit31OfLowWordSet_ReportsFullDuration (ulong totalSamples)
 	{
 		var data = TestBuilders.Flac.CreateWithStreamInfo (44100, 2, 16, totalSamples);
 
