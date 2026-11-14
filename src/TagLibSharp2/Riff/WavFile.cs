@@ -244,16 +244,13 @@ public sealed class WavFile : IMediaFile
 			wav.ExtendedProperties = WavAudioPropertiesParser.ParseExtended (fmtChunk.Value.Data);
 		}
 
-		// Parse LIST INFO chunk
+		// Parse LIST INFO chunk. Other LIST types (adtl cue labels) stay in the chunk list.
 		foreach (var listChunk in riff.GetChunks (ListChunkId)) {
-			// Check if this is an INFO list
-			if (listChunk.Data.Length >= 4) {
-				var listType = listChunk.Data.Slice (0, 4).ToStringLatin1 ();
-				if (listType == "INFO") {
-					wav.InfoTag = RiffInfoTag.Parse (listChunk.Data);
-					break;
-				}
-			}
+			if (!IsInfoList (listChunk))
+				continue;
+
+			wav.InfoTag = RiffInfoTag.Parse (listChunk.Data);
+			break;
 		}
 
 		// Parse ID3v2 chunk
@@ -362,6 +359,14 @@ public sealed class WavFile : IMediaFile
 	}
 
 	/// <summary>
+	/// True when <paramref name="chunk"/> is a LIST whose data begins with the INFO list type.
+	/// </summary>
+	static bool IsInfoList (RiffChunk chunk) =>
+		chunk.FourCC == ListChunkId
+		&& chunk.Data.Length >= 4
+		&& chunk.Data.Slice (0, 4).ToStringLatin1 () == "INFO";
+
+	/// <summary>
 	/// Renders the WAV file to binary data.
 	/// </summary>
 	/// <returns>The complete WAV file as binary data.</returns>
@@ -374,13 +379,16 @@ public sealed class WavFile : IMediaFile
 		// Start with a new RIFF structure
 		var riff = new RiffFile ();
 
-		// Copy all chunks from original, except metadata chunks we'll update
+		// Rewrite id3, bext, and LIST INFO. Copy every other LIST (adtl cue labels) unchanged.
 		foreach (var chunk in _riff.AllChunks) {
-			// Skip chunks we'll replace with updated versions
-			if (chunk.FourCC == ListChunkId || chunk.FourCC == Id3ChunkId || chunk.FourCC == BextChunkId)
+			if (chunk.FourCC == Id3ChunkId || chunk.FourCC == BextChunkId || IsInfoList (chunk))
 				continue;
 
-			riff.SetChunk (chunk);
+			// SetChunk keeps one chunk per FourCC, so a later INFO list would replace adtl.
+			if (chunk.FourCC == ListChunkId)
+				riff.AddChunk (chunk);
+			else
+				riff.SetChunk (chunk);
 		}
 
 		// Add bext tag if present
@@ -398,7 +406,8 @@ public sealed class WavFile : IMediaFile
 				// We need to extract just the data portion
 				if (infoData.Length > 8) {
 					var listData = infoData.Slice (8); // Skip "LIST" + size
-					riff.SetChunk (new RiffChunk (ListChunkId, listData));
+					// Append. SetChunk would replace a non-INFO LIST copied above.
+					riff.AddChunk (new RiffChunk (ListChunkId, listData));
 				}
 			}
 		}

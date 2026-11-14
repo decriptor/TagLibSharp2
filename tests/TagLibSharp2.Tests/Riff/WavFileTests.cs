@@ -250,6 +250,48 @@ public class WavFileTests
 		Assert.IsTrue (content.Contains ("cue "));
 	}
 
+	[TestMethod]
+	public void Render_AdtlList_PreservesAdtlList ()
+	{
+		var wav = WavFile.Read (CreateWavWithAdtlList ()).File;
+		Assert.IsNotNull (wav);
+
+		var rendered = wav.Render ();
+
+		AssertAdtlListPreserved (rendered);
+	}
+
+	[TestMethod]
+	public void Render_AdtlList_PreservedWhenInfoTagRewritten ()
+	{
+		var wav = WavFile.Read (CreateWavWithAdtlList ()).File;
+		Assert.IsNotNull (wav);
+
+		wav.InfoTag = new RiffInfoTag { Title = "Rewritten" };
+
+		var rendered = wav.Render ();
+		AssertAdtlListPreserved (rendered);
+
+		var roundTripped = WavFile.Read (rendered).File;
+		Assert.AreEqual ("Rewritten", roundTripped?.InfoTag?.Title);
+	}
+
+	static void AssertAdtlListPreserved (BinaryData rendered)
+	{
+		Assert.IsTrue (RiffFile.TryParse (rendered, out var riff));
+
+		var found = false;
+		foreach (var chunk in riff.GetChunks ("LIST")) {
+			if (chunk.Data.Length < 4 || chunk.Data.Slice (0, 4).ToStringLatin1 () != "adtl")
+				continue;
+
+			Assert.IsTrue (chunk.Data.ToStringLatin1 ().Contains ("cue-labels"));
+			found = true;
+		}
+
+		Assert.IsTrue (found, "LIST adtl was dropped");
+	}
+
 	static BinaryData CreateWavWithFactChunk ()
 	{
 		using var builder = new BinaryDataBuilder (512);
@@ -389,6 +431,38 @@ public class WavFileTests
 		builder.AddUInt32LE (0);
 
 		return builder.ToBinaryData ();
+	}
+
+	static BinaryData CreateWavWithAdtlList ()
+	{
+		using var body = new BinaryDataBuilder (128);
+		body.AddStringLatin1 ("WAVE");
+
+		body.AddStringLatin1 ("fmt ");
+		body.AddUInt32LE (16);
+		body.AddUInt16LE (1);
+		body.AddUInt16LE (1);
+		body.AddUInt32LE (44100);
+		body.AddUInt32LE (44100);
+		body.AddUInt16LE (1);
+		body.AddUInt16LE (8);
+
+		body.AddStringLatin1 ("data");
+		body.AddUInt32LE (4);
+		body.Add (0x01, 0x02, 0x03, 0x04);
+
+		// LIST whose data starts with "adtl", plus a cue-label payload.
+		body.AddStringLatin1 ("LIST");
+		body.AddUInt32LE (14);
+		body.AddStringLatin1 ("adtl");
+		body.AddStringLatin1 ("cue-labels");
+
+		var bodyData = body.ToBinaryData ();
+		using var file = new BinaryDataBuilder (8 + bodyData.Length);
+		file.AddStringLatin1 ("RIFF");
+		file.AddUInt32LE ((uint)bodyData.Length);
+		file.Add (bodyData);
+		return file.ToBinaryData ();
 	}
 
 	[TestMethod]

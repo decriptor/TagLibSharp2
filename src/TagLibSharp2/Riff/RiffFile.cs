@@ -100,6 +100,16 @@ public class RiffFile
 	}
 
 	/// <summary>
+	/// Appends a chunk without replacing an existing chunk of the same FourCC.
+	/// </summary>
+	/// <param name="chunk">The chunk to append.</param>
+	/// <remarks>
+	/// RIFF allows more than one LIST chunk (INFO and adtl, for example).
+	/// <see cref="SetChunk"/> keeps a single chunk per FourCC and would overwrite the other list.
+	/// </remarks>
+	internal void AddChunk (RiffChunk chunk) => _chunks.Add (chunk);
+
+	/// <summary>
 	/// Removes all chunks with the specified FourCC.
 	/// </summary>
 	/// <param name="fourCC">The 4-character chunk identifier.</param>
@@ -139,9 +149,15 @@ public class RiffFile
 		// Read form type
 		file.FormType = data.Slice (8, 4).ToStringLatin1 ();
 
-		// Parse chunks
+		// Parse chunks. Narrow only after the min: (int)FileSize wraps the high bit
+		// (0xFFFFFFFF becomes -1), so the chunk loop never runs and TryParse still succeeds.
+		// 0xFFFFFFFF is the RF64 size sentinel; the real length is in ds64, which is not read here.
 		var offset = HeaderSize;
-		var limit = Math.Min (data.Length, (int)file.FileSize + 8);
+		int limit;
+		if (file.FileSize == 0xFFFFFFFF)
+			limit = data.Length;
+		else
+			limit = (int)Math.Min (data.Length, (long)file.FileSize + 8);
 
 		while (offset + RiffChunk.HeaderSize <= limit) {
 			if (!RiffChunk.TryParse (data, offset, out var chunk))
