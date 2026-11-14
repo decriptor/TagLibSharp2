@@ -652,6 +652,134 @@ public class ApeTagTests
 	}
 
 	[TestMethod]
+	public void Rewrite_HeaderOnlyBeforeId3v1_DoesNotDeleteAudio ()
+	{
+		// A 32-byte header (bit 29) before ID3v1 is not a footer. Honoring it as one deletes 32 audio bytes.
+		var audio = new byte[48];
+		audio[0] = 0xA1;
+		for (var i = 1; i < audio.Length; i++)
+			audio[i] = 0x11;
+
+		var header = ApeTagHeader.Create (tagSize: ApeTagFooter.Size, itemCount: 0).Render ();
+		var parsedHeader = ApeTagFooter.Parse (header);
+		Assert.IsTrue (parsedHeader.IsSuccess, parsedHeader.Error);
+		Assert.IsTrue (parsedHeader.Footer!.IsHeader);
+
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + header.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		header.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + header.Length);
+
+		var location = ApeTagLocation.Locate (data);
+
+		Assert.IsFalse (location.Found);
+		Assert.AreEqual (data.Length - ApeTagLocation.Id3v1Size, location.AudioEnd);
+		Assert.AreEqual (location.AudioEnd, location.Id3v1Offset);
+
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (audio.Length, header.Length).SequenceEqual (header));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size + 3, 6).SequenceEqual ("KeepMe"u8));
+	}
+
+	[TestMethod]
+	public void Rewrite_HeaderOnlyAtEof_DoesNotDeleteAudio ()
+	{
+		// Same header flag at EOF is not a footer either. Locate must not eat the preceding 32 bytes.
+		var audio = new byte[48];
+		audio[0] = 0xA2;
+		for (var i = 1; i < audio.Length; i++)
+			audio[i] = 0x12;
+
+		var header = ApeTagHeader.Create (tagSize: ApeTagFooter.Size, itemCount: 0).Render ();
+		var data = new byte[audio.Length + header.Length];
+		audio.CopyTo (data, 0);
+		header.CopyTo (data, audio.Length);
+
+		var location = ApeTagLocation.Locate (data);
+
+		Assert.IsFalse (location.Found);
+		Assert.AreEqual (data.Length, location.AudioEnd);
+
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (audio.Length, header.Length).SequenceEqual (header));
+	}
+
+	[TestMethod]
+	public void Rewrite_OverclaimedHeaderPointsAtAudio_DoesNotDeleteAudio ()
+	{
+		// Footer claims a header, but the 32 bytes at that start are audio, not APETAGEX.
+		var audio = new byte[64];
+		audio[0] = 0xB1;
+		for (var i = 1; i < audio.Length; i++)
+			audio[i] = 0x21;
+
+		var footer = ApeTagFooter.Create (tagSize: ApeTagFooter.Size, itemCount: 0, hasHeader: true).Render ();
+		var parsed = ApeTagFooter.Parse (footer);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.IsFalse (parsed.Footer!.IsHeader);
+		Assert.IsTrue (parsed.Footer.HasHeader);
+
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + footer.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		footer.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + footer.Length);
+
+		var headerStart = audio.Length - ApeTagFooter.Size;
+		Assert.IsFalse (data.AsSpan (headerStart, 8).SequenceEqual ("APETAGEX"u8));
+
+		var location = ApeTagLocation.Locate (data);
+
+		Assert.IsTrue (location.Found);
+		Assert.AreEqual (audio.Length, location.AudioEnd);
+		Assert.AreEqual (audio.Length + footer.Length, location.Id3v1Offset);
+
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size + 3, 6).SequenceEqual ("KeepMe"u8));
+	}
+
+	[TestMethod]
+	public void Rewrite_UnboundedFooterBeforeId3v1_WritesTagBeforeId3 ()
+	{
+		// A footer before ID3v1 whose size does not fit is not a tag. Keep ID3v1 and write in front of it.
+		var audio = new byte[64];
+		audio[0] = 0xC1;
+		for (var i = 1; i < audio.Length; i++)
+			audio[i] = 0x31;
+
+		var footer = ApeTagFooter.Create (tagSize: 10_000, itemCount: 0).Render ();
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + footer.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		footer.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + footer.Length);
+
+		var location = ApeTagLocation.Locate (data);
+
+		Assert.IsFalse (location.Found);
+		Assert.AreEqual (data.Length - ApeTagLocation.Id3v1Size, location.AudioEnd);
+		Assert.AreEqual (location.AudioEnd, location.Id3v1Offset);
+
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+		Assert.IsTrue (saved.AsSpan (audio.Length, footer.Length).SequenceEqual (footer));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagFooter.Size - ApeTagLocation.Id3v1Size, 8).SequenceEqual ("APETAGEX"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		Assert.IsTrue (saved.AsSpan (saved.Length - ApeTagLocation.Id3v1Size + 3, 6).SequenceEqual ("KeepMe"u8));
+		Assert.IsFalse (saved.AsSpan (saved.Length - 8, 8).SequenceEqual ("APETAGEX"u8));
+	}
+
+	[TestMethod]
 	public void Parse_FollowedById3v1_ParsesApeItem ()
 	{
 		var tag = new ApeTag {
@@ -731,6 +859,14 @@ public class ApeTagTests
 		item.CopyTo (data, 0);
 		footer.CopyTo (data, item.Length);
 		return data;
+	}
+
+	private static byte[] CreateId3v1Suffix ()
+	{
+		var id3 = new byte[ApeTagLocation.Id3v1Size];
+		"TAG"u8.CopyTo (id3);
+		"KeepMe"u8.CopyTo (id3.AsSpan (3));
+		return id3;
 	}
 
 	private static byte[] CreateValidFooter (uint version, uint tagSize, uint itemCount, uint flags)

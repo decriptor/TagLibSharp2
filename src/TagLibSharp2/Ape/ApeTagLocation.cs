@@ -5,9 +5,14 @@ namespace TagLibSharp2.Ape;
 
 /// <summary>
 /// Locates an APE tag at the end of a buffer. This is the only EOF-32 / EOF-160 rule.
-/// A full footer (magic, version, reserved) at EOF is used when it parses.
+/// A full footer (magic, version, reserved) at EOF is used when it parses and bit 29 is clear.
+/// Bit 29 means the structure is a header. A header has the same layout as a footer but is not one,
+/// so locating continues with the other candidate or the ID3v1-only path.
 /// Otherwise, if the last 128 bytes start with "TAG", the footer is the 32 bytes at EOF-160.
-/// When that footer does not parse, the suffix is still ID3v1 and audio ends at length-128.
+/// When that structure is not a footer, or its size does not fit, the suffix is still ID3v1
+/// and audio ends at length-128.
+/// Tag size includes the footer and excludes a header. The extra 32 header bytes count only when
+/// the computed header start is "APETAGEX".
 /// "APETAGEX" contains the letters TAG at offset 3, not offset 0, so the preamble is not ID3v1.
 /// </summary>
 internal readonly struct ApeTagLocation
@@ -33,7 +38,7 @@ internal readonly struct ApeTagLocation
 	public int TagEnd { get; }
 
 	/// <summary>
-	/// Gets the first byte of the tag, including its header when the footer says one is present.
+	/// Gets the first byte of the tag. A header is included only when its first eight bytes are APETAGEX.
 	/// When only ID3v1 is present, this is length-128. Equals the buffer length when no tag suffix was found.
 	/// </summary>
 	public int AudioEnd { get; }
@@ -79,27 +84,36 @@ internal readonly struct ApeTagLocation
 		}
 
 		// Prefer a full footer at EOF over a footer planted in front of a trailing "TAG".
+		// Bit 29 marks a header, which is not a footer even though the bytes parse.
 		var eofFooter = ApeTagFooter.Parse (data.Slice (data.Length - ApeTagFooter.Size, ApeTagFooter.Size));
-		if (eofFooter.IsSuccess) {
+		if (IsFooter (eofFooter)) {
 			return FoundAt (data, eofFooter.Footer!, data.Length - ApeTagFooter.Size);
 		}
 
 		if (HasTrailingId3v1 (data)) {
-			var error = eofFooter.Error!;
+			var error = eofFooter.IsSuccess
+				? "APE structure at end of file is a header, not a footer"
+				: eofFooter.Error!;
 			if (data.Length >= Id3v1Size + ApeTagFooter.Size) {
 				var beforeId3 = data.Length - Id3v1Size - ApeTagFooter.Size;
 				var id3Footer = ApeTagFooter.Parse (data.Slice (beforeId3, ApeTagFooter.Size));
-				if (id3Footer.IsSuccess) {
+				if (IsFooter (id3Footer)) {
 					return FoundAt (data, id3Footer.Footer!, beforeId3);
 				}
 
-				error = id3Footer.Error!;
+				error = id3Footer.IsSuccess
+					? "APE structure before ID3v1 is a header, not a footer"
+					: id3Footer.Error!;
 			}
 
 			return Id3Only (data.Length, error);
 		}
 
-		return Missing (data.Length, eofFooter.Error!);
+		return Missing (
+			data.Length,
+			eofFooter.IsSuccess
+				? "APE structure at end of file is a header, not a footer"
+				: eofFooter.Error!);
 	}
 
 	/// <summary>
@@ -128,15 +142,36 @@ internal readonly struct ApeTagLocation
 		data.Length >= Id3v1Size &&
 		data.Slice (data.Length - Id3v1Size, 3).SequenceEqual ("TAG"u8);
 
+	private static bool IsFooter (ApeTagFooterParseResult parsed) =>
+		parsed.IsSuccess && !parsed.Footer!.IsHeader;
+
 	private static ApeTagLocation FoundAt (ReadOnlySpan<byte> data, ApeTagFooter footer, int footerOffset)
 	{
 		var tagEnd = footerOffset + ApeTagFooter.Size;
-		// TagSize includes the footer and excludes a header.
-		var total = (long)footer.TagSize + (footer.HasHeader ? ApeTagFooter.Size : 0);
+		// TagSize includes the footer and excludes a header. Add the header only when those bytes are APETAGEX.
+		var total = (long)footer.TagSize + HeaderSpan (data, footer, tagEnd);
 		var bounded = total >= ApeTagFooter.Size && total <= tagEnd;
+		if (!bounded && tagEnd == data.Length - Id3v1Size && HasTrailingId3v1 (data)) {
+			return Id3Only (data.Length, $"APE tag size ({footer.TagSize}) exceeds data length ({tagEnd})");
+		}
+
 		var audioEnd = bounded ? tagEnd - (int)total : data.Length;
 		var id3Offset = bounded && tagEnd < data.Length ? tagEnd : -1;
 		return new ApeTagLocation (true, footer, tagEnd, audioEnd, id3Offset, null);
+	}
+
+	private static int HeaderSpan (ReadOnlySpan<byte> data, ApeTagFooter footer, int tagEnd)
+	{
+		if (!footer.HasHeader)
+			return 0;
+
+		var headerStart = (long)tagEnd - footer.TagSize - ApeTagFooter.Size;
+		if (headerStart < 0 || headerStart + ApeTagFooter.Magic.Length > data.Length)
+			return 0;
+
+		return data.Slice ((int)headerStart, ApeTagFooter.Magic.Length).SequenceEqual (ApeTagFooter.Magic)
+			? ApeTagFooter.Size
+			: 0;
 	}
 
 	private static ApeTagLocation Missing (int length, string error) =>
