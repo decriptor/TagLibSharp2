@@ -88,11 +88,7 @@ public sealed class DefaultFileSystem : IFileSystem
 			return;
 		}
 
-#if NETSTANDARD2_0
 		File.Replace (sourcePath, destinationPath, null);
-#else
-		File.Move (sourcePath, destinationPath, overwrite: true);
-#endif
 	}
 
 	/// <inheritdoc/>
