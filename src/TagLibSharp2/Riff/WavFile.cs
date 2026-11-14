@@ -370,19 +370,37 @@ public sealed class WavFile : IMediaFile
 	/// Renders the WAV file to binary data.
 	/// </summary>
 	/// <returns>The complete WAV file as binary data.</returns>
-	/// <exception cref="InvalidOperationException">Thrown if the file is not valid.</exception>
+	/// <exception cref="InvalidOperationException">
+	/// Thrown if the file is not valid or has no data chunk.
+	/// </exception>
 	public BinaryData Render ()
 	{
 		if (!IsValid)
 			throw new InvalidOperationException ("Cannot render invalid WAV file");
 
+		if (!HasDataChunk)
+			throw new InvalidOperationException ("Cannot render a WAV file that has no data chunk.");
+
 		// Start with a new RIFF structure
 		var riff = new RiffFile ();
+		var copyBext = ShouldCopyBextChunk ();
 
-		// Rewrite id3, bext, and LIST INFO. Copy every other LIST (adtl cue labels) unchanged.
+		// Rewrite parsed id3, bext, and LIST INFO. Copy a chunk those tags could not parse.
 		foreach (var chunk in _riff.AllChunks) {
-			if (chunk.FourCC == Id3ChunkId || chunk.FourCC == BextChunkId || IsInfoList (chunk))
+			if (IsInfoList (chunk))
 				continue;
+
+			if (chunk.FourCC == Id3ChunkId) {
+				if (Id3v2Tag is null)
+					riff.SetChunk (chunk);
+				continue;
+			}
+
+			if (chunk.FourCC == BextChunkId) {
+				if (copyBext)
+					riff.SetChunk (chunk);
+				continue;
+			}
 
 			// SetChunk keeps one chunk per FourCC, so a later INFO list would replace adtl.
 			if (chunk.FourCC == ListChunkId)
@@ -391,8 +409,8 @@ public sealed class WavFile : IMediaFile
 				riff.SetChunk (chunk);
 		}
 
-		// Add bext tag if present
-		if (BextTag is not null && !BextTag.IsEmpty) {
+		// Add bext tag if present. An unmodified parsed bext is copied above.
+		if (!copyBext && BextTag is not null && !BextTag.IsEmpty) {
 			var bextData = BextTag.Render ();
 			if (bextData.Length > 0)
 				riff.SetChunk (new RiffChunk (BextChunkId, bextData));
@@ -402,12 +420,10 @@ public sealed class WavFile : IMediaFile
 		if (InfoTag is not null && !InfoTag.IsEmpty) {
 			var infoData = InfoTag.Render ();
 			if (infoData.Length > 0) {
-				// RiffInfoTag.Render() returns complete LIST chunk
-				// We need to extract just the data portion
+				// RiffInfoTag.Render() returns a complete LIST chunk, so skip that header.
+				// Append. SetChunk would replace a non-INFO LIST copied above.
 				if (infoData.Length > 8) {
-					var listData = infoData.Slice (8); // Skip "LIST" + size
-					// Append. SetChunk would replace a non-INFO LIST copied above.
-					riff.AddChunk (new RiffChunk (ListChunkId, listData));
+					riff.AddChunk (new RiffChunk (ListChunkId, infoData.Slice (8)));
 				}
 			}
 		}
@@ -423,13 +439,39 @@ public sealed class WavFile : IMediaFile
 	}
 
 	/// <summary>
+	/// A data ckSize above <see cref="int.MaxValue"/>, or a container that ends first, leaves no data chunk.
+	/// </summary>
+	bool HasDataChunk => _riff.GetChunk (DataChunkId) is not null;
+
+	/// <summary>
+	/// Copy the original bext chunk when it did not parse, or when rebuilding would drop bytes
+	/// <see cref="BextTag"/> does not model. An edited tag is rendered instead.
+	/// </summary>
+	bool ShouldCopyBextChunk () =>
+		_riff.GetChunk (BextChunkId) is not null
+		&& (BextTag is null || BextTag.MatchesSource ());
+
+	FileWriteResult? MissingDataChunkFailure ()
+	{
+		if (!IsValid || HasDataChunk)
+			return null;
+
+		return FileWriteResult.Failure ("Cannot save a WAV file that has no data chunk.");
+	}
+
+	/// <summary>
 	/// Saves the WAV file to the specified path.
 	/// </summary>
 	/// <param name="path">The file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
-	/// <returns>The write result.</returns>
+	/// <returns>
+	/// The write result. Fails without writing when the file has no data chunk.
+	/// </returns>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
+		if (MissingDataChunkFailure () is { } failure)
+			return failure;
+
 		var data = Render ();
 		return AtomicFileWriter.Write (path, data.Span, fileSystem);
 	}
@@ -440,12 +482,17 @@ public sealed class WavFile : IMediaFile
 	/// <param name="path">The file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
-	/// <returns>The write result.</returns>
+	/// <returns>
+	/// The write result. Fails without writing when the file has no data chunk.
+	/// </returns>
 	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
+		if (MissingDataChunkFailure () is { } failure)
+			return Task.FromResult (failure);
+
 		var data = Render ();
 		return AtomicFileWriter.WriteAsync (path, data.Memory, fileSystem, cancellationToken);
 	}

@@ -328,7 +328,7 @@ public class WavFileTests
 		using var builder = new BinaryDataBuilder (512);
 
 		builder.AddStringLatin1 ("RIFF");
-		builder.AddUInt32LE (60); // size will need adjustment
+		builder.AddUInt32LE (72); // WAVE + fmt + cue + empty data
 		builder.AddStringLatin1 ("WAVE");
 
 		// fmt chunk
