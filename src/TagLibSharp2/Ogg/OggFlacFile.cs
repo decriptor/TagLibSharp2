@@ -84,6 +84,11 @@ public readonly struct OggFlacFileReadResult : IEquatable<OggFlacFileReadResult>
 public sealed class OggFlacFile : IMediaFile
 {
 	private const int MinHeaderSize = 27; // Minimum Ogg page header
+
+	// RFC 9639 section 8.1: the length after the 4-byte header is 24 bits. Do not wrap it.
+	private const int MaxFlacBlockDataLength = 0xFFFFFF;
+	private const int MaxFlacMetadataPacketSize = 4 + MaxFlacBlockDataLength;
+
 	private static readonly byte[] OggMagic = "OggS"u8.ToArray ();
 	private static readonly byte[] FlacMagic = "FLAC"u8.ToArray ();
 
@@ -331,10 +336,11 @@ public sealed class OggFlacFile : IMediaFile
 	{
 		_metadataBlocks.Clear ();
 		var walk = WalkPackets (data);
-		if (!walk.IsSuccess)
-			return;
 
-		VorbisComment = walk.Comment;
+		// A later page can fail after a comment or block was already closed. Keep those.
+		// A walk that fails before any of them finishes leaves the comment unset.
+		if (walk.Comment is not null)
+			VorbisComment = walk.Comment;
 		_metadataBlocks.AddRange (walk.Blocks);
 	}
 
@@ -387,13 +393,34 @@ public sealed class OggFlacFile : IMediaFile
 	/// <summary>
 	/// Renders the file to a byte array.
 	/// </summary>
-	/// <returns>The rendered file, or an empty array when packets cannot be reassembled.</returns>
+	/// <returns>
+	/// The rendered file, or an empty array when packets cannot be reassembled or a metadata
+	/// block is longer than the 24-bit length field.
+	/// </returns>
 	public byte[] Render (ReadOnlySpan<byte> originalData)
 	{
 		// Do not splice metadata in front of a continuation we failed to reassemble.
 		var headerInfo = ExtractHeaderInfo (originalData);
 		if (!headerInfo.IsSuccess)
 			return Array.Empty<byte> ();
+
+		// Build list of metadata blocks to write. Reject before replacing any bytes:
+		// SaveToFile treats an empty render as failure.
+		var blocksToWrite = new List<(byte type, byte[] data)> ();
+
+		if (VorbisComment is not null) {
+			var commentData = VorbisComment.Render ();
+			if (commentData.Length > MaxFlacBlockDataLength)
+				return Array.Empty<byte> ();
+			blocksToWrite.Add ((4, commentData.ToArray ()));
+		}
+
+		// Preserved blocks (PICTURE, CUESHEET, SEEKTABLE, etc.) use the same 24-bit length.
+		foreach (var block in _metadataBlocks) {
+			if (block.Data.Length > MaxFlacBlockDataLength)
+				return Array.Empty<byte> ();
+			blocksToWrite.Add ((block.Type, block.Data));
+		}
 
 		using var builder = new MemoryStream ();
 
@@ -408,33 +435,16 @@ public sealed class OggFlacFile : IMediaFile
 
 		uint nextSequence = 1;
 
-		// Build list of metadata blocks to write
-		var blocksToWrite = new List<(byte type, byte[] data)> ();
-
-		// Add VorbisComment if present
-		if (VorbisComment is not null) {
-			var commentData = VorbisComment.Render ();
-			blocksToWrite.Add ((4, commentData.ToArray ()));
-		}
-
-		// Add preserved metadata blocks (PICTURE, CUESHEET, SEEKTABLE, etc.)
-		foreach (var block in _metadataBlocks) {
-			blocksToWrite.Add ((block.Type, block.Data));
-		}
-
-		// Write each metadata block as a separate Ogg page
+		// Write each metadata block as a separate Ogg page.
+		// Length bytes come from FlacMetadataBlockHeader, which refuses a value above 24 bits.
 		for (int i = 0; i < blocksToWrite.Count; i++) {
 			var (blockType, blockData) = blocksToWrite[i];
 			var isLastBlock = (i == blocksToWrite.Count - 1);
-
-			// Build FLAC metadata block: type (1) + size (3) + data
-			// Set last-block flag (0x80) only on the final block
-			var packet = new byte[4 + blockData.Length];
-			packet[0] = (byte)(blockType | (isLastBlock ? 0x80 : 0x00));
-			packet[1] = (byte)((blockData.Length >> 16) & 0xFF);
-			packet[2] = (byte)((blockData.Length >> 8) & 0xFF);
-			packet[3] = (byte)(blockData.Length & 0xFF);
-			blockData.CopyTo (packet, 4);
+			var blockHeader = new FlacMetadataBlockHeader (isLastBlock, (FlacBlockType)blockType, blockData.Length);
+			var headerBytes = blockHeader.Render ();
+			var packet = new byte[headerBytes.Length + blockData.Length];
+			headerBytes.Span.CopyTo (packet);
+			blockData.CopyTo (packet, headerBytes.Length);
 
 			// A picture larger than 255 Ogg segments must span pages. BuildOggPage throws
 			// past that limit. Vorbis and Opus already use the multi-page helper.
@@ -475,7 +485,7 @@ public sealed class OggFlacFile : IMediaFile
 	/// </summary>
 	private static PacketWalkResult WalkPackets (ReadOnlySpan<byte> data)
 	{
-		const int maxPacketSize = 16 * 1024 * 1024;
+		const int maxPacketSize = MaxFlacMetadataPacketSize;
 		const int maxPages = 10000;
 
 		var blocks = new List<FlacMetadataBlock> ();
@@ -546,7 +556,7 @@ public sealed class OggFlacFile : IMediaFile
 			error = "Ogg FLAC packet is missing its terminating lacing value";
 
 		if (error is not null)
-			return PacketWalkResult.Failure (error);
+			return PacketWalkResult.Failure (error, comment, blocks);
 
 		if (headerPacket is null)
 			return PacketWalkResult.Failure ("Missing Ogg FLAC header packet");
@@ -712,8 +722,8 @@ public sealed class OggFlacFile : IMediaFile
 		public static PacketWalkResult Success (byte[] headerPacket, uint serialNumber, int audioStart, VorbisComment? comment, List<FlacMetadataBlock> blocks)
 			=> new (true, null, headerPacket, serialNumber, audioStart, comment, blocks);
 
-		public static PacketWalkResult Failure (string error)
-			=> new (false, error, null, 0, 0, null, new List<FlacMetadataBlock> ());
+		public static PacketWalkResult Failure (string error, VorbisComment? comment = null, List<FlacMetadataBlock>? blocks = null)
+			=> new (false, error, null, 0, 0, comment, blocks ?? new List<FlacMetadataBlock> ());
 	}
 
 	// ===== File I/O =====
