@@ -6,8 +6,10 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
 using TagLibSharp2.Dsf;
+using TagLibSharp2.Id3;
 using TagLibSharp2.Id3.Id3v2;
 
 #pragma warning disable CA1815 // Override equals and operator equals on value types
@@ -535,7 +537,7 @@ public sealed class DffFile : IMediaFile
 		using var ms = new MemoryStream ();
 		var removed = new List<RemovedRange> (2);
 		var dstiRegions = new List<(int Position, int Length)> (1);
-		CopySkippingId3Chunks (ms, original, removed, dstiRegions, Id3v2Tag is not null);
+		CopySkippingId3Chunks (ms, original, removed, dstiRegions, Id3v2Tag is not null, out var trailerOffset);
 
 		// The copied length is odd only when the last on-disk chunk had no pad byte.
 		if (Id3v2Tag is not null && (ms.Length & 1) != 0)
@@ -553,6 +555,10 @@ public sealed class DffFile : IMediaFile
 			if (id3Data.Length % 2 != 0)
 				ms.WriteByte (0);
 		}
+
+		// Not a DSDIFF chunk. Copy it after the ID3 chunk so the tag can be re-read.
+		if (trailerOffset >= 0)
+			ms.Write (original, trailerOffset, original.Length - trailerOffset);
 
 		var result = ms.ToArray ();
 		RebaseDstiEntries (result, dstiRegions, removed);
@@ -711,14 +717,23 @@ public sealed class DffFile : IMediaFile
 		byte[] original,
 		List<RemovedRange> removed,
 		List<(int Position, int Length)> dstiRegions,
-		bool appendingId3)
+		bool appendingId3,
+		out int trailerOffset)
 	{
+		trailerOffset = -1;
 		var headerBytes = original.Length < 16 ? original.Length : 16;
 		if (headerBytes > 0)
 			destination.Write (original, 0, headerBytes);
 
 		var offset = 16;
 		while (offset + 12 <= original.Length) {
+			// ID3v1 ("TAG", 128 bytes) and an APE footer ("APETAGEX", 32 bytes) are not chunks.
+			// Reading a 12-byte header here rewrites ckDataSize inside the trailer.
+			if (IsNonChunkTrailer (original, offset)) {
+				trailerOffset = offset;
+				break;
+			}
+
 			var fits = TryGetChunkEnd (original, offset, out var chunkEnd);
 			var available = (ulong)(original.Length - offset - 12);
 			var declared = BinaryPrimitives.ReadUInt64BigEndian (original.AsSpan (offset + 4, 8));
@@ -765,8 +780,51 @@ public sealed class DffFile : IMediaFile
 		// The same remainder is left by zero padding whose length is not a multiple of 12.
 		// After the walk that remainder is always under 12 bytes, so drop it only when an ID3 chunk
 		// will be appended. Clearing the tag appends nothing, and the tail stays.
-		if (offset < original.Length && !appendingId3)
+		// A recognized trailer is not this tail; it is copied after the new ID3 chunk.
+		if (trailerOffset < 0 && offset < original.Length && !appendingId3)
 			destination.Write (original, offset, original.Length - offset);
+	}
+
+	// The bytes at offset through EOF, and nothing else. A truncated sound chunk still shrinks.
+	private static bool IsNonChunkTrailer (byte[] data, int offset)
+	{
+		var remaining = data.Length - offset;
+		if (remaining == Id3v1Tag.TagSize)
+			return IsId3v1 (data, offset);
+
+		if (remaining == ApeTagFooter.Size)
+			return IsApeFooter (data, offset, offset + ApeTagFooter.Size);
+
+		// APE footer immediately before ID3v1. The footer starts at EOF-160.
+		if (remaining == ApeTagFooter.Size + Id3v1Tag.TagSize
+			&& offset == data.Length - (ApeTagFooter.Size + Id3v1Tag.TagSize)) {
+			return IsApeFooter (data, offset, offset + ApeTagFooter.Size)
+				&& IsId3v1 (data, offset + ApeTagFooter.Size);
+		}
+
+		return false;
+	}
+
+	private static bool IsId3v1 (byte[] data, int offset)
+	{
+		if (offset < 0 || offset + Id3v1Tag.TagSize > data.Length)
+			return false;
+
+		return Id3v1Tag.Read (data.AsSpan (offset, Id3v1Tag.TagSize)).IsSuccess;
+	}
+
+	// Tag size includes the footer. A size that cannot hold the footer, or that starts before byte 0, is not valid.
+	private static bool IsApeFooter (byte[] data, int offset, int footerEnd)
+	{
+		if (offset < 0 || footerEnd < offset + ApeTagFooter.Size || footerEnd > data.Length)
+			return false;
+
+		var parsed = ApeTagFooter.Parse (data.AsSpan (offset, ApeTagFooter.Size));
+		if (!parsed.IsSuccess || parsed.Footer is null)
+			return false;
+
+		var size = parsed.Footer.TagSize;
+		return size >= ApeTagFooter.Size && size <= (uint)footerEnd;
 	}
 
 	// DSTI entries are absolute file offsets. Only an offset past a removed range moves.
