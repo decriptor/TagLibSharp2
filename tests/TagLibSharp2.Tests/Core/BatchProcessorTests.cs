@@ -66,8 +66,13 @@ public class BatchProcessorTests
 			(path, ct) => Task.FromResult (path),
 			progress: progress);
 
-		// Wait for all progress reports with timeout (avoids flaky Task.Delay)
-		var completed = await Task.WhenAny (allReported.Task, Task.Delay (1000));
+		// Progress callbacks are posted asynchronously. Wait for them, and cancel the timer
+		// if they arrive first so CA2027 does not leave a Task.Delay running.
+		using var timeout = new CancellationTokenSource (TimeSpan.FromSeconds (1));
+		try {
+			await allReported.Task.WaitAsync (timeout.Token);
+		} catch (OperationCanceledException) when (timeout.IsCancellationRequested) {
+		}
 
 		Assert.HasCount (3, results);
 		Assert.IsTrue (results.All (r => r.IsSuccess));
