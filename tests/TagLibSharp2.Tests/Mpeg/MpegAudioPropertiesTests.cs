@@ -480,7 +480,7 @@ public class MpegAudioPropertiesTests
 		builder.AddUInt32BE (0x01);
 		builder.AddUInt32BE (frameCount);
 
-		while (builder.Length < 417)
+		while (builder.Length < 208) // MPEG-2 Layer III, 64 kbps, 22050 Hz
 			builder.Add (0);
 
 		return builder.ToBinaryData ();
