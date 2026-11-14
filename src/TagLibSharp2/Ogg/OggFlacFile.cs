@@ -490,14 +490,17 @@ public sealed class OggFlacFile : IMediaFile
 			packet[3] = (byte)(blockData.Length & 0xFF);
 			blockData.CopyTo (packet, 4);
 
-			var page = OggPageHelper.BuildOggPage (
-				new[] { packet },
+			// A picture larger than 255 Ogg segments must span pages. BuildOggPage throws
+			// past that limit. Vorbis and Opus already use the multi-page helper.
+			var (pages, next) = OggPageHelper.BuildMultiPagePacket (
+				packet,
 				OggPageFlags.None,
 				0,
 				headerInfo.SerialNumber,
 				nextSequence);
-			builder.Write (page, 0, page.Length);
-			nextSequence++;
+			foreach (var page in pages)
+				builder.Write (page, 0, page.Length);
+			nextSequence = next;
 		}
 
 		// Remaining pages: Audio data (renumbered)
