@@ -425,11 +425,9 @@ public sealed class MonkeysAudioFile : IMediaFile
 	public byte[] Render (ReadOnlySpan<byte> originalData)
 	{
 		byte[] tagData = ApeTag is null ? [] : ApeTag.Render ().ToArray ();
-		return ApeTagLocation.Rewrite (originalData, FindAudioEnd (originalData), tagData);
+		var location = ApeTagLocation.Locate (originalData);
+		return ApeTagLocation.Rewrite (originalData, location, tagData);
 	}
-
-	private static int FindAudioEnd (ReadOnlySpan<byte> data) =>
-		ApeTagLocation.Locate (data).AudioEnd;
 
 	// ===== File I/O =====
 
