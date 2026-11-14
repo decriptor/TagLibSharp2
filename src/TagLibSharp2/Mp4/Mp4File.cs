@@ -1213,7 +1213,8 @@ public sealed class Mp4File : IMediaFile
 	/// <summary>
 	/// Adds <paramref name="delta"/> to stco and co64 entries that point at or
 	/// after the old end of moov. ISO 14496-12 chunk offsets are file offsets.
-	/// A trak with a non-self-contained data reference is left unchanged.
+	/// A trak is left unchanged only when every sample entry it references is external.
+	/// With no sample description, any external data reference still leaves the trak unchanged.
 	/// </summary>
 	static BinaryData AdjustChunkOffsets (BinaryData moov, int threshold, int delta)
 	{
@@ -1236,7 +1237,7 @@ public sealed class Mp4File : IMediaFile
 		else if (type.SequenceEqual ("co64"u8))
 			PatchOffsets (payload, 8, threshold, delta);
 		else if (type.SequenceEqual ("trak"u8)) {
-			// §8.7.2: a dref entry with the self-contained flag clear points at another file.
+			// §8.5.2 / §8.7.2: skip only when every referenced sample entry is an external dref.
 			if (!TrakReferencesExternalMedia (payload))
 				WalkBoxes (payload, threshold, delta);
 		} else if (IsOffsetContainer (type))
@@ -1251,12 +1252,41 @@ public sealed class Mp4File : IMediaFile
 		|| type.SequenceEqual ("edts"u8);
 
 	/// <summary>
-	/// True when a dref entry has the self-contained flag clear. No dref means self-contained.
+	/// True when chunk offsets in this trak address another file.
+	/// ISO 14496-12 §8.5.2 stores a 1-based data_reference_index in each sample entry.
+	/// §8.7.2: the indexed dref entry is external when its self-contained flag is clear.
+	/// Skip patching only when every referenced entry is external.
+	/// A missing or out-of-range index is treated as self-contained.
+	/// An entry that does not contain its flags is unknown and is not external by itself.
+	/// With no stsd, any external dref entry still leaves the trak unchanged.
 	/// </summary>
-	static bool TrakReferencesExternalMedia (ReadOnlySpan<byte> trakPayload) =>
-		ContainsExternalDref (trakPayload);
+	static bool TrakReferencesExternalMedia (ReadOnlySpan<byte> trakPayload)
+	{
+		var external = new List<bool> ();
+		var references = new List<int> ();
+		var sawStsd = false;
+		CollectTrackLayout (trakPayload, external, references, ref sawStsd);
+		if (!sawStsd) {
+			foreach (var isExternal in external) {
+				if (isExternal)
+					return true;
+			}
 
-	static bool ContainsExternalDref (ReadOnlySpan<byte> payload)
+			return false;
+		}
+
+		if (references.Count == 0)
+			return false;
+
+		foreach (var index in references) {
+			if (index < 1 || index > external.Count || !external[index - 1])
+				return false;
+		}
+
+		return true;
+	}
+
+	static void CollectTrackLayout (ReadOnlySpan<byte> payload, List<bool> external, List<int> references, ref bool sawStsd)
 	{
 		var offset = 0;
 		while (offset + 8 <= payload.Length) {
@@ -1271,27 +1301,28 @@ public sealed class Mp4File : IMediaFile
 
 			var type = payload.Slice (offset + 4, 4);
 			var body = payload.Slice (offset + header, size - header);
-			if (type.SequenceEqual ("dref"u8)) {
-				if (DrefHasExternalEntry (body))
-					return true;
-			} else if (IsDrefParent (type) && ContainsExternalDref (body))
-				return true;
+			if (type.SequenceEqual ("dref"u8))
+				ReadDrefEntries (body, external);
+			else if (type.SequenceEqual ("stsd"u8)) {
+				sawStsd = true;
+				ReadStsdReferences (body, references);
+			} else if (IsTrackLayoutParent (type))
+				CollectTrackLayout (body, external, references, ref sawStsd);
 
 			offset += size;
 		}
-
-		return false;
 	}
 
-	static bool IsDrefParent (ReadOnlySpan<byte> type) =>
+	static bool IsTrackLayoutParent (ReadOnlySpan<byte> type) =>
 		type.SequenceEqual ("mdia"u8)
 		|| type.SequenceEqual ("minf"u8)
-		|| type.SequenceEqual ("dinf"u8);
+		|| type.SequenceEqual ("dinf"u8)
+		|| type.SequenceEqual ("stbl"u8);
 
-	static bool DrefHasExternalEntry (ReadOnlySpan<byte> payload)
+	static void ReadDrefEntries (ReadOnlySpan<byte> payload, List<bool> external)
 	{
 		if (payload.Length < 8)
-			return false;
+			return;
 
 		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
 		var pos = 8;
@@ -1301,17 +1332,46 @@ public sealed class Mp4File : IMediaFile
 			if (size < header || size > payload.Length - pos)
 				break;
 
-			// FullBox flags follow the box header. Bit 0 set means the samples live in this file.
-			if (pos + header + 4 <= payload.Length) {
+			// FullBox flags follow this entry's header. Bit 0 set means the samples live in this file.
+			// A shorter entry does not contain flags; the next entry's bytes are not this entry's flags.
+			var isExternal = false;
+			if (size >= header + 4) {
 				var flags = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos + header, 4));
-				if ((flags & 1) == 0)
-					return true;
+				isExternal = (flags & 1) == 0;
 			}
+
+			external.Add (isExternal);
+			pos += size;
+		}
+	}
+
+	static void ReadStsdReferences (ReadOnlySpan<byte> payload, List<int> references)
+	{
+		if (payload.Length < 8)
+			return;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
+		var pos = 8;
+		for (var i = 0u; i < count; i++) {
+			if (pos >= payload.Length || !TryMeasureBox (payload.Slice (pos), out var size, out var header)) {
+				references.Add (0);
+				return;
+			}
+
+			if (size < header || size > payload.Length - pos) {
+				references.Add (0);
+				return;
+			}
+
+			// §8.5.2: 6 reserved bytes, then uint16 data_reference_index, after the box header.
+			// The field must sit inside this entry. A short entry's index is missing.
+			if (size < header + 8)
+				references.Add (0);
+			else
+				references.Add (BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos + header + 6, 2)));
 
 			pos += size;
 		}
-
-		return false;
 	}
 
 	static void WalkBoxes (Span<byte> payload, int threshold, int delta)
