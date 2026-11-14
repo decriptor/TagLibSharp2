@@ -2,7 +2,6 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Buffers.Binary;
-using System.Text;
 using TagLibSharp2.Core;
 
 namespace TagLibSharp2.Mp4;
@@ -1188,14 +1187,9 @@ public sealed class Mp4File : IMediaFile
 		var newMoov = RebuildMoovWithMetadata (boxes[moovIndex].Box);
 		var delta = newMoov.Length - oldMoovLength;
 		var oldMoovEnd = oldMoovStart + oldMoovLength;
-		var mdatFollowsMoov = false;
-		for (int i = 0; i < boxes.Count; i++) {
-			if (boxes[i].Box.Type == "mdat" && boxes[i].Start >= oldMoovEnd)
-				mdatFollowsMoov = true;
-		}
-		if (tailStart >= oldMoovEnd)
-			mdatFollowsMoov = true;
-		if (mdatFollowsMoov && delta != 0)
+		// Offsets are absolute file positions. Anything at or after the old moov moves with it,
+		// including media that is not stored in a box named mdat. Entries inside moov stay put.
+		if (delta != 0)
 			newMoov = AdjustChunkOffsets (newMoov, oldMoovEnd, delta);
 
 		// Reassemble the file
@@ -1219,6 +1213,7 @@ public sealed class Mp4File : IMediaFile
 	/// <summary>
 	/// Adds <paramref name="delta"/> to stco and co64 entries that point at or
 	/// after the old end of moov. ISO 14496-12 chunk offsets are file offsets.
+	/// A trak with a non-self-contained data reference is left unchanged.
 	/// </summary>
 	static BinaryData AdjustChunkOffsets (BinaryData moov, int threshold, int delta)
 	{
@@ -1234,14 +1229,89 @@ public sealed class Mp4File : IMediaFile
 		if (size < header || size > box.Length)
 			return;
 
-		var type = Encoding.ASCII.GetString (box.Slice (4, 4));
+		var type = box.Slice (4, 4);
 		var payload = box.Slice (header, size - header);
-		if (type == "stco")
+		if (type.SequenceEqual ("stco"u8))
 			PatchOffsets (payload, 4, threshold, delta);
-		else if (type == "co64")
+		else if (type.SequenceEqual ("co64"u8))
 			PatchOffsets (payload, 8, threshold, delta);
-		else if (type is "moov" or "trak" or "mdia" or "minf" or "stbl" or "edts")
+		else if (type.SequenceEqual ("trak"u8)) {
+			// §8.7.2: a dref entry with the self-contained flag clear points at another file.
+			if (!TrakReferencesExternalMedia (payload))
+				WalkBoxes (payload, threshold, delta);
+		} else if (IsOffsetContainer (type))
 			WalkBoxes (payload, threshold, delta);
+	}
+
+	static bool IsOffsetContainer (ReadOnlySpan<byte> type) =>
+		type.SequenceEqual ("moov"u8)
+		|| type.SequenceEqual ("mdia"u8)
+		|| type.SequenceEqual ("minf"u8)
+		|| type.SequenceEqual ("stbl"u8)
+		|| type.SequenceEqual ("edts"u8);
+
+	/// <summary>
+	/// True when a dref entry has the self-contained flag clear. No dref means self-contained.
+	/// </summary>
+	static bool TrakReferencesExternalMedia (ReadOnlySpan<byte> trakPayload) =>
+		ContainsExternalDref (trakPayload);
+
+	static bool ContainsExternalDref (ReadOnlySpan<byte> payload)
+	{
+		var offset = 0;
+		while (offset + 8 <= payload.Length) {
+			if (!TryMeasureBox (payload.Slice (offset), out var size, out var header))
+				break;
+			if (size <= 0 || size > payload.Length - offset)
+				break;
+			if (size < header) {
+				offset += size;
+				continue;
+			}
+
+			var type = payload.Slice (offset + 4, 4);
+			var body = payload.Slice (offset + header, size - header);
+			if (type.SequenceEqual ("dref"u8)) {
+				if (DrefHasExternalEntry (body))
+					return true;
+			} else if (IsDrefParent (type) && ContainsExternalDref (body))
+				return true;
+
+			offset += size;
+		}
+
+		return false;
+	}
+
+	static bool IsDrefParent (ReadOnlySpan<byte> type) =>
+		type.SequenceEqual ("mdia"u8)
+		|| type.SequenceEqual ("minf"u8)
+		|| type.SequenceEqual ("dinf"u8);
+
+	static bool DrefHasExternalEntry (ReadOnlySpan<byte> payload)
+	{
+		if (payload.Length < 8)
+			return false;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
+		var pos = 8;
+		for (var i = 0u; i < count; i++) {
+			if (pos >= payload.Length || !TryMeasureBox (payload.Slice (pos), out var size, out var header))
+				break;
+			if (size < header || size > payload.Length - pos)
+				break;
+
+			// FullBox flags follow the box header. Bit 0 set means the samples live in this file.
+			if (pos + header + 4 <= payload.Length) {
+				var flags = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos + header, 4));
+				if ((flags & 1) == 0)
+					return true;
+			}
+
+			pos += size;
+		}
+
+		return false;
 	}
 
 	static void WalkBoxes (Span<byte> payload, int threshold, int delta)
@@ -1267,7 +1337,8 @@ public sealed class Mp4File : IMediaFile
 
 	/// <summary>
 	/// Measures one box. Size 0 runs to the end of <paramref name="data"/> (the parent, in a nested walk).
-	/// Size 1 is a 16-byte header plus a 64-bit largesize and is not the size-0 rule.
+	/// Size 1 is a 64-bit largesize and is not the size-0 rule. An illegal size that still fits in the
+	/// parent is returned so the caller can step over it; only an unknown remainder returns false.
 	/// </summary>
 	static bool TryMeasureBox (ReadOnlySpan<byte> data, out int size, out int header)
 	{
@@ -1283,7 +1354,8 @@ public sealed class Mp4File : IMediaFile
 				return false;
 
 			var large = BinaryPrimitives.ReadUInt64BigEndian (data.Slice (8));
-			if (large < 16 || large > (ulong)data.Length)
+			// largesize includes the 16-byte header. A value that does not fit is not "extends to the end".
+			if (large == 0 || large > (ulong)data.Length)
 				return false;
 
 			size = (int)large;
@@ -1327,28 +1399,29 @@ public sealed class Mp4File : IMediaFile
 	{
 		using var moovContent = new BinaryDataBuilder ();
 
-		// Copy all children except udta
-		bool hasUdta = false;
+		var newUdta = BuildUdtaBox ();
+		var emittedChild = false;
 		foreach (var child in originalMoov.Children) {
-			if (child.Type == "udta") {
-				hasUdta = true;
-				continue; // We'll add our own udta
-			}
+			if (child.Type == "udta")
+				continue;
 			moovContent.Add (child.Render ());
+			emittedChild = true;
 		}
 
-		// Build new udta with updated metadata (or create one if Tag exists).
-		// Emit it before any unread tail so a later bad box cannot hide the new metadata.
-		if (Tag is not null || hasUdta) {
-			var newUdta = BuildUdtaBox ();
+		// Child parsing stops on a bad box. Keep that unread span so a later trak survives.
+		// ISO 14496-12 allows one udta in moov, so a replacement drops any udta still in the tail.
+		var tail = originalMoov.UnparsedTail.Span;
+		if (emittedChild) {
 			if (newUdta.Length > 0)
 				moovContent.Add (newUdta);
+			if (tail.Length > 0)
+				AppendMoovTail (moovContent, tail, newUdta.Length > 0, ReadOnlySpan<byte>.Empty);
+		} else if (tail.Length > 0) {
+			// Nothing before the bad child was readable, so do not emit udta ahead of mvhd.
+			AppendMoovTail (moovContent, tail, newUdta.Length > 0, newUdta.Span);
+		} else if (newUdta.Length > 0) {
+			moovContent.Add (newUdta);
 		}
-
-		// Child parsing stops early on a bad box. Keep the unread span so a later trak
-		// is not deleted and chunk-offset patching can still see stco/co64 inside it.
-		if (originalMoov.UnparsedTail.Length > 0)
-			moovContent.Add (originalMoov.UnparsedTail);
 
 		// Build the moov box header
 		using var moovBuilder = new BinaryDataBuilder ();
@@ -1360,6 +1433,64 @@ public sealed class Mp4File : IMediaFile
 		moovBuilder.Add (moovContentData);
 
 		return moovBuilder.ToBinaryData ();
+	}
+
+	/// <summary>
+	/// Copies unread moov children. When <paramref name="omitUdta"/> is set, top-level udta boxes are
+	/// dropped. <paramref name="replacementUdta"/> is inserted after mvhd, or in the old udta's place
+	/// when mvhd is not in the tail.
+	/// </summary>
+	static void AppendMoovTail (BinaryDataBuilder dest, ReadOnlySpan<byte> tail, bool omitUdta, ReadOnlySpan<byte> replacementUdta)
+	{
+		var place = replacementUdta.Length > 0;
+		var hasMvhd = place && TailHasBoxType (tail, "mvhd"u8);
+		var inserted = false;
+		var offset = 0;
+		while (offset + 8 <= tail.Length) {
+			if (!TryMeasureBox (tail.Slice (offset), out var size, out _))
+				break;
+			if (size <= 0 || size > tail.Length - offset)
+				break;
+
+			var isUdta = size >= 8 && tail.Slice (offset + 4, 4).SequenceEqual ("udta"u8);
+			if (omitUdta && isUdta) {
+				if (place && !hasMvhd && !inserted) {
+					dest.Add (replacementUdta);
+					inserted = true;
+				}
+				offset += size;
+				continue;
+			}
+
+			var isMvhd = size >= 8 && tail.Slice (offset + 4, 4).SequenceEqual ("mvhd"u8);
+			dest.Add (tail.Slice (offset, size));
+			offset += size;
+			if (place && hasMvhd && isMvhd && !inserted) {
+				dest.Add (replacementUdta);
+				inserted = true;
+			}
+		}
+
+		if (offset < tail.Length)
+			dest.Add (tail.Slice (offset));
+		if (place && !inserted)
+			dest.Add (replacementUdta);
+	}
+
+	static bool TailHasBoxType (ReadOnlySpan<byte> tail, ReadOnlySpan<byte> type)
+	{
+		var offset = 0;
+		while (offset + 8 <= tail.Length) {
+			if (!TryMeasureBox (tail.Slice (offset), out var size, out _))
+				break;
+			if (size <= 0 || size > tail.Length - offset)
+				break;
+			if (size >= 8 && tail.Slice (offset + 4, 4).SequenceEqual (type))
+				return true;
+			offset += size;
+		}
+
+		return false;
 	}
 
 	/// <summary>
