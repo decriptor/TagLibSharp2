@@ -232,7 +232,6 @@ public sealed class MpegFrame
 		switch (layer) {
 			case MpegLayer.Layer1:
 				// Layer 1: frame size = (12 * bitrate / sampleRate + padding) * 4
-				paddingSize = hasPadding ? 4 : 0;
 				return ((12 * bitrate * 1000 / sampleRate) + (hasPadding ? 1 : 0)) * 4;
 
 			case MpegLayer.Layer2:

@@ -165,13 +165,41 @@ public class MpegAudioPropertiesTests
 	}
 
 	[TestMethod]
-	public void Codec_Layer3_ReturnsMp3 ()
+	public void Codec_Mpeg1Layer3_IncludesMpeg1 ()
 	{
 		var data = CreateMp3WithXingHeader (1000, 44100, 1152);
 
 		MpegAudioProperties.TryParse (data, 0, out var props);
 
-		Assert.AreEqual ("MP3", props!.Codec);
+		Assert.IsNotNull (props);
+		StringAssert.Contains (props!.Codec, "MPEG-1");
+	}
+
+	[TestMethod]
+	public void Codec_Mpeg2Layer2_IncludesVersionAndLayer ()
+	{
+		// MPEG-2 Layer II, 64 kbps, 22050 Hz. The extra byte lets the sync scan see the header.
+		byte[] data = [0xFF, 0xF5, 0x80, 0x00, 0x00];
+
+		var parsed = MpegAudioProperties.TryParse (new BinaryData (data), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		Assert.IsNotNull (props);
+		StringAssert.Contains (props!.Codec, "MPEG-2");
+		StringAssert.Contains (props.Codec, "Layer II");
+		Assert.IsFalse (props.Codec.Contains ("MPEG-2.5", StringComparison.Ordinal), props.Codec);
+	}
+
+	[TestMethod]
+	public void Codec_Mpeg25Layer3_IncludesVersion ()
+	{
+		// MPEG-2.5 Layer III, 64 kbps, 11025 Hz.
+		byte[] data = [0xFF, 0xE3, 0x80, 0x00, 0x00];
+
+		var parsed = MpegAudioProperties.TryParse (new BinaryData (data), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		StringAssert.Contains (props!.Codec, "MPEG-2.5");
 	}
 
 	[TestMethod]
@@ -367,6 +395,20 @@ public class MpegAudioPropertiesTests
 		Assert.IsTrue (props.Duration.TotalSeconds > 52 && props.Duration.TotalSeconds < 53);
 	}
 
+	[TestMethod]
+	public void CreateMpeg2Mp3_PadsToFrameSizeForSampleRate ()
+	{
+		// 64 kbps MPEG-2 Layer III. A constant 208-byte pad is only correct at 22050 Hz.
+		// 24000 Hz is 192 bytes and 16000 Hz is 288 bytes.
+		int[] sampleRates = [22050, 24000, 16000];
+		foreach (var sampleRate in sampleRates) {
+			var data = CreateMpeg2Mp3 (100, sampleRate);
+
+			Assert.IsTrue (MpegFrame.TryParse (data, 0, out var frame), $"header at {sampleRate} Hz");
+			Assert.AreEqual (frame!.FrameSize, data.Length, $"sample rate {sampleRate}");
+		}
+	}
+
 	// Helper methods
 
 	static BinaryData CreateMp3WithInfoHeader (
@@ -465,11 +507,16 @@ public class MpegAudioPropertiesTests
 	{
 		var builder = new BinaryDataBuilder ();
 
-		// MPEG2 Layer 3: 0xFF 0xF3
-		byte byte2 = sampleRate switch {
+		// MPEG-2 Layer III, 64 kbps, no CRC, no padding. Unknown rates use 22050 Hz.
+		var rateHz = sampleRate switch {
+			24000 => 24000,
+			16000 => 16000,
+			_ => 22050
+		};
+		byte byte2 = rateHz switch {
 			24000 => 0x84,
 			16000 => 0x88,
-			_ => 0x80 // 22050
+			_ => 0x80
 		};
 
 		builder.Add (0xFF, 0xF3, byte2, 0x00);
@@ -480,7 +527,11 @@ public class MpegAudioPropertiesTests
 		builder.AddUInt32BE (0x01);
 		builder.AddUInt32BE (frameCount);
 
-		while (builder.Length < 208) // MPEG-2 Layer III, 64 kbps, 22050 Hz
+		// Layer III MPEG-2 coefficient is 72. Pad from bitrate, sample rate, and layer.
+		const int bitrateKbps = 64;
+		const int coefficient = 72;
+		var frameSize = coefficient * bitrateKbps * 1000 / rateHz;
+		while (builder.Length < frameSize)
 			builder.Add (0);
 
 		return builder.ToBinaryData ();
