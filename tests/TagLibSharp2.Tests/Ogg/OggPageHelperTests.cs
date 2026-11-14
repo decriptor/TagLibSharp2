@@ -661,7 +661,7 @@ public class OggPageHelperTests
 		// Security: Prevent DoS via memory exhaustion by limiting max packet size
 		// A malicious file could claim packets that span many pages, causing unbounded memory growth
 
-		// For testing, use a smaller limit that can be reached within the 50-page limit
+		// The page cap is high enough for a 16 MiB packet, so use a small byte limit instead.
 		// Each page holds ~65025 bytes (255 segments × 255 bytes)
 		// With 5 pages, we get ~325KB, so a limit of 200KB should trigger the rejection
 		const int testLimit = 200 * 1024; // 200 KB test limit
@@ -699,6 +699,69 @@ public class OggPageHelperTests
 		Assert.IsTrue (result.IsSuccess, $"Valid 1MB packet should succeed: {result.Error}");
 		Assert.AreEqual (1, result.Packets.Count);
 		Assert.AreEqual (packetLength, result.Packets[0].Length);
+	}
+
+	[TestMethod]
+	public void ExtractHeaderPackets_ContinuedPacketAcross51Pages_Reassembles ()
+	{
+		// A lacing value below 255 ends a packet (https://xiph.org/ogg/doc/framing.html), so each
+		// continued page carries one 255-byte segment. That is 51 pages and about 13 KB, not 51
+		// full 65,025-byte pages. The cap counts pages, so this still has to clear a limit of 50.
+		const int continuedPages = 50;
+		const int lastSegment = 7;
+		var packet = new byte[(continuedPages * 255) + lastSegment];
+		for (var i = 0; i < packet.Length; i++)
+			packet[i] = (byte)(i * 3 + 1);
+
+		var builder = new BinaryDataBuilder ();
+		var offset = 0;
+		for (var pageIndex = 0; pageIndex < continuedPages; pageIndex++) {
+			builder.Add (CreateContinuedPage ((uint)pageIndex, packet.AsSpan (offset, 255), finished: false));
+			offset += 255;
+		}
+
+		builder.Add (CreateContinuedPage ((uint)continuedPages, packet.AsSpan (offset, lastSegment), finished: true));
+
+		var result = OggPageHelper.ExtractHeaderPackets (builder.ToArray (), maxPackets: 1);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (1, result.Packets.Count, "A packet that finishes on page 51 was dropped");
+		CollectionAssert.AreEqual (packet, result.Packets[0]);
+	}
+
+	static byte[] CreateContinuedPage (uint sequence, ReadOnlySpan<byte> payload, bool finished)
+	{
+		// An unfinished page ends in a lacing value of 255. The finishing page ends below 255.
+		var lacing = finished ? (byte)payload.Length : (byte)255;
+		if (!finished && payload.Length != 255)
+			throw new ArgumentException ("An unfinished segment must be 255 bytes.", nameof (payload));
+
+		var page = new byte[27 + 1 + payload.Length];
+		page[0] = (byte)'O';
+		page[1] = (byte)'g';
+		page[2] = (byte)'g';
+		page[3] = (byte)'S';
+		byte flags = 0;
+		if (sequence == 0)
+			flags |= (byte)OggPageFlags.BeginOfStream;
+		else
+			flags |= (byte)OggPageFlags.Continuation;
+		page[5] = flags;
+		page[14] = 1; // serial 1, little-endian
+		page[18] = (byte)sequence;
+		page[19] = (byte)(sequence >> 8);
+		page[20] = (byte)(sequence >> 16);
+		page[21] = (byte)(sequence >> 24);
+		page[26] = 1;
+		page[27] = lacing;
+		payload.CopyTo (page.AsSpan (28));
+
+		var crc = OggCrc.Calculate (page);
+		page[22] = (byte)crc;
+		page[23] = (byte)(crc >> 8);
+		page[24] = (byte)(crc >> 16);
+		page[25] = (byte)(crc >> 24);
+		return page;
 	}
 
 	static byte[] CreatePageForLargePacket (uint sequence, int dataSize, bool isBos, bool isComplete, uint serial)

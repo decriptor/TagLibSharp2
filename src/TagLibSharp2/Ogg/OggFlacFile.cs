@@ -93,6 +93,11 @@ public sealed class OggFlacFile : IMediaFile
 	private static readonly byte[] FlacMagic = "FLAC"u8.ToArray ();
 
 	private byte[] _originalData = Array.Empty<byte> ();
+	private PacketWalkResult? _cachedWalk;
+
+	// Counts packet walks. A cache hit does not increment. Test hook only.
+	internal int PacketWalkCount { get; private set; }
+
 	private string? _sourcePath;
 	private IFileSystem? _sourceFileSystem;
 	private readonly List<FlacMetadataBlock> _metadataBlocks = new ();
@@ -335,7 +340,7 @@ public sealed class OggFlacFile : IMediaFile
 	private void ParseVorbisComment (ReadOnlySpan<byte> data)
 	{
 		_metadataBlocks.Clear ();
-		var walk = WalkPackets (data);
+		var walk = GetWalk (data);
 
 		// A later page can fail after a comment or block was already closed. Keep those.
 		// A walk that fails before any of them finishes leaves the comment unset.
@@ -469,9 +474,9 @@ public sealed class OggFlacFile : IMediaFile
 		return builder.ToArray ();
 	}
 
-	private static OggFlacHeaderInfo ExtractHeaderInfo (ReadOnlySpan<byte> data)
+	private OggFlacHeaderInfo ExtractHeaderInfo (ReadOnlySpan<byte> data)
 	{
-		var walk = WalkPackets (data);
+		var walk = GetWalk (data);
 		if (!walk.IsSuccess || walk.HeaderPacket is null)
 			return OggFlacHeaderInfo.Failure (walk.Error ?? "Failed to reassemble Ogg FLAC packets");
 
@@ -479,81 +484,49 @@ public sealed class OggFlacFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Reassembles Ogg packets before FLAC metadata is parsed.
-	/// A lacing value of 255 continues a packet; a shorter value, including 0, ends it.
-	/// Audio starts at the first packet whose first byte is 0xFF, which begins a fresh page.
+	/// Returns the walk of <paramref name="data"/>, reusing the cached walk of the bytes stored
+	/// at read time. A render of those same bytes does not walk again. A render with no cached
+	/// successful walk walks once.
 	/// </summary>
-	private static PacketWalkResult WalkPackets (ReadOnlySpan<byte> data)
+	private PacketWalkResult GetWalk (ReadOnlySpan<byte> data)
 	{
-		const int maxPacketSize = MaxFlacMetadataPacketSize;
-		const int maxPages = 10000;
+		if (_cachedWalk is { IsSuccess: true } cached && data.SequenceEqual (_originalData))
+			return cached;
+
+		var walk = WalkPackets (data);
+		if (walk.IsSuccess && data.SequenceEqual (_originalData))
+			_cachedWalk = walk;
+		return walk;
+	}
+
+	/// <summary>
+	/// Reassembles Ogg packets before FLAC metadata is parsed.
+	/// Lacing is delegated to <see cref="OggPageHelper.ExtractPacketsUntilAudio"/>: a lacing value
+	/// of 255 continues a packet, and a shorter value, including 0, ends it. Audio starts at the
+	/// first packet whose first byte is 0xFF, which must begin a fresh page (RFC 9639 section 10.1).
+	/// </summary>
+	private PacketWalkResult WalkPackets (ReadOnlySpan<byte> data)
+	{
+		PacketWalkCount++;
+
+		// One page can finish at most 255 packets. Stay above that so scanning stops at the
+		// audio packet or at MaxHeaderPages, not at a short packet count.
+		var scan = OggPageHelper.ExtractPacketsUntilAudio (
+			data,
+			maxPackets: OggPageHelper.MaxHeaderPages * OggPageHelper.MaxSegmentsPerPage,
+			maxPacketSize: MaxFlacMetadataPacketSize);
 
 		var blocks = new List<FlacMetadataBlock> ();
-		var buffer = new List<byte> ();
 		byte[]? headerPacket = null;
 		VorbisComment? comment = null;
-		uint serialNumber = 0;
-		var open = false;
-		var offset = 0;
-		var audioStart = -1;
-		var pageCount = 0;
-		string? error = null;
+		string? error = scan.IsSuccess ? null : scan.Error;
 
-		while (error is null && audioStart < 0 && offset + 27 <= data.Length) {
-			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset));
-			if (!pageResult.IsSuccess) {
-				if (open)
-					error = "Ogg FLAC packet continues past a readable page";
-				else if (headerPacket is null)
-					error = pageResult.Error ?? "Failed to read Ogg page";
-				else
-					audioStart = offset;
+		foreach (var packet in scan.Packets) {
+			if (!ClosePacket (packet, blocks, ref headerPacket, ref comment, out var closeError)) {
+				error = closeError;
 				break;
 			}
-
-			pageCount++;
-			if (pageCount > maxPages) {
-				error = "Ogg FLAC metadata exceeds the page limit";
-				break;
-			}
-
-			if (offset == 0)
-				serialNumber = pageResult.Page.SerialNumber;
-
-			var pageOffset = offset;
-			if (pageResult.Page.IsContinuation) {
-				if (!open) {
-					error = "Ogg continuation page has no open packet";
-					break;
-				}
-
-				if (pageResult.Segments.Count == 0) {
-					error = "Ogg continuation page has no lacing values";
-					break;
-				}
-
-				if (!AppendFragment (buffer, pageResult.Segments[0], maxPacketSize, out error))
-					break;
-
-				if (pageResult.IsPacketComplete[0]) {
-					if (!ClosePacket (buffer, blocks, ref headerPacket, ref comment, ref open, out error))
-						break;
-				}
-
-				if (!ReadNewPackets (pageResult, 1, pageOffset, buffer, blocks, ref headerPacket, ref comment, ref open, ref audioStart, maxPacketSize, ref error))
-					break;
-			} else if (open) {
-				error = "Ogg FLAC packet was not finished before the next page";
-				break;
-			} else if (!ReadNewPackets (pageResult, 0, pageOffset, buffer, blocks, ref headerPacket, ref comment, ref open, ref audioStart, maxPacketSize, ref error)) {
-				break;
-			}
-
-			offset += pageResult.BytesConsumed;
 		}
-
-		if (error is null && open)
-			error = "Ogg FLAC packet is missing its terminating lacing value";
 
 		if (error is not null)
 			return PacketWalkResult.Failure (error, comment, blocks);
@@ -561,79 +534,16 @@ public sealed class OggFlacFile : IMediaFile
 		if (headerPacket is null)
 			return PacketWalkResult.Failure ("Missing Ogg FLAC header packet");
 
-		if (audioStart < 0)
-			audioStart = offset;
-
-		return PacketWalkResult.Success (headerPacket, serialNumber, audioStart, comment, blocks);
-	}
-
-	private static bool ReadNewPackets (
-		OggPageWithSegmentsResult pageResult,
-		int startIndex,
-		int pageOffset,
-		List<byte> buffer,
-		List<FlacMetadataBlock> blocks,
-		ref byte[]? headerPacket,
-		ref VorbisComment? comment,
-		ref bool open,
-		ref int audioStart,
-		int maxPacketSize,
-		ref string? error)
-	{
-		for (var i = startIndex; i < pageResult.Segments.Count; i++) {
-			if (open) {
-				error = "Unexpected lacing after an open packet";
-				return false;
-			}
-
-			var segment = pageResult.Segments[i];
-			if (segment.Length > 0 && segment[0] == 0xFF) {
-				// The first audio packet begins a fresh page. A continuation, or a packet
-				// that follows metadata on the same page, cannot be spliced safely.
-				if (pageResult.Page.IsContinuation || i != 0) {
-					error = "FLAC audio packet does not begin a fresh page";
-					return false;
-				}
-
-				audioStart = pageOffset;
-				return true;
-			}
-
-			buffer.Clear ();
-			if (!AppendFragment (buffer, segment, maxPacketSize, out error))
-				return false;
-
-			open = !pageResult.IsPacketComplete[i];
-			if (!open && !ClosePacket (buffer, blocks, ref headerPacket, ref comment, ref open, out error))
-				return false;
-		}
-
-		return true;
-	}
-
-	private static bool AppendFragment (List<byte> buffer, byte[] fragment, int maxPacketSize, out string? error)
-	{
-		if ((long)buffer.Count + fragment.Length > maxPacketSize) {
-			error = "Ogg FLAC packet exceeds the maximum size";
-			return false;
-		}
-
-		OggPageHelper.AppendSpanToList (buffer, fragment);
-		error = null;
-		return true;
+		return PacketWalkResult.Success (headerPacket, scan.SerialNumber, scan.BytesConsumed, comment, blocks);
 	}
 
 	private static bool ClosePacket (
-		List<byte> buffer,
+		byte[] packet,
 		List<FlacMetadataBlock> blocks,
 		ref byte[]? headerPacket,
 		ref VorbisComment? comment,
-		ref bool open,
 		out string? error)
 	{
-		var packet = buffer.ToArray ();
-		buffer.Clear ();
-		open = false;
 		error = null;
 
 		if (headerPacket is null) {
@@ -873,6 +783,7 @@ public sealed class OggFlacFile : IMediaFile
 		VorbisComment = null;
 		Properties = default;
 		_originalData = Array.Empty<byte> ();
+		_cachedWalk = null;
 		_sourcePath = null;
 		_sourceFileSystem = null;
 		_metadataBlocks.Clear ();
