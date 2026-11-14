@@ -6,7 +6,7 @@ namespace TagLibSharp2.Core;
 /// <summary>
 /// Default implementation of <see cref="IFileSystem"/> that wraps the real file system.
 /// </summary>
-public sealed class DefaultFileSystem : IFileSystem
+public sealed class DefaultFileSystem : IFileSystem, IFileSystemTimestamps
 {
 	/// <summary>
 	/// Gets the singleton instance of the default file system.
@@ -260,6 +260,12 @@ public sealed class DefaultFileSystem : IFileSystem
 
 	/// <inheritdoc/>
 	public string? GetDirectoryName (string path) => Path.GetDirectoryName (path);
+
+	IEnumerable<string> IFileSystemTimestamps.EnumerateFiles (string directory) =>
+		Directory.EnumerateFiles (directory);
+
+	DateTime? IFileSystemTimestamps.GetLastWriteTimeUtc (string path) =>
+		File.GetLastWriteTimeUtc (path);
 
 	/// <inheritdoc/>
 	public string GetFileName (string path) => Path.GetFileName (path);

@@ -117,3 +117,27 @@ public interface IFileSystem
 	/// <returns>The combined path.</returns>
 	string CombinePath (string path1, string path2);
 }
+
+/// <summary>
+/// Optional directory listing and last-write times for <see cref="IFileSystem"/>.
+/// </summary>
+/// <remarks>
+/// Atomic saves use this to delete abandoned temp files. A file system that does not implement
+/// it is left unchanged. A null last-write time must not be treated as permission to delete by name.
+/// </remarks>
+internal interface IFileSystemTimestamps
+{
+	/// <summary>
+	/// Enumerates files directly in <paramref name="directory"/>, not in subdirectories.
+	/// </summary>
+	/// <param name="directory">The directory to list.</param>
+	/// <returns>Paths of files in that directory.</returns>
+	IEnumerable<string> EnumerateFiles (string directory);
+
+	/// <summary>
+	/// Gets the UTC last-write time of <paramref name="path"/>.
+	/// </summary>
+	/// <param name="path">The file path.</param>
+	/// <returns>The UTC last-write time, or <c>null</c> when this file system cannot report one.</returns>
+	DateTime? GetLastWriteTimeUtc (string path);
+}

@@ -16,16 +16,20 @@ namespace TagLibSharp2.Core;
 /// </para>
 /// <para>
 /// A crash can still leave the temporary file, including a partial one if it happens
-/// during the write. A replace can also fail after the destination has already been
-/// removed. The temp file is moved back only when that destination existed before the
-/// replace and is missing afterward; otherwise the temp file is deleted. If the move
-/// back fails, the temp file is kept and its path is reported.
+/// during the write. A later save deletes abandoned temp files in that directory whose
+/// names use this prefix and suffix and whose last-write time is at least 24 hours old.
+/// A file system that cannot report last-write time is not swept. The temp file this
+/// save is about to create is never deleted. A replace can also fail after the destination
+/// has already been removed. The temp file is moved back only when that destination existed
+/// before the replace and is missing afterward; otherwise the temp file is deleted. If the
+/// move back fails, the temp file is kept and its path is reported.
 /// </para>
 /// </remarks>
 public static class AtomicFileWriter
 {
 	const string TempFilePrefix = ".taglib_";
 	const string TempFileSuffix = ".tmp";
+	static readonly TimeSpan AbandonedTempFileAge = TimeSpan.FromHours (24);
 
 	/// <summary>
 	/// Writes data to a file atomically.
@@ -39,6 +43,7 @@ public static class AtomicFileWriter
 		fileSystem ??= DefaultFileSystem.Instance;
 
 		var tempPath = GetTempPath (path, fileSystem);
+		DeleteAbandonedTempFiles (path, tempPath, fileSystem);
 		var destinationExisted = false;
 
 		try {
@@ -86,6 +91,7 @@ public static class AtomicFileWriter
 		fileSystem ??= DefaultFileSystem.Instance;
 
 		var tempPath = GetTempPath (path, fileSystem);
+		DeleteAbandonedTempFiles (path, tempPath, fileSystem);
 		var destinationExisted = false;
 
 		try {
@@ -184,6 +190,78 @@ public static class AtomicFileWriter
 		// Fixed short name. Including the destination name overflows the 255-unit component limit.
 		var tempFileName = $"{TempFilePrefix}{Guid.NewGuid ():N}{TempFileSuffix}";
 		return fileSystem.CombinePath (directory, tempFileName);
+	}
+
+	static void DeleteAbandonedTempFiles (string destinationPath, string reservedTempPath, IFileSystem fileSystem)
+	{
+		// Best effort. Failing to sweep must not fail the save, and must not delete a temp still being written.
+		if (fileSystem is not IFileSystemTimestamps timestamps)
+			return;
+
+		var parent = fileSystem.GetDirectoryName (reservedTempPath);
+		// netstandard2.0's nullable annotations do not narrow IsNullOrEmpty.
+		var directory = string.IsNullOrEmpty (parent) ? "." : parent!;
+
+		string[] candidates;
+		try {
+			var listed = timestamps.EnumerateFiles (directory);
+			candidates = listed is null ? [] : listed.ToArray ();
+		} catch (IOException) {
+			return;
+		} catch (UnauthorizedAccessException) {
+			return;
+		} catch (ArgumentException) {
+			return;
+		}
+
+		var destinationName = fileSystem.GetFileName (destinationPath);
+		var reservedName = fileSystem.GetFileName (reservedTempPath);
+		var staleBefore = DateTime.UtcNow - AbandonedTempFileAge;
+		foreach (var candidate in candidates) {
+			try {
+				if (!IsAbandonedTemp (
+					candidate,
+					destinationPath,
+					destinationName,
+					reservedTempPath,
+					reservedName,
+					staleBefore,
+					fileSystem,
+					timestamps))
+					continue;
+				fileSystem.Delete (candidate);
+			} catch (IOException) {
+			} catch (UnauthorizedAccessException) {
+			} catch (ArgumentException) {
+			}
+		}
+	}
+
+	static bool IsAbandonedTemp (
+		string candidate,
+		string destinationPath,
+		string destinationName,
+		string reservedTempPath,
+		string reservedName,
+		DateTime staleBefore,
+		IFileSystem fileSystem,
+		IFileSystemTimestamps timestamps)
+	{
+		if (string.Equals (candidate, destinationPath, StringComparison.Ordinal)
+			|| string.Equals (candidate, reservedTempPath, StringComparison.Ordinal))
+			return false;
+
+		var name = fileSystem.GetFileName (candidate);
+		if (string.IsNullOrEmpty (name)
+			|| string.Equals (name, destinationName, StringComparison.Ordinal)
+			|| string.Equals (name, reservedName, StringComparison.Ordinal))
+			return false;
+		if (!name.StartsWith (TempFilePrefix, StringComparison.Ordinal)
+			|| !name.EndsWith (TempFileSuffix, StringComparison.Ordinal))
+			return false;
+
+		var lastWrite = timestamps.GetLastWriteTimeUtc (candidate);
+		return lastWrite is not null && lastWrite.Value <= staleBefore;
 	}
 
 	static void CleanupTempFile (string tempPath, IFileSystem fileSystem)
