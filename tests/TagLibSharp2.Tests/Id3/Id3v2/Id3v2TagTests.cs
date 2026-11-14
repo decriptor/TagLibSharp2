@@ -1,8 +1,10 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
+using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Id3.Id3v2;
 
@@ -158,6 +160,80 @@ public class Id3v2TagTests
 
 		Assert.AreEqual ("1999", tag.GetTextFrame ("TYER"));
 		Assert.AreEqual ("1999", tag.Year);
+	}
+
+	[TestMethod]
+	public void Year_SetTimestampOnV24_RendersAndRereadsTimestamp ()
+	{
+		// TDRC accepts a reduced ISO-8601 timestamp, not only yyyy.
+		var tag = new Id3v2Tag (Id3v2Version.V24) {
+			Year = "2024-05-01T10:00"
+		};
+
+		var reread = Id3v2Tag.Read (tag.Render ().Span).Tag!;
+
+		Assert.AreEqual ("2024-05-01T10:00", reread.GetTextFrame ("TDRC"));
+		Assert.AreEqual ("2024", reread.Year);
+	}
+
+	[TestMethod]
+	public void CopyTo_V24Date_RoundTripsFullTimestamp ()
+	{
+		var source = new Id3v2Tag (Id3v2Version.V24) {
+			Year = "2024-05-01"
+		};
+		var target = new Id3v2Tag (Id3v2Version.V24);
+
+		source.CopyTo (target);
+
+		var reread = Id3v2Tag.Read (target.Render ().Span).Tag!;
+		Assert.AreEqual ("2024", reread.Year);
+		Assert.AreEqual ("2024-05-01", reread.GetTextFrame ("TDRC"));
+	}
+
+	[TestMethod]
+	public void CopyTo_V24Date_StoresFullDateOnVorbisComment ()
+	{
+		var source = new Id3v2Tag (Id3v2Version.V24) {
+			Year = "2024-05-01"
+		};
+		var target = new VorbisComment ();
+
+		source.CopyTo (target);
+
+		Assert.AreEqual ("2024-05-01", target.Year);
+	}
+
+	[TestMethod]
+	public void CopyTo_V24Date_ReplacesSameYearTimestamp ()
+	{
+		// Copying only the four-digit year would leave the target's May timestamp.
+		var source = new Id3v2Tag (Id3v2Version.V24) {
+			Year = "2024-12-25"
+		};
+		var target = new Id3v2Tag (Id3v2Version.V24) {
+			Year = "2024-05-01"
+		};
+
+		source.CopyTo (target);
+
+		Assert.AreEqual ("2024-12-25", target.GetTextFrame ("TDRC"));
+		Assert.AreEqual ("2024", target.Year);
+	}
+
+	[TestMethod]
+	public void CopyTo_CombinedV24Date_ReplacesSameYearTimestamp ()
+	{
+		var source = new CombinedTag (new Id3v2Tag (Id3v2Version.V24) {
+			Year = "2024-12-25"
+		});
+		var target = new Id3v2Tag (Id3v2Version.V24) {
+			Year = "2024-05-01"
+		};
+
+		source.CopyTo (target);
+
+		Assert.AreEqual ("2024-12-25", target.GetTextFrame ("TDRC"));
 	}
 
 	[TestMethod]
