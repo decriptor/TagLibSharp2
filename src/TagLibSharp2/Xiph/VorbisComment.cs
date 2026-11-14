@@ -302,13 +302,11 @@ public sealed class VorbisComment : Tag
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Uses the MOVEMENTTOTAL field. Falls back to MOVEMENTCOUNT for compatibility.
+	/// Reads the first numeric MOVEMENTTOTAL, then MOVEMENTCOUNT. An empty or non-numeric field is skipped.
+	/// Writes MOVEMENTTOTAL.
 	/// </remarks>
 	public override uint? MovementTotal {
-		get {
-			var value = GetValue ("MOVEMENTTOTAL") ?? GetValue ("MOVEMENTCOUNT");
-			return !string.IsNullOrEmpty (value) && uint.TryParse (value, out var num) ? num : null;
-		}
+		get => ParseUIntField ("MOVEMENTTOTAL") ?? ParseUIntField ("MOVEMENTCOUNT");
 		set => SetValue ("MOVEMENTTOTAL", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
 
@@ -669,14 +667,14 @@ public sealed class VorbisComment : Tag
 	/// Gets or sets the total number of tracks on the album.
 	/// </summary>
 	/// <remarks>
-	/// Reads TOTALTRACKS, then TRACKTOTAL, then a TRACKNUMBER value of the form "5/12".
-	/// Writes TOTALTRACKS.
+	/// Reads the first numeric TOTALTRACKS, then TRACKTOTAL, then a TRACKNUMBER value of the form "5/12".
+	/// An empty or non-numeric field is skipped. Writes TOTALTRACKS and removes TRACKTOTAL.
 	/// </remarks>
 	public override uint? TotalTracks {
 		get {
 			// TOTALTRACKS is what this library writes. TRACKTOTAL is what rippers write.
-			var totalTracksValue = GetValue ("TOTALTRACKS") ?? GetValue ("TRACKTOTAL");
-			if (!string.IsNullOrEmpty (totalTracksValue) && uint.TryParse (totalTracksValue, out var total))
+			var total = ParseUIntField ("TOTALTRACKS") ?? ParseUIntField ("TRACKTOTAL");
+			if (total is not null)
 				return total;
 
 			// Fall back to parsing TRACKNUMBER "5/12" format
@@ -697,22 +695,25 @@ public sealed class VorbisComment : Tag
 
 			return null;
 		}
-		set => SetValue ("TOTALTRACKS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+		set {
+			SetValue ("TOTALTRACKS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+			RemoveAll ("TRACKTOTAL");
+		}
 	}
 
 	/// <summary>
 	/// Gets or sets the total number of discs.
 	/// </summary>
 	/// <remarks>
-	/// Reads from TOTALDISCS with fallback to DISCTOTAL for compatibility.
-	/// Writes to TOTALDISCS.
+	/// Reads the first numeric TOTALDISCS, then DISCTOTAL. An empty or non-numeric field is skipped.
+	/// Writes TOTALDISCS and removes DISCTOTAL.
 	/// </remarks>
 	public override uint? TotalDiscs {
-		get {
-			var value = GetValue ("TOTALDISCS") ?? GetValue ("DISCTOTAL");
-			return !string.IsNullOrEmpty (value) && uint.TryParse (value, out var total) ? total : null;
+		get => ParseUIntField ("TOTALDISCS") ?? ParseUIntField ("DISCTOTAL");
+		set {
+			SetValue ("TOTALDISCS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+			RemoveAll ("DISCTOTAL");
 		}
-		set => SetValue ("TOTALDISCS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
 	}
 
 	/// <inheritdoc/>
@@ -774,6 +775,19 @@ public sealed class VorbisComment : Tag
 				return _fields[i].Value;
 		}
 		return null;
+	}
+
+	/// <summary>
+	/// Reads the first value of a field as an unsigned integer.
+	/// </summary>
+	/// <param name="name">The field name (case-insensitive).</param>
+	/// <returns>The parsed value, or null when the field is missing, empty, or not an unsigned integer.</returns>
+	uint? ParseUIntField (string name)
+	{
+		var value = GetValue (name);
+		if (string.IsNullOrEmpty (value))
+			return null;
+		return uint.TryParse (value, out var parsed) ? parsed : null;
 	}
 
 	/// <summary>

@@ -248,6 +248,52 @@ public class VorbisCommentExtendedMetadataTests
 		Assert.AreEqual (3u, comment.TotalDiscs);
 	}
 
+	[TestMethod]
+	public void TotalDiscs_Set_RemovesDiscTotal ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.SetValue ("DISCTOTAL", "4");
+
+		comment.TotalDiscs = 2;
+
+		Assert.AreEqual (2u, comment.TotalDiscs);
+		Assert.AreEqual ("2", comment.GetValue ("TOTALDISCS"));
+		Assert.IsNull (comment.GetValue ("DISCTOTAL"));
+	}
+
+	[TestMethod]
+	public void TotalDiscs_SetNull_ClearsDiscTotal ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.SetValue ("DISCTOTAL", "4");
+
+		comment.TotalDiscs = null;
+
+		Assert.IsNull (comment.TotalDiscs);
+		Assert.IsNull (comment.GetValue ("TOTALDISCS"));
+		Assert.IsNull (comment.GetValue ("DISCTOTAL"));
+	}
+
+	[TestMethod]
+	public void TotalDiscs_UnusableTotalDiscs_FallsBackToDiscTotal ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.SetValue ("TOTALDISCS", "abc");
+		comment.SetValue ("DISCTOTAL", "4");
+
+		Assert.AreEqual (4u, comment.TotalDiscs);
+	}
+
+	[TestMethod]
+	public void TotalDiscs_EmptyTotalDiscs_FallsBackToDiscTotal ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.SetValue ("TOTALDISCS", "");
+		comment.SetValue ("DISCTOTAL", "4");
+
+		Assert.AreEqual (4u, comment.TotalDiscs);
+	}
+
 	// ===========================================
 	// DiscSubtitle Tests
 	// ===========================================

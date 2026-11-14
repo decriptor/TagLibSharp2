@@ -166,4 +166,24 @@ public sealed class VorbisCommentClassicalMusicTests
 
 		Assert.IsNull (comment.MovementTotal);
 	}
+
+	[TestMethod]
+	public void MovementTotal_UnusableMovementTotal_FallsBackToMovementCount ()
+	{
+		var comment = new VorbisComment ("Test");
+		comment.SetValue ("MOVEMENTTOTAL", "abc");
+		comment.SetValue ("MOVEMENTCOUNT", "4");
+
+		Assert.AreEqual (4u, comment.MovementTotal);
+	}
+
+	[TestMethod]
+	public void MovementTotal_EmptyMovementTotal_FallsBackToMovementCount ()
+	{
+		var comment = new VorbisComment ("Test");
+		comment.SetValue ("MOVEMENTTOTAL", "");
+		comment.SetValue ("MOVEMENTCOUNT", "4");
+
+		Assert.AreEqual (4u, comment.MovementTotal);
+	}
 }
