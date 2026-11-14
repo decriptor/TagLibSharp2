@@ -43,6 +43,33 @@ public sealed class Mp3FileTests
 	}
 
 	[TestMethod]
+	public void Render_UnsynchronizedV23DeclaredSizePastBuffer_KeepsAudioSync ()
+	{
+		// Whole-tag unsync inserts 00 after FF. The title carries an FF so the stored
+		// frame is longer than the de-unsynced frame. Audio after the tag also contains
+		// FF 00, which must not be counted as tag bytes.
+		var frame = TestBuilders.Id3v2.CreateTextFrame (TestConstants.FrameIds.Title, "A\u00FFB", TestConstants.Id3v2.Version3);
+		var storedFrame = TestBuilders.Id3v2.ApplyUnsynchronization (frame);
+		var audio = new byte[] { 0xFF, 0xFB, 0x90, 0x00, 0xFF, 0x00, 0x11, 0x22 };
+		var header = TestBuilders.Id3v2.CreateHeaderWithFlags (
+			TestConstants.Id3v2.Version3,
+			0x0FFFFFFF,
+			TestConstants.Id3v2.FlagUnsynchronization);
+		var data = new byte[header.Length + storedFrame.Length + audio.Length];
+		header.CopyTo (data, 0);
+		storedFrame.CopyTo (data, header.Length);
+		audio.CopyTo (data, header.Length + storedFrame.Length);
+
+		var read = Mp3File.Read (data);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("A\u00FFB", read.File!.Id3v2Tag!.Title);
+		Assert.AreEqual (header.Length + storedFrame.Length, read.File.Id3v2Size);
+
+		var rendered = read.File.Render (data);
+		Assert.IsTrue (rendered.Span.IndexOf (audio) >= 0);
+	}
+
+	[TestMethod]
 	public void Read_EmptyData_ReturnsFailure ()
 	{
 		var result = Mp3File.Read ([]);
