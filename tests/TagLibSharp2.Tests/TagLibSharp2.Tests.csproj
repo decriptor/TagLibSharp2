@@ -6,6 +6,9 @@
 		<IsTestProject>true</IsTestProject>
 		<!-- Relax analysis for test projects -->
 		<AnalysisLevel>latest-recommended</AnalysisLevel>
+		<!-- Verify 33 requires a SponsorCheck declaration. This repository is MIT and has no revenue. The publisher caps the exemption at 12 months. -->
+		<Verify_SponsorshipExemption>OpenSource</Verify_SponsorshipExemption>
+		<Verify_SponsorshipExemptionUntil>2027-11</Verify_SponsorshipExemptionUntil>
 		<NoWarn>$(NoWarn);CA1707;CA1515;MSTEST0037;CA1310;CA1806;MSTEST0032</NoWarn>
 	</PropertyGroup>
 
