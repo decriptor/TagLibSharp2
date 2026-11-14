@@ -787,6 +787,124 @@ public class OggPageHelperTests
 
 		Assert.IsTrue (pages.Length > 1);
 		Assert.AreEqual (3u + (uint)pages.Length, next);
+		AssertPagesCarryOnePacket (pages, packet, finishingGranule: 0);
+	}
+
+	[TestMethod]
+	[DataRow (65025)]
+	[DataRow (130050)]
+	public void BuildMultiPagePacket_MultipleOf65025Bytes_TerminatesOnNextPage (int length)
+	{
+		// 255 segments of 255 bytes is a full page. The packet still needs a lacing
+		// value of 0, and that 0 must be its own continuation page — not a 256th
+		// segment cast down to a count of 0.
+		var packet = new byte[length];
+		for (var i = 0; i < packet.Length; i++)
+			packet[i] = (byte)(i * 17 + 3);
+
+		const ulong finishingGranule = 0x0102030405060708UL;
+		var (pages, next) = OggPageHelper.BuildMultiPagePacket (
+			packet, OggPageFlags.None, finishingGranule, serialNumber: 7, startSequence: 5);
+
+		Assert.AreEqual (5u + (uint)pages.Length, next);
+		AssertPagesCarryOnePacket (pages, packet, finishingGranule);
+
+		Assert.AreEqual ((byte)OggPageFlags.None, pages[0][5], "First page of a new packet is not continued");
+		var terminator = pages[^1];
+		Assert.AreEqual ((byte)OggPageFlags.Continuation, terminator[5]);
+		Assert.AreEqual (0, terminator[5] & 0x06, "Terminating page is not BOS or EOS");
+		Assert.AreEqual (1, terminator[26], "Terminating page has a single lacing value");
+		Assert.AreEqual (0, terminator[27], "Terminating lacing value is 0");
+		Assert.AreEqual (finishingGranule, ReadGranule (terminator));
+
+		for (var i = 0; i < pages.Length - 1; i++) {
+			Assert.AreEqual (ulong.MaxValue, ReadGranule (pages[i]), "Unfinished page has granule -1");
+			Assert.AreEqual (255, pages[i][26]);
+		}
+
+		var (continued, _) = OggPageHelper.BuildMultiPagePacket (
+			packet, OggPageFlags.Continuation, finishingGranule, serialNumber: 7, startSequence: 5);
+		Assert.AreEqual ((byte)OggPageFlags.Continuation, continued[0][5],
+			"A packet that already continued keeps the continuation flag");
+		Assert.AreEqual (ulong.MaxValue, ReadGranule (continued[0]));
+	}
+
+	[TestMethod]
+	public void BuildMultiPagePacket_PacketOf65026Bytes_RoundTrips ()
+	{
+		var packet = new byte[65026];
+		for (var i = 0; i < packet.Length; i++)
+			packet[i] = (byte)(i + 9);
+
+		const ulong finishingGranule = 99UL;
+		var (pages, next) = OggPageHelper.BuildMultiPagePacket (
+			packet, OggPageFlags.None, finishingGranule, serialNumber: 3, startSequence: 1);
+
+		Assert.AreEqual (1u + (uint)pages.Length, next);
+		AssertPagesCarryOnePacket (pages, packet, finishingGranule);
+		Assert.AreEqual (2, pages.Length, "65026 bytes are one full page plus a 1-byte page");
+
+		Assert.AreEqual (ulong.MaxValue, ReadGranule (pages[0]));
+		Assert.AreEqual (255, pages[0][26]);
+		Assert.AreEqual ((byte)OggPageFlags.Continuation, pages[1][5]);
+		Assert.AreEqual (finishingGranule, ReadGranule (pages[1]));
+		Assert.AreEqual (1, pages[1][26]);
+		Assert.AreEqual (1, pages[1][27], "The finishing page carries the last byte, not a bare 0");
+		Assert.AreEqual (packet[^1], pages[1][^1]);
+	}
+
+	static void AssertPagesCarryOnePacket (byte[][] pages, byte[] packet, ulong finishingGranule)
+	{
+		Assert.IsGreaterThan (0, pages.Length);
+		var joined = new List<byte> (packet.Length);
+		for (var pageIndex = 0; pageIndex < pages.Length; pageIndex++) {
+			var page = pages[pageIndex];
+			Assert.IsGreaterThanOrEqualTo (27, page.Length);
+			Assert.AreEqual ((byte)'O', page[0]);
+			Assert.AreEqual ((byte)'g', page[1]);
+			Assert.AreEqual ((byte)'g', page[2]);
+			Assert.AreEqual ((byte)'S', page[3]);
+
+			var segmentCount = page[26];
+			Assert.IsTrue (segmentCount is > 0 and <= 255,
+				$"Page {pageIndex} segment count {segmentCount} is outside 1..255");
+			Assert.IsLessThanOrEqualTo (page.Length, 27 + segmentCount);
+
+			var onlyTerminator = segmentCount == 1 && page[27] == 0;
+			var dataOffset = 27 + segmentCount;
+			var pageFinishes = false;
+			for (var i = 0; i < segmentCount; i++) {
+				var lace = page[27 + i];
+				if (lace == 0) {
+					Assert.IsTrue (onlyTerminator,
+						$"Page {pageIndex} has a 0 lacing value but is not only the terminator");
+					pageFinishes = true;
+				} else if (lace < 255) {
+					pageFinishes = true;
+				}
+
+				Assert.IsLessThanOrEqualTo (page.Length, dataOffset + lace);
+				joined.AddRange (page.AsSpan (dataOffset, lace).ToArray ());
+				dataOffset += lace;
+			}
+
+			Assert.AreEqual (page.Length, dataOffset, $"Page {pageIndex} has bytes outside its lacing table");
+			var isLast = pageIndex == pages.Length - 1;
+			Assert.AreEqual (isLast, pageFinishes, $"Page {pageIndex} finish flag does not match its position");
+			Assert.AreEqual (isLast ? finishingGranule : ulong.MaxValue, ReadGranule (page));
+			if (!isLast && pageIndex > 0)
+				Assert.AreEqual ((byte)OggPageFlags.Continuation, page[5]);
+		}
+
+		CollectionAssert.AreEqual (packet, joined.ToArray ());
+	}
+
+	static ulong ReadGranule (byte[] page)
+	{
+		ulong granule = 0;
+		for (var i = 0; i < 8; i++)
+			granule |= (ulong)page[6 + i] << (8 * i);
+		return granule;
 	}
 
 	[TestMethod]

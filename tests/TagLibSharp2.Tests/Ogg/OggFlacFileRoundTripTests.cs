@@ -234,6 +234,201 @@ public class OggFlacFileRoundTripTests
 	}
 
 	[TestMethod]
+	public void LargePicture_RoundTripsAfterTitleChange ()
+	{
+		// A picture packet just over one Ogg page (65025 bytes). The second page is
+		// a continuation; its first payload byte is 0xFF so a reader that classifies
+		// pages by that byte would treat the continuation as audio.
+		const int pictureLength = 70000;
+		var picture = new byte[pictureLength];
+		Array.Fill (picture, (byte)0x5A);
+		picture[0] = 0x11;
+		picture[1] = 0x22;
+		picture[2] = 0x33;
+		picture[3] = 0x44;
+		picture[65021] = 0xFF;
+
+		var original = CreateOggFlacWithPicture (picture);
+		var read = OggFlacFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNotNull (read.File);
+		read.File.EnsureVorbisComment ().Title = "Changed Title";
+
+		var rendered = read.File.Render (original);
+		Assert.IsGreaterThan (0, rendered.Length, "Render dropped the file instead of writing the picture");
+
+		var reread = OggFlacFile.Read (rendered);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("Changed Title", reread.File!.VorbisComment?.Title);
+		Assert.IsTrue (reread.File.TryGetMetadataBlock (6, out var stored));
+		CollectionAssert.AreEqual (picture, stored);
+
+		var pages = SplitPages (rendered);
+		Assert.AreEqual (5, pages.Count, "Continuation page was copied into the audio again");
+		var fullPage = -1;
+		var continuedPages = 0;
+		for (var i = 0; i < pages.Count; i++) {
+			if (pages[i][26] == 255)
+				fullPage = i;
+			if ((pages[i][5] & (byte)OggPageFlags.Continuation) != 0)
+				continuedPages++;
+		}
+
+		Assert.AreEqual (1, continuedPages, "Picture continuation was written more than once");
+		Assert.IsGreaterThanOrEqualTo (0, fullPage, "Picture packet should fill a 255-segment page");
+		Assert.IsLessThan (pages.Count - 1, fullPage);
+		var continuation = pages[fullPage + 1];
+		Assert.AreEqual ((byte)OggPageFlags.Continuation, continuation[5],
+			"Second page of the picture packet must be a continuation");
+		Assert.AreEqual (0, continuation[5] & 0x06);
+	}
+
+	static byte[] CreateOggFlacWithPicture (byte[] picture)
+	{
+		var comment = new VorbisComment ("TagLibSharp2") { Title = "Original Title" };
+		var commentBody = comment.Render ().ToArray ();
+		var commentPacket = WrapFlacBlock (0x04, commentBody);
+		var picturePacket = WrapFlacBlock (0x86, picture);
+		var headerPacket = CreateHeaderPacket (headerPackets: 2);
+		var audioPacket = new byte[] { 0xFF, 0xF8, 0xC9, 0x12, 0x00 };
+
+		using var output = new MemoryStream ();
+		uint sequence = 0;
+		WritePages (output, headerPacket, OggPageFlags.BeginOfStream, ref sequence);
+		WritePages (output, commentPacket, OggPageFlags.None, ref sequence);
+		WritePages (output, picturePacket, OggPageFlags.None, ref sequence);
+		WritePages (output, audioPacket, OggPageFlags.EndOfStream, ref sequence);
+		return output.ToArray ();
+	}
+
+	static byte[] WrapFlacBlock (byte typeAndFlags, byte[] data)
+	{
+		var packet = new byte[4 + data.Length];
+		packet[0] = typeAndFlags;
+		packet[1] = (byte)((data.Length >> 16) & 0xFF);
+		packet[2] = (byte)((data.Length >> 8) & 0xFF);
+		packet[3] = (byte)(data.Length & 0xFF);
+		data.CopyTo (packet, 4);
+		return packet;
+	}
+
+	static byte[] CreateHeaderPacket (ushort headerPackets)
+	{
+		using var ms = new MemoryStream ();
+		ms.WriteByte (0x7F);
+		ms.Write ("FLAC"u8);
+		ms.WriteByte (1);
+		ms.WriteByte (0);
+		ms.WriteByte ((byte)(headerPackets >> 8));
+		ms.WriteByte ((byte)headerPackets);
+		ms.Write ("fLaC"u8);
+		ms.WriteByte (0x00);
+		ms.WriteByte (0);
+		ms.WriteByte (0);
+		ms.WriteByte (34);
+		ms.Write (new byte[] { 0x10, 0x00, 0x10, 0x00 });
+		ms.Write (new byte[6]);
+		ulong packed = ((ulong)44100 << 44) | ((ulong)1 << 41) | ((ulong)15 << 36) | 44100UL;
+		for (var i = 7; i >= 0; i--)
+			ms.WriteByte ((byte)(packed >> (i * 8)));
+		ms.Write (new byte[16]);
+		return ms.ToArray ();
+	}
+
+	static void WritePages (Stream output, byte[] packet, OggPageFlags firstFlags, ref uint sequence)
+	{
+		const int maxPageBytes = 255 * 255;
+		var offset = 0;
+		var first = true;
+		while (offset < packet.Length || (packet.Length > 0 && packet.Length % maxPageBytes == 0 && offset == packet.Length)) {
+			var remaining = packet.Length - offset;
+			byte[] payload;
+			byte[] lacing;
+			OggPageFlags flags;
+			ulong granule;
+			if (remaining > maxPageBytes || (remaining == maxPageBytes && packet.Length % maxPageBytes == 0 && remaining > 0)) {
+				payload = new byte[maxPageBytes];
+				Array.Copy (packet, offset, payload, 0, maxPageBytes);
+				lacing = new byte[255];
+				Array.Fill (lacing, (byte)255);
+				flags = first ? firstFlags : OggPageFlags.Continuation;
+				granule = ulong.MaxValue;
+				offset += maxPageBytes;
+			} else if (remaining == 0) {
+				payload = [];
+				lacing = [0];
+				flags = OggPageFlags.Continuation;
+				granule = 0;
+				offset++;
+			} else {
+				payload = new byte[remaining];
+				Array.Copy (packet, offset, payload, 0, remaining);
+				var count = (remaining / 255) + 1;
+				lacing = new byte[count];
+				for (var i = 0; i < count - 1; i++)
+					lacing[i] = 255;
+				lacing[^1] = (byte)(remaining % 255);
+				flags = first ? firstFlags : OggPageFlags.Continuation;
+				granule = 0;
+				offset = packet.Length;
+			}
+
+			first = false;
+			WriteOnePage (output, payload, lacing, flags, granule, sequence);
+			sequence++;
+			if (remaining == 0)
+				break;
+		}
+	}
+
+	static void WriteOnePage (Stream output, byte[] payload, byte[] lacing, OggPageFlags flags, ulong granule, uint sequence)
+	{
+		var page = new byte[27 + lacing.Length + payload.Length];
+		page[0] = (byte)'O';
+		page[1] = (byte)'g';
+		page[2] = (byte)'g';
+		page[3] = (byte)'S';
+		page[5] = (byte)flags;
+		for (var i = 0; i < 8; i++)
+			page[6 + i] = (byte)(granule >> (8 * i));
+		page[14] = 1;
+		page[18] = (byte)sequence;
+		page[19] = (byte)(sequence >> 8);
+		page[20] = (byte)(sequence >> 16);
+		page[21] = (byte)(sequence >> 24);
+		page[26] = (byte)lacing.Length;
+		lacing.CopyTo (page, 27);
+		payload.CopyTo (page, 27 + lacing.Length);
+		var crc = OggCrc.Calculate (page);
+		page[22] = (byte)crc;
+		page[23] = (byte)(crc >> 8);
+		page[24] = (byte)(crc >> 16);
+		page[25] = (byte)(crc >> 24);
+		output.Write (page);
+	}
+
+	static List<byte[]> SplitPages (byte[] data)
+	{
+		var pages = new List<byte[]> ();
+		var offset = 0;
+		while (offset + 27 <= data.Length &&
+			   data[offset] == 'O' && data[offset + 1] == 'g' &&
+			   data[offset + 2] == 'g' && data[offset + 3] == 'S') {
+			var segmentCount = data[offset + 26];
+			var dataSize = 0;
+			for (var i = 0; i < segmentCount; i++)
+				dataSize += data[offset + 27 + i];
+			var size = 27 + segmentCount + dataSize;
+			var page = new byte[size];
+			Array.Copy (data, offset, page, 0, size);
+			pages.Add (page);
+			offset += size;
+		}
+
+		return pages;
+	}
+
+	[TestMethod]
 	public void Unicode_AllScripts ()
 	{
 		// Arrange
