@@ -148,8 +148,8 @@ sealed class TempPathRecordingFileSystem (DefaultFileSystem inner, List<string> 
 
 	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
 
-	public IEnumerable<string> EnumerateFiles (string directory) =>
-		((IFileSystemTimestamps)inner).EnumerateFiles (directory);
+	public IEnumerable<string> EnumerateFiles (string directory, string searchPattern) =>
+		((IFileSystemTimestamps)inner).EnumerateFiles (directory, searchPattern);
 
 	public DateTime? GetLastWriteTimeUtc (string path) =>
 		((IFileSystemTimestamps)inner).GetLastWriteTimeUtc (path);
@@ -165,6 +165,14 @@ sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem, IFileSystemT
 	public List<string> Writes { get; } = [];
 
 	public bool ThrowAfterWrite { get; set; }
+
+	public bool ThrowOnEnumerate { get; set; }
+
+	public int EnumerateCount { get; private set; }
+
+	public string? EnumeratePattern { get; private set; }
+
+	public Action<string>? DuringWrite { get; set; }
 
 	public void OnNextMove (Action<IFileSystem, string, string> action) =>
 		_moveScripts.Enqueue (action);
@@ -186,19 +194,22 @@ sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem, IFileSystemT
 	{
 		Writes.Add (path);
 		inner.WriteAllBytes (path, data);
+		DuringWrite?.Invoke (path);
 		if (ThrowAfterWrite)
 			throw new IOException ("write failed");
 	}
 
-	public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+	public async Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
 	{
 		Writes.Add (path);
 		if (ThrowAfterWrite) {
 			inner.WriteAllBytes (path, data.Span);
+			DuringWrite?.Invoke (path);
 			throw new IOException ("write failed");
 		}
 
-		return inner.WriteAllBytesAsync (path, data, cancellationToken);
+		await inner.WriteAllBytesAsync (path, data, cancellationToken).ConfigureAwait (false);
+		DuringWrite?.Invoke (path);
 	}
 
 	public void Delete (string path) => inner.Delete (path);
@@ -219,8 +230,17 @@ sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem, IFileSystemT
 
 	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
 
-	public IEnumerable<string> EnumerateFiles (string directory) =>
-		inner is IFileSystemTimestamps timestamps ? timestamps.EnumerateFiles (directory) : [];
+	public IEnumerable<string> EnumerateFiles (string directory, string searchPattern)
+	{
+		EnumerateCount++;
+		EnumeratePattern = searchPattern;
+		if (ThrowOnEnumerate)
+			throw new IOException ("sweep failed");
+
+		return inner is IFileSystemTimestamps timestamps
+			? timestamps.EnumerateFiles (directory, searchPattern)
+			: [];
+	}
 
 	public DateTime? GetLastWriteTimeUtc (string path) =>
 		inner is IFileSystemTimestamps timestamps ? timestamps.GetLastWriteTimeUtc (path) : null;
@@ -302,8 +322,8 @@ sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem, IFileS
 
 	public string CombinePath (string path1, string path2) => _inner.CombinePath (path1, path2);
 
-	public IEnumerable<string> EnumerateFiles (string directory) =>
-		((IFileSystemTimestamps)_inner).EnumerateFiles (directory);
+	public IEnumerable<string> EnumerateFiles (string directory, string searchPattern) =>
+		((IFileSystemTimestamps)_inner).EnumerateFiles (directory, searchPattern);
 
 	public DateTime? GetLastWriteTimeUtc (string path) =>
 		((IFileSystemTimestamps)_inner).GetLastWriteTimeUtc (path);
@@ -342,13 +362,27 @@ sealed class NullTimestampFileSystem (MockFileSystem inner) : IFileSystem, IFile
 
 	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
 
-	public IEnumerable<string> EnumerateFiles (string directory) =>
+	public IEnumerable<string> EnumerateFiles (string directory, string searchPattern) =>
 		inner.GetAllFiles ().Keys
 			.Where (path => string.Equals (
 				inner.GetDirectoryName (path),
 				directory,
 				StringComparison.OrdinalIgnoreCase))
+			.Where (path => NameMatchesSearch (inner.GetFileName (path), searchPattern))
 			.ToArray ();
+
+	static bool NameMatchesSearch (string name, string searchPattern)
+	{
+		var star = searchPattern.IndexOf ('*', StringComparison.Ordinal);
+		if (star < 0)
+			return string.Equals (name, searchPattern, StringComparison.OrdinalIgnoreCase);
+
+		var prefix = searchPattern[..star];
+		var suffix = searchPattern[(star + 1)..];
+		return name.StartsWith (prefix, StringComparison.OrdinalIgnoreCase)
+			&& name.EndsWith (suffix, StringComparison.OrdinalIgnoreCase)
+			&& name.Length >= prefix.Length + suffix.Length;
+	}
 
 	public DateTime? GetLastWriteTimeUtc (string path) => null;
 }
@@ -408,6 +442,42 @@ public sealed class FileSystemTests
 	}
 
 	[TestMethod]
+	public void WriteAllBytes_PublicMethod_FlushesTheStreamItOpens ()
+	{
+		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
+		FlushRecordingFileStream? recorded = null;
+		try {
+			using (DefaultFileSystem.OverrideWriteStreamForTests (candidate => recorded = new FlushRecordingFileStream (candidate)))
+				DefaultFileSystem.Instance.WriteAllBytes (path, [1, 2, 3]);
+
+			Assert.IsNotNull (recorded);
+			Assert.IsTrue (recorded.FlushedToDisk);
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (path));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public async Task WriteAllBytesAsync_PublicMethod_FlushesTheStreamItOpens ()
+	{
+		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
+		FlushRecordingFileStream? recorded = null;
+		try {
+			using (DefaultFileSystem.OverrideWriteStreamForTests (candidate => recorded = new FlushRecordingFileStream (candidate)))
+				await DefaultFileSystem.Instance.WriteAllBytesAsync (path, new byte[] { 1, 2, 3 });
+
+			Assert.IsNotNull (recorded);
+			Assert.IsTrue (recorded.FlushedToDisk);
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (path));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
 	public async Task WriteAndFlushAsync_WritesBytesAndFlushesToDisk ()
 	{
 		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
@@ -421,6 +491,60 @@ public sealed class FileSystemTests
 		} finally {
 			if (File.Exists (path))
 				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public void Move_FailedReplaceAfterTempMovedBesideTarget_RestoresTempAndLeavesDestination ()
+	{
+		var root = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		var sourceDir = Path.Combine (root, "source");
+		var destinationDir = Path.Combine (root, "dest");
+		Directory.CreateDirectory (sourceDir);
+		Directory.CreateDirectory (destinationDir);
+		try {
+			var source = Path.Combine (sourceDir, ".taglib_" + new string ('a', 32) + ".tmp");
+			var destination = Path.Combine (destinationDir, "song.bin");
+			File.WriteAllBytes (source, [4, 5]);
+			File.WriteAllBytes (destination, [1, 2, 3]);
+
+			using (DefaultFileSystem.BeforeReplaceForTests ((replacing, dest) => {
+				Assert.AreEqual (Path.GetFullPath (destinationDir), Path.GetFullPath (Path.GetDirectoryName (replacing)!));
+				Assert.IsTrue (File.Exists (replacing));
+				Assert.IsFalse (File.Exists (source));
+				Assert.AreEqual (Path.GetFullPath (destination), Path.GetFullPath (dest));
+				throw new IOException ("replace failed");
+			})) {
+				var ex = Assert.ThrowsExactly<IOException> (() => DefaultFileSystem.Instance.Move (source, destination));
+				Assert.AreEqual ("replace failed", ex.Message);
+			}
+
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (destination));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (source));
+			Assert.IsFalse (Directory.EnumerateFiles (destinationDir).Any (path =>
+				Path.GetFileName (path).StartsWith (".taglib_", StringComparison.Ordinal)));
+		} finally {
+			Directory.Delete (root, true);
+		}
+	}
+
+	[TestMethod]
+	public void EnumerateFiles_SearchPatternSkipsOtherNames ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			File.WriteAllBytes (Path.Combine (dir, ".taglib_old.tmp"), [1]);
+			File.WriteAllBytes (Path.Combine (dir, "notes.tmp"), [2]);
+			var names = ((IFileSystemTimestamps)DefaultFileSystem.Instance)
+				.EnumerateFiles (dir, ".taglib_*.tmp")
+				.Select (Path.GetFileName)
+				.ToArray ();
+
+			CollectionAssert.Contains (names, ".taglib_old.tmp");
+			CollectionAssert.DoesNotContain (names, "notes.tmp");
+		} finally {
+			Directory.Delete (dir, true);
 		}
 	}
 
@@ -720,6 +844,28 @@ public sealed class AtomicFileWriterTests
 	}
 
 	[TestMethod]
+	public async Task WriteAsync_CallsWriteAllBytesBeforeMove ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var events = new List<string> ();
+			var fs = new FlushOrderingFileSystem (events);
+
+			var result = await AtomicFileWriter.WriteAsync (destination, new byte[] { 1, 2, 3 }, fs);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.HasCount (2, events);
+			Assert.AreEqual ("flush-to-disk", events[0]);
+			Assert.AreEqual ("move", events[1]);
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
 	public void Write_TwoSaves_UseDistinctTempPaths ()
 	{
 		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
@@ -907,11 +1053,12 @@ public sealed class AtomicFileWriterTests
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsNotNull (result.Error);
+		var recovered = RecoveredPath ("/song.bin");
 		var files = mock.GetAllFiles ();
 		Assert.HasCount (1, files);
-		var tempPath = files.Keys.Single ();
-		Assert.AreEqual ($"Temporary file kept at '{tempPath}': retry failed", result.Error);
-		CollectionAssert.AreEqual (new byte[] { 4, 5 }, files[tempPath]);
+		Assert.IsTrue (files.ContainsKey (recovered), string.Join (", ", files.Keys));
+		AssertKeptTempError (result.Error, "retry failed", recovered);
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, files[recovered]);
 		Assert.IsFalse (mock.FileExists ("/song.bin"));
 	}
 
@@ -1083,10 +1230,13 @@ public sealed class AtomicFileWriterTests
 
 		var restored = AtomicFileWriter.TryRecoverTempFile ("/.taglib_temp.tmp", "/song.bin", fs, out var keptTempError);
 
+		var recovered = RecoveredPath ("/song.bin");
 		Assert.IsFalse (restored);
-		Assert.AreEqual ("Temporary file kept at '/.taglib_temp.tmp': retry failed", keptTempError);
-		Assert.IsTrue (mock.FileExists ("/.taglib_temp.tmp"));
-		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/.taglib_temp.tmp"));
+		Assert.IsNotNull (keptTempError);
+		AssertKeptTempError (keptTempError, "retry failed", recovered);
+		Assert.IsTrue (mock.FileExists (recovered));
+		Assert.IsFalse (mock.FileExists ("/.taglib_temp.tmp"));
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes (recovered));
 	}
 
 	[TestMethod]
@@ -1176,7 +1326,7 @@ public sealed class AtomicFileWriterTests
 	public void Write_ExistingFile_PreservesUnixFileMode ()
 	{
 		// Unix file mode is unsupported on Windows, and missing on netstandard2.0.
-		if (!OperatingSystem.IsLinux () && !OperatingSystem.IsMacOS () && !OperatingSystem.IsFreeBSD ())
+		if (OperatingSystem.IsWindows ())
 			return;
 
 		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
@@ -1296,50 +1446,398 @@ public sealed class AtomicFileWriterTests
 		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/dir/song.bin"));
 	}
 
+	[TestMethod]
+	public void Write_SweepThrows_ReturnsFailureInsteadOfThrowing ()
+	{
+		var fs = new RecordingFileSystem (new MockFileSystem ()) { ThrowOnEnumerate = true };
+		var destination = "/dir-" + Guid.NewGuid ().ToString ("N") + "/song.bin";
+
+		FileWriteResult result;
+		try {
+			result = AtomicFileWriter.Write (destination, [1, 2, 3], fs);
+		} catch (Exception ex) {
+			Assert.Fail ("sweep threw to the caller: " + ex);
+			return;
+		}
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNotNull (result.Error);
+		StringAssert.Contains (result.Error, "sweep failed");
+		Assert.IsFalse (fs.FileExists (destination));
+	}
+
+	[TestMethod]
+	public async Task WriteAsync_SweepThrows_ReturnsFailureInsteadOfThrowing ()
+	{
+		var fs = new RecordingFileSystem (new MockFileSystem ()) { ThrowOnEnumerate = true };
+		var destination = "/dir-" + Guid.NewGuid ().ToString ("N") + "/song.bin";
+
+		FileWriteResult result;
+		try {
+			result = await AtomicFileWriter.WriteAsync (destination, new byte[] { 1, 2, 3 }, fs);
+		} catch (Exception ex) {
+			Assert.Fail ("sweep threw to the caller: " + ex);
+			return;
+		}
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNotNull (result.Error);
+		StringAssert.Contains (result.Error, "sweep failed");
+		Assert.IsFalse (fs.FileExists (destination));
+	}
+
+	[TestMethod]
+	public void Write_SecondSaveInSameDirectory_DoesNotDeleteTempAgedAfterFirstSave ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			File.WriteAllBytes (destination, [1]);
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			var now = DateTime.UtcNow;
+			using (AtomicFileWriter.OverrideSweepClockForTests (() => now, TimeSpan.FromHours (1))) {
+				var first = AtomicFileWriter.Write (destination, [1, 2], fs);
+				Assert.IsTrue (first.IsSuccess, first.Error);
+				Assert.AreEqual (1, fs.EnumerateCount);
+				Assert.AreEqual (".taglib_*.tmp", fs.EnumeratePattern);
+
+				var aged = Path.Combine (dir, HexTempName ('a'));
+				var legacy = Path.Combine (dir, ".taglib_song.bin.tmp");
+				File.WriteAllBytes (aged, [9]);
+				File.WriteAllBytes (legacy, [7]);
+				File.SetLastWriteTimeUtc (aged, now.AddHours (-25));
+				File.SetLastWriteTimeUtc (legacy, now.AddHours (-48));
+
+				var second = AtomicFileWriter.Write (destination, [3, 4], fs);
+
+				Assert.IsTrue (second.IsSuccess, second.Error);
+				Assert.AreEqual (1, fs.EnumerateCount);
+				Assert.IsTrue (File.Exists (aged), "second save swept a temp that aged after the first sweep");
+				CollectionAssert.AreEqual (new byte[] { 9 }, File.ReadAllBytes (aged));
+				Assert.IsTrue (File.Exists (legacy));
+				CollectionAssert.AreEqual (new byte[] { 3, 4 }, File.ReadAllBytes (destination));
+
+				now = now.AddHours (2);
+				var third = AtomicFileWriter.Write (destination, [5], fs);
+				Assert.IsTrue (third.IsSuccess, third.Error);
+				Assert.AreEqual (2, fs.EnumerateCount);
+				Assert.AreEqual (".taglib_*.tmp", fs.EnumeratePattern);
+				Assert.IsFalse (File.Exists (aged));
+				Assert.IsTrue (File.Exists (legacy), "legacy temp was deleted while its file was not the only name filter");
+				CollectionAssert.AreEqual (new byte[] { 7 }, File.ReadAllBytes (legacy));
+			}
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public async Task WriteAsync_SecondSaveInSameDirectory_DoesNotScanAgainInsideTheInterval ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			File.WriteAllBytes (destination, [1]);
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			var now = DateTime.UtcNow;
+			using (AtomicFileWriter.OverrideSweepClockForTests (() => now, TimeSpan.FromHours (1))) {
+				var first = await AtomicFileWriter.WriteAsync (destination, new byte[] { 1, 2 }, fs);
+				Assert.IsTrue (first.IsSuccess, first.Error);
+				var aged = Path.Combine (dir, HexTempName ('a'));
+				File.WriteAllBytes (aged, [9]);
+				File.SetLastWriteTimeUtc (aged, now.AddHours (-25));
+
+				var second = await AtomicFileWriter.WriteAsync (destination, new byte[] { 3, 4 }, fs);
+
+				Assert.IsTrue (second.IsSuccess, second.Error);
+				Assert.AreEqual (1, fs.EnumerateCount);
+				Assert.IsTrue (File.Exists (aged));
+			}
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_AgedKeptTempThatIsTheOnlyCopy_IsNotDeleted ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			File.WriteAllBytes (destination, [1, 2, 3]);
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			fs.OnNextMove ((inner, _, dest) => {
+				inner.Delete (dest);
+				throw new IOException ("Unable to move replacement");
+			});
+			fs.OnNextMove ((_, _, _) => throw new IOException ("retry failed"));
+			var now = DateTime.UtcNow;
+			using var clock = AtomicFileWriter.OverrideSweepClockForTests (() => now, TimeSpan.FromHours (1));
+
+			var failed = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+			var recovered = RecoveredPath (destination);
+			Assert.IsFalse (failed.IsSuccess);
+			Assert.IsNotNull (failed.Error);
+			AssertKeptTempError (failed.Error, "retry failed", recovered);
+			Assert.IsTrue (File.Exists (recovered));
+			Assert.IsFalse (File.Exists (destination));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (recovered));
+
+			File.SetLastWriteTimeUtc (recovered, now.AddHours (-25));
+			var sibling = Path.Combine (dir, HexTempName ('f'));
+			File.WriteAllBytes (sibling, [8]);
+			File.SetLastWriteTimeUtc (sibling, now.AddHours (-25));
+			now = now.AddHours (2);
+
+			var swept = AtomicFileWriter.Write (Path.Combine (dir, "other.bin"), [9], fs);
+
+			Assert.IsTrue (swept.IsSuccess, swept.Error);
+			Assert.IsTrue (File.Exists (recovered), "aged kept temp was deleted");
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (recovered));
+			Assert.IsFalse (File.Exists (sibling));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_SymlinkToOtherDirectory_TempAppearsBesideTarget ()
+	{
+		// Same volume: the link and the target are two directories. A second volume is not mounted.
+		if (!IsUnix ())
+			return;
+
+		var root = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		var dataDir = Path.Combine (root, "data");
+		var linkDir = Path.Combine (root, "links");
+		Directory.CreateDirectory (dataDir);
+		Directory.CreateDirectory (linkDir);
+		try {
+			var target = Path.Combine (dataDir, "song.bin");
+			var link = Path.Combine (linkDir, "song.bin");
+			File.WriteAllBytes (target, [1, 2, 3]);
+			File.CreateSymbolicLink (link, Path.GetRelativePath (linkDir, target));
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			fs.DuringWrite = path => {
+				Assert.AreEqual (Path.GetFullPath (dataDir), Path.GetFullPath (Path.GetDirectoryName (path)!));
+				Assert.IsTrue (File.Exists (path));
+				Assert.IsFalse (Directory.EnumerateFiles (linkDir).Any (candidate =>
+					Path.GetFileName (candidate).StartsWith (".taglib_", StringComparison.Ordinal)));
+			};
+
+			var result = AtomicFileWriter.Write (link, [4, 5], fs);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.HasCount (1, fs.Writes);
+			Assert.IsNotNull (new FileInfo (link).LinkTarget);
+			var resolved = File.ResolveLinkTarget (link, returnFinalTarget: true);
+			Assert.IsNotNull (resolved);
+			Assert.AreEqual (Path.GetFullPath (target), Path.GetFullPath (resolved.FullName));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (target));
+			AssertNoTempFiles (dataDir);
+			AssertNoTempFiles (linkDir);
+		} finally {
+			Directory.Delete (root, true);
+		}
+	}
+
+	[TestMethod]
+	public async Task WriteAsync_SymlinkToOtherDirectory_TempAppearsBesideTarget ()
+	{
+		if (!IsUnix ())
+			return;
+
+		var root = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		var dataDir = Path.Combine (root, "data");
+		var linkDir = Path.Combine (root, "links");
+		Directory.CreateDirectory (dataDir);
+		Directory.CreateDirectory (linkDir);
+		try {
+			var target = Path.Combine (dataDir, "song.bin");
+			var link = Path.Combine (linkDir, "song.bin");
+			File.WriteAllBytes (target, [1, 2, 3]);
+			File.CreateSymbolicLink (link, Path.GetRelativePath (linkDir, target));
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			fs.DuringWrite = path => {
+				Assert.AreEqual (Path.GetFullPath (dataDir), Path.GetFullPath (Path.GetDirectoryName (path)!));
+				Assert.IsTrue (File.Exists (path));
+			};
+
+			var result = await AtomicFileWriter.WriteAsync (link, new byte[] { 4, 5 }, fs);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.IsNotNull (new FileInfo (link).LinkTarget);
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (target));
+			AssertNoTempFiles (dataDir);
+			AssertNoTempFiles (linkDir);
+		} finally {
+			Directory.Delete (root, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_SymlinkInSameDirectory_TempAppearsBesideTarget ()
+	{
+		if (!IsUnix ())
+			return;
+
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var target = Path.Combine (dir, "song.bin");
+			var link = Path.Combine (dir, "link.bin");
+			File.WriteAllBytes (target, [1, 2, 3]);
+			File.CreateSymbolicLink (link, "song.bin");
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			fs.DuringWrite = path => {
+				Assert.AreEqual (Path.GetFullPath (dir), Path.GetFullPath (Path.GetDirectoryName (path)!));
+				Assert.IsTrue (File.Exists (path));
+				Assert.AreNotEqual (Path.GetFullPath (link), Path.GetFullPath (path));
+				Assert.AreNotEqual (Path.GetFullPath (target), Path.GetFullPath (path));
+			};
+
+			var result = AtomicFileWriter.Write (link, [4, 5], fs);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.AreEqual ("song.bin", new FileInfo (link).LinkTarget);
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (target));
+			AssertNoTempFiles (dir);
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_SymlinkTargetDirectoryNotWritable_LeavesLinkAndTargetUnchanged ()
+	{
+		if (OperatingSystem.IsWindows ())
+			return;
+
+		var root = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		var dataDir = Path.Combine (root, "data");
+		var linkDir = Path.Combine (root, "links");
+		Directory.CreateDirectory (dataDir);
+		Directory.CreateDirectory (linkDir);
+		var target = Path.Combine (dataDir, "song.bin");
+		var link = Path.Combine (linkDir, "song.bin");
+		File.WriteAllBytes (target, [1, 2, 3]);
+		File.CreateSymbolicLink (link, Path.GetRelativePath (linkDir, target));
+		var dirMode = File.GetUnixFileMode (dataDir);
+		File.SetUnixFileMode (
+			dataDir,
+			dirMode & ~(UnixFileMode.UserWrite | UnixFileMode.GroupWrite | UnixFileMode.OtherWrite));
+		try {
+			var result = AtomicFileWriter.Write (link, [4, 5]);
+
+			Assert.IsFalse (result.IsSuccess, result.Error);
+			Assert.IsNotNull (new FileInfo (link).LinkTarget);
+			var resolved = File.ResolveLinkTarget (link, returnFinalTarget: true);
+			Assert.IsNotNull (resolved);
+			Assert.AreEqual (Path.GetFullPath (target), Path.GetFullPath (resolved.FullName));
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (target));
+			AssertNoTempFiles (dataDir);
+			AssertNoTempFiles (linkDir);
+		} finally {
+			File.SetUnixFileMode (dataDir, dirMode);
+			Directory.Delete (root, true);
+		}
+	}
+
+	static string HexTempName (char digit) => ".taglib_" + new string (digit, 32) + ".tmp";
+
+	static string RecoveredPath (string destination)
+	{
+		var directory = Path.GetDirectoryName (destination);
+		var name = Path.GetFileName (destination) + ".taglib-recovered";
+		return string.IsNullOrEmpty (directory) ? name : Path.Combine (directory, name);
+	}
+
+	static void AssertKeptTempError (string error, string exceptionMessage, string recoveredPath)
+	{
+		Assert.AreEqual (1, CountOf (error, exceptionMessage), error);
+		Assert.AreEqual (1, CountOf (error, recoveredPath), error);
+	}
+
+	static int CountOf (string text, string value)
+	{
+		var count = 0;
+		var index = 0;
+		while ((index = text.IndexOf (value, index, StringComparison.Ordinal)) >= 0) {
+			count++;
+			index += value.Length;
+		}
+
+		return count;
+	}
+
 	static void CreateStaleTempFixture (string dir)
 	{
-		var oldTemp = Path.Combine (dir, ".taglib_old.tmp");
-		var freshTemp = Path.Combine (dir, ".taglib_fresh.tmp");
+		var aged25 = Path.Combine (dir, HexTempName ('a'));
+		var aged23 = Path.Combine (dir, HexTempName ('b'));
+		var freshTemp = Path.Combine (dir, HexTempName ('c'));
+		var legacyMissing = Path.Combine (dir, ".taglib_missing.bin.tmp");
+		var legacyShort = Path.Combine (dir, ".taglib_old.tmp");
+		var shortHex = Path.Combine (dir, ".taglib_" + new string ('d', 31) + ".tmp");
+		var longHex = Path.Combine (dir, ".taglib_" + new string ('e', 33) + ".tmp");
+		var nonHex = Path.Combine (dir, ".taglib_" + new string ('g', 32) + ".tmp");
 		var notes = Path.Combine (dir, "notes.tmp");
 		var prefixOnly = Path.Combine (dir, ".taglib_old.txt");
 		var missingDot = Path.Combine (dir, "taglib_old.tmp");
 		var nestedDir = Path.Combine (dir, "nested");
 		Directory.CreateDirectory (nestedDir);
 		var nestedTemp = Path.Combine (nestedDir, ".taglib_old.tmp");
-		File.WriteAllBytes (oldTemp, [1]);
+		File.WriteAllBytes (Path.Combine (dir, "song.bin"), [1, 2, 3]);
+		File.WriteAllBytes (aged25, [1]);
+		File.WriteAllBytes (aged23, [4]);
 		File.WriteAllBytes (freshTemp, [2]);
+		File.WriteAllBytes (legacyMissing, [5]);
+		File.WriteAllBytes (legacyShort, [6]);
+		File.WriteAllBytes (shortHex, [7]);
+		File.WriteAllBytes (longHex, [8]);
+		File.WriteAllBytes (nonHex, [9]);
 		File.WriteAllBytes (notes, [3]);
 		File.WriteAllBytes (prefixOnly, [6]);
 		File.WriteAllBytes (missingDot, [7]);
 		File.WriteAllBytes (nestedTemp, [8]);
 		var stale = DateTime.UtcNow.AddHours (-48);
-		File.SetLastWriteTimeUtc (oldTemp, stale);
+		File.SetLastWriteTimeUtc (aged25, DateTime.UtcNow.AddHours (-25));
+		File.SetLastWriteTimeUtc (aged23, DateTime.UtcNow.AddHours (-23));
+		File.SetLastWriteTimeUtc (freshTemp, DateTime.UtcNow);
+		File.SetLastWriteTimeUtc (legacyMissing, stale);
+		File.SetLastWriteTimeUtc (legacyShort, stale);
+		File.SetLastWriteTimeUtc (shortHex, stale);
+		File.SetLastWriteTimeUtc (longHex, stale);
+		File.SetLastWriteTimeUtc (nonHex, stale);
 		File.SetLastWriteTimeUtc (notes, stale);
 		File.SetLastWriteTimeUtc (prefixOnly, stale);
 		File.SetLastWriteTimeUtc (missingDot, stale);
 		File.SetLastWriteTimeUtc (nestedTemp, stale);
-		File.SetLastWriteTimeUtc (freshTemp, DateTime.UtcNow);
 	}
 
 	static void AssertStaleTempsSwept (string dir, string destination)
 	{
-		Assert.IsFalse (File.Exists (Path.Combine (dir, ".taglib_old.tmp")));
-		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_fresh.tmp")));
+		Assert.IsFalse (File.Exists (Path.Combine (dir, HexTempName ('a'))));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, HexTempName ('b'))));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, HexTempName ('c'))));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_missing.bin.tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_old.tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_" + new string ('d', 31) + ".tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_" + new string ('e', 33) + ".tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_" + new string ('g', 32) + ".tmp")));
+		Assert.IsFalse (File.Exists (Path.Combine (dir, "missing.bin")));
 		Assert.IsTrue (File.Exists (Path.Combine (dir, "notes.tmp")));
 		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_old.txt")));
 		Assert.IsTrue (File.Exists (Path.Combine (dir, "taglib_old.tmp")));
 		Assert.IsTrue (File.Exists (Path.Combine (dir, "nested", ".taglib_old.tmp")));
-		CollectionAssert.AreEqual (new byte[] { 2 }, File.ReadAllBytes (Path.Combine (dir, ".taglib_fresh.tmp")));
+		CollectionAssert.AreEqual (new byte[] { 4 }, File.ReadAllBytes (Path.Combine (dir, HexTempName ('b'))));
+		CollectionAssert.AreEqual (new byte[] { 2 }, File.ReadAllBytes (Path.Combine (dir, HexTempName ('c'))));
+		CollectionAssert.AreEqual (new byte[] { 5 }, File.ReadAllBytes (Path.Combine (dir, ".taglib_missing.bin.tmp")));
 		CollectionAssert.AreEqual (new byte[] { 3 }, File.ReadAllBytes (Path.Combine (dir, "notes.tmp")));
 		CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
-		var ownTemps = Directory.EnumerateFiles (dir)
-			.Select (Path.GetFileName)
-			.Where (name => name is not null
-				&& name.StartsWith (".taglib_", StringComparison.Ordinal)
-				&& name.EndsWith (".tmp", StringComparison.Ordinal)
-				&& !string.Equals (name, ".taglib_fresh.tmp", StringComparison.Ordinal))
-			.ToArray ();
-		Assert.AreEqual (0, ownTemps.Length, string.Join (", ", ownTemps));
 	}
 
 	static void AssertNoTempFiles (string directory)
@@ -1350,8 +1848,7 @@ public sealed class AtomicFileWriterTests
 		Assert.AreEqual (0, leftovers.Length, string.Join (", ", leftovers));
 	}
 
-	static bool IsUnix () =>
-		OperatingSystem.IsLinux () || OperatingSystem.IsMacOS () || OperatingSystem.IsFreeBSD ();
+	static bool IsUnix () => OperatingSystem.IsWindows () == false;
 }
 
 [TestClass]
