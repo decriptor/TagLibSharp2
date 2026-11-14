@@ -1213,9 +1213,13 @@ public sealed class Mp4File : IMediaFile
 	/// <summary>
 	/// Adds <paramref name="delta"/> to stco and co64 entries that point at or
 	/// after the old end of moov. ISO 14496-12 chunk offsets are file offsets.
-	/// A trak is left unchanged only when every sample entry it references is external.
-	/// Mixed references patch the trak as a whole, so every chunk offset moves.
-	/// If stsd is missing, empty, or yields no indexes, any external dref leaves the trak unchanged.
+	/// §8.7.4 maps each chunk through stsc to a sample description. That entry's
+	/// data_reference_index (§8.5.2) selects a dref entry. An external entry
+	/// (§8.7.2, self-contained flag clear) stays where it is.
+	/// With no stsc, a trak is unchanged only when every referenced entry is external.
+	/// A missing stsd, an empty stsd, or no indexes still leaves the trak unchanged
+	/// when any dref entry is external. No dref means self-contained.
+	/// Offsets below <paramref name="threshold"/> do not move.
 	/// </summary>
 	static BinaryData AdjustChunkOffsets (BinaryData moov, int threshold, int delta)
 	{
@@ -1224,7 +1228,7 @@ public sealed class Mp4File : IMediaFile
 		return new BinaryData (bytes);
 	}
 
-	static void PatchChunkOffsets (Span<byte> box, int threshold, int delta)
+	static void PatchChunkOffsets (Span<byte> box, int threshold, int delta, ChunkAdjust adjust = default)
 	{
 		if (!TryMeasureBox (box, out var size, out var header))
 			return;
@@ -1233,16 +1237,60 @@ public sealed class Mp4File : IMediaFile
 
 		var type = box.Slice (4, 4);
 		var payload = box.Slice (header, size - header);
-		if (type.SequenceEqual ("stco"u8))
-			PatchOffsets (payload, 4, threshold, delta);
-		else if (type.SequenceEqual ("co64"u8))
-			PatchOffsets (payload, 8, threshold, delta);
-		else if (type.SequenceEqual ("trak"u8)) {
-			// §8.5.2 / §8.7.2: one decision per trak. Mixed references still patch every chunk offset.
-			if (!TrakReferencesExternalMedia (payload))
-				WalkBoxes (payload, threshold, delta);
-		} else if (IsOffsetContainer (type))
-			WalkBoxes (payload, threshold, delta);
+		if (type.SequenceEqual ("stco"u8)) {
+			if (!adjust.LeavesChunkTable)
+				PatchOffsets (payload, 4, threshold, delta, adjust);
+		} else if (type.SequenceEqual ("co64"u8)) {
+			if (!adjust.LeavesChunkTable)
+				PatchOffsets (payload, 8, threshold, delta, adjust);
+		} else if (type.SequenceEqual ("trak"u8))
+			PatchTrakOffsets (payload, threshold, delta);
+		else if (adjust.InTrak && type.SequenceEqual ("stbl"u8))
+			PatchStblOffsets (payload, threshold, delta, adjust);
+		else if (IsOffsetContainer (type))
+			WalkBoxes (payload, threshold, delta, adjust);
+	}
+
+	/// <summary>
+	/// One stsc table applies to the chunk offset box in the same sample table.
+	/// No rows keeps the trak-level rule: skip only when the trak is entirely external.
+	/// </summary>
+	static void PatchTrakOffsets (Span<byte> payload, int threshold, int delta)
+	{
+		var external = new List<bool> ();
+		var references = new List<int> ();
+		CollectTrackLayout (payload, external, references, null);
+		var trakExternal = ReferencedEntriesAreExternal (external, references);
+		// No sample entries and an external dref: the chunks are not in this file.
+		if (trakExternal && references.Count == 0)
+			return;
+
+		WalkBoxes (payload, threshold, delta, new ChunkAdjust {
+			InTrak = true,
+			TrakExternal = trakExternal,
+			External = external,
+		});
+	}
+
+	static void PatchStblOffsets (Span<byte> payload, int threshold, int delta, ChunkAdjust adjust)
+	{
+		var references = new List<int> ();
+		var rows = new List<StscRow> ();
+		// dref lives in dinf, not in this stbl. A dref found here must not shift the trak's indexes.
+		CollectTrackLayout (payload, new List<bool> (), references, rows);
+		if (rows.Count > 0 && references.Count > 0) {
+			adjust = new ChunkAdjust {
+				InTrak = true,
+				PerChunk = true,
+				External = adjust.External,
+				References = references,
+				Rows = rows,
+			};
+		} else if (adjust.TrakExternal) {
+			return;
+		}
+
+		WalkBoxes (payload, threshold, delta, adjust);
 	}
 
 	static bool IsOffsetContainer (ReadOnlySpan<byte> type) =>
@@ -1253,23 +1301,17 @@ public sealed class Mp4File : IMediaFile
 		|| type.SequenceEqual ("edts"u8);
 
 	/// <summary>
-	/// True when chunk offsets in this trak address another file.
+	/// True when every sample entry this trak references is an external dref.
 	/// ISO 14496-12 §8.5.2 stores a 1-based data_reference_index in each sample entry.
 	/// §8.7.2: the indexed dref entry is external when its self-contained flag is clear.
-	/// The decision is per trak, not per chunk. Sample entries that mix self-contained and
-	/// external references are patched as a whole, so every chunk offset moves. That is wrong
-	/// for a QuickTime reference movie with two chunks; per-chunk stsc patching is not done here.
-	/// Skip patching only when every referenced entry is external.
-	/// A missing or out-of-range index is treated as self-contained.
+	/// This is the rule for a trak with no stsc rows. §8.7.4 picks the entry per chunk when rows exist.
+	/// A missing or out-of-range index is self-contained, so the trak is not entirely external.
 	/// An entry that does not contain its flags is unknown and is not external by itself.
 	/// If stsd is missing, empty, or yields no data_reference_index values, any external dref
 	/// entry leaves the trak unchanged. No dref still means self-contained.
 	/// </summary>
-	static bool TrakReferencesExternalMedia (ReadOnlySpan<byte> trakPayload)
+	static bool ReferencedEntriesAreExternal (List<bool> external, List<int> references)
 	{
-		var external = new List<bool> ();
-		var references = new List<int> ();
-		CollectTrackLayout (trakPayload, external, references);
 		// No stsd, an empty stsd, or a description that produced no indexes: do not assume
 		// the samples are in this file when any dref entry is external.
 		if (references.Count == 0) {
@@ -1289,7 +1331,7 @@ public sealed class Mp4File : IMediaFile
 		return true;
 	}
 
-	static void CollectTrackLayout (ReadOnlySpan<byte> payload, List<bool> external, List<int> references)
+	static void CollectTrackLayout (ReadOnlySpan<byte> payload, List<bool> external, List<int> references, List<StscRow>? rows)
 	{
 		var offset = 0;
 		while (offset + 8 <= payload.Length) {
@@ -1308,8 +1350,10 @@ public sealed class Mp4File : IMediaFile
 				ReadDrefEntries (body, external);
 			else if (type.SequenceEqual ("stsd"u8))
 				ReadStsdReferences (body, references);
+			else if (rows is not null && type.SequenceEqual ("stsc"u8))
+				ReadStscRows (body, rows);
 			else if (IsTrackLayoutParent (type))
-				CollectTrackLayout (body, external, references);
+				CollectTrackLayout (body, external, references, rows);
 
 			offset += size;
 		}
@@ -1403,7 +1447,7 @@ public sealed class Mp4File : IMediaFile
 		}
 	}
 
-	static void WalkBoxes (Span<byte> payload, int threshold, int delta)
+	static void WalkBoxes (Span<byte> payload, int threshold, int delta, ChunkAdjust adjust)
 	{
 		var offset = 0;
 		while (offset + 8 <= payload.Length) {
@@ -1419,7 +1463,7 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
-			PatchChunkOffsets (payload.Slice (offset, size), threshold, delta);
+			PatchChunkOffsets (payload.Slice (offset, size), threshold, delta, adjust);
 			offset += size;
 		}
 	}
@@ -1460,7 +1504,7 @@ public sealed class Mp4File : IMediaFile
 		return true;
 	}
 
-	static void PatchOffsets (Span<byte> payload, int width, int threshold, int delta)
+	static void PatchOffsets (Span<byte> payload, int width, int threshold, int delta, ChunkAdjust adjust)
 	{
 		if (payload.Length < 8)
 			return;
@@ -1468,16 +1512,109 @@ public sealed class Mp4File : IMediaFile
 		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
 		var pos = 8;
 		for (var i = 0; i < count && pos + width <= payload.Length; i++) {
-			if (width == 4) {
-				var value = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos));
-				if (value >= (uint)threshold)
-					BinaryPrimitives.WriteUInt32BigEndian (payload.Slice (pos), (uint)(value + delta));
-			} else {
-				var value = BinaryPrimitives.ReadUInt64BigEndian (payload.Slice (pos));
-				if (value >= (ulong)threshold)
-					BinaryPrimitives.WriteUInt64BigEndian (payload.Slice (pos), (ulong)((long)value + delta));
+			// Chunk numbers in stsc and stco/co64 are 1-based. §8.7.4 / §8.7.5.
+			if (adjust.Moves ((uint)i + 1)) {
+				if (width == 4) {
+					var value = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos));
+					if (value >= (uint)threshold)
+						BinaryPrimitives.WriteUInt32BigEndian (payload.Slice (pos), (uint)(value + delta));
+				} else {
+					var value = BinaryPrimitives.ReadUInt64BigEndian (payload.Slice (pos));
+					if (value >= (ulong)threshold)
+						BinaryPrimitives.WriteUInt64BigEndian (payload.Slice (pos), (ulong)((long)value + delta));
+				}
 			}
+
 			pos += width;
+		}
+	}
+
+	/// <summary>
+	/// §8.7.4: entry_count, then first_chunk, samples_per_chunk, sample_description_index.
+	/// A short table stops at the last complete row. samples_per_chunk does not select the file.
+	/// </summary>
+	static void ReadStscRows (ReadOnlySpan<byte> payload, List<StscRow> rows)
+	{
+		if (payload.Length < 8)
+			return;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (4));
+		var pos = 8;
+		for (var i = 0u; i < count; i++) {
+			if (payload.Length - pos < 12)
+				break;
+
+			rows.Add (new StscRow (
+				BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos)),
+				BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos + 8))));
+			pos += 12;
+		}
+	}
+
+	/// <summary>
+	/// The row with the greatest first_chunk that is still &lt;= <paramref name="chunk"/>.
+	/// Later rows win when first_chunk ties. No such row means the description is missing.
+	/// </summary>
+	static bool TrySampleDescription (List<StscRow> rows, uint chunk, out uint description)
+	{
+		description = 0;
+		var found = false;
+		var best = 0u;
+		foreach (var row in rows) {
+			if (row.FirstChunk > chunk)
+				continue;
+			if (found && row.FirstChunk < best)
+				continue;
+
+			found = true;
+			best = row.FirstChunk;
+			description = row.SampleDescriptionIndex;
+		}
+
+		return found;
+	}
+
+	/// <summary>
+	/// One stsc row. first_chunk and sample_description_index are 1-based.
+	/// </summary>
+	readonly record struct StscRow (uint FirstChunk, uint SampleDescriptionIndex);
+
+	/// <summary>
+	/// How to shift chunk offsets inside one trak. Per-chunk uses that trak's dref table
+	/// and the enclosing stbl's stsd and stsc. Outside a trak every in-range offset moves.
+	/// </summary>
+	readonly struct ChunkAdjust
+	{
+		public bool InTrak { get; init; }
+
+		public bool TrakExternal { get; init; }
+
+		public bool PerChunk { get; init; }
+
+		public List<bool>? External { get; init; }
+
+		public List<int>? References { get; init; }
+
+		public List<StscRow>? Rows { get; init; }
+
+		public bool LeavesChunkTable => InTrak && TrakExternal && !PerChunk;
+
+		public bool Moves (uint chunk)
+		{
+			if (!PerChunk || Rows is null || References is null || External is null)
+				return true;
+
+			// Missing stsc coverage, sample entry, or data_reference_index stays self-contained.
+			if (!TrySampleDescription (Rows, chunk, out var description))
+				return true;
+			if (description < 1 || description > (uint)References.Count)
+				return true;
+
+			var dataReference = References[(int)description - 1];
+			if (dataReference < 1 || dataReference > External.Count)
+				return true;
+
+			return !External[dataReference - 1];
 		}
 	}
 

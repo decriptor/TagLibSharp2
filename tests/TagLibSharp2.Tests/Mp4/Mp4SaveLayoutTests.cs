@@ -291,7 +291,7 @@ public class Mp4SaveLayoutTests
 	public void Render_MixedDataReference_MovesChunkOffset ()
 	{
 		// One chunk and no stsc. stsd references dref entry 1 (self-contained) and entry 2 (external).
-		// The trak is patched as a whole, so this offset moves.
+		// Without stsc the trak is still one decision, so this offset moves.
 		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
 		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
 		var file = FileWithChunkTrak (offset => TrakWithDinfAndStbl (offset, dref, stsd), out var payloadOffset);
@@ -303,10 +303,10 @@ public class Mp4SaveLayoutTests
 	}
 
 	[TestMethod]
-	public void Render_MixedDataReference_TwoChunks_MovesBothOffsets ()
+	public void Render_MixedDataReference_TwoChunks_MovesOnlySelfContainedOffset ()
 	{
 		// stsc assigns chunk 1 to the self-contained sample entry and chunk 2 to the external one.
-		// ISO 14496-12 §8.7.4 could patch per chunk. This trak is patched as a whole, so both offsets move.
+		// ISO 14496-12 §8.7.4 / §8.7.5: only the in-file chunk moves by the moov delta.
 		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
 		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
 		var file = FileWithChunkTrak (
@@ -316,8 +316,47 @@ public class Mp4SaveLayoutTests
 		var rendered = RenderWithTitle (file);
 		var markerAt = (uint)MarkerAt (rendered.Span);
 		Assert.AreEqual (markerAt, ReadStco (rendered.Span, 0), "self-contained chunk moves");
-		Assert.AreEqual (markerAt + 4, ReadStco (rendered.Span, 1), "external chunk moves with the trak");
-		Assert.AreNotEqual (payloadOffset + 4, ReadStco (rendered.Span, 1));
+		Assert.AreNotEqual (payloadOffset, ReadStco (rendered.Span, 0));
+		Assert.AreEqual (payloadOffset + 4, ReadStco (rendered.Span, 1), "external chunk stays");
+	}
+
+	[TestMethod]
+	public void Render_MixedDataReference_TwoCo64Chunks_MovesOnlySelfContainedOffset ()
+	{
+		// Same stsc split as the stco case. co64 entries follow the same per-chunk rule.
+		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
+		var file = FileWithChunkTrak (
+			offset => TrakWithTwoChunks (offset, offset + 4, dref, stsd, StscBox (), useCo64: true),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual ((ulong)markerAt, ReadCo64 (rendered.Span, 0), "self-contained co64 chunk moves");
+		Assert.AreNotEqual ((ulong)payloadOffset, ReadCo64 (rendered.Span, 0));
+		Assert.AreEqual ((ulong)payloadOffset + 4, ReadCo64 (rendered.Span, 1), "external co64 chunk stays");
+	}
+
+	[TestMethod]
+	public void Render_MixedDataReference_StscRun_UsesGreatestFirstChunk ()
+	{
+		// Row at chunk 1 is external. Row at chunk 3 is self-contained.
+		// Chunk 2 has no row; §8.7.4 uses the greatest first_chunk that is <= 2.
+		// Chunk 4 is self-contained but points before moov, so it still does not move.
+		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1), SampleEntry (2));
+		var stsc = StscRows ((1, 2), (3, 1));
+		var file = FileWithChunkTrak (
+			offset => TrakWithChunkOffsets (dref, stsd, stsc, false, 8, offset, offset + 4, 8),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		Assert.AreEqual (8u, ReadStco (rendered.Span, 0), "external run stays");
+		Assert.AreEqual (payloadOffset, ReadStco (rendered.Span, 1), "chunk 2 stays on the external run");
+		Assert.AreEqual (markerAt + 4, ReadStco (rendered.Span, 2), "self-contained run moves");
+		Assert.AreNotEqual (payloadOffset + 4, ReadStco (rendered.Span, 2));
+		Assert.AreEqual (8u, ReadStco (rendered.Span, 3), "offset before moov stays");
 	}
 
 	[TestMethod]
@@ -737,26 +776,41 @@ public class Mp4SaveLayoutTests
 		return Box ("trak", Concat (Box ("tkhd", new byte[4]), Box ("mdia", minf)));
 	}
 
-	static byte[] TrakWithTwoChunks (uint firstOffset, uint secondOffset, byte[] dref, byte[] stsd, byte[] stsc)
+	static byte[] TrakWithTwoChunks (uint firstOffset, uint secondOffset, byte[] dref, byte[] stsd, byte[] stsc, bool useCo64 = false) =>
+		TrakWithChunkOffsets (dref, stsd, stsc, useCo64, firstOffset, secondOffset);
+
+	static byte[] TrakWithChunkOffsets (byte[] dref, byte[] stsd, byte[] stsc, bool useCo64, params uint[] offsets)
 	{
-		var chunks = Box ("stco", StcoBody (firstOffset, secondOffset));
+		byte[] chunks;
+		if (useCo64) {
+			var wide = new ulong[offsets.Length];
+			for (var i = 0; i < offsets.Length; i++)
+				wide[i] = offsets[i];
+			chunks = Box ("co64", Co64Body (wide));
+		} else {
+			chunks = Box ("stco", StcoBody (offsets));
+		}
+
 		var stbl = Box ("stbl", Concat (stsd, stsc, chunks));
 		var minf = Box ("minf", Concat (Box ("dinf", dref), stbl));
 		return Box ("trak", Concat (Box ("tkhd", new byte[4]), Box ("mdia", minf)));
 	}
 
-	static byte[] StscBox ()
+	static byte[] StscBox () => StscRows ((1, 1), (2, 2));
+
+	static byte[] StscRows (params (uint FirstChunk, uint SampleDescription)[] rows)
 	{
-		// Two rows: chunk 1 uses sample description 1, chunk 2 uses sample description 2.
-		var rows = new byte[4 + 24];
-		BinaryPrimitives.WriteUInt32BigEndian (rows, 2);
-		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (4), 1);
-		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (8), 1);
-		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (12), 1);
-		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (16), 2);
-		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (20), 1);
-		BinaryPrimitives.WriteUInt32BigEndian (rows.AsSpan (24), 2);
-		return FullBox ("stsc", 0, rows);
+		// ISO 14496-12 §8.7.4: first_chunk, samples_per_chunk, sample_description_index. 1-based.
+		var body = new byte[4 + (rows.Length * 12)];
+		BinaryPrimitives.WriteUInt32BigEndian (body, (uint)rows.Length);
+		for (var i = 0; i < rows.Length; i++) {
+			var at = 4 + (i * 12);
+			BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (at), rows[i].FirstChunk);
+			BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (at + 4), 1);
+			BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (at + 8), rows[i].SampleDescription);
+		}
+
+		return FullBox ("stsc", 0, body);
 	}
 
 	static byte[] TrakWithDref (uint offset, bool selfContained, bool useCo64)
