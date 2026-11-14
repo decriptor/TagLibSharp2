@@ -113,7 +113,8 @@ public sealed class MockFileSystem : IFileSystem
 /// <summary>
 /// Records temp paths passed to <see cref="IFileSystem.Move"/> and performs the move on <see cref="DefaultFileSystem"/>.
 /// </summary>
-sealed class TempPathRecordingFileSystem (DefaultFileSystem inner, List<string> tempPaths) : IFileSystem
+sealed class TempPathRecordingFileSystem (DefaultFileSystem inner, List<string> tempPaths)
+	: IFileSystem, IFileSystemTimestamps
 {
 	public bool FileExists (string path) => inner.FileExists (path);
 
@@ -146,12 +147,18 @@ sealed class TempPathRecordingFileSystem (DefaultFileSystem inner, List<string> 
 	public string GetFileName (string path) => inner.GetFileName (path);
 
 	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
+
+	public IEnumerable<string> EnumerateFiles (string directory) =>
+		((IFileSystemTimestamps)inner).EnumerateFiles (directory);
+
+	public DateTime? GetLastWriteTimeUtc (string path) =>
+		((IFileSystemTimestamps)inner).GetLastWriteTimeUtc (path);
 }
 
 /// <summary>
 /// Delegates to an inner file system while recording writes and optionally replacing moves.
 /// </summary>
-sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem
+sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem, IFileSystemTimestamps
 {
 	readonly Queue<Action<IFileSystem, string, string>> _moveScripts = new ();
 
@@ -211,6 +218,12 @@ sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem
 	public string GetFileName (string path) => inner.GetFileName (path);
 
 	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
+
+	public IEnumerable<string> EnumerateFiles (string directory) =>
+		inner is IFileSystemTimestamps timestamps ? timestamps.EnumerateFiles (directory) : [];
+
+	public DateTime? GetLastWriteTimeUtc (string path) =>
+		inner is IFileSystemTimestamps timestamps ? timestamps.GetLastWriteTimeUtc (path) : null;
 }
 
 /// <summary>
@@ -244,7 +257,7 @@ sealed class FlushRecordingFileStream : FileStream
 /// <summary>
 /// Writes through <see cref="DefaultFileSystem.WriteAndFlush"/> and records that call before move.
 /// </summary>
-sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem
+sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem, IFileSystemTimestamps
 {
 	readonly DefaultFileSystem _inner = DefaultFileSystem.Instance;
 
@@ -288,6 +301,56 @@ sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem
 	public string GetFileName (string path) => _inner.GetFileName (path);
 
 	public string CombinePath (string path1, string path2) => _inner.CombinePath (path1, path2);
+
+	public IEnumerable<string> EnumerateFiles (string directory) =>
+		((IFileSystemTimestamps)_inner).EnumerateFiles (directory);
+
+	public DateTime? GetLastWriteTimeUtc (string path) =>
+		((IFileSystemTimestamps)_inner).GetLastWriteTimeUtc (path);
+}
+
+/// <summary>
+/// Lists files but never reports a last-write time, so a sweep must not delete by name.
+/// </summary>
+sealed class NullTimestampFileSystem (MockFileSystem inner) : IFileSystem, IFileSystemTimestamps
+{
+	public bool FileExists (string path) => inner.FileExists (path);
+
+	public Stream OpenRead (string path) => inner.OpenRead (path);
+
+	public Stream OpenReadWrite (string path) => inner.OpenReadWrite (path);
+
+	public Stream Create (string path) => inner.Create (path);
+
+	public byte[] ReadAllBytes (string path) => inner.ReadAllBytes (path);
+
+	public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default) =>
+		inner.ReadAllBytesAsync (path, cancellationToken);
+
+	public void WriteAllBytes (string path, ReadOnlySpan<byte> data) => inner.WriteAllBytes (path, data);
+
+	public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default) =>
+		inner.WriteAllBytesAsync (path, data, cancellationToken);
+
+	public void Delete (string path) => inner.Delete (path);
+
+	public void Move (string sourcePath, string destinationPath) => inner.Move (sourcePath, destinationPath);
+
+	public string? GetDirectoryName (string path) => inner.GetDirectoryName (path);
+
+	public string GetFileName (string path) => inner.GetFileName (path);
+
+	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
+
+	public IEnumerable<string> EnumerateFiles (string directory) =>
+		inner.GetAllFiles ().Keys
+			.Where (path => string.Equals (
+				inner.GetDirectoryName (path),
+				directory,
+				StringComparison.OrdinalIgnoreCase))
+			.ToArray ();
+
+	public DateTime? GetLastWriteTimeUtc (string path) => null;
 }
 
 [TestClass]
@@ -1132,6 +1195,151 @@ public sealed class AtomicFileWriterTests
 		} finally {
 			Directory.Delete (dir, true);
 		}
+	}
+
+	[TestMethod]
+	public void Write_DeletesStaleTempFilesOlderThanOneDay ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			CreateStaleTempFixture (dir);
+			var destination = Path.Combine (dir, "song.bin");
+
+			var result = AtomicFileWriter.Write (destination, [4, 5]);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			AssertStaleTempsSwept (dir, destination);
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public async Task WriteAsync_DeletesStaleTempFilesOlderThanOneDay ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			CreateStaleTempFixture (dir);
+			var destination = Path.Combine (dir, "song.bin");
+
+			var result = await AtomicFileWriter.WriteAsync (destination, new byte[] { 4, 5 });
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			AssertStaleTempsSwept (dir, destination);
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_WhenDestinationNameMatchesTempPattern_DoesNotDeleteItBeforeFailure ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, ".taglib_song.tmp");
+			File.WriteAllBytes (destination, [1, 2, 3]);
+			File.SetLastWriteTimeUtc (destination, DateTime.UtcNow.AddHours (-48));
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance) { ThrowAfterWrite = true };
+
+			var result = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+			Assert.IsFalse (result.IsSuccess);
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_FileSystemWithoutLastWriteTime_KeepsTempFiles ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/dir/.taglib_old.tmp", [1]);
+		mock.AddFile ("/dir/.taglib_fresh.tmp", [2]);
+		mock.AddFile ("/dir/notes.tmp", [3]);
+		mock.AddFile ("/dir/.taglib_old.txt", [6]);
+
+		var result = AtomicFileWriter.Write ("/dir/song.bin", [4, 5], mock);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsTrue (mock.FileExists ("/dir/.taglib_old.tmp"));
+		Assert.IsTrue (mock.FileExists ("/dir/.taglib_fresh.tmp"));
+		Assert.IsTrue (mock.FileExists ("/dir/notes.tmp"));
+		Assert.IsTrue (mock.FileExists ("/dir/.taglib_old.txt"));
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/dir/song.bin"));
+		Assert.IsFalse (mock.GetAllFiles ().Keys.Any (path => {
+			var name = Path.GetFileName (path);
+			return name.StartsWith (".taglib_", StringComparison.Ordinal)
+				&& name.EndsWith (".tmp", StringComparison.Ordinal)
+				&& name is not ".taglib_old.tmp" and not ".taglib_fresh.tmp";
+		}));
+	}
+
+	[TestMethod]
+	public void Write_NullLastWriteTime_DoesNotDeleteMatchingNames ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/dir/.taglib_old.tmp", [1]);
+		mock.AddFile ("/dir/notes.tmp", [3]);
+		mock.AddFile ("/other/.taglib_old.tmp", [9]);
+		var fs = new NullTimestampFileSystem (mock);
+
+		var result = AtomicFileWriter.Write ("/dir/song.bin", [4, 5], fs);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsTrue (mock.FileExists ("/dir/.taglib_old.tmp"));
+		Assert.IsTrue (mock.FileExists ("/dir/notes.tmp"));
+		Assert.IsTrue (mock.FileExists ("/other/.taglib_old.tmp"));
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/dir/song.bin"));
+	}
+
+	static void CreateStaleTempFixture (string dir)
+	{
+		var oldTemp = Path.Combine (dir, ".taglib_old.tmp");
+		var freshTemp = Path.Combine (dir, ".taglib_fresh.tmp");
+		var notes = Path.Combine (dir, "notes.tmp");
+		var prefixOnly = Path.Combine (dir, ".taglib_old.txt");
+		var missingDot = Path.Combine (dir, "taglib_old.tmp");
+		var nestedDir = Path.Combine (dir, "nested");
+		Directory.CreateDirectory (nestedDir);
+		var nestedTemp = Path.Combine (nestedDir, ".taglib_old.tmp");
+		File.WriteAllBytes (oldTemp, [1]);
+		File.WriteAllBytes (freshTemp, [2]);
+		File.WriteAllBytes (notes, [3]);
+		File.WriteAllBytes (prefixOnly, [6]);
+		File.WriteAllBytes (missingDot, [7]);
+		File.WriteAllBytes (nestedTemp, [8]);
+		var stale = DateTime.UtcNow.AddHours (-48);
+		File.SetLastWriteTimeUtc (oldTemp, stale);
+		File.SetLastWriteTimeUtc (notes, stale);
+		File.SetLastWriteTimeUtc (prefixOnly, stale);
+		File.SetLastWriteTimeUtc (missingDot, stale);
+		File.SetLastWriteTimeUtc (nestedTemp, stale);
+		File.SetLastWriteTimeUtc (freshTemp, DateTime.UtcNow);
+	}
+
+	static void AssertStaleTempsSwept (string dir, string destination)
+	{
+		Assert.IsFalse (File.Exists (Path.Combine (dir, ".taglib_old.tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_fresh.tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, "notes.tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, ".taglib_old.txt")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, "taglib_old.tmp")));
+		Assert.IsTrue (File.Exists (Path.Combine (dir, "nested", ".taglib_old.tmp")));
+		CollectionAssert.AreEqual (new byte[] { 2 }, File.ReadAllBytes (Path.Combine (dir, ".taglib_fresh.tmp")));
+		CollectionAssert.AreEqual (new byte[] { 3 }, File.ReadAllBytes (Path.Combine (dir, "notes.tmp")));
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
+		var ownTemps = Directory.EnumerateFiles (dir)
+			.Select (Path.GetFileName)
+			.Where (name => name is not null
+				&& name.StartsWith (".taglib_", StringComparison.Ordinal)
+				&& name.EndsWith (".tmp", StringComparison.Ordinal)
+				&& !string.Equals (name, ".taglib_fresh.tmp", StringComparison.Ordinal))
+			.ToArray ();
+		Assert.AreEqual (0, ownTemps.Length, string.Join (", ", ownTemps));
 	}
 
 	static void AssertNoTempFiles (string directory)
