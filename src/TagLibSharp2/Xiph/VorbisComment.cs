@@ -669,12 +669,13 @@ public sealed class VorbisComment : Tag
 	/// Gets or sets the total number of tracks on the album.
 	/// </summary>
 	/// <remarks>
-	/// Also reads from TRACKNUMBER field if in "5/12" format.
+	/// Reads TOTALTRACKS, then TRACKTOTAL, then a TRACKNUMBER value of the form "5/12".
+	/// Writes TOTALTRACKS.
 	/// </remarks>
 	public override uint? TotalTracks {
 		get {
-			// First check TOTALTRACKS field
-			var totalTracksValue = GetValue ("TOTALTRACKS");
+			// TOTALTRACKS is what this library writes. TRACKTOTAL is what rippers write.
+			var totalTracksValue = GetValue ("TOTALTRACKS") ?? GetValue ("TRACKTOTAL");
 			if (!string.IsNullOrEmpty (totalTracksValue) && uint.TryParse (totalTracksValue, out var total))
 				return total;
 
