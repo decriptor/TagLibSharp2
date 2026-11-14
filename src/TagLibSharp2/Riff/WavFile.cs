@@ -262,21 +262,33 @@ public sealed class WavFile : IMediaFile
 		var dataChunk = riff.GetChunk (DataChunkId);
 
 		if (fmtChunk.HasValue) {
-			var dataSize = dataChunk?.DataSize ?? 0;
-			wav.Properties = WavAudioPropertiesParser.Parse (fmtChunk.Value.Data, dataSize) ?? default;
+			// Duration uses the sample bytes held. A declared ckSize larger than
+			// those bytes is not the audio that was parsed.
+			var dataBytes = dataChunk is { } present ? present.Data.Length : 0;
+			wav.Properties = WavAudioPropertiesParser.Parse (fmtChunk.Value.Data, dataBytes) ?? default;
 
 			// Parse WAVEFORMATEXTENSIBLE if present
 			wav.ExtendedProperties = WavAudioPropertiesParser.ParseExtended (fmtChunk.Value.Data);
 		}
 
-		// Parse LIST INFO chunk. Other LIST types (adtl cue labels) stay in the chunk list.
+		// Merge every LIST INFO into one tag. The first list wins; a later list
+		// fills only fields that list left empty. Other LIST types stay in the chunk list.
+		RiffInfoTag? info = null;
 		foreach (var listChunk in riff.GetChunks (ListChunkId)) {
 			if (!IsInfoList (listChunk))
 				continue;
 
-			wav.InfoTag = RiffInfoTag.Parse (listChunk.Data);
-			break;
+			var parsed = RiffInfoTag.Parse (listChunk.Data);
+			if (parsed is null)
+				continue;
+
+			if (info is null)
+				info = parsed;
+			else
+				info.FillMissingFrom (parsed);
 		}
+
+		wav.InfoTag = info;
 
 		// Parse ID3v2 chunk
 		var id3Chunk = riff.GetChunk (Id3ChunkId);
@@ -419,20 +431,12 @@ public sealed class WavFile : IMediaFile
 		// Start with a new RIFF structure
 		var riff = new RiffFile ();
 		var copyBext = ShouldCopyBextChunk ();
-		var skippedOwnedInfo = false;
 
-		// Rewrite the parsed id3, bext, and the INFO list this file owns.
-		// Copy every other chunk, including a second chunk with the same FourCC.
+		// Rewrite id3, bext, and every LIST INFO. Copy every other chunk,
+		// including a second chunk with the same FourCC. One INFO list is written below.
 		foreach (var chunk in _riff.AllChunks) {
-			if (IsInfoList (chunk)) {
-				if (!skippedOwnedInfo) {
-					skippedOwnedInfo = true;
-					continue;
-				}
-
-				riff.AddChunk (chunk);
+			if (IsInfoList (chunk))
 				continue;
-			}
 
 			if (chunk.FourCC == Id3ChunkId) {
 				if (_keepUnparsedId3 && Id3v2Tag is null)
@@ -479,7 +483,7 @@ public sealed class WavFile : IMediaFile
 	}
 
 	/// <summary>
-	/// A data ckSize above <see cref="int.MaxValue"/>, or a container that ends first, leaves no data chunk.
+	/// A data ckSize that does not fit the container, including one past <see cref="int.MaxValue"/>, leaves no data chunk.
 	/// </summary>
 	bool HasDataChunk => _riff.GetChunk (DataChunkId) is not null;
 

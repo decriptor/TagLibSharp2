@@ -109,7 +109,8 @@ public class BextTag
 	byte[]? _umid;
 
 	/// <summary>
-	/// True after the caller assigns null, so a save does not copy the source UMID back.
+	/// True after the caller assigns null, so a save does not copy a non-zero source UMID back.
+	/// Bytes 348-411 that are already zero are not a change.
 	/// </summary>
 	bool _umidCleared;
 
@@ -119,9 +120,9 @@ public class BextTag
 	/// <remarks>
 	/// Only present in Version 1 and later. 64 bytes, with the last 32
 	/// set to zero if using basic (32-byte) UMID.
-	/// Setting this to null clears it. A later save writes zeros instead of
-	/// bytes from the chunk this tag was parsed from, including when that
-	/// chunk's version word (offset 346) is less than 1.
+	/// Setting this to null clears a non-zero UMID. A later save writes zeros
+	/// instead of those source bytes, including when the version word at
+	/// offset 346 is less than 1. Bytes 348-411 that are already zero are not a change.
 	/// </remarks>
 #pragma warning disable CA1819 // Properties should not return arrays - UMID is a fixed-size identifier
 	public byte[]? Umid {
@@ -215,7 +216,7 @@ public class BextTag
 	/// </summary>
 	internal bool MatchesSource ()
 	{
-		if (_source is null || _umidCleared)
+		if (_source is null || UmidClearChangesSource ())
 			return false;
 
 		var fresh = Parse (new BinaryData (_source));
@@ -287,6 +288,22 @@ public class BextTag
 			CopyRange (_source, bytes, UmidOffset, UmidSize);
 
 		return new BinaryData (bytes);
+	}
+
+	/// <summary>
+	/// Assigning null counts as a change only when source bytes 348-411 are non-zero.
+	/// </summary>
+	bool UmidClearChangesSource ()
+	{
+		if (!_umidCleared || _source is null || _source.Length < UmidOffset + UmidSize)
+			return false;
+
+		for (var i = 0; i < UmidSize; i++) {
+			if (_source[UmidOffset + i] != 0)
+				return true;
+		}
+
+		return false;
 	}
 
 	static bool UmidEquals (byte[]? left, byte[]? right)
