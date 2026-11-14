@@ -1235,7 +1235,16 @@ public sealed class Id3v2Tag : Tag
 				}
 			}
 
-			if (frameSize <= 0 ||
+			if (frameSize == 0) {
+				// A size of 0 is illegal, but the next frame starts after this header.
+				if (remaining < frameHeaderSize || frameData.Length < frameHeaderSize)
+					break;
+				frameData = frameData.Slice (frameHeaderSize);
+				remaining -= frameHeaderSize;
+				continue;
+			}
+
+			if (frameSize < 0 ||
 				frameSize > remaining - frameHeaderSize ||
 				frameSize > frameData.Length - frameHeaderSize)
 				break;

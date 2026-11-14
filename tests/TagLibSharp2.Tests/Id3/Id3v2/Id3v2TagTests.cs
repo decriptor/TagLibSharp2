@@ -150,6 +150,26 @@ public class Id3v2TagTests
 	}
 
 	[TestMethod]
+	public void Read_ZeroLengthFrame_KeepsTheFramesAfterIt ()
+	{
+		var title = TestBuilders.Id3v2.CreateTextFrame (TestConstants.FrameIds.Title, "Kept", TestConstants.Id3v2.Version3);
+		var zero = new byte[10];
+		"WOAF"u8.CopyTo (zero);
+		var frames = new byte[zero.Length + title.Length];
+		zero.CopyTo (frames, 0);
+		title.CopyTo (frames, zero.Length);
+		var header = TestBuilders.Id3v2.CreateHeader (TestConstants.Id3v2.Version3, (uint)frames.Length);
+		var data = new byte[header.Length + frames.Length];
+		header.CopyTo (data, 0);
+		frames.CopyTo (data, header.Length);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual ("Kept", result.Tag!.Title);
+	}
+
+	[TestMethod]
 	public void Read_NoMagic_ReturnsNotFound ()
 	{
 		var data = new byte[] { (byte)'X', (byte)'Y', (byte)'Z', 4, 0, 0, 0, 0, 0, 0 };
