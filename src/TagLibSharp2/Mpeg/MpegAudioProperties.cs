@@ -49,10 +49,12 @@ public sealed class MpegAudioProperties : IMediaProperties
 	public int BitsPerSample => 0;
 
 	/// <summary>
-	/// Gets the codec name, including the MPEG version and layer
-	/// (for example, "MPEG-1 Layer III" or "MPEG-2 Layer II").
+	/// Gets the codec name. Layer III is "MP3" for every MPEG version.
+	/// Layer I and Layer II include the version (for example, "MPEG-2 Layer II").
 	/// </summary>
-	public string Codec => $"{FormatVersion (Version)} {FormatLayer (Layer)}";
+	public string Codec => Layer == MpegLayer.Layer3
+		? "MP3"
+		: $"{FormatVersion (Version)} {FormatLayer (Layer)}";
 
 	/// <summary>
 	/// Gets a value indicating whether this is a variable bit rate file.
