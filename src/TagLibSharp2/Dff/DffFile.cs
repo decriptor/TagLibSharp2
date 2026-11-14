@@ -213,6 +213,35 @@ public sealed class DffFile : IMediaFile
 	private int _id3Size;
 	private ulong _sampleCount;
 
+	// Every ID3 chunk that precedes the sound chunk, including its pad byte.
+	// One offset is not enough when two such chunks exist, and neither is the audio cut.
+	private List<Id3Range>? _preAudioId3Ranges;
+
+	private readonly struct Id3Range (int offset, int length)
+	{
+		public int Offset { get; } = offset;
+
+		public int Length { get; } = length;
+
+		public static Id3Range OnDisk (int offset, ulong chunkSize, bool extendsData, int dataLength)
+		{
+			var available = dataLength - offset - 12;
+			if (available < 0)
+				available = 0;
+
+			// A chunk that fits is at most the bytes still in the file, so the cast is exact.
+			var dataBytes = extendsData ? available : (int)chunkSize;
+			var length = 12 + dataBytes;
+			if (!extendsData && (chunkSize & 1) != 0 && offset + length < dataLength)
+				length++;
+
+			if (offset + length > dataLength)
+				length = dataLength - offset;
+
+			return new Id3Range (offset, length);
+		}
+	}
+
 	private DffFile () { }
 
 	/// <summary>
@@ -308,8 +337,13 @@ public sealed class DffFile : IMediaFile
 				case "ID3 ":
 					// Only an ID3 chunk at or after the audio is the metadata suffix.
 					// An earlier ID3 chunk must not become the cut point for save.
-					if (foundAudio)
+					if (foundAudio) {
 						file._id3Offset = offset;
+					} else {
+						file._preAudioId3Ranges ??= new List<Id3Range> (2);
+						file._preAudioId3Ranges.Add (Id3Range.OnDisk (offset, chunkSize, chunkExtendsData, data.Length));
+					}
+
 					file._id3Size = (int)chunkSize;
 					if (!chunkExtendsData) {
 						var id3Data = data.Slice (offset + 12, (int)chunkSize);
@@ -540,18 +574,28 @@ public sealed class DffFile : IMediaFile
 		if (_originalData is null)
 			throw new InvalidOperationException ("Cannot render: no original data available");
 
-		// If no ID3v2 tag changes, return original data
-		if (Id3v2Tag is null && _id3Offset == 0)
-			return new BinaryData (_originalData);
+		var original = _originalData;
+		var stripLeadingId3 = Id3v2Tag is null && _preAudioId3Ranges is { Count: > 0 };
+
+		// Nothing to remove and nothing to write.
+		if (Id3v2Tag is null && _id3Offset == 0 && !stripLeadingId3)
+			return new BinaryData (original);
 
 		using var ms = new MemoryStream ();
 
-		// Copy everything up to ID3 chunk (or end if no ID3)
-		var copyEnd = _id3Offset > 0 ? _id3Offset : _originalData.Length;
-		ms.Write (_originalData, 0, copyEnd);
+		// Suffix ID3 is the only cut. Pre-audio ID3 stays in front of the sound chunk
+		// unless the tag is being cleared, in which case those chunks (and pad bytes) are skipped.
+		var copyEnd = _id3Offset > 0 ? _id3Offset : original.Length;
+		if (stripLeadingId3)
+			CopySkippingPreAudioId3 (ms, original, copyEnd);
+		else
+			ms.Write (original, 0, copyEnd);
 
 		// Write ID3 chunk if we have a tag
 		if (Id3v2Tag is not null) {
+			// A sound chunk that claims more bytes than were copied would hide this ID3.
+			WritePresentSoundChunkSize (ms, original, copyEnd);
+
 			var id3Data = Id3v2Tag.Render ();
 			var id3ChunkId = System.Text.Encoding.ASCII.GetBytes ("ID3 ");
 			ms.Write (id3ChunkId, 0, id3ChunkId.Length);
@@ -693,6 +737,57 @@ public sealed class DffFile : IMediaFile
 		} catch (Exception ex) {
 			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
 		}
+	}
+
+	private void CopySkippingPreAudioId3 (MemoryStream destination, byte[] original, int copyEnd)
+	{
+		var ranges = _preAudioId3Ranges;
+		var cursor = 0;
+		if (ranges is not null) {
+			for (var i = 0; i < ranges.Count; i++) {
+				var range = ranges[i];
+				if (range.Offset >= copyEnd)
+					break;
+				if (range.Offset < cursor)
+					continue;
+				if (range.Offset > cursor)
+					destination.Write (original, cursor, range.Offset - cursor);
+
+				var skipEnd = range.Offset + range.Length;
+				if (skipEnd > copyEnd)
+					skipEnd = copyEnd;
+				if (skipEnd > cursor)
+					cursor = skipEnd;
+			}
+		}
+
+		if (cursor < copyEnd)
+			destination.Write (original, cursor, copyEnd - cursor);
+	}
+
+	private void WritePresentSoundChunkSize (MemoryStream destination, byte[] original, int copyEnd)
+	{
+		// DSD and DST share _dsdOffset. The header is never at the start of a FRM8 file.
+		if (_dsdOffset < 16)
+			return;
+
+		var headerEnd = _dsdOffset + 12;
+		if (headerEnd > copyEnd || headerEnd > original.Length)
+			return;
+
+		var declared = BinaryPrimitives.ReadUInt64BigEndian (original.AsSpan (_dsdOffset + 4, 8));
+		var present = (ulong)(copyEnd - headerEnd);
+		if (declared <= present)
+			return;
+
+		var end = destination.Position;
+		destination.Position = _dsdOffset + 4;
+		WriteUInt64BE (destination, present);
+		destination.Position = end;
+
+		// The following local chunk must start on an even boundary.
+		if ((present & 1) != 0)
+			destination.WriteByte (0);
 	}
 
 	private static void WriteUInt64BE (Stream stream, ulong value)
