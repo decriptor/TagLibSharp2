@@ -158,6 +158,20 @@ public abstract class Tag
 	public abstract string? Year { get; set; }
 
 	/// <summary>
+	/// Gets the release date <see cref="CopyTo"/> writes into <see cref="Year"/>.
+	/// </summary>
+	/// <remarks>
+	/// Defaults to <see cref="Year"/>. A format whose public year is only four digits
+	/// overrides this to carry a full timestamp.
+	/// </remarks>
+	protected virtual string? CopyableDate => Year;
+
+	/// <summary>
+	/// Reads <see cref="CopyableDate"/> from another tag in this assembly.
+	/// </summary>
+	internal string? ReadCopyableDate () => CopyableDate;
+
+	/// <summary>
 	/// Gets or sets the original release date.
 	/// </summary>
 	/// <remarks>
@@ -1186,8 +1200,8 @@ public abstract class Tag
 				target.Artist = Artist;
 			if (Album is not null)
 				target.Album = Album;
-			if (Year is not null)
-				target.Year = Year;
+			if (CopyableDate is not null)
+				target.Year = CopyableDate;
 			if (Comment is not null)
 				target.Comment = Comment;
 			if (Genre is not null)

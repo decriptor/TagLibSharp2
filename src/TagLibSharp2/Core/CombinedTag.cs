@@ -154,6 +154,10 @@ public class CombinedTag : Tag
 	}
 
 	/// <inheritdoc/>
+	protected override string? CopyableDate =>
+		FirstNonEmptyString (tag => tag.ReadCopyableDate ());
+
+	/// <inheritdoc/>
 	public override string? Comment {
 		get => FirstNonEmptyString (t => t.Comment);
 		set => WriteToAll (t => t.Comment = value);

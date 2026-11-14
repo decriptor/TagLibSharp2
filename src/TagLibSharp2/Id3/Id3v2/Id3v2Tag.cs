@@ -225,6 +225,23 @@ public sealed class Id3v2Tag : Tag
 
 	/// <inheritdoc/>
 	/// <remarks>
+	/// ID3v2.4 TDRC is a timestamp (yyyy-MM-ddTHH:mm:ss, precision may be reduced).
+	/// A valid timestamp is copied in full. Anything else copies the four-digit year.
+	/// </remarks>
+	protected override string? CopyableDate {
+		get {
+			if (Version == 4) {
+				var recorded = GetTextFrame ("TDRC");
+				if (IsReleaseTimestamp (recorded))
+					return recorded;
+			}
+
+			return Year;
+		}
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
 	/// In ID3v2.4, uses the TDOR (Original Release Time) frame.
 	/// In ID3v2.3, uses the TORY (Original Release Year) frame.
 	/// When reading, falls back to the other version's frame if the primary is not found.
@@ -2592,9 +2609,9 @@ public sealed class Id3v2Tag : Tag
 			hasDataLengthIndicator = false; // Separate flag is v2.4 only
 		}
 
-		// Skip encryption - we can't decrypt, so just return original for now
+		// An encrypted frame is not text. The method byte is not a text encoding.
 		if (hasEncryption)
-			return content;
+			return ReadOnlySpan<byte>.Empty;
 
 		// Skip grouping identity byte if present (1 byte)
 		if (hasGrouping) {
@@ -2607,14 +2624,15 @@ public sealed class Id3v2Tag : Tag
 		// v2.3 with compression: first 4 bytes are decompressed size (handled in decompression)
 		int decompressedSize = 0;
 		if (majorVersion == 4 && hasDataLengthIndicator) {
+			// A compressed frame without its size field is not text.
 			if (content.Length < offset + 4)
-				return content;
+				return hasCompression ? ReadOnlySpan<byte>.Empty : content;
 			decompressedSize = ReadSyncsafeInt32 (content.Slice (offset, 4));
 			offset += 4;
 		} else if (majorVersion == 3 && hasCompression) {
 			// v2.3: 4-byte big-endian decompressed size precedes compressed data
 			if (content.Length < offset + 4)
-				return content;
+				return ReadOnlySpan<byte>.Empty;
 			decompressedSize = (content[offset] << 24) | (content[offset + 1] << 16) |
 							   (content[offset + 2] << 8) | content[offset + 3];
 			offset += 4;
@@ -2798,6 +2816,30 @@ public sealed class Id3v2Tag : Tag
 		return raw;
 	}
 
+	// ID3v2.4 timestamps: yyyy, yyyy-MM, yyyy-MM-dd, yyyy-MM-ddTHH,
+	// yyyy-MM-ddTHH:mm, yyyy-MM-ddTHH:mm:ss. https://id3.org/id3v2.4.0-structure
+	static readonly string[] ReleaseTimestampFormats = [
+		"yyyy",
+		"yyyy-MM",
+		"yyyy-MM-dd",
+		"yyyy-MM-dd'T'HH",
+		"yyyy-MM-dd'T'HH:mm",
+		"yyyy-MM-dd'T'HH:mm:ss"
+	];
+
+	static bool IsReleaseTimestamp (string? value)
+	{
+		if (value is null || value.Length is not (4 or 7 or 10 or 13 or 16 or 19))
+			return false;
+
+		return DateTime.TryParseExact (
+			value,
+			ReleaseTimestampFormats,
+			CultureInfo.InvariantCulture,
+			DateTimeStyles.None,
+			out _);
+	}
+
 	// stored is the unsynchronised tag body. decodedCount is how many bytes remain
 	// after FF 00 pairs are removed. The returned length includes those inserted zeros.
 	static int StoredBytesForDecodedPrefix (ReadOnlySpan<byte> stored, int decodedCount)
@@ -2835,9 +2877,12 @@ public sealed class Id3v2Tag : Tag
 	static byte[]? DecompressZlib (ReadOnlySpan<byte> data, int expectedSize)
 	{
 		const int MaxDecompressedBytes = 16 * 1024 * 1024;
+		// A repeated byte passes 1000:1 (about 1001:1 at 800 KB) and stays under 16 MiB.
+		// 1100 keeps that legal frame. The cap still bounds the allocation.
+		const int MaxExpansionRatio = 1100;
 		if (data.Length < 2 || expectedSize <= 0 || expectedSize > MaxDecompressedBytes)
 			return null;
-		if ((long)expectedSize > (long)data.Length * 1000L)
+		if ((long)expectedSize > (long)data.Length * MaxExpansionRatio)
 			return null;
 
 		try {

@@ -175,9 +175,7 @@ public class Id3v2FrameFlagsTests
 		var result = Id3v2Tag.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		var title = result.Tag!.Title;
-		Assert.IsTrue (title is null || title.Length <= Declared);
-		Assert.IsTrue (title is null || title.Length < frameContent.Length - 1);
+		Assert.IsNull (result.Tag!.Title);
 	}
 
 	[TestMethod]
@@ -195,8 +193,122 @@ public class Id3v2FrameFlagsTests
 		var result = Id3v2Tag.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		var title = result.Tag!.Title;
-		Assert.IsTrue (title is null || title.Length < Declared);
+		Assert.IsNull (result.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Read_CompressedFrame_CapRejectsIncompressibleDeclaredSize ()
+	{
+		// About 17 KB stored, declared as 16 MiB + 1. The expansion ratio stays
+		// under 1100, so only the cap can reject it.
+		const int Stored = 17 * 1024;
+		const int Declared = 16 * 1024 * 1024 + 1;
+		var frameContent = new byte[Stored];
+		frameContent[0] = TestConstants.Id3v2.EncodingLatin1;
+		for (var i = 1; i < frameContent.Length; i++)
+			frameContent[i] = (byte)(i * 17);
+
+		var compressed = CompressZlib (frameContent, CompressionLevel.NoCompression);
+		Assert.IsTrue (compressed.Length > 16 * 1024, "Payload must stay large enough that the ratio allows it.");
+		Assert.IsTrue ((long)Declared <= (long)compressed.Length * 1100L);
+		Assert.IsTrue (Declared > 16 * 1024 * 1024);
+
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			compressed,
+			Declared,
+			TestConstants.Id3v2.Version4);
+		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNull (result.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Read_CompressedFrame_RatioRejectsWhenCapWouldNot ()
+	{
+		var frameContent = new byte[] { TestConstants.Id3v2.EncodingLatin1, (byte)'A' };
+		var compressed = CompressZlib (frameContent);
+		var declared = compressed.Length * 1100 + 1;
+		Assert.IsTrue (declared <= 16 * 1024 * 1024);
+
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			compressed,
+			declared,
+			TestConstants.Id3v2.Version4);
+		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNull (result.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Read_CompressedFrame_ExpansionBetween1000And1100_KeepsTitle ()
+	{
+		// Deflate of 800 KB of one byte is just over 1000:1 and under 1100:1, and under 16 MiB.
+		const int TextLength = 800_000;
+		var frameContent = new byte[1 + TextLength];
+		frameContent[0] = TestConstants.Id3v2.EncodingLatin1;
+		Array.Fill (frameContent, (byte)'A', 1, TextLength);
+
+		var compressed = CompressZlib (frameContent, CompressionLevel.Optimal);
+		Assert.IsTrue ((long)frameContent.Length > (long)compressed.Length * 1000L);
+		Assert.IsTrue ((long)frameContent.Length <= (long)compressed.Length * 1100L);
+		Assert.IsTrue (frameContent.Length <= 16 * 1024 * 1024);
+
+		var frame = CreateCompressedFrameWithDeclaredSize (
+			TestConstants.FrameIds.Title,
+			compressed,
+			frameContent.Length,
+			TestConstants.Id3v2.Version4);
+		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNotNull (result.Tag!.Title);
+		Assert.AreEqual (TextLength, result.Tag.Title.Length);
+		Assert.AreEqual ('A', result.Tag.Title[0]);
+		Assert.AreEqual ('A', result.Tag.Title[TextLength - 1]);
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version4, 0x09)]
+	[DataRow (TestConstants.Id3v2.Version3, 0x80)]
+	public void Read_CompressedFrame_ShorterThanSizeField_TitleIsNull (int version, int formatFlags)
+	{
+		// Three bytes cannot hold the 4-byte decompressed-size field.
+		var content = new byte[] { TestConstants.Id3v2.EncodingLatin1, (byte)'H', (byte)'i' };
+		var frame = CreateRawFrame (TestConstants.FrameIds.Title, content, (byte)version, (byte)formatFlags);
+		var data = CreateTagWithFrame ((byte)version, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNull (result.Tag!.Title);
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version4, 0x04)]
+	[DataRow (TestConstants.Id3v2.Version3, 0x40)]
+	public void Read_EncryptedFrame_TitleIsNull (int version, int formatFlags)
+	{
+		var text = Encoding.Latin1.GetBytes ("Secret");
+		var content = new byte[1 + text.Length];
+		content[0] = TestConstants.Id3v2.EncodingLatin1;
+		text.CopyTo (content, 1);
+		var frame = CreateRawFrame (TestConstants.FrameIds.Title, content, (byte)version, (byte)formatFlags);
+		var data = CreateTagWithFrame ((byte)version, frame);
+
+		var result = Id3v2Tag.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.IsNull (result.Tag!.Title);
 	}
 
 	[TestMethod]
@@ -218,8 +330,7 @@ public class Id3v2FrameFlagsTests
 		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
 
 		Assert.IsTrue (result.IsSuccess);
-		var title = result.Tag!.Title;
-		Assert.IsTrue (title is null || title.Length < Declared);
+		Assert.IsNull (result.Tag!.Title);
 		Assert.IsTrue (allocated < 1024 * 1024, $"Read allocated {allocated} bytes");
 	}
 
@@ -314,6 +425,29 @@ public class Id3v2FrameFlagsTests
 	// ===========================================================================
 	// Helper Methods
 	// ===========================================================================
+
+	static byte[] CreateRawFrame (string frameId, byte[] content, byte version, byte formatFlags)
+	{
+		var frame = new byte[TestConstants.Id3v2.FrameHeaderSize + content.Length];
+		Encoding.ASCII.GetBytes (frameId).CopyTo (frame, 0);
+		var size = content.Length;
+		if (version == TestConstants.Id3v2.Version4) {
+			frame[4] = (byte)((size >> 21) & 0x7F);
+			frame[5] = (byte)((size >> 14) & 0x7F);
+			frame[6] = (byte)((size >> 7) & 0x7F);
+			frame[7] = (byte)(size & 0x7F);
+		} else {
+			frame[4] = (byte)((size >> 24) & 0xFF);
+			frame[5] = (byte)((size >> 16) & 0xFF);
+			frame[6] = (byte)((size >> 8) & 0xFF);
+			frame[7] = (byte)(size & 0xFF);
+		}
+
+		frame[8] = 0x00;
+		frame[9] = formatFlags;
+		content.CopyTo (frame, TestConstants.Id3v2.FrameHeaderSize);
+		return frame;
+	}
 
 	static byte[] CreateTagWithFrame (byte version, byte[] frame)
 	{

@@ -28,9 +28,10 @@ public class Id3v2TagUnsyncAndV22Tests
 	}
 
 	[TestMethod]
-	public void Read_V22ExtendedHeaderBit_DoesNotSkipTheTitle ()
+	public void Read_V22CompressionFlag_KeepsTitleByLeniency ()
 	{
-		// Bit 6 is compression in v2.2, not an extended header. The title still parses.
+		// ID3v2.2 bit 6 is compression. The spec says a set compression bit makes the
+		// tag void. Parsing the title anyway is deliberate leniency, not an extended header.
 		var frame = TestBuilders.Id3v2.CreateTextFrameV22 (TestConstants.FrameIdsV22.Title, "Kept");
 		var header = TestBuilders.Id3v2.CreateHeaderWithFlags (TestConstants.Id3v2.Version2, (uint)frame.Length, 0x40);
 		var data = new byte[header.Length + frame.Length];

@@ -897,6 +897,7 @@ namespace TagLibSharp2.Core
         public override string[] Composers { get; set; }
         public override string[]? ComposersSort { get; set; }
         public override string? Conductor { get; set; }
+        protected override string? CopyableDate { get; }
         public override string? Copyright { get; set; }
         public override string? DateTagged { get; set; }
         public override string? Description { get; set; }
@@ -1165,6 +1166,7 @@ namespace TagLibSharp2.Core
         public virtual string[] Composers { get; set; }
         public virtual string[]? ComposersSort { get; set; }
         public virtual string? Conductor { get; set; }
+        protected virtual string? CopyableDate { get; }
         public virtual string? Copyright { get; set; }
         public virtual string? DateTagged { get; set; }
         public virtual string? Description { get; set; }
@@ -2081,6 +2083,7 @@ namespace TagLibSharp2.Id3.Id3v2
         public override string[] Composers { get; set; }
         public override string[]? ComposersSort { get; set; }
         public override string? Conductor { get; set; }
+        protected override string? CopyableDate { get; }
         public override string? Copyright { get; set; }
         public TagLibSharp2.Id3.Id3v2.Frames.PictureFrame? CoverArt { get; set; }
         public override string? DateTagged { get; set; }
