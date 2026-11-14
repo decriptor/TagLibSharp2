@@ -156,6 +156,19 @@ public class MpegFrameTests
 	}
 
 	[TestMethod]
+	public void FrameSize_Mpeg2Layer3_CalculatedCorrectly ()
+	{
+		// MPEG-2 Layer III, 64 kbps, 22050 Hz, no padding
+		// Frame size = 72 * bitrate / sample_rate
+		// = 72 * 64000 / 22050 = 208.97..., truncated = 208 bytes
+		byte[] data = [0xFF, 0xF3, 0x80, 0x00];
+
+		MpegFrame.TryParse (new BinaryData (data), 0, out var frame);
+
+		Assert.AreEqual (208, frame!.FrameSize);
+	}
+
+	[TestMethod]
 	public void FrameSize_WithPadding_CalculatedCorrectly ()
 	{
 		// MPEG1 Layer 3, 128 kbps, 44100 Hz, WITH padding

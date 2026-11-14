@@ -137,7 +137,7 @@ public sealed class MpegFrame
 		SamplesPerFrame = samplesTable[layerIndex];
 
 		// Calculate frame size
-		FrameSize = CalculateFrameSize (layer, bitrate, sampleRate, hasPadding);
+		FrameSize = CalculateFrameSize (version, layer, bitrate, sampleRate, hasPadding);
 	}
 
 	/// <summary>
@@ -215,7 +215,13 @@ public sealed class MpegFrame
 	/// <summary>
 	/// Calculates the size of an MPEG frame based on its parameters.
 	/// </summary>
-	static int CalculateFrameSize (MpegLayer layer, int bitrate, int sampleRate, bool hasPadding)
+	/// <remarks>
+	/// ISO 11172-3 / 13818-3: frame bytes = samplesPerFrame / 8 * bitrate / sampleRate + padding.
+	/// Layer I is (12 * bitrate / sampleRate + padding) * 4. Layer II is 144 on every version
+	/// (1152 samples). Layer III MPEG-1 is 144 (1152 samples). Layer III MPEG-2 and MPEG-2.5
+	/// is 72 (576 samples). Padding is 1 byte for layer II/III.
+	/// </remarks>
+	static int CalculateFrameSize (MpegVersion version, MpegLayer layer, int bitrate, int sampleRate, bool hasPadding)
 	{
 		if (bitrate == 0 || sampleRate == 0)
 			return 0;
@@ -231,9 +237,9 @@ public sealed class MpegFrame
 
 			case MpegLayer.Layer2:
 			case MpegLayer.Layer3:
-				// Layer 2/3: frame size = 144 * bitrate / sampleRate + padding
+				// 72 only for Layer III when the version is not MPEG-1.
 				paddingSize = hasPadding ? 1 : 0;
-				coefficient = 144;
+				coefficient = layer == MpegLayer.Layer3 && version != MpegVersion.Version1 ? 72 : 144;
 				return (coefficient * bitrate * 1000 / sampleRate) + paddingSize;
 
 			default:
