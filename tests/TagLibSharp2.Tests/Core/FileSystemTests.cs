@@ -157,6 +157,8 @@ sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem
 
 	public List<string> Writes { get; } = [];
 
+	public bool ThrowAfterWrite { get; set; }
+
 	public void OnNextMove (Action<IFileSystem, string, string> action) =>
 		_moveScripts.Enqueue (action);
 
@@ -177,11 +179,18 @@ sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem
 	{
 		Writes.Add (path);
 		inner.WriteAllBytes (path, data);
+		if (ThrowAfterWrite)
+			throw new IOException ("write failed");
 	}
 
 	public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
 	{
 		Writes.Add (path);
+		if (ThrowAfterWrite) {
+			inner.WriteAllBytes (path, data.Span);
+			throw new IOException ("write failed");
+		}
+
 		return inner.WriteAllBytesAsync (path, data, cancellationToken);
 	}
 
@@ -222,10 +231,18 @@ sealed class FlushRecordingFileStream : FileStream
 			FlushedToDisk = true;
 		base.Flush (flushToDisk);
 	}
+
+	protected override void Dispose (bool disposing)
+	{
+		var flushed = FlushedToDisk;
+		base.Dispose (disposing);
+		if (disposing && !flushed)
+			throw new InvalidOperationException ("Flush(true) was not called.");
+	}
 }
 
 /// <summary>
-/// Writes through <see cref="DefaultFileSystem.FlushToDisk"/> and records that call before move.
+/// Writes through <see cref="DefaultFileSystem.WriteAndFlush"/> and records that call before move.
 /// </summary>
 sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem
 {
@@ -247,15 +264,15 @@ sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem
 	public void WriteAllBytes (string path, ReadOnlySpan<byte> data)
 	{
 		using var stream = new FlushRecordingFileStream (path);
-		stream.Write (data);
-		DefaultFileSystem.FlushToDisk (stream);
+		DefaultFileSystem.WriteAndFlush (stream, data);
 		events.Add (stream.FlushedToDisk ? "flush-to-disk" : "not-flushed");
 	}
 
-	public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+	public async Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
 	{
-		WriteAllBytes (path, data.Span);
-		return Task.CompletedTask;
+		using var stream = new FlushRecordingFileStream (path);
+		await DefaultFileSystem.WriteAndFlushAsync (stream, data, cancellationToken).ConfigureAwait (false);
+		events.Add (stream.FlushedToDisk ? "flush-to-disk" : "not-flushed");
 	}
 
 	public void Delete (string path) => _inner.Delete (path);
@@ -277,15 +294,36 @@ sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem
 public sealed class FileSystemTests
 {
 	[TestMethod]
-	public void FlushToDisk_RequestsFlushToDisk ()
+	public void WriteAndFlush_WritesBytesAndFlushesToDisk ()
 	{
 		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
 		try {
-			using var stream = new FlushRecordingFileStream (path);
-			DefaultFileSystem.FlushToDisk (stream);
-			Assert.IsTrue (stream.FlushedToDisk);
+			using (var stream = new FlushRecordingFileStream (path)) {
+				DefaultFileSystem.WriteAndFlush (stream, [1, 2, 3]);
+				Assert.IsTrue (stream.FlushedToDisk);
+			}
+
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (path));
 		} finally {
-			File.Delete (path);
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public async Task WriteAndFlushAsync_WritesBytesAndFlushesToDisk ()
+	{
+		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
+		try {
+			using (var stream = new FlushRecordingFileStream (path)) {
+				await DefaultFileSystem.WriteAndFlushAsync (stream, new byte[] { 1, 2, 3 });
+				Assert.IsTrue (stream.FlushedToDisk);
+			}
+
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (path));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
 		}
 	}
 
@@ -796,6 +834,72 @@ public sealed class AtomicFileWriterTests
 		Assert.IsFalse (result.Error.Contains (fs.Writes[0], StringComparison.Ordinal));
 		CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, mock.ReadAllBytes ("/song.bin"));
 		Assert.HasCount (1, mock.GetAllFiles ());
+	}
+
+	[TestMethod]
+	public void Write_AbsentDestination_WhenMoveThrowsAfterTempExists_DeletesTemp ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			// The second failure is the recovery move. It must not leave the temp behind.
+			fs.OnNextMove ((_, _, _) => throw new IOException ("cannot replace"));
+			fs.OnNextMove ((_, _, _) => throw new IOException ("cannot replace"));
+
+			var result = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+			Assert.IsFalse (result.IsSuccess);
+			Assert.IsFalse (File.Exists (destination));
+			var leftovers = Directory.GetFiles (dir);
+			Assert.AreEqual (0, leftovers.Length, string.Join (", ", leftovers));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public async Task WriteAsync_AbsentDestination_WhenMoveThrowsAfterTempExists_DeletesTemp ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			// The second failure is the recovery move. It must not leave the temp behind.
+			fs.OnNextMove ((_, _, _) => throw new IOException ("cannot replace"));
+			fs.OnNextMove ((_, _, _) => throw new IOException ("cannot replace"));
+
+			var result = await AtomicFileWriter.WriteAsync (destination, new byte[] { 4, 5 }, fs);
+
+			Assert.IsFalse (result.IsSuccess);
+			Assert.IsFalse (File.Exists (destination));
+			var leftovers = Directory.GetFiles (dir);
+			Assert.AreEqual (0, leftovers.Length, string.Join (", ", leftovers));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_WhenWriteThrowsBeforeReplace_DeletesTemp ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance) { ThrowAfterWrite = true };
+
+			var result = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+			Assert.IsFalse (result.IsSuccess);
+			Assert.IsFalse (File.Exists (destination));
+			var leftovers = Directory.GetFiles (dir);
+			Assert.AreEqual (0, leftovers.Length, string.Join (", ", leftovers));
+		} finally {
+			Directory.Delete (dir, true);
+		}
 	}
 
 	[TestMethod]
