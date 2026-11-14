@@ -149,22 +149,28 @@ public class RiffFile
 		// Read form type
 		file.FormType = data.Slice (8, 4).ToStringLatin1 ();
 
-		// Parse chunks. Narrow only after the min: (int)FileSize wraps the high bit
-		// (0xFFFFFFFF becomes -1), so the chunk loop never runs and TryParse still succeeds.
-		// 0xFFFFFFFF is the RF64 size sentinel; the real length is in ds64, which is not read here.
-		var offset = HeaderSize;
-		int limit;
-		if (file.FileSize == 0xFFFFFFFF)
-			limit = data.Length;
-		else
-			limit = (int)Math.Min (data.Length, (long)file.FileSize + 8);
+		// 0xFFFFFFFF is a placeholder from streamed writers. RF64 is unsupported.
+		var formEnd = file.FileSize == 0xFFFFFFFF ? (long)data.Length : (long)file.FileSize + 8;
+		var limit = (int)Math.Min ((long)data.Length, formEnd);
 
+		var offset = HeaderSize;
 		while (offset + RiffChunk.HeaderSize <= limit) {
 			if (!RiffChunk.TryParse (data, offset, out var chunk))
 				break;
 
+			// ckSize is the data length and does not include the pad byte.
+			// A size near int.MaxValue used to overflow this signed offset and throw.
+			var dataSize = chunk.DataSize;
+			var pad = (dataSize & 1) != 0 ? 1L : 0L;
+			var next = (long)offset + RiffChunk.HeaderSize + dataSize + pad;
+			if (next > int.MaxValue)
+				break;
+
 			file._chunks.Add (chunk);
-			offset += chunk.TotalSize;
+			if (next >= limit)
+				break;
+
+			offset = (int)next;
 		}
 
 		file.IsValid = true;
@@ -182,10 +188,10 @@ public class RiffFile
 		if (string.IsNullOrEmpty (formType) || formType.Length != 4)
 			throw new InvalidOperationException ("Form type must be exactly 4 characters");
 
-		// Calculate total size
+		// Form size is the form type plus each chunk as stored (header + bytes present + pad).
 		var chunksSize = 0;
 		foreach (var chunk in _chunks)
-			chunksSize += chunk.TotalSize;
+			chunksSize += chunk.RenderedSize;
 
 		var totalSize = HeaderSize + chunksSize;
 		using var builder = new BinaryDataBuilder (totalSize);

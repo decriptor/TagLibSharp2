@@ -71,6 +71,10 @@ public sealed class WavFile : IMediaFile
 	/// <remarks>
 	/// ID3v2 tags provide richer metadata than RIFF INFO.
 	/// May be null if no id3 chunk is present.
+	/// Assigning null removes an id3 chunk that was parsed into this property.
+	/// An id3 chunk this reader could not parse is kept only while this property
+	/// stays null. Assigning an <see cref="Id3v2Tag"/>, including <c>new Id3v2Tag()</c>,
+	/// replaces that unparsed chunk.
 	/// </remarks>
 	public Id3v2Tag? Id3v2Tag { get; set; }
 
@@ -82,6 +86,10 @@ public sealed class WavFile : IMediaFile
 	/// originator, timestamps, and time reference. Commonly used in
 	/// professional audio production.
 	/// May be null if no bext chunk is present.
+	/// Assigning null removes a bext chunk that was parsed into this property.
+	/// A bext chunk shorter than <see cref="BextTag.MinimumSize"/> is kept only
+	/// while this property stays null. Assigning a <see cref="BextTag"/>,
+	/// including <c>new BextTag()</c>, replaces that unparsed chunk.
 	/// </remarks>
 	public BextTag? BextTag { get; set; }
 
@@ -141,6 +149,12 @@ public sealed class WavFile : IMediaFile
 	/// True when a bext chunk was present and shorter than <see cref="BextTag.MinimumSize"/>.
 	/// </summary>
 	bool _keepUnparsedBext;
+
+	/// <summary>
+	/// The <see cref="BextTag"/> instance produced by <see cref="Read"/>.
+	/// Original bytes are copied only while <see cref="BextTag"/> is still this instance.
+	/// </summary>
+	BextTag? _parsedBext;
 
 	WavFile (RiffFile riff)
 	{
@@ -280,10 +294,12 @@ public sealed class WavFile : IMediaFile
 
 		// Parse bext chunk (BWF Broadcast Extension)
 		var bextChunk = riff.GetChunk (BextChunkId);
-		if (bextChunk.HasValue && bextChunk.Value.Data.Length >= BextTag.MinimumSize)
+		if (bextChunk.HasValue && bextChunk.Value.Data.Length >= BextTag.MinimumSize) {
 			wav.BextTag = Riff.BextTag.Parse (bextChunk.Value.Data);
-		else if (bextChunk.HasValue)
+			wav._parsedBext = wav.BextTag;
+		} else if (bextChunk.HasValue) {
 			wav._keepUnparsedBext = true;
+		}
 
 		return WavFileReadResult.Success (wav);
 	}
@@ -403,29 +419,34 @@ public sealed class WavFile : IMediaFile
 		// Start with a new RIFF structure
 		var riff = new RiffFile ();
 		var copyBext = ShouldCopyBextChunk ();
+		var skippedOwnedInfo = false;
 
-		// Rewrite parsed id3, bext, and LIST INFO. Copy a chunk those tags could not parse.
+		// Rewrite the parsed id3, bext, and the INFO list this file owns.
+		// Copy every other chunk, including a second chunk with the same FourCC.
 		foreach (var chunk in _riff.AllChunks) {
-			if (IsInfoList (chunk))
+			if (IsInfoList (chunk)) {
+				if (!skippedOwnedInfo) {
+					skippedOwnedInfo = true;
+					continue;
+				}
+
+				riff.AddChunk (chunk);
 				continue;
+			}
 
 			if (chunk.FourCC == Id3ChunkId) {
 				if (_keepUnparsedId3 && Id3v2Tag is null)
-					riff.SetChunk (chunk);
+					riff.AddChunk (chunk);
 				continue;
 			}
 
 			if (chunk.FourCC == BextChunkId) {
 				if (copyBext)
-					riff.SetChunk (chunk);
+					riff.AddChunk (chunk);
 				continue;
 			}
 
-			// SetChunk keeps one chunk per FourCC, so a later INFO list would replace adtl.
-			if (chunk.FourCC == ListChunkId)
-				riff.AddChunk (chunk);
-			else
-				riff.SetChunk (chunk);
+			riff.AddChunk (chunk);
 		}
 
 		// Add bext tag if present. An unmodified parsed bext is copied above.
@@ -463,12 +484,15 @@ public sealed class WavFile : IMediaFile
 	bool HasDataChunk => _riff.GetChunk (DataChunkId) is not null;
 
 	/// <summary>
-	/// Copy the original bext chunk when it did not parse, or when a parsed tag is unchanged.
-	/// A caller who sets <see cref="BextTag"/> to null removed a parsed tag.
+	/// Copy the original bext bytes only for the instance <see cref="Read"/> parsed,
+	/// and only while that instance still matches its source.
+	/// A <see cref="BextTag"/> assigned from another file is rendered instead.
+	/// Null removes a parsed bext. An unparsed bext is kept while the property stays null.
 	/// </summary>
 	bool ShouldCopyBextChunk () =>
 		_riff.GetChunk (BextChunkId) is not null
-		&& ((_keepUnparsedBext && BextTag is null) || BextTag is { } tag && tag.MatchesSource ());
+		&& ((_keepUnparsedBext && BextTag is null)
+			|| (ReferenceEquals (BextTag, _parsedBext) && BextTag is { } tag && tag.MatchesSource ()));
 
 	FileWriteResult? MissingDataChunkFailure ()
 	{

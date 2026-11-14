@@ -106,15 +106,31 @@ public class BextTag
 	/// </remarks>
 	public ushort Version { get; set; }
 
+	byte[]? _umid;
+
+	/// <summary>
+	/// True after the caller assigns null, so a save does not copy the source UMID back.
+	/// </summary>
+	bool _umidCleared;
+
 	/// <summary>
 	/// Gets or sets the SMPTE UMID (Unique Material Identifier).
 	/// </summary>
 	/// <remarks>
 	/// Only present in Version 1 and later. 64 bytes, with the last 32
 	/// set to zero if using basic (32-byte) UMID.
+	/// Setting this to null clears it. A later save writes zeros instead of
+	/// bytes from the chunk this tag was parsed from, including when that
+	/// chunk's version word (offset 346) is less than 1.
 	/// </remarks>
 #pragma warning disable CA1819 // Properties should not return arrays - UMID is a fixed-size identifier
-	public byte[]? Umid { get; set; }
+	public byte[]? Umid {
+		get => _umid;
+		set {
+			_umid = value;
+			_umidCleared = value is null;
+		}
+	}
 #pragma warning restore CA1819
 
 	/// <summary>
@@ -179,7 +195,7 @@ public class BextTag
 				}
 			}
 			if (hasUmid)
-				tag.Umid = umid;
+				tag._umid = umid;
 		}
 
 		// CodingHistory (variable length after fixed portion)
@@ -199,7 +215,7 @@ public class BextTag
 	/// </summary>
 	internal bool MatchesSource ()
 	{
-		if (_source is null)
+		if (_source is null || _umidCleared)
 			return false;
 
 		var fresh = Parse (new BinaryData (_source));
@@ -263,9 +279,11 @@ public class BextTag
 			return rendered;
 
 		// Keep loudness and reserved bytes this writer does not model.
+		// A cleared UMID stays zero. Version 0 reserves that region; do not copy it back
+		// after the caller set Umid to null (the version word is at offset 346).
 		var bytes = rendered.ToArray ();
 		CopyRange (_source, bytes, LoudnessOffset, UninterpretedTailSize);
-		if (Version < 1 && Umid is null)
+		if (!_umidCleared && Version < 1 && Umid is null)
 			CopyRange (_source, bytes, UmidOffset, UmidSize);
 
 		return new BinaryData (bytes);
