@@ -205,6 +205,27 @@ public class Id3v2TagTests
 	}
 
 	[TestMethod]
+	public void CopyTo_V24ItunesTimestamp_CopiesFullTimestampNotYear ()
+	{
+		// iTunes stores TDRC with a trailing Z. The year setter keeps that string.
+		// Copy must write the same string, not the four-digit year.
+		const string timestamp = "2024-05-01T07:00:00Z";
+		var source = new Id3v2Tag (Id3v2Version.V24) {
+			Year = timestamp
+		};
+		var id3Target = new Id3v2Tag (Id3v2Version.V24);
+		var vorbisTarget = new VorbisComment ();
+
+		source.CopyTo (id3Target);
+		source.CopyTo (vorbisTarget);
+
+		var reread = Id3v2Tag.Read (id3Target.Render ().Span).Tag!;
+		Assert.AreEqual (timestamp, reread.GetTextFrame ("TDRC"));
+		Assert.AreNotEqual ("2024", reread.GetTextFrame ("TDRC"));
+		Assert.AreEqual (timestamp, vorbisTarget.Year);
+	}
+
+	[TestMethod]
 	public void CopyTo_V24Date_ReplacesSameYearTimestamp ()
 	{
 		// Copying only the four-digit year would leave the target's May timestamp.

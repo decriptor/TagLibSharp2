@@ -226,13 +226,15 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// ID3v2.4 TDRC is a timestamp (yyyy-MM-ddTHH:mm:ss, precision may be reduced).
-	/// A valid timestamp is copied in full. Anything else copies the four-digit year.
+	/// https://id3.org/id3v2.4.0-structure says timestamps are UTC. iTunes appends Z.
+	/// Copy uses the same acceptance as the year setter: a value that starts with
+	/// four digits is copied in full. Anything else copies the four-digit year.
 	/// </remarks>
-	protected override string? CopyableDate {
+	private protected override string? CopyableDate {
 		get {
 			if (Version == 4) {
-				var recorded = GetTextFrame ("TDRC");
-				if (IsReleaseTimestamp (recorded))
+				var recorded = NormalizeReleaseTimestamp (GetTextFrame ("TDRC"));
+				if (recorded is not null)
 					return recorded;
 			}
 
@@ -2814,30 +2816,6 @@ public sealed class Id3v2Tag : Tag
 			return null;
 
 		return raw;
-	}
-
-	// ID3v2.4 timestamps: yyyy, yyyy-MM, yyyy-MM-dd, yyyy-MM-ddTHH,
-	// yyyy-MM-ddTHH:mm, yyyy-MM-ddTHH:mm:ss. https://id3.org/id3v2.4.0-structure
-	static readonly string[] ReleaseTimestampFormats = [
-		"yyyy",
-		"yyyy-MM",
-		"yyyy-MM-dd",
-		"yyyy-MM-dd'T'HH",
-		"yyyy-MM-dd'T'HH:mm",
-		"yyyy-MM-dd'T'HH:mm:ss"
-	];
-
-	static bool IsReleaseTimestamp (string? value)
-	{
-		if (value is null || value.Length is not (4 or 7 or 10 or 13 or 16 or 19))
-			return false;
-
-		return DateTime.TryParseExact (
-			value,
-			ReleaseTimestampFormats,
-			CultureInfo.InvariantCulture,
-			DateTimeStyles.None,
-			out _);
 	}
 
 	// stored is the unsynchronised tag body. decodedCount is how many bytes remain
