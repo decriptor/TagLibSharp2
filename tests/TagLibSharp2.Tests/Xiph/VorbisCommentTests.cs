@@ -502,6 +502,16 @@ public class VorbisCommentTests
 	}
 
 	[TestMethod]
+	public void TotalTracks_PrefersTotalTracksOverTrackTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALTRACKS", "12");
+		comment.SetValue ("TRACKTOTAL", "20");
+
+		Assert.AreEqual (12u, comment.TotalTracks);
+	}
+
+	[TestMethod]
 	public void TotalTracks_TrackTotalAlias_WinsOverTrackNumberSlash ()
 	{
 		var comment = new VorbisComment ();
