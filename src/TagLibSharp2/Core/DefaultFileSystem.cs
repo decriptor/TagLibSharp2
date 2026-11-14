@@ -47,11 +47,43 @@ public sealed class DefaultFileSystem : IFileSystem, IFileSystemTimestamps
 #endif
 	}
 
+	static readonly AsyncLocal<Func<string, FileStream>?> WriteStreamOverride = new ();
+
+	/// <summary>
+	/// Opens the stream the public write methods use. Tests use this to record the flush.
+	/// </summary>
+	/// <param name="open">Creates the stream for a path. The caller disposes it.</param>
+	/// <returns>A scope that restores the previous factory.</returns>
+	internal static IDisposable OverrideWriteStreamForTests (Func<string, FileStream> open)
+	{
+		var previous = WriteStreamOverride.Value;
+		WriteStreamOverride.Value = open;
+		return new Restore<Func<string, FileStream>?> (previous, value => WriteStreamOverride.Value = value);
+	}
+
 	/// <inheritdoc/>
 	public void WriteAllBytes (string path, ReadOnlySpan<byte> data)
 	{
-		using var stream = new FileStream (path, FileMode.Create, FileAccess.Write, FileShare.None);
+		using var stream = OpenWriteStream (path, asynchronous: false);
 		WriteAllBytes (stream, data);
+	}
+
+	static FileStream OpenWriteStream (string path, bool asynchronous)
+	{
+		var open = WriteStreamOverride.Value;
+		if (open is not null)
+			return open (path);
+
+		if (!asynchronous)
+			return new FileStream (path, FileMode.Create, FileAccess.Write, FileShare.None);
+
+		return new FileStream (
+			path,
+			FileMode.Create,
+			FileAccess.Write,
+			FileShare.None,
+			4096,
+			FileOptions.Asynchronous);
 	}
 
 	/// <summary>
@@ -63,13 +95,7 @@ public sealed class DefaultFileSystem : IFileSystem, IFileSystemTimestamps
 	/// <inheritdoc/>
 	public async Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
 	{
-		using var stream = new FileStream (
-			path,
-			FileMode.Create,
-			FileAccess.Write,
-			FileShare.None,
-			4096,
-			FileOptions.Asynchronous);
+		using var stream = OpenWriteStream (path, asynchronous: true);
 		await WriteAllBytesAsync (stream, data, cancellationToken).ConfigureAwait (false);
 	}
 
@@ -191,10 +217,25 @@ public sealed class DefaultFileSystem : IFileSystem, IFileSystemTimestamps
 #endif
 	}
 
+	static readonly AsyncLocal<Action<string, string>?> BeforeReplaceHook = new ();
+
+	/// <summary>
+	/// Runs after the temp file is beside the destination and before the replace.
+	/// </summary>
+	/// <param name="hook">Receives the temp path and the destination path. May throw to fail the replace.</param>
+	/// <returns>A scope that restores the previous hook.</returns>
+	internal static IDisposable BeforeReplaceForTests (Action<string, string> hook)
+	{
+		var previous = BeforeReplaceHook.Value;
+		BeforeReplaceHook.Value = hook;
+		return new Restore<Action<string, string>?> (previous, value => BeforeReplaceHook.Value = value);
+	}
+
 	static void ReplaceExisting (string sourcePath, string destinationPath)
 	{
 		var replacingPath = PlaceTempBesideDestination (sourcePath, destinationPath);
 		try {
+			BeforeReplaceHook.Value?.Invoke (replacingPath, destinationPath);
 			CopyUnixFileMode (destinationPath, replacingPath);
 			// ignoreMetadataErrors avoids failing the replace on ACL or attribute merge errors.
 			File.Replace (replacingPath, destinationPath, null, ignoreMetadataErrors: true);
@@ -239,30 +280,39 @@ public sealed class DefaultFileSystem : IFileSystem, IFileSystemTimestamps
 		}
 	}
 
+	/// <summary>
+	/// Copies the Unix permission bits onto the replacement. Windows does not copy Unix modes.
+	/// </summary>
 	static void CopyUnixFileMode (string fromPath, string toPath)
 	{
 #if NET7_0_OR_GREATER
-		if (!OperatingSystem.IsLinux () && !OperatingSystem.IsMacOS () && !OperatingSystem.IsFreeBSD ())
+		// OperatingSystem.IsWindows() == false. Early return is the guard CA1416 recognizes.
+		if (OperatingSystem.IsWindows ())
 			return;
 
 		// Modes belong to the file, not to a symlink path. Following a link would chmod the target.
 		if (File.ResolveLinkTarget (fromPath, returnFinalTarget: false) is not null)
 			return;
 
+		// Owner, group, and extended attributes are not preserved.
 		File.SetUnixFileMode (toPath, File.GetUnixFileMode (fromPath));
 #endif
 	}
 
 #if NET7_0_OR_GREATER
-	static bool IsUnix () =>
-		OperatingSystem.IsLinux () || OperatingSystem.IsMacOS () || OperatingSystem.IsFreeBSD ();
+	static bool IsUnix () => OperatingSystem.IsWindows () == false;
 #endif
+
+	sealed class Restore<T> (T previous, Action<T> assign) : IDisposable
+	{
+		public void Dispose () => assign (previous);
+	}
 
 	/// <inheritdoc/>
 	public string? GetDirectoryName (string path) => Path.GetDirectoryName (path);
 
-	IEnumerable<string> IFileSystemTimestamps.EnumerateFiles (string directory) =>
-		Directory.EnumerateFiles (directory);
+	IEnumerable<string> IFileSystemTimestamps.EnumerateFiles (string directory, string searchPattern) =>
+		Directory.EnumerateFiles (directory, searchPattern);
 
 	DateTime? IFileSystemTimestamps.GetLastWriteTimeUtc (string path) =>
 		File.GetLastWriteTimeUtc (path);

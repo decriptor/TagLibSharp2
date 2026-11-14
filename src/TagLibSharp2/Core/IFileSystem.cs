@@ -131,8 +131,9 @@ internal interface IFileSystemTimestamps
 	/// Enumerates files directly in <paramref name="directory"/>, not in subdirectories.
 	/// </summary>
 	/// <param name="directory">The directory to list.</param>
-	/// <returns>Paths of files in that directory.</returns>
-	IEnumerable<string> EnumerateFiles (string directory);
+	/// <param name="searchPattern">The file-name pattern. <c>*</c> and <c>?</c> are wildcards.</param>
+	/// <returns>Paths of matching files in that directory.</returns>
+	IEnumerable<string> EnumerateFiles (string directory, string searchPattern);
 
 	/// <summary>
 	/// Gets the UTC last-write time of <paramref name="path"/>.
