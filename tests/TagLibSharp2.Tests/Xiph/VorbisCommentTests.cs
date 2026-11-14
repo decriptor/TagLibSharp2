@@ -454,6 +454,24 @@ public class VorbisCommentTests
 	}
 
 	[TestMethod]
+	public void TotalDiscs_Set_RewritesEachDiscNumberInPlace ()
+	{
+		var comment = new VorbisComment ();
+		comment.AddField ("DISCNUMBER", "2/3");
+		comment.AddField ("DISCNUMBER", "1");
+
+		comment.TotalDiscs = 4;
+
+		var discs = comment.GetValues ("DISCNUMBER");
+		Assert.HasCount (2, discs);
+		Assert.AreEqual ("2", discs[0]);
+		Assert.AreEqual ("1", discs[1]);
+		Assert.AreEqual (4u, comment.TotalDiscs);
+		Assert.IsNull (comment.GetValue ("DISCTOTAL"));
+		Assert.AreEqual ("4", comment.GetValue ("TOTALDISCS"));
+	}
+
+	[TestMethod]
 	public void DiscNumber_Set_ReplacesUnusableTotalDiscsWithSlashTotal ()
 	{
 		var comment = new VorbisComment ();
@@ -660,6 +678,65 @@ public class VorbisCommentTests
 		Assert.AreEqual ("5", comment.GetValue ("TRACKNUMBER"));
 		Assert.AreEqual ("9", comment.GetValue ("TOTALTRACKS"));
 		Assert.IsNull (comment.GetValue ("TRACKTOTAL"));
+	}
+
+	[TestMethod]
+	public void TotalTracks_Set_RewritesEachTrackNumberInPlace ()
+	{
+		var comment = new VorbisComment ();
+		comment.AddField ("TRACKNUMBER", "5/12");
+		comment.AddField ("TRACKNUMBER", "7");
+
+		comment.TotalTracks = 9;
+
+		var tracks = comment.GetValues ("TRACKNUMBER");
+		Assert.HasCount (2, tracks);
+		Assert.AreEqual ("5", tracks[0]);
+		Assert.AreEqual ("7", tracks[1]);
+		Assert.AreEqual (9u, comment.TotalTracks);
+		Assert.IsNull (comment.GetValue ("TRACKTOTAL"));
+		Assert.AreEqual ("9", comment.GetValue ("TOTALTRACKS"));
+	}
+
+	[TestMethod]
+	public void TotalTracks_Set_StripsSlashFromALaterTrackNumber ()
+	{
+		var comment = new VorbisComment ();
+		comment.AddField ("ALBUM", "Album");
+		comment.AddField ("TRACKNUMBER", "7");
+		comment.AddField ("TRACKNUMBER", "5/12");
+		comment.AddField ("TITLE", "Song");
+
+		comment.TotalTracks = 9;
+
+		var tracks = comment.GetValues ("TRACKNUMBER");
+		Assert.HasCount (2, tracks);
+		Assert.AreEqual ("7", tracks[0]);
+		Assert.AreEqual ("5", tracks[1]);
+		Assert.AreEqual ("ALBUM", comment.Fields[0].Name);
+		Assert.AreEqual ("Album", comment.Fields[0].Value);
+		Assert.AreEqual ("TRACKNUMBER", comment.Fields[1].Name);
+		Assert.AreEqual ("7", comment.Fields[1].Value);
+		Assert.AreEqual ("TRACKNUMBER", comment.Fields[2].Name);
+		Assert.AreEqual ("5", comment.Fields[2].Value);
+		Assert.AreEqual ("TITLE", comment.Fields[3].Name);
+		Assert.AreEqual ("Song", comment.Fields[3].Value);
+	}
+
+	[TestMethod]
+	public void TotalTracks_Set_LeavesTrackNumberThatIsNotSlashForm ()
+	{
+		var comment = new VorbisComment ();
+		comment.AddField ("TRACKNUMBER", "5/nope");
+		comment.AddField ("TRACKNUMBER", "7");
+
+		comment.TotalTracks = 9;
+
+		var tracks = comment.GetValues ("TRACKNUMBER");
+		Assert.HasCount (2, tracks);
+		Assert.AreEqual ("5/nope", tracks[0]);
+		Assert.AreEqual ("7", tracks[1]);
+		Assert.AreEqual (9u, comment.TotalTracks);
 	}
 
 	[TestMethod]

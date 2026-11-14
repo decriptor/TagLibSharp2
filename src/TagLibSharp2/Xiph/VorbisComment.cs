@@ -657,7 +657,8 @@ public sealed class VorbisComment : Tag
 	/// Reads the first numeric TOTALTRACKS, then TRACKTOTAL, then a TRACKNUMBER value of the form "5/12".
 	/// An empty or non-numeric field is skipped. Writes TOTALTRACKS and removes TRACKTOTAL.
 	/// Setting the value canonicalizes the stored total to TOTALTRACKS.
-	/// A TRACKNUMBER of the form n/m is rewritten to n so the slash total is not read back.
+	/// Each TRACKNUMBER of the form n/m is rewritten in place to n so the slash total is not read back.
+	/// A value that is not n/m is left unchanged.
 	/// </remarks>
 	public override uint? TotalTracks {
 		get {
@@ -682,7 +683,8 @@ public sealed class VorbisComment : Tag
 	/// Reads the first numeric TOTALDISCS, then DISCTOTAL, then a DISCNUMBER value of the form "2/3".
 	/// An empty or non-numeric field is skipped. Writes TOTALDISCS and removes DISCTOTAL.
 	/// Setting the value canonicalizes the stored total to TOTALDISCS.
-	/// A DISCNUMBER of the form n/m is rewritten to n so the slash total is not read back.
+	/// Each DISCNUMBER of the form n/m is rewritten in place to n so the slash total is not read back.
+	/// A value that is not n/m is left unchanged.
 	/// </remarks>
 	public override uint? TotalDiscs {
 		get {
@@ -840,19 +842,28 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <summary>
-	/// Rewrites n/m to n when m parses, so a later read cannot resurrect the slash total.
+	/// Rewrites every n/m value of <paramref name="numberField"/> to n when m parses.
+	/// Values that are not n/m, and every other field, stay where they are so a later read cannot resurrect the slash total.
 	/// </summary>
+	/// <param name="numberField">The field whose repeated values may embed a total, such as TRACKNUMBER.</param>
 	void StripEmbeddedTotal (string numberField)
 	{
-		var value = GetValue (numberField);
-		if (value is null || value.Length == 0 || ParseEmbeddedTotal (value) is null)
-			return;
+		var upperName = numberField.ToUpperInvariant ();
+		for (var i = 0; i < _fields.Count; i++) {
+			var field = _fields[i];
+			if (field.Name != upperName)
+				continue;
 
-		var slashIndex = IndexOfSlash (value);
-		if (slashIndex <= 0)
-			return;
+			var value = field.Value;
+			if (ParseEmbeddedTotal (value) is null)
+				continue;
 
-		SetValue (numberField, value.Substring (0, slashIndex));
+			var slashIndex = IndexOfSlash (value);
+			if (slashIndex <= 0)
+				continue;
+
+			_fields[i] = new VorbisCommentField (field.Name, value.Substring (0, slashIndex));
+		}
 	}
 
 	static int IndexOfSlash (string value)
