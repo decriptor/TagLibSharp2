@@ -3,8 +3,11 @@
 
 using System.Buffers.Binary;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using TagLibSharp2.Ape;
+using TagLibSharp2.Core;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
+using TagLibSharp2.Id3;
 using TagLibSharp2.Id3.Id3v2;
 
 namespace TagLibSharp2.Tests.Dff;
@@ -894,6 +897,113 @@ public class DffFileTests
 		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
 		Assert.AreEqual ((ulong)payload.Length, declared);
 		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ", "OldTitle")]
+	[DataRow ("DST ", "OldTitle")]
+	[DataRow ("DSD ", "")]
+	[DataRow ("DST ", "")]
+	public void Render_Id3v1Trailer_AppendedId3KeepsTrailerBytes (string soundChunkId, string id3v1Title)
+	{
+		// ID3v1 is the last 128 bytes and starts with "TAG". It is not a DSDIFF chunk.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var trailer = new Id3v1Tag { Title = id3v1Title }.Render ().ToArray ();
+		Assert.AreEqual (128, trailer.Length);
+		Assert.AreEqual ((byte)'T', trailer[0]);
+
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = Concat (fileBytes, trailer);
+		BinaryPrimitives.WriteUInt64BigEndian (fileBytes.AsSpan (4, 8), (ulong)(fileBytes.Length - 12));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "New Title";
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New Title", again.File!.Id3v2Tag?.Title);
+
+		AssertTrailerAfterId3 (rendered, soundChunkId, payload, trailer);
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_ApeFooterTrailer_AppendedId3KeepsFooterBytes (string soundChunkId)
+	{
+		// An APE footer is the last 32 bytes and starts with "APETAGEX". It is not a DSDIFF chunk.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var trailer = ApeTagFooter.Create (ApeTagFooter.Size, 0).Render ();
+		Assert.AreEqual (32, trailer.Length);
+		Assert.IsTrue (ApeTagFooter.Parse (trailer).IsSuccess);
+
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = Concat (fileBytes, trailer);
+		BinaryPrimitives.WriteUInt64BigEndian (fileBytes.AsSpan (4, 8), (ulong)(fileBytes.Length - 12));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "New Title";
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New Title", again.File!.Id3v2Tag?.Title);
+
+		AssertTrailerAfterId3 (rendered, soundChunkId, payload, trailer);
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_ApeFooterBeforeId3v1_AppendedId3KeepsBoth (string soundChunkId)
+	{
+		// Footer at end-160, then the 128-byte ID3v1 tag. Neither is a DSDIFF chunk.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var footer = ApeTagFooter.Create (ApeTagFooter.Size, 0).Render ();
+		var id3v1 = new Id3v1Tag { Title = "OldTitle" }.Render ().ToArray ();
+		var trailer = Concat (footer, id3v1);
+		Assert.AreEqual (160, trailer.Length);
+
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = Concat (fileBytes, trailer);
+		BinaryPrimitives.WriteUInt64BigEndian (fileBytes.AsSpan (4, 8), (ulong)(fileBytes.Length - 12));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "New Title";
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New Title", again.File!.Id3v2Tag?.Title);
+
+		AssertTrailerAfterId3 (rendered, soundChunkId, payload, trailer);
+	}
+
+	private static void AssertTrailerAfterId3 (BinaryData rendered, string soundChunkId, byte[] payload, byte[] trailer)
+	{
+		Assert.IsTrue (trailer.Length <= rendered.Length);
+		Assert.IsTrue (
+			trailer.AsSpan ().SequenceEqual (rendered.Span.Slice (rendered.Length - trailer.Length, trailer.Length)),
+			"Trailer bytes after the new ID3 chunk must be unchanged");
+
+		var renderedBytes = rendered.ToArray ();
+		var renderedSound = FindChunkOffset (renderedBytes, soundChunkId);
+		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
+		Assert.AreEqual ((ulong)payload.Length, declared);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var id3 = FindChunkOffset (renderedBytes, "ID3 ");
+		var id3Size = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (id3 + 4, 8));
+		var id3End = id3 + 12 + (int)id3Size;
+		if ((id3Size & 1) != 0)
+			id3End++;
+
+		Assert.AreEqual (renderedSound + 12 + payload.Length, id3, "ID3 chunk follows the complete sound chunk");
+		Assert.AreEqual (rendered.Length - trailer.Length, id3End, "Trailer is copied after the ID3 chunk");
 	}
 
 	[TestMethod]
