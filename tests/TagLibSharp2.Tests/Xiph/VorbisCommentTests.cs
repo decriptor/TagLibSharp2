@@ -399,6 +399,73 @@ public class VorbisCommentTests
 	}
 
 	[TestMethod]
+	public void TotalTracks_Set_ReplacesTrackTotalWithTotalTracks ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKNUMBER", "5");
+		comment.SetValue ("TRACKTOTAL", "20");
+
+		comment.TotalTracks = 7;
+
+		Assert.AreEqual (7u, comment.TotalTracks);
+		Assert.AreEqual ("7", comment.GetValue ("TOTALTRACKS"));
+		Assert.IsNull (comment.GetValue ("TRACKTOTAL"));
+		Assert.AreEqual (5u, comment.Track);
+	}
+
+	[TestMethod]
+	public void TotalTracks_SetNull_ClearsTrackTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TRACKNUMBER", "5");
+		comment.SetValue ("TRACKTOTAL", "20");
+
+		comment.TotalTracks = 7;
+		comment.TotalTracks = null;
+
+		Assert.IsNull (comment.TotalTracks);
+		Assert.IsNull (comment.GetValue ("TOTALTRACKS"));
+		Assert.IsNull (comment.GetValue ("TRACKTOTAL"));
+		Assert.AreEqual (5u, comment.Track);
+	}
+
+	[TestMethod]
+	public void TotalTracks_UnusableTotalTracks_FallsBackToTrackTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALTRACKS", "abc");
+		comment.SetValue ("TRACKTOTAL", "12");
+		comment.SetValue ("TRACKNUMBER", "5");
+
+		Assert.AreEqual (5u, comment.Track);
+		Assert.AreEqual (12u, comment.TotalTracks);
+	}
+
+	[TestMethod]
+	public void TotalTracks_EmptyTotalTracks_FallsBackToTrackTotal ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALTRACKS", "");
+		comment.SetValue ("TRACKTOTAL", "12");
+		comment.SetValue ("TRACKNUMBER", "5");
+
+		Assert.AreEqual (5u, comment.Track);
+		Assert.AreEqual (12u, comment.TotalTracks);
+	}
+
+	[TestMethod]
+	public void TotalTracks_UnusableFields_FallsBackToTrackNumberSlash ()
+	{
+		var comment = new VorbisComment ();
+		comment.SetValue ("TOTALTRACKS", "abc");
+		comment.SetValue ("TRACKTOTAL", "nope");
+		comment.SetValue ("TRACKNUMBER", "5/12");
+
+		Assert.AreEqual (5u, comment.Track);
+		Assert.AreEqual (12u, comment.TotalTracks);
+	}
+
+	[TestMethod]
 	public void Artists_ReturnsAllArtistValues ()
 	{
 		var comment = new VorbisComment ();
