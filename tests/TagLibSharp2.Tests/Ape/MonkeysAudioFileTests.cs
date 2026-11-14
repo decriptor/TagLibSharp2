@@ -349,35 +349,9 @@ public class MonkeysAudioFileTests
 	[TestMethod]
 	public void Render_Id3v1AfterApe_RewritesOneTagAndRemoveLeavesAudio ()
 	{
-		var audio = CreateMinimalApeFile (version: 3990);
-		var data = ApeTagTestData.CreateAudioWithApeThenId3v1 (audio, "Original");
-		var result = MonkeysAudioFile.Read (data);
-		Assert.IsTrue (result.IsSuccess, result.Error);
-
-		var file = result.File!;
-		file.ApeTag!.Title = "New Title";
-		var rendered = file.Render (data);
-
-		Assert.AreEqual (1, ApeTagTestData.CountSequence (rendered, "APETAGEX"u8));
-		Assert.IsTrue (rendered.AsSpan (rendered.Length - 128 - ApeTagFooter.Size, 8).SequenceEqual ("APETAGEX"u8));
-		Assert.IsTrue (rendered.AsSpan (rendered.Length - 128, 3).SequenceEqual ("TAG"u8));
-		Assert.IsTrue (rendered.AsSpan (rendered.Length - 125, 6).SequenceEqual ("KeepMe"u8));
-		CollectionAssert.AreEqual (audio, rendered[..audio.Length]);
-
-		var reparsed = MonkeysAudioFile.Read (rendered);
-		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
-		Assert.AreEqual ("New Title", reparsed.File!.ApeTag!.Title);
-
-		file.RemoveApeTag ();
-		var removed = file.Render (data);
-		Assert.AreEqual (0, ApeTagTestData.CountSequence (removed, "APETAGEX"u8));
-		Assert.AreEqual (audio.Length + 128, removed.Length);
-		CollectionAssert.AreEqual (audio, removed[..audio.Length]);
-		Assert.IsTrue (removed.AsSpan (audio.Length, 3).SequenceEqual ("TAG"u8));
-
-		var stripped = MonkeysAudioFile.Read (removed);
-		Assert.IsTrue (stripped.IsSuccess, stripped.Error);
-		Assert.IsNull (stripped.File!.ApeTag);
+		ApeTagTestData.AssertId3v1SaveRoundTrip (
+			CreateMinimalApeFile (version: 3990),
+			ApeTagTestData.OpenMonkeysAudio);
 	}
 
 	#endregion

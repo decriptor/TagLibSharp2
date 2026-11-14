@@ -760,7 +760,9 @@ public sealed class ApeTag : Tag
 
 	/// <summary>
 	/// Parses an APE tag from binary data.
-	/// A full footer at EOF is used when it parses. Otherwise the footer is at EOF-160 when ID3v1 follows.
+	/// A full footer at EOF is used when it parses.
+	/// Otherwise, when ID3v1 follows, a Lyrics3 v2 block immediately before that tag is not the footer.
+	/// The footer is the 32 bytes before LYRICSBEGIN, or at EOF-160 when no Lyrics3 block is present.
 	/// </summary>
 	public static ApeTagParseResult Parse (ReadOnlySpan<byte> data)
 	{
