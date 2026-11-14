@@ -780,6 +780,16 @@ public class OggPageHelperTests
 	}
 
 	[TestMethod]
+	public void BuildMultiPagePacket_PacketPastOnePage_DoesNotThrow ()
+	{
+		var packet = new byte[80_000];
+		var (pages, next) = OggPageHelper.BuildMultiPagePacket (packet, OggPageFlags.None, 0, 1, 3);
+
+		Assert.IsTrue (pages.Length > 1);
+		Assert.AreEqual (3u + (uint)pages.Length, next);
+	}
+
+	[TestMethod]
 	public void BuildOggPage_PacketExactly65025Bytes_Succeeds ()
 	{
 		// 65025 bytes = 255 segments of 255 bytes each + 0-byte terminator = 256 segments
