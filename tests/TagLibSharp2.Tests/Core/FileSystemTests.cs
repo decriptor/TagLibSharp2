@@ -110,6 +110,44 @@ public sealed class MockFileSystem : IFileSystem
 	public IReadOnlyDictionary<string, byte[]> GetAllFiles () => new Dictionary<string, byte[]> (_files);
 }
 
+/// <summary>
+/// Records temp paths passed to <see cref="IFileSystem.Move"/> and performs the move on <see cref="DefaultFileSystem"/>.
+/// </summary>
+sealed class TempPathRecordingFileSystem (DefaultFileSystem inner, List<string> tempPaths) : IFileSystem
+{
+	public bool FileExists (string path) => inner.FileExists (path);
+
+	public Stream OpenRead (string path) => inner.OpenRead (path);
+
+	public Stream OpenReadWrite (string path) => inner.OpenReadWrite (path);
+
+	public Stream Create (string path) => inner.Create (path);
+
+	public byte[] ReadAllBytes (string path) => inner.ReadAllBytes (path);
+
+	public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default) =>
+		inner.ReadAllBytesAsync (path, cancellationToken);
+
+	public void WriteAllBytes (string path, ReadOnlySpan<byte> data) => inner.WriteAllBytes (path, data);
+
+	public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default) =>
+		inner.WriteAllBytesAsync (path, data, cancellationToken);
+
+	public void Delete (string path) => inner.Delete (path);
+
+	public void Move (string sourcePath, string destinationPath)
+	{
+		tempPaths.Add (sourcePath);
+		inner.Move (sourcePath, destinationPath);
+	}
+
+	public string? GetDirectoryName (string path) => inner.GetDirectoryName (path);
+
+	public string GetFileName (string path) => inner.GetFileName (path);
+
+	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
+}
+
 [TestClass]
 public sealed class FileSystemTests
 {
@@ -122,6 +160,48 @@ public sealed class FileSystemTests
 			var destination = Path.Combine (dir, "song.bin");
 			var source = Path.Combine (dir, "new.bin");
 			File.WriteAllBytes (destination, [1, 2, 3]);
+			File.WriteAllBytes (source, [4, 5]);
+
+			DefaultFileSystem.Instance.Move (source, destination);
+
+			Assert.IsTrue (File.Exists (destination));
+			Assert.IsFalse (File.Exists (source));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void DefaultFileSystem_Move_MissingSource_LeavesDestinationUnchanged ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var source = Path.Combine (dir, "new.bin");
+			byte[] original = [1, 2, 3];
+			File.WriteAllBytes (destination, original);
+			File.WriteAllBytes (source, [4, 5]);
+			File.Delete (source);
+
+			Assert.ThrowsExactly<FileNotFoundException> (() => DefaultFileSystem.Instance.Move (source, destination));
+
+			Assert.IsTrue (File.Exists (destination));
+			CollectionAssert.AreEqual (original, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void DefaultFileSystem_Move_MovesWhenDestinationDoesNotExist ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var source = Path.Combine (dir, "new.bin");
 			File.WriteAllBytes (source, [4, 5]);
 
 			DefaultFileSystem.Instance.Move (source, destination);
@@ -333,6 +413,33 @@ public sealed class FileReadResultTests
 [TestClass]
 public sealed class AtomicFileWriterTests
 {
+	[TestMethod]
+	public void Write_TwoSaves_UseDistinctTempPaths ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var tempPaths = new List<string> ();
+			var fs = new TempPathRecordingFileSystem (DefaultFileSystem.Instance, tempPaths);
+
+			var first = AtomicFileWriter.Write (destination, [1, 2, 3], fs);
+			var second = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+			Assert.IsTrue (first.IsSuccess);
+			Assert.IsTrue (second.IsSuccess);
+			Assert.HasCount (2, tempPaths);
+			Assert.AreNotEqual (tempPaths[0], tempPaths[1]);
+			Assert.AreEqual (dir, Path.GetDirectoryName (tempPaths[0]));
+			Assert.AreEqual (dir, Path.GetDirectoryName (tempPaths[1]));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
+			Assert.IsFalse (File.Exists (tempPaths[0]));
+			Assert.IsFalse (File.Exists (tempPaths[1]));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
 	[TestMethod]
 	public void Write_NewFile_CreatesFile ()
 	{
