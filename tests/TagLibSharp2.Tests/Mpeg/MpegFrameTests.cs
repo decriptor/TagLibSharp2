@@ -169,6 +169,65 @@ public class MpegFrameTests
 	}
 
 	[TestMethod]
+	public void FrameSize_Mpeg2Layer3_WithPadding_CalculatedCorrectly ()
+	{
+		// MPEG-2 Layer III, 64 kbps, 22050 Hz, padding set.
+		// 0xFF 0xF3 = sync + MPEG-2 + Layer III + no CRC
+		// 0x82 = 64 kbps (index 8) + 22050 Hz (index 0) + padding
+		// Layer III slot is 1 byte. MPEG-2 Layer III coefficient is 72.
+		// 72 * 64000 / 22050 = 208, plus one padding slot = 209
+		byte[] data = [0xFF, 0xF3, 0x82, 0x00];
+
+		MpegFrame.TryParse (new BinaryData (data), 0, out var frame);
+
+		Assert.AreEqual (MpegVersion.Version2, frame!.Version);
+		Assert.AreEqual (MpegLayer.Layer3, frame.Layer);
+		Assert.AreEqual (64, frame.Bitrate);
+		Assert.AreEqual (22050, frame.SampleRate);
+		Assert.IsTrue (frame.HasPadding);
+		Assert.AreEqual (209, frame.FrameSize);
+	}
+
+	[TestMethod]
+	public void FrameSize_Mpeg25Layer3_CalculatedCorrectly ()
+	{
+		// MPEG-2.5 Layer III, 64 kbps, 11025 Hz, no padding.
+		// 0xFF 0xE3 = sync + MPEG-2.5 + Layer III + no CRC
+		// 0x80 = 64 kbps (index 8) + 11025 Hz (index 0) + no padding
+		// Coefficient 72, slot 1: 72 * 64000 / 11025 = 417
+		byte[] data = [0xFF, 0xE3, 0x80, 0x00];
+
+		MpegFrame.TryParse (new BinaryData (data), 0, out var frame);
+
+		Assert.AreEqual (MpegVersion.Version25, frame!.Version);
+		Assert.AreEqual (MpegLayer.Layer3, frame.Layer);
+		Assert.AreEqual (64, frame.Bitrate);
+		Assert.AreEqual (11025, frame.SampleRate);
+		Assert.IsFalse (frame.HasPadding);
+		Assert.AreEqual (417, frame.FrameSize);
+	}
+
+	[TestMethod]
+	public void FrameSize_Mpeg2Layer2_CalculatedCorrectly ()
+	{
+		// MPEG-2 Layer II, 64 kbps, 22050 Hz, no padding.
+		// 0xFF 0xF5 = sync + MPEG-2 + Layer II + no CRC
+		// 0x80 = 64 kbps (index 8) + 22050 Hz (index 0) + no padding
+		// Layer II coefficient is 144 on every version (1152 samples), slot 1.
+		// 144 * 64000 / 22050 = 417. A coefficient of 72 would yield 208.
+		byte[] data = [0xFF, 0xF5, 0x80, 0x00];
+
+		MpegFrame.TryParse (new BinaryData (data), 0, out var frame);
+
+		Assert.AreEqual (MpegVersion.Version2, frame!.Version);
+		Assert.AreEqual (MpegLayer.Layer2, frame.Layer);
+		Assert.AreEqual (64, frame.Bitrate);
+		Assert.AreEqual (22050, frame.SampleRate);
+		Assert.IsFalse (frame.HasPadding);
+		Assert.AreEqual (417, frame.FrameSize);
+	}
+
+	[TestMethod]
 	public void FrameSize_WithPadding_CalculatedCorrectly ()
 	{
 		// MPEG1 Layer 3, 128 kbps, 44100 Hz, WITH padding
