@@ -298,4 +298,77 @@ public class OggVorbisFileRoundTripTests
 		Assert.IsTrue (again.IsSuccess, again.Error);
 		Assert.AreEqual (value, again.File!.VorbisComment!.Comment);
 	}
+
+	[TestMethod]
+	public void LargeSetupPacket_RoundTripsCommentAndSetupBytes ()
+	{
+		// 70 KB is past one Ogg page (255 * 255) and past 255 segments.
+		// BuildOggPage throws there; the setup header has to use the multi-page helper.
+		const int setupLength = 70_000;
+		var setup = new byte[setupLength];
+		setup[0] = 5;
+		setup[1] = (byte)'v';
+		setup[2] = (byte)'o';
+		setup[3] = (byte)'r';
+		setup[4] = (byte)'b';
+		setup[5] = (byte)'i';
+		setup[6] = (byte)'s';
+		setup[7] = 0xA5;
+		setup[65025] = 0x5A;
+		setup[^1] = 0xC3;
+		var segmentsNeeded = (setup.Length / 255) + 1;
+		Assert.IsGreaterThan (255 * 255, setup.Length);
+		Assert.IsGreaterThan (255, segmentsNeeded, "Setup packet must be large enough that BuildOggPage throws");
+
+		var comment = new VorbisComment ("TagLibSharp2") { Title = "Before", Artist = "Artist" };
+		const uint serial = 1;
+		var identPage = OggPageHelper.BuildOggPage (
+			[TestBuilders.Ogg.CreateIdentificationPacket ()], OggPageFlags.BeginOfStream, 0, serial, 0);
+		var commentPage = OggPageHelper.BuildOggPage (
+			[TestBuilders.Ogg.CreateCommentPacket (comment)], OggPageFlags.None, 0, serial, 1);
+		var (setupPages, nextSequence) = OggPageHelper.BuildMultiPagePacket (
+			setup, OggPageFlags.None, 0, serial, 2);
+		var audio = new byte[] { 0x11, 0x22, 0x33, 0x44 };
+		var audioPage = OggPageHelper.BuildOggPage (
+			[audio], OggPageFlags.EndOfStream, 64, serial, nextSequence);
+
+		var parts = new List<byte[]> { identPage, commentPage };
+		parts.AddRange (setupPages);
+		parts.Add (audioPage);
+		var original = Concat (parts);
+
+		var read = OggVorbisFile.Read (original);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Before", read.File!.VorbisComment!.Title);
+		read.File.VorbisComment.Title = "After";
+
+		var written = read.File.Render (original);
+		Assert.IsGreaterThan (0, written.Length, "Render returned empty for a setup packet over 255 segments");
+
+		var setupOut = OggPacketAssembler.Read (written.Span)
+			.Single (packet => packet.Data.Length > 6 && packet.Data[0] == 5 && packet.Data[1] == (byte)'v');
+		Assert.IsGreaterThan (1, setupOut.Lacings.Count, "Setup packet must span pages");
+		CollectionAssert.AreEqual (setup, setupOut.Data);
+
+		var again = OggVorbisFile.Read (written.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("After", again.File!.VorbisComment!.Title);
+		Assert.AreEqual ("Artist", again.File.VorbisComment.Artist);
+	}
+
+	static byte[] Concat (List<byte[]> parts)
+	{
+		var length = 0;
+		for (var i = 0; i < parts.Count; i++)
+			length += parts[i].Length;
+
+		var result = new byte[length];
+		var offset = 0;
+		for (var i = 0; i < parts.Count; i++) {
+			parts[i].CopyTo (result, offset);
+			offset += parts[i].Length;
+		}
+
+		return result;
+	}
 }
