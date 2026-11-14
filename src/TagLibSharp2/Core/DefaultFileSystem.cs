@@ -50,25 +50,49 @@ public sealed class DefaultFileSystem : IFileSystem
 	/// <inheritdoc/>
 	public void WriteAllBytes (string path, ReadOnlySpan<byte> data)
 	{
-#if NETSTANDARD2_0
-		File.WriteAllBytes (path, data.ToArray ());
-#else
 		using var stream = new FileStream (path, FileMode.Create, FileAccess.Write, FileShare.None);
-		stream.Write (data);
-		stream.Flush ();
-#endif
+		WriteAll (stream, data);
+		FlushToDisk (stream);
 	}
 
 	/// <inheritdoc/>
 	public async Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
 	{
+		using var stream = new FileStream (
+			path,
+			FileMode.Create,
+			FileAccess.Write,
+			FileShare.None,
+			4096,
+			FileOptions.Asynchronous);
 #if NETSTANDARD2_0
-		using var stream = new FileStream (path, FileMode.Create, FileAccess.Write, FileShare.None);
-		await stream.WriteAsync (data.ToArray (), 0, data.Length, cancellationToken).ConfigureAwait (false);
-		await stream.FlushAsync (cancellationToken).ConfigureAwait (false);
+		var buffer = data.ToArray ();
+		await stream.WriteAsync (buffer, 0, buffer.Length, cancellationToken).ConfigureAwait (false);
 #else
-		await File.WriteAllBytesAsync (path, data.ToArray (), cancellationToken).ConfigureAwait (false);
+		await stream.WriteAsync (data, cancellationToken).ConfigureAwait (false);
 #endif
+		// Flush(bool) has no async overload; the replace must not start before the flush returns.
+		FlushToDisk (stream);
+	}
+
+	static void WriteAll (FileStream stream, ReadOnlySpan<byte> data)
+	{
+#if NETSTANDARD2_0
+		var buffer = data.ToArray ();
+		stream.Write (buffer, 0, buffer.Length);
+#else
+		stream.Write (data);
+#endif
+	}
+
+	/// <summary>
+	/// Flushes a temp file to disk before it replaces the destination.
+	/// </summary>
+	internal static void FlushToDisk (FileStream stream)
+	{
+		// Stream.Flush(bool) does not exist on these targets. FileStream.Flush(bool) does,
+		// including netstandard2.0 and netstandard2.1, so every build can request a disk flush.
+		stream.Flush (flushToDisk: true);
 	}
 
 	/// <inheritdoc/>
@@ -88,7 +112,8 @@ public sealed class DefaultFileSystem : IFileSystem
 			return;
 		}
 
-		File.Replace (sourcePath, destinationPath, null);
+		// ignoreMetadataErrors avoids failing the replace on ACL or attribute merge errors.
+		File.Replace (sourcePath, destinationPath, null, ignoreMetadataErrors: true);
 	}
 
 	/// <inheritdoc/>

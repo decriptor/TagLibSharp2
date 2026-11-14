@@ -148,9 +148,147 @@ sealed class TempPathRecordingFileSystem (DefaultFileSystem inner, List<string> 
 	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
 }
 
+/// <summary>
+/// Delegates to an inner file system while recording writes and optionally replacing moves.
+/// </summary>
+sealed class RecordingFileSystem (IFileSystem inner) : IFileSystem
+{
+	readonly Queue<Action<IFileSystem, string, string>> _moveScripts = new ();
+
+	public List<string> Writes { get; } = [];
+
+	public void OnNextMove (Action<IFileSystem, string, string> action) =>
+		_moveScripts.Enqueue (action);
+
+	public bool FileExists (string path) => inner.FileExists (path);
+
+	public Stream OpenRead (string path) => inner.OpenRead (path);
+
+	public Stream OpenReadWrite (string path) => inner.OpenReadWrite (path);
+
+	public Stream Create (string path) => inner.Create (path);
+
+	public byte[] ReadAllBytes (string path) => inner.ReadAllBytes (path);
+
+	public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default) =>
+		inner.ReadAllBytesAsync (path, cancellationToken);
+
+	public void WriteAllBytes (string path, ReadOnlySpan<byte> data)
+	{
+		Writes.Add (path);
+		inner.WriteAllBytes (path, data);
+	}
+
+	public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+	{
+		Writes.Add (path);
+		return inner.WriteAllBytesAsync (path, data, cancellationToken);
+	}
+
+	public void Delete (string path) => inner.Delete (path);
+
+	public void Move (string sourcePath, string destinationPath)
+	{
+		if (_moveScripts.Count > 0) {
+			_moveScripts.Dequeue () (inner, sourcePath, destinationPath);
+			return;
+		}
+
+		inner.Move (sourcePath, destinationPath);
+	}
+
+	public string? GetDirectoryName (string path) => inner.GetDirectoryName (path);
+
+	public string GetFileName (string path) => inner.GetFileName (path);
+
+	public string CombinePath (string path1, string path2) => inner.CombinePath (path1, path2);
+}
+
+/// <summary>
+/// Records whether <see cref="FileStream.Flush(bool)"/> was asked to flush to disk.
+/// </summary>
+sealed class FlushRecordingFileStream : FileStream
+{
+	public FlushRecordingFileStream (string path)
+		: base (path, FileMode.Create, FileAccess.ReadWrite, FileShare.None)
+	{
+	}
+
+	public bool FlushedToDisk { get; private set; }
+
+	public override void Flush (bool flushToDisk)
+	{
+		if (flushToDisk)
+			FlushedToDisk = true;
+		base.Flush (flushToDisk);
+	}
+}
+
+/// <summary>
+/// Writes through <see cref="DefaultFileSystem.FlushToDisk"/> and records that call before move.
+/// </summary>
+sealed class FlushOrderingFileSystem (List<string> events) : IFileSystem
+{
+	readonly DefaultFileSystem _inner = DefaultFileSystem.Instance;
+
+	public bool FileExists (string path) => _inner.FileExists (path);
+
+	public Stream OpenRead (string path) => _inner.OpenRead (path);
+
+	public Stream OpenReadWrite (string path) => _inner.OpenReadWrite (path);
+
+	public Stream Create (string path) => _inner.Create (path);
+
+	public byte[] ReadAllBytes (string path) => _inner.ReadAllBytes (path);
+
+	public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default) =>
+		_inner.ReadAllBytesAsync (path, cancellationToken);
+
+	public void WriteAllBytes (string path, ReadOnlySpan<byte> data)
+	{
+		using var stream = new FlushRecordingFileStream (path);
+		stream.Write (data);
+		DefaultFileSystem.FlushToDisk (stream);
+		events.Add (stream.FlushedToDisk ? "flush-to-disk" : "not-flushed");
+	}
+
+	public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+	{
+		WriteAllBytes (path, data.Span);
+		return Task.CompletedTask;
+	}
+
+	public void Delete (string path) => _inner.Delete (path);
+
+	public void Move (string sourcePath, string destinationPath)
+	{
+		events.Add ("move");
+		_inner.Move (sourcePath, destinationPath);
+	}
+
+	public string? GetDirectoryName (string path) => _inner.GetDirectoryName (path);
+
+	public string GetFileName (string path) => _inner.GetFileName (path);
+
+	public string CombinePath (string path1, string path2) => _inner.CombinePath (path1, path2);
+}
+
 [TestClass]
 public sealed class FileSystemTests
 {
+	[TestMethod]
+	public void FlushToDisk_RequestsFlushToDisk ()
+	{
+		var path = Path.Combine (Path.GetTempPath (), "tls-flush-" + Guid.NewGuid ().ToString ("N"));
+		try {
+			using var stream = new FlushRecordingFileStream (path);
+			DefaultFileSystem.FlushToDisk (stream);
+			Assert.IsTrue (stream.FlushedToDisk);
+		} finally {
+			File.Delete (path);
+		}
+	}
+
 	[TestMethod]
 	public void DefaultFileSystem_Move_ReplacesExistingFile ()
 	{
@@ -161,12 +299,23 @@ public sealed class FileSystemTests
 			var source = Path.Combine (dir, "new.bin");
 			File.WriteAllBytes (destination, [1, 2, 3]);
 			File.WriteAllBytes (source, [4, 5]);
+			using var reader = new FileStream (
+				destination,
+				FileMode.Open,
+				FileAccess.Read,
+				FileShare.ReadWrite | FileShare.Delete);
 
 			DefaultFileSystem.Instance.Move (source, destination);
 
 			Assert.IsTrue (File.Exists (destination));
 			Assert.IsFalse (File.Exists (source));
 			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
+
+			// The open handle still refers to the inode that was replaced, so it sees the old bytes.
+			reader.Position = 0;
+			var stillOpen = new byte[3];
+			Assert.AreEqual (3, reader.Read (stillOpen, 0, stillOpen.Length));
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, stillOpen);
 		} finally {
 			Directory.Delete (dir, true);
 		}
@@ -414,6 +563,28 @@ public sealed class FileReadResultTests
 public sealed class AtomicFileWriterTests
 {
 	[TestMethod]
+	public void Write_FlushesTempToDiskBeforeMove ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var events = new List<string> ();
+			var fs = new FlushOrderingFileSystem (events);
+
+			var result = AtomicFileWriter.Write (destination, [1, 2, 3], fs);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.HasCount (2, events);
+			Assert.AreEqual ("flush-to-disk", events[0]);
+			Assert.AreEqual ("move", events[1]);
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
 	public void Write_TwoSaves_UseDistinctTempPaths ()
 	{
 		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
@@ -522,6 +693,180 @@ public sealed class AtomicFileWriterTests
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsNotNull (result.Error);
 		StringAssert.Contains (result.Error, "cancelled");
+	}
+
+	[TestMethod]
+	public void Write_DestinationName230Characters_SucceedsWithShortTempName ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var fileName = new string ('a', 230);
+			var destination = Path.Combine (dir, fileName);
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+
+			var result = AtomicFileWriter.Write (destination, [1, 2, 3], fs);
+
+			Assert.IsTrue (result.IsSuccess, result.Error);
+			Assert.HasCount (1, fs.Writes);
+			var tempName = Path.GetFileName (fs.Writes[0]);
+			Assert.IsTrue (tempName.Length < 80, tempName);
+			Assert.IsFalse (tempName.Contains (fileName, StringComparison.Ordinal), tempName);
+			StringAssert.StartsWith (tempName, ".taglib_");
+			StringAssert.EndsWith (tempName, ".tmp");
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void Write_WhenReplaceRemovesDestination_MovesTempBack ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/song.bin", [1, 2, 3]);
+		var fs = new RecordingFileSystem (mock);
+		fs.OnNextMove ((inner, _, dest) => {
+			inner.Delete (dest);
+			throw new IOException ("Unable to move replacement");
+		});
+
+		var result = AtomicFileWriter.Write ("/song.bin", [4, 5], fs);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/song.bin"));
+		Assert.HasCount (1, mock.GetAllFiles ());
+	}
+
+	[TestMethod]
+	public async Task WriteAsync_WhenReplaceRemovesDestination_MovesTempBack ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/song.bin", [1, 2, 3]);
+		var fs = new RecordingFileSystem (mock);
+		fs.OnNextMove ((inner, _, dest) => {
+			inner.Delete (dest);
+			throw new IOException ("Unable to move replacement");
+		});
+
+		var result = await AtomicFileWriter.WriteAsync ("/song.bin", new byte[] { 4, 5 }, fs);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/song.bin"));
+		Assert.HasCount (1, mock.GetAllFiles ());
+	}
+
+	[TestMethod]
+	public void Write_WhenReplaceRemovesDestinationAndRetryFails_KeepsTempAndReportsPath ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/song.bin", [1, 2, 3]);
+		var fs = new RecordingFileSystem (mock);
+		fs.OnNextMove ((inner, _, dest) => {
+			inner.Delete (dest);
+			throw new IOException ("Unable to move replacement");
+		});
+		fs.OnNextMove ((_, _, _) => throw new IOException ("retry failed"));
+
+		var result = AtomicFileWriter.Write ("/song.bin", [4, 5], fs);
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNotNull (result.Error);
+		var files = mock.GetAllFiles ();
+		Assert.HasCount (1, files);
+		var tempPath = files.Keys.Single ();
+		StringAssert.Contains (result.Error, tempPath);
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, files[tempPath]);
+		Assert.IsFalse (mock.FileExists ("/song.bin"));
+	}
+
+	[TestMethod]
+	public void Write_WhenMoveThrowsAndDestinationRemains_DeletesTempOnly ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/song.bin", [1, 2, 3]);
+		var fs = new RecordingFileSystem (mock);
+		fs.OnNextMove ((_, _, _) => throw new IOException ("disk full"));
+
+		var result = AtomicFileWriter.Write ("/song.bin", [4, 5], fs);
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.IsNotNull (result.Error);
+		Assert.HasCount (1, fs.Writes);
+		Assert.IsFalse (result.Error.Contains (fs.Writes[0], StringComparison.Ordinal));
+		CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, mock.ReadAllBytes ("/song.bin"));
+		Assert.HasCount (1, mock.GetAllFiles ());
+	}
+
+	[TestMethod]
+	public void Write_WhenDefaultFileSystemMoveThrows_LeavesDestinationAndDeletesTemp ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			File.WriteAllBytes (destination, [1, 2, 3]);
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			fs.OnNextMove ((inner, _, dest) => {
+				var missing = Path.Combine (dir, "missing-" + Guid.NewGuid ().ToString ("N"));
+				inner.Move (missing, dest);
+			});
+
+			var result = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+			Assert.IsFalse (result.IsSuccess);
+			Assert.IsNotNull (result.Error);
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (destination));
+			Assert.IsFalse (Directory.EnumerateFiles (dir).Any (path => Path.GetFileName (path).StartsWith (".taglib_", StringComparison.Ordinal)));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
+	public void TryRecoverTempFile_DestinationExists_DeletesTemp ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/song.bin", [1, 2, 3]);
+		mock.AddFile ("/.taglib_temp.tmp", [4, 5]);
+
+		var restored = AtomicFileWriter.TryRecoverTempFile ("/.taglib_temp.tmp", "/song.bin", mock, out var keptTempError);
+
+		Assert.IsFalse (restored);
+		Assert.IsNull (keptTempError);
+		Assert.IsFalse (mock.FileExists ("/.taglib_temp.tmp"));
+		CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, mock.ReadAllBytes ("/song.bin"));
+	}
+
+	[TestMethod]
+	public void TryRecoverTempFile_DestinationMissing_MovesTemp ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/.taglib_temp.tmp", [4, 5]);
+
+		var restored = AtomicFileWriter.TryRecoverTempFile ("/.taglib_temp.tmp", "/song.bin", mock, out var keptTempError);
+
+		Assert.IsTrue (restored);
+		Assert.IsNull (keptTempError);
+		Assert.IsFalse (mock.FileExists ("/.taglib_temp.tmp"));
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/song.bin"));
+	}
+
+	[TestMethod]
+	public void TryRecoverTempFile_DestinationMissingAndMoveFails_KeepsTemp ()
+	{
+		var mock = new MockFileSystem ();
+		mock.AddFile ("/.taglib_temp.tmp", [4, 5]);
+		var fs = new RecordingFileSystem (mock);
+		fs.OnNextMove ((_, _, _) => throw new IOException ("retry failed"));
+
+		var restored = AtomicFileWriter.TryRecoverTempFile ("/.taglib_temp.tmp", "/song.bin", fs, out var keptTempError);
+
+		Assert.IsFalse (restored);
+		Assert.IsNotNull (keptTempError);
+		StringAssert.Contains (keptTempError, "/.taglib_temp.tmp");
+		Assert.IsTrue (mock.FileExists ("/.taglib_temp.tmp"));
+		CollectionAssert.AreEqual (new byte[] { 4, 5 }, mock.ReadAllBytes ("/.taglib_temp.tmp"));
 	}
 }
 

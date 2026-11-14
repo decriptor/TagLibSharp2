@@ -87,6 +87,7 @@ public interface IFileSystem
 
 	/// <summary>
 	/// Moves a file from one path to another, overwriting the destination if it exists.
+	/// Replacing an existing file is same-volume only; File.Replace throws when the paths are on different volumes.
 	/// </summary>
 	/// <param name="sourcePath">The source file path.</param>
 	/// <param name="destinationPath">The destination file path.</param>
