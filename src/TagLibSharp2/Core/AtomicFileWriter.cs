@@ -99,7 +99,7 @@ public static class AtomicFileWriter
 	{
 		var directory = fileSystem.GetDirectoryName (targetPath) ?? ".";
 		var fileName = fileSystem.GetFileName (targetPath);
-		var tempFileName = $"{TempFilePrefix}{fileName}{TempFileSuffix}";
+		var tempFileName = $"{TempFilePrefix}{Guid.NewGuid ():N}_{fileName}{TempFileSuffix}";
 		return fileSystem.CombinePath (directory, tempFileName);
 	}
 
