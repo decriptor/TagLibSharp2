@@ -245,19 +245,22 @@ public class FlacFileTests
 		Assert.AreEqual (TimeSpan.FromSeconds (5), result.File.Properties.Duration);
 	}
 
+	// RFC 9639: 36-bit big-endian sample count (low 4 bits of byte 13 plus bytes 14-17).
+	// A signed shift of a byte >= 0x80 sign-extends. TimeSpan.FromSeconds then throws
+	// OverflowException and Read fails.
 	[TestMethod]
-	public void Properties_SampleCountAbove2To31_DoesNotSignExtend ()
+	[DataRow (1UL << 31)]
+	[DataRow (0xFFFFFFFFUL)]
+	[DataRow ((1UL << 32) | (1UL << 31))]
+	[DataRow (0xFFFFFFFFFUL)]
+	public void Read_SignedShiftOfByteAtLeast0x80_SignExtendsAndThrowsOverflowException (ulong totalSamples)
 	{
-		// STREAMINFO stores the low 32 bits of the sample count in bytes 14-17.
-		// 2^31 samples at 44100 Hz is about 13.5 hours. A signed shift of byte 14
-		// (0x80) sign-extends and reports thousands of years.
-		const ulong totalSamples = 1UL << 31;
 		var data = TestBuilders.Flac.CreateWithStreamInfo (44100, 2, 16, totalSamples);
 
 		var result = FlacFile.Read (data);
 
 		Assert.IsTrue (result.IsSuccess);
-		Assert.AreEqual (TimeSpan.FromSeconds ((double)totalSamples / 44100), result.File!.Properties.Duration);
+		Assert.AreEqual (TimeSpan.FromSeconds (totalSamples / 44100.0), result.File!.Properties.Duration);
 	}
 
 	[TestMethod]

@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Core;
 
 namespace TagLibSharp2.Xiph;
@@ -778,11 +779,11 @@ public sealed class FlacFile : IMediaFile
 
 		var bitsPerSample = (((data[12] & 0x01) << 4) | (data[13] >> 4)) + 1; // 5 bits, stored as bps-1
 
-		// Total samples: upper 4 bits from byte 13, lower 32 bits from bytes 14-17
+		// RFC 9639: 36-bit big-endian sample count. Low 4 bits of byte 13, then bytes 14-17.
+		// Read the low word as a big-endian uint and OR in the top nibble. A signed shift of a
+		// byte >= 0x80 sign-extends. TimeSpan.FromSeconds then throws OverflowException and Read fails.
 		var totalSamplesUpper = (ulong)(data[13] & 0x0F);
-		// Shift each byte as a ulong. A signed int shift of 0x80 sign-extends and
-		// turns a file longer than 2^31 samples into a multi-millennia duration.
-		var totalSamplesLower = ((ulong)data[14] << 24) | ((ulong)data[15] << 16) | ((ulong)data[16] << 8) | data[17];
+		var totalSamplesLower = (ulong)BinaryPrimitives.ReadUInt32BigEndian (data.Slice (14, 4));
 		var totalSamples = (totalSamplesUpper << 32) | totalSamplesLower;
 
 		return AudioProperties.FromFlac (totalSamples, sampleRate, bitsPerSample, channels);
