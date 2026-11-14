@@ -288,6 +288,34 @@ public class FlacTagTests
 	}
 
 	/// <summary>
+	/// Text metadata in a FLAC file lives in the VORBIS_COMMENT block
+	/// (https://xiph.org/flac/format.html, https://xiph.org/vorbis/doc/v-comment.html).
+	/// The tag view has to read and write those fields, not only title and pictures.
+	/// ALBUMARTIST, LYRICS, REPLAYGAIN_TRACK_GAIN, and MUSICBRAINZ_TRACKID are the
+	/// names VorbisComment already stores (https://wiki.xiph.org/VorbisComment).
+	/// </summary>
+	[TestMethod]
+	public void Tag_ExtendedFields_DelegateToVorbisComment ()
+	{
+		var data = TestBuilders.Flac.CreateWithVorbisComment ("Title", "Artist");
+		var file = FlacFile.Read (data).File!;
+
+		file.Tag!.AlbumArtist = "The Band";
+		file.Tag.Lyrics = "la la";
+		file.Tag.ReplayGainTrackGain = "-3.50 dB";
+		file.Tag.MusicBrainzTrackId = "9b1d6b8a-8c0e-4c0a-9f1a-6e5d4c3b2a10";
+		file.Tag.Performers = ["Ada", "Bea"];
+
+		Assert.AreEqual ("The Band", file.VorbisComment!.AlbumArtist);
+		Assert.AreEqual ("la la", file.Tag.Lyrics);
+		Assert.AreEqual ("-3.50 dB", file.VorbisComment.ReplayGainTrackGain);
+		Assert.AreEqual ("9b1d6b8a-8c0e-4c0a-9f1a-6e5d4c3b2a10", file.VorbisComment.MusicBrainzTrackId);
+		Assert.HasCount (2, file.Tag.Performers);
+		Assert.AreEqual ("Ada", file.Tag.Performers[0]);
+		Assert.AreEqual ("Bea", file.Tag.Performers[1]);
+	}
+
+	/// <summary>
 	/// <see cref="FlacTag.Clear"/> clears every metadata source this view surfaces:
 	/// the VorbisComment fields (including embedded METADATA_BLOCK_PICTURE entries)
 	/// and the native PICTURE blocks held on the file.
