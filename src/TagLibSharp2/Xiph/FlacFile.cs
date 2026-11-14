@@ -780,8 +780,8 @@ public sealed class FlacFile : IMediaFile
 		var bitsPerSample = (((data[12] & 0x01) << 4) | (data[13] >> 4)) + 1; // 5 bits, stored as bps-1
 
 		// RFC 9639: 36-bit big-endian sample count. Low 4 bits of byte 13, then bytes 14-17.
-		// Read the low word as a big-endian uint and OR in the top nibble. A signed shift of a
-		// byte >= 0x80 sign-extends. TimeSpan.FromSeconds then throws OverflowException and Read fails.
+		// A byte >= 0x80 in the low word (byte 14, bit 31) used to be shifted as a signed int,
+		// TimeSpan.FromSeconds threw OverflowException, and Read failed.
 		var totalSamplesUpper = (ulong)(data[13] & 0x0F);
 		var totalSamplesLower = (ulong)BinaryPrimitives.ReadUInt32BigEndian (data.Slice (14, 4));
 		var totalSamples = (totalSamplesUpper << 32) | totalSamplesLower;
