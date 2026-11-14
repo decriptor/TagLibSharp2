@@ -1229,16 +1229,9 @@ public sealed class Mp4File : IMediaFile
 
 	static void PatchChunkOffsets (Span<byte> box, int threshold, int delta)
 	{
-		if (box.Length < 8)
+		if (!TryMeasureBox (box, out var size, out var header))
 			return;
-
-		var size32 = BinaryPrimitives.ReadUInt32BigEndian (box);
-		var header = size32 == 1 ? 16 : 8;
-		if (box.Length < header)
-			return;
-
-		var size = size32 == 0 || size32 > (uint)box.Length ? box.Length : (int)size32;
-		if (size < header)
+		if (size < header || size > box.Length)
 			return;
 
 		var type = Encoding.ASCII.GetString (box.Slice (4, 4));
@@ -1255,15 +1248,55 @@ public sealed class Mp4File : IMediaFile
 	{
 		var offset = 0;
 		while (offset + 8 <= payload.Length) {
-			var size32 = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (offset));
-			var size = size32 < 8 || size32 > (uint)(payload.Length - offset)
-				? payload.Length - offset
-				: (int)size32;
-			if (size < 8)
+			if (!TryMeasureBox (payload.Slice (offset), out var size, out var header))
 				break;
+
+			// A size below the header is not "extends to the end" (that is size 0 only).
+			// Step over the declared length so a later sibling stays visible.
+			if (size < header) {
+				if (size <= 0)
+					break;
+				offset += size;
+				continue;
+			}
+
 			PatchChunkOffsets (payload.Slice (offset, size), threshold, delta);
 			offset += size;
 		}
+	}
+
+	/// <summary>
+	/// Measures one box. Size 0 runs to the end of <paramref name="data"/> (the parent, in a nested walk).
+	/// Size 1 is a 16-byte header plus a 64-bit largesize and is not the size-0 rule.
+	/// </summary>
+	static bool TryMeasureBox (ReadOnlySpan<byte> data, out int size, out int header)
+	{
+		size = 0;
+		header = 8;
+		if (data.Length < 8)
+			return false;
+
+		var size32 = BinaryPrimitives.ReadUInt32BigEndian (data);
+		if (size32 == 1) {
+			header = 16;
+			if (data.Length < 16)
+				return false;
+
+			var large = BinaryPrimitives.ReadUInt64BigEndian (data.Slice (8));
+			if (large < 16 || large > (ulong)data.Length)
+				return false;
+
+			size = (int)large;
+			return true;
+		}
+
+		if (size32 == 0 || size32 > (uint)data.Length) {
+			size = data.Length;
+			return true;
+		}
+
+		size = (int)size32;
+		return true;
 	}
 
 	static void PatchOffsets (Span<byte> payload, int width, int threshold, int delta)
@@ -1304,12 +1337,18 @@ public sealed class Mp4File : IMediaFile
 			moovContent.Add (child.Render ());
 		}
 
-		// Build new udta with updated metadata (or create one if Tag exists)
+		// Build new udta with updated metadata (or create one if Tag exists).
+		// Emit it before any unread tail so a later bad box cannot hide the new metadata.
 		if (Tag is not null || hasUdta) {
 			var newUdta = BuildUdtaBox ();
 			if (newUdta.Length > 0)
 				moovContent.Add (newUdta);
 		}
+
+		// Child parsing stops early on a bad box. Keep the unread span so a later trak
+		// is not deleted and chunk-offset patching can still see stco/co64 inside it.
+		if (originalMoov.UnparsedTail.Length > 0)
+			moovContent.Add (originalMoov.UnparsedTail);
 
 		// Build the moov box header
 		using var moovBuilder = new BinaryDataBuilder ();
