@@ -780,7 +780,9 @@ public sealed class FlacFile : IMediaFile
 
 		// Total samples: upper 4 bits from byte 13, lower 32 bits from bytes 14-17
 		var totalSamplesUpper = (ulong)(data[13] & 0x0F);
-		var totalSamplesLower = (ulong)((data[14] << 24) | (data[15] << 16) | (data[16] << 8) | data[17]);
+		// Shift each byte as a ulong. A signed int shift of 0x80 sign-extends and
+		// turns a file longer than 2^31 samples into a multi-millennia duration.
+		var totalSamplesLower = ((ulong)data[14] << 24) | ((ulong)data[15] << 16) | ((ulong)data[16] << 8) | data[17];
 		var totalSamples = (totalSamplesUpper << 32) | totalSamplesLower;
 
 		return AudioProperties.FromFlac (totalSamples, sampleRate, bitsPerSample, channels);

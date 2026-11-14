@@ -246,6 +246,21 @@ public class FlacFileTests
 	}
 
 	[TestMethod]
+	public void Properties_SampleCountAbove2To31_DoesNotSignExtend ()
+	{
+		// STREAMINFO stores the low 32 bits of the sample count in bytes 14-17.
+		// 2^31 samples at 44100 Hz is about 13.5 hours. A signed shift of byte 14
+		// (0x80) sign-extends and reports thousands of years.
+		const ulong totalSamples = 1UL << 31;
+		var data = TestBuilders.Flac.CreateWithStreamInfo (44100, 2, 16, totalSamples);
+
+		var result = FlacFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess);
+		Assert.AreEqual (TimeSpan.FromSeconds ((double)totalSamples / 44100), result.File!.Properties.Duration);
+	}
+
+	[TestMethod]
 	public void Properties_CodecIsFlac ()
 	{
 		var data = TestBuilders.Flac.CreateMinimal ();
