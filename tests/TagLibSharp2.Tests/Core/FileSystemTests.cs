@@ -114,6 +114,27 @@ public sealed class MockFileSystem : IFileSystem
 public sealed class FileSystemTests
 {
 	[TestMethod]
+	public void DefaultFileSystem_Move_ReplacesExistingFile ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			var source = Path.Combine (dir, "new.bin");
+			File.WriteAllBytes (destination, [1, 2, 3]);
+			File.WriteAllBytes (source, [4, 5]);
+
+			DefaultFileSystem.Instance.Move (source, destination);
+
+			Assert.IsTrue (File.Exists (destination));
+			Assert.IsFalse (File.Exists (source));
+			CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
 	public void DefaultFileSystem_Instance_IsSingleton ()
 	{
 		var instance1 = DefaultFileSystem.Instance;

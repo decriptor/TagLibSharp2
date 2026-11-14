@@ -81,11 +81,18 @@ public sealed class DefaultFileSystem : IFileSystem
 	/// <inheritdoc/>
 	public void Move (string sourcePath, string destinationPath)
 	{
-		// Delete destination first if it exists (required on some platforms)
-		if (File.Exists (destinationPath))
-			File.Delete (destinationPath);
+		// Replace the destination in one step. Deleting it first leaves a window
+		// where a crash or a failed move destroys the original.
+		if (!File.Exists (destinationPath)) {
+			File.Move (sourcePath, destinationPath);
+			return;
+		}
 
-		File.Move (sourcePath, destinationPath);
+#if NETSTANDARD2_0
+		File.Replace (sourcePath, destinationPath, null);
+#else
+		File.Move (sourcePath, destinationPath, overwrite: true);
+#endif
 	}
 
 	/// <inheritdoc/>
