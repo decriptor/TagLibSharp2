@@ -97,15 +97,22 @@ internal static class Mp4BoxParser
 
 		// Parse children if this is a container box
 		IReadOnlyList<Mp4Box>? children = null;
+		BinaryData? unparsedTail = null;
 		if (IsContainerBox (type)) {
 			// meta is a FullBox: skip version(1) + flags(3) before children
-			if (type == "meta" && boxData.Length >= 4)
-				children = ParseChildren (boxData.Slice (4).Span);
-			else
-				children = ParseChildren (boxData.Span);
+			var childData = boxData.Span;
+			var prefix = 0;
+			if (type == "meta" && boxData.Length >= 4) {
+				childData = boxData.Slice (4).Span;
+				prefix = 4;
+			}
+
+			children = ParseChildren (childData, out var consumed);
+			if (consumed < childData.Length)
+				unparsedTail = boxData.Slice (prefix + consumed);
 		}
 
-		var box = new Mp4Box (type, boxData, children, usesExtendedSize);
+		var box = new Mp4Box (type, boxData, children, usesExtendedSize, unparsedTail);
 		return new Mp4BoxReadResult (box, (int)boxSize);
 	}
 
@@ -126,6 +133,17 @@ internal static class Mp4BoxParser
 	/// <returns>List of parsed child boxes.</returns>
 	public static IReadOnlyList<Mp4Box> ParseChildren (ReadOnlySpan<byte> data)
 	{
+		return ParseChildren (data, out _);
+	}
+
+	/// <summary>
+	/// Parses child boxes until one cannot be read.
+	/// </summary>
+	/// <param name="data">The container's data (excluding container header).</param>
+	/// <param name="bytesConsumed">Bytes covered by successfully parsed children. The remainder is unread.</param>
+	/// <returns>List of parsed child boxes.</returns>
+	public static IReadOnlyList<Mp4Box> ParseChildren (ReadOnlySpan<byte> data, out int bytesConsumed)
+	{
 		var children = new List<Mp4Box> ();
 		var offset = 0;
 
@@ -138,6 +156,7 @@ internal static class Mp4BoxParser
 			offset += result.BytesConsumed;
 		}
 
+		bytesConsumed = offset;
 		return children;
 	}
 
