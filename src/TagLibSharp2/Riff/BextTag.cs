@@ -53,7 +53,14 @@ public class BextTag
 	const int VersionOffset = 346;
 	const int UmidOffset = 348;
 	const int UmidSize = 64;
+	const int LoudnessOffset = 412;
+	// Loudness (10 bytes) plus the reserved region through the fixed 602-byte header.
+	const int UninterpretedTailSize = 190;
 	const int CodingHistoryOffset = 602;
+
+	// Original chunk bytes. Render writes modeled fields back over this so loudness
+	// and the reserved region are not replaced with zeros.
+	byte[]? _source;
 
 	/// <summary>
 	/// Gets or sets the free-form description of the audio content (max 256 characters).
@@ -183,7 +190,31 @@ public class BextTag
 				tag.CodingHistory = history;
 		}
 
+		tag._source = data.ToArray ();
 		return tag;
+	}
+
+	/// <summary>
+	/// True when the modeled fields still match the chunk this tag was parsed from.
+	/// </summary>
+	internal bool MatchesSource ()
+	{
+		if (_source is null)
+			return false;
+
+		var fresh = Parse (new BinaryData (_source));
+		if (fresh is null)
+			return false;
+
+		return Description == fresh.Description
+			&& Originator == fresh.Originator
+			&& OriginatorReference == fresh.OriginatorReference
+			&& OriginationDate == fresh.OriginationDate
+			&& OriginationTime == fresh.OriginationTime
+			&& TimeReference == fresh.TimeReference
+			&& Version == fresh.Version
+			&& CodingHistory == fresh.CodingHistory
+			&& UmidEquals (Umid, fresh.Umid);
 	}
 
 	/// <summary>
@@ -220,15 +251,40 @@ public class BextTag
 			builder.Add (new byte[UmidSize]);
 		}
 
-		// Loudness values (10 bytes for Version 2) + Reserved (180 bytes) = 190 bytes
-		// We don't support loudness values yet, so just write zeros
-		builder.Add (new byte[190]);
+		// Loudness and reserved bytes are not modeled. A parsed chunk restores them below.
+		builder.Add (new byte[UninterpretedTailSize]);
 
 		// CodingHistory
 		if (codingHistoryBytes.Length > 0)
 			builder.Add (codingHistoryBytes);
 
-		return builder.ToBinaryData ();
+		var rendered = builder.ToBinaryData ();
+		if (_source is not { Length: >= MinimumSize })
+			return rendered;
+
+		// Keep loudness and reserved bytes this writer does not model.
+		var bytes = rendered.ToArray ();
+		CopyRange (_source, bytes, LoudnessOffset, UninterpretedTailSize);
+		if (Version < 1 && Umid is null)
+			CopyRange (_source, bytes, UmidOffset, UmidSize);
+
+		return new BinaryData (bytes);
+	}
+
+	static bool UmidEquals (byte[]? left, byte[]? right)
+	{
+		if (left is null || right is null)
+			return left is null && right is null;
+
+		return left.AsSpan ().SequenceEqual (right);
+	}
+
+	static void CopyRange (byte[] source, byte[] destination, int offset, int count)
+	{
+		if (source.Length < offset + count || destination.Length < offset + count)
+			return;
+
+		Array.Copy (source, offset, destination, offset, count);
 	}
 
 	static string? ReadAsciiField (BinaryData data, int offset, int size)
