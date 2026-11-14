@@ -304,14 +304,18 @@ public sealed class AiffFile : IMediaFile
 
 		IsValid = true;
 
-		// Parse chunks
-		int offset = HeaderSize;
+		// Parse chunks. TotalSize is a long so a size near int.MaxValue does not walk backward.
+		long offset = HeaderSize;
 		while (offset < data.Length) {
-			if (!AiffChunk.TryParse (data, offset, out var chunk))
+			if (offset > int.MaxValue || !AiffChunk.TryParse (data, (int)offset, out var chunk))
 				break;
 
 			_chunks.Add (chunk!);
-			offset += chunk!.TotalSize;
+			var next = offset + chunk!.TotalSize;
+			if (next <= offset)
+				break;
+
+			offset = next;
 
 			// Process specific chunk types
 			ProcessChunk (chunk);
@@ -357,8 +361,8 @@ public sealed class AiffFile : IMediaFile
 		if (!IsValid)
 			throw new InvalidOperationException ("Cannot render invalid AIFF file");
 
-		// Calculate total size of all chunks
-		var chunksSize = 0;
+		// Calculate total size of all chunks. TotalSize is a long file length, not a wrapped int.
+		long chunksSize = 0;
 		foreach (var chunk in _chunks) {
 			// Skip existing ID3 chunks - we'll add updated version if needed
 			if (chunk.FourCC is "ID3 " or "ID3")
@@ -379,9 +383,12 @@ public sealed class AiffFile : IMediaFile
 			}
 		}
 
-		// Total size = form type (4) + all chunks
+		// Total size = form type (4) + all chunks. The builder capacity is an int.
+		if (chunksSize > int.MaxValue - HeaderSize)
+			throw new InvalidOperationException ("Cannot render an AIFF file larger than supported memory.");
+
 		var contentSize = 4 + chunksSize;
-		var totalSize = HeaderSize + chunksSize;
+		var totalSize = (int)(HeaderSize + chunksSize);
 
 		using var builder = new BinaryDataBuilder (totalSize);
 

@@ -22,7 +22,7 @@
         public TagLibSharp2.Core.BinaryData Data { get; }
         public string FourCC { get; }
         public uint Size { get; }
-        public int TotalSize { get; }
+        public long TotalSize { get; }
         public TagLibSharp2.Core.BinaryData Render() { }
         public static bool TryParse(TagLibSharp2.Core.BinaryData data, int offset, out TagLibSharp2.Aiff.AiffChunk? chunk) { }
     }
@@ -2857,7 +2857,7 @@ namespace TagLibSharp2.Riff
         public uint DataSize { get; }
         public string FourCC { get; }
         public bool IsValid { get; }
-        public int TotalSize { get; }
+        public long TotalSize { get; }
         public bool Equals(TagLibSharp2.Riff.RiffChunk other) { }
         public override bool Equals(object? obj) { }
         public override int GetHashCode() { }

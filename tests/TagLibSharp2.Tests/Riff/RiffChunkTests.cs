@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Core;
 using TagLibSharp2.Riff;
 
@@ -36,6 +37,22 @@ public class RiffChunkTests
 		var chunk = new RiffChunk ("test", new BinaryData ([1, 2, 3]));
 		// TotalSize = HeaderSize(8) + DataSize(3) + padding(1) = 12
 		Assert.AreEqual (12, chunk.TotalSize);
+	}
+
+	[TestMethod]
+	public void TotalSize_DataSizeNearIntMax_IsNotNegative ()
+	{
+		// Header (8) plus a pad byte overflows Int32 when DataSize is within 9 of int.MaxValue.
+		var declared = (uint)(int.MaxValue - 4);
+		var raw = new byte[RiffChunk.HeaderSize];
+		"data"u8.CopyTo (raw);
+		BinaryPrimitives.WriteUInt32LittleEndian (raw.AsSpan (4), declared);
+
+		Assert.IsTrue (RiffChunk.TryParse (new BinaryData (raw), 0, out var chunk));
+		Assert.AreEqual (declared, chunk.DataSize);
+		var expected = RiffChunk.HeaderSize + (long)declared + (declared & 1);
+		Assert.AreEqual (expected, chunk.TotalSize);
+		Assert.IsTrue (chunk.TotalSize > 0, $"TotalSize wrapped to {chunk.TotalSize}");
 	}
 
 	[TestMethod]

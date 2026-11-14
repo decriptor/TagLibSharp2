@@ -284,11 +284,9 @@ public class RiffInfoTag : Tag
 			var fieldSize = data.ToUInt32LE (offset);
 			offset += 4;
 
-			// Overflow protection: reject fields claiming > int.MaxValue size
-			if (fieldSize > int.MaxValue)
-				break;
-
-			if (offset + fieldSize > data.Length)
+			// offset is positive and data.Length fits in an int, so a uint size above int.MaxValue
+			// fails this comparison and is not cast. The pad is applied after the field is read.
+			if ((long)offset + fieldSize > data.Length)
 				break;
 
 			// Read field value (null-terminated string, safe cast after overflow check)
