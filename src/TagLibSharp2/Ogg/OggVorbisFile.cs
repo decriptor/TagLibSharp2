@@ -460,15 +460,16 @@ public sealed class OggVorbisFile : IMediaFile
 			foreach (var page in commentPages)
 				builder.Add (page);
 
-			// Setup packet on its own page
-			var setupPage = OggPageHelper.BuildOggPage (
-				new[] { headerInfo.SetupPacket },
+			// Setup can itself exceed 255 segments; the single-page builder throws past that.
+			var (setupPages, seqAfterSetup) = OggPageHelper.BuildMultiPagePacket (
+				headerInfo.SetupPacket,
 				OggPageFlags.None,
 				0,
 				headerInfo.SerialNumber,
 				seqAfterComment);
-			builder.Add (setupPage);
-			nextSequence = seqAfterComment + 1;
+			foreach (var page in setupPages)
+				builder.Add (page);
+			nextSequence = seqAfterSetup;
 		}
 
 		// Renumber and fix audio pages (sequence numbers + EOS flag)

@@ -269,13 +269,14 @@ internal static class OggPageHelper
 	/// Builds multiple Ogg pages for a large packet that exceeds the single-page segment limit.
 	/// </summary>
 	/// <remarks>
-	/// Per RFC 3533, a single Ogg page can have at most 255 segments. For packets larger than
-	/// 65025 bytes (255 × 255), the packet must be split across multiple pages. The first page
-	/// contains the specified flags, and continuation pages have the continuation flag set.
+	/// Per RFC 3533, a page has at most 255 lacing values. A lacing value of 255 means the
+	/// packet continues, so a packet whose size is a positive multiple of 65025 ends with a
+	/// lacing value of 0 on the next page. Pages that do not finish the packet use granule
+	/// position -1. The page that finishes the packet uses <paramref name="granulePosition"/>.
 	/// </remarks>
 	/// <param name="packet">The packet data to split across pages.</param>
 	/// <param name="firstPageFlags">Flags for the first page (subsequent pages use Continuation).</param>
-	/// <param name="granulePosition">The granule position (typically 0 for header pages).</param>
+	/// <param name="granulePosition">Granule position of the page that finishes the packet.</param>
 	/// <param name="serialNumber">The stream serial number.</param>
 	/// <param name="startSequence">The starting sequence number.</param>
 	/// <returns>Array of Ogg pages containing the packet, and the next sequence number to use.</returns>
@@ -300,10 +301,13 @@ internal static class OggPageHelper
 			return ([page], startSequence + 1);
 		}
 
-		// Split packet across multiple pages
+		// Split packet across multiple pages. A full page is 255 lacing values of 255.
+		// When that also ends the packet, the terminating 0 lacing does not fit and is
+		// emitted afterwards — storing 256 in the segment-count byte would wrap to 0.
 		var pages = new List<byte[]> ();
 		var packetOffset = 0;
 		var sequenceNumber = startSequence;
+		var packetFinished = false;
 
 		while (packetOffset < packet.Length) {
 			var isFirstPage = packetOffset == 0;
@@ -318,19 +322,13 @@ internal static class OggPageHelper
 				bytesInPage -= maxBytesPerSegment;
 			}
 
-			// Check if packet ends on this page
-			var isLastPage = packetOffset + pageDataSize >= packet.Length;
-			if (isLastPage) {
-				// Packet ends here - add final segment (< 255 bytes)
+			// A page that already holds 255 segments cannot also carry the terminating 0.
+			var consumedAllRemaining = packetOffset + pageDataSize >= packet.Length;
+			if (consumedAllRemaining && segments.Count < maxSegmentsPerPage) {
 				segments.Add ((byte)bytesInPage);
-			} else {
-				// Packet continues to next page - all segments must be 255
-				// (we've already filled with 255s, just need to ensure no partial)
-				if (bytesInPage > 0) {
-					// Should not happen with our chunking logic
-					segments.Add ((byte)bytesInPage);
-				}
-			}
+				packetFinished = true;
+			} else if (!consumedAllRemaining && bytesInPage > 0)
+				segments.Add ((byte)bytesInPage);
 
 			// Build page header
 			var pageFlags = isFirstPage ? firstPageFlags : OggPageFlags.Continuation;
@@ -349,8 +347,8 @@ internal static class OggPageHelper
 			// Flags
 			page[5] = (byte)pageFlags;
 
-			// Granule position (8 bytes little-endian) - 0 for header pages
-			var gp = granulePosition;
+			// No packet finishes on this page: granule -1. The finishing page uses the caller's granule.
+			var gp = packetFinished ? granulePosition : ulong.MaxValue;
 			for (var i = 0; i < 8; i++) {
 				page[6 + i] = (byte)(gp & 0xFF);
 				gp >>= 8;
@@ -393,6 +391,18 @@ internal static class OggPageHelper
 
 			pages.Add (page);
 			packetOffset += pageDataSize;
+			sequenceNumber++;
+		}
+
+		if (!packetFinished) {
+			// Positive multiple of 65025: the packet ends with a lacing value of 0 on the next page.
+			var terminator = BuildOggPage (
+				new[] { Array.Empty<byte> () },
+				OggPageFlags.Continuation,
+				granulePosition,
+				serialNumber,
+				sequenceNumber);
+			pages.Add (terminator);
 			sequenceNumber++;
 		}
 

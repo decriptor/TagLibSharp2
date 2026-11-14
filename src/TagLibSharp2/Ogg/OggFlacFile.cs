@@ -114,6 +114,23 @@ public sealed class OggFlacFile : IMediaFile
 	public VorbisComment? VorbisComment { get; private set; }
 
 	/// <summary>
+	/// Returns the payload of the first preserved metadata block of <paramref name="type"/>,
+	/// excluding the block header. Pictures are type 6.
+	/// </summary>
+	internal bool TryGetMetadataBlock (byte type, out byte[] data)
+	{
+		foreach (var block in _metadataBlocks) {
+			if (block.Type == type) {
+				data = block.Data;
+				return true;
+			}
+		}
+
+		data = Array.Empty<byte> ();
+		return false;
+	}
+
+	/// <summary>
 	/// Gets the source file path if the file was read from disk.
 	/// </summary>
 	public string? SourcePath => _sourcePath;
@@ -312,85 +329,13 @@ public sealed class OggFlacFile : IMediaFile
 
 	private void ParseVorbisComment (ReadOnlySpan<byte> data)
 	{
-		// Search for metadata blocks in subsequent pages/packets
-		// Also preserve non-VorbisComment blocks (PICTURE, CUESHEET, etc.)
 		_metadataBlocks.Clear ();
+		var walk = WalkPackets (data);
+		if (!walk.IsSuccess)
+			return;
 
-		var offset = 0;
-		while (offset < data.Length - 27) {
-			// Skip to next Ogg page
-			if (!data.Slice (offset, 4).SequenceEqual (OggMagic)) {
-				offset++;
-				continue;
-			}
-
-			// Get number of segments
-			var numSegments = data[offset + 26];
-			var segmentTableEnd = offset + 27 + numSegments;
-
-			if (segmentTableEnd >= data.Length)
-				break;
-
-			// Calculate packet start
-			var packetStart = segmentTableEnd;
-
-			// Check if this packet contains a FLAC metadata block
-			if (packetStart < data.Length) {
-				var blockHeader = data[packetStart];
-				var blockType = (byte)(blockHeader & 0x7F);
-
-				// Only process known metadata block types (0-6)
-				if (blockType <= 6) {
-					var blockSizeOffset = packetStart + 1;
-					if (blockSizeOffset + 3 < data.Length) {
-						var blockSize = (data[blockSizeOffset] << 16) |
-										(data[blockSizeOffset + 1] << 8) |
-										data[blockSizeOffset + 2];
-
-						var blockDataStart = blockSizeOffset + 3;
-						if (blockDataStart + blockSize <= data.Length) {
-							var blockData = data.Slice (blockDataStart, blockSize);
-
-							if (blockType == 4) // VORBIS_COMMENT
-							{
-								var result = VorbisComment.Read (blockData);
-								if (result.IsSuccess) {
-									VorbisComment = result.Tag;
-								}
-							} else if (blockType != 0) // Don't store STREAMINFO (it's in the header packet)
-							  {
-								// Preserve other blocks (PADDING, APPLICATION, SEEKTABLE, CUESHEET, PICTURE)
-								_metadataBlocks.Add (new FlacMetadataBlock (blockType, blockData.ToArray ()));
-							}
-						}
-					}
-				}
-			}
-
-			// Move to next page
-			var pageSize = CalculatePageSize (data, offset);
-			if (pageSize <= 0)
-				break;
-			offset += pageSize;
-		}
-	}
-
-	private static int CalculatePageSize (ReadOnlySpan<byte> data, int offset)
-	{
-		if (offset + 27 > data.Length)
-			return -1;
-
-		int numSegments = data[offset + 26];
-		if (offset + 27 + numSegments > data.Length)
-			return -1;
-
-		// Sum segment sizes (max 255 segments * 255 bytes = 65,025 bytes per page)
-		var dataSize = 0;
-		for (int i = 0; i < numSegments; i++) {
-			dataSize += data[offset + 27 + i];
-		}
-
-		return 27 + numSegments + dataSize;
+		VorbisComment = walk.Comment;
+		_metadataBlocks.AddRange (walk.Blocks);
 	}
 
 	private static ExtractPacketResult ExtractFirstPacket (ReadOnlySpan<byte> data)
@@ -442,12 +387,13 @@ public sealed class OggFlacFile : IMediaFile
 	/// <summary>
 	/// Renders the file to a byte array.
 	/// </summary>
+	/// <returns>The rendered file, or an empty array when packets cannot be reassembled.</returns>
 	public byte[] Render (ReadOnlySpan<byte> originalData)
 	{
-		// Extract header info from original data
+		// Do not splice metadata in front of a continuation we failed to reassemble.
 		var headerInfo = ExtractHeaderInfo (originalData);
 		if (!headerInfo.IsSuccess)
-			return originalData.ToArray ();
+			return Array.Empty<byte> ();
 
 		using var builder = new MemoryStream ();
 
@@ -515,58 +461,207 @@ public sealed class OggFlacFile : IMediaFile
 
 	private static OggFlacHeaderInfo ExtractHeaderInfo (ReadOnlySpan<byte> data)
 	{
-		if (data.Length < 27)
-			return OggFlacHeaderInfo.Failure ("Data too short");
+		var walk = WalkPackets (data);
+		if (!walk.IsSuccess || walk.HeaderPacket is null)
+			return OggFlacHeaderInfo.Failure (walk.Error ?? "Failed to reassemble Ogg FLAC packets");
 
-		// Read first page to get header packet
-		var pageResult = OggPageHelper.ReadOggPageWithSegments (data);
-		if (!pageResult.IsSuccess || pageResult.Segments.Count == 0)
-			return OggFlacHeaderInfo.Failure ("Failed to read first page");
-
-		// Combine segments into header packet
-		var headerPacket = CombineSegments (pageResult.Segments);
-		var serialNumber = pageResult.Page.SerialNumber;
-		var pageSize = pageResult.BytesConsumed;
-
-		// Find where audio data starts (after header and comment pages)
-		var offset = pageSize;
-		while (offset < data.Length - 27) {
-			if (!data.Slice (offset, 4).SequenceEqual (OggMagic))
-				break;
-
-			var nextPageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset));
-			if (!nextPageResult.IsSuccess)
-				break;
-
-			// Check if this page contains audio data (EOS flag or page after metadata)
-			// For FLAC in Ogg, audio pages have granule position > 0 typically
-			if (nextPageResult.Segments.Count > 0 && nextPageResult.Segments[0].Length > 0) {
-				var firstByte = nextPageResult.Segments[0][0];
-				// FLAC metadata blocks have type in lower 7 bits (0-6)
-				// Audio frames start with sync code 0xFF (or continuation)
-				if ((firstByte & 0x7F) > 6)
-					break; // This is audio data
-			}
-
-			offset += nextPageResult.BytesConsumed;
-		}
-
-		return OggFlacHeaderInfo.Success (headerPacket, serialNumber, offset);
+		return OggFlacHeaderInfo.Success (walk.HeaderPacket, walk.SerialNumber, walk.AudioDataStart);
 	}
 
-	private static byte[] CombineSegments (IReadOnlyList<byte[]> segments)
+	/// <summary>
+	/// Reassembles Ogg packets before FLAC metadata is parsed.
+	/// A lacing value of 255 continues a packet; a shorter value, including 0, ends it.
+	/// Audio starts at the first packet whose first byte is 0xFF, which begins a fresh page.
+	/// </summary>
+	private static PacketWalkResult WalkPackets (ReadOnlySpan<byte> data)
 	{
-		var totalSize = 0;
-		for (int i = 0; i < segments.Count; i++)
-			totalSize += segments[i].Length;
+		const int maxPacketSize = 16 * 1024 * 1024;
+		const int maxPages = 10000;
 
-		var result = new byte[totalSize];
+		var blocks = new List<FlacMetadataBlock> ();
+		var buffer = new List<byte> ();
+		byte[]? headerPacket = null;
+		VorbisComment? comment = null;
+		uint serialNumber = 0;
+		var open = false;
 		var offset = 0;
-		for (int i = 0; i < segments.Count; i++) {
-			segments[i].CopyTo (result, offset);
-			offset += segments[i].Length;
+		var audioStart = -1;
+		var pageCount = 0;
+		string? error = null;
+
+		while (error is null && audioStart < 0 && offset + 27 <= data.Length) {
+			var pageResult = OggPageHelper.ReadOggPageWithSegments (data.Slice (offset));
+			if (!pageResult.IsSuccess) {
+				if (open)
+					error = "Ogg FLAC packet continues past a readable page";
+				else if (headerPacket is null)
+					error = pageResult.Error ?? "Failed to read Ogg page";
+				else
+					audioStart = offset;
+				break;
+			}
+
+			pageCount++;
+			if (pageCount > maxPages) {
+				error = "Ogg FLAC metadata exceeds the page limit";
+				break;
+			}
+
+			if (offset == 0)
+				serialNumber = pageResult.Page.SerialNumber;
+
+			var pageOffset = offset;
+			if (pageResult.Page.IsContinuation) {
+				if (!open) {
+					error = "Ogg continuation page has no open packet";
+					break;
+				}
+
+				if (pageResult.Segments.Count == 0) {
+					error = "Ogg continuation page has no lacing values";
+					break;
+				}
+
+				if (!AppendFragment (buffer, pageResult.Segments[0], maxPacketSize, out error))
+					break;
+
+				if (pageResult.IsPacketComplete[0]) {
+					if (!ClosePacket (buffer, blocks, ref headerPacket, ref comment, ref open, out error))
+						break;
+				}
+
+				if (!ReadNewPackets (pageResult, 1, pageOffset, buffer, blocks, ref headerPacket, ref comment, ref open, ref audioStart, maxPacketSize, ref error))
+					break;
+			} else if (open) {
+				error = "Ogg FLAC packet was not finished before the next page";
+				break;
+			} else if (!ReadNewPackets (pageResult, 0, pageOffset, buffer, blocks, ref headerPacket, ref comment, ref open, ref audioStart, maxPacketSize, ref error)) {
+				break;
+			}
+
+			offset += pageResult.BytesConsumed;
 		}
-		return result;
+
+		if (error is null && open)
+			error = "Ogg FLAC packet is missing its terminating lacing value";
+
+		if (error is not null)
+			return PacketWalkResult.Failure (error);
+
+		if (headerPacket is null)
+			return PacketWalkResult.Failure ("Missing Ogg FLAC header packet");
+
+		if (audioStart < 0)
+			audioStart = offset;
+
+		return PacketWalkResult.Success (headerPacket, serialNumber, audioStart, comment, blocks);
+	}
+
+	private static bool ReadNewPackets (
+		OggPageWithSegmentsResult pageResult,
+		int startIndex,
+		int pageOffset,
+		List<byte> buffer,
+		List<FlacMetadataBlock> blocks,
+		ref byte[]? headerPacket,
+		ref VorbisComment? comment,
+		ref bool open,
+		ref int audioStart,
+		int maxPacketSize,
+		ref string? error)
+	{
+		for (var i = startIndex; i < pageResult.Segments.Count; i++) {
+			if (open) {
+				error = "Unexpected lacing after an open packet";
+				return false;
+			}
+
+			var segment = pageResult.Segments[i];
+			if (segment.Length > 0 && segment[0] == 0xFF) {
+				// The first audio packet begins a fresh page. A continuation, or a packet
+				// that follows metadata on the same page, cannot be spliced safely.
+				if (pageResult.Page.IsContinuation || i != 0) {
+					error = "FLAC audio packet does not begin a fresh page";
+					return false;
+				}
+
+				audioStart = pageOffset;
+				return true;
+			}
+
+			buffer.Clear ();
+			if (!AppendFragment (buffer, segment, maxPacketSize, out error))
+				return false;
+
+			open = !pageResult.IsPacketComplete[i];
+			if (!open && !ClosePacket (buffer, blocks, ref headerPacket, ref comment, ref open, out error))
+				return false;
+		}
+
+		return true;
+	}
+
+	private static bool AppendFragment (List<byte> buffer, byte[] fragment, int maxPacketSize, out string? error)
+	{
+		if ((long)buffer.Count + fragment.Length > maxPacketSize) {
+			error = "Ogg FLAC packet exceeds the maximum size";
+			return false;
+		}
+
+		OggPageHelper.AppendSpanToList (buffer, fragment);
+		error = null;
+		return true;
+	}
+
+	private static bool ClosePacket (
+		List<byte> buffer,
+		List<FlacMetadataBlock> blocks,
+		ref byte[]? headerPacket,
+		ref VorbisComment? comment,
+		ref bool open,
+		out string? error)
+	{
+		var packet = buffer.ToArray ();
+		buffer.Clear ();
+		open = false;
+		error = null;
+
+		if (headerPacket is null) {
+			if (packet.Length == 0) {
+				error = "Empty Ogg FLAC header packet";
+				return false;
+			}
+
+			headerPacket = packet;
+			return true;
+		}
+
+		if (packet.Length == 0)
+			return true;
+
+		if (packet.Length < 4) {
+			error = "Ogg FLAC metadata packet is shorter than a block header";
+			return false;
+		}
+
+		var blockType = (byte)(packet[0] & 0x7F);
+		var blockSize = (packet[1] << 16) | (packet[2] << 8) | packet[3];
+		if (blockSize < 0 || packet.Length < 4 + blockSize) {
+			error = "Ogg FLAC metadata block extends outside its packet";
+			return false;
+		}
+
+		if (blockType == 4) {
+			var commentResult = VorbisComment.Read (packet.AsSpan (4, blockSize));
+			if (commentResult.IsSuccess)
+				comment = commentResult.Tag;
+		} else if (blockType != 0) {
+			var blockData = new byte[blockSize];
+			Array.Copy (packet, 4, blockData, 0, blockSize);
+			blocks.Add (new FlacMetadataBlock (blockType, blockData));
+		}
+
+		return true;
 	}
 
 	private readonly struct OggFlacHeaderInfo
@@ -591,6 +686,34 @@ public sealed class OggFlacFile : IMediaFile
 
 		public static OggFlacHeaderInfo Failure (string error)
 			=> new (false, null, 0, 0, error);
+	}
+
+	private readonly struct PacketWalkResult
+	{
+		public bool IsSuccess { get; }
+		public string? Error { get; }
+		public byte[]? HeaderPacket { get; }
+		public uint SerialNumber { get; }
+		public int AudioDataStart { get; }
+		public VorbisComment? Comment { get; }
+		public List<FlacMetadataBlock> Blocks { get; }
+
+		private PacketWalkResult (bool success, string? error, byte[]? headerPacket, uint serialNumber, int audioStart, VorbisComment? comment, List<FlacMetadataBlock> blocks)
+		{
+			IsSuccess = success;
+			Error = error;
+			HeaderPacket = headerPacket;
+			SerialNumber = serialNumber;
+			AudioDataStart = audioStart;
+			Comment = comment;
+			Blocks = blocks;
+		}
+
+		public static PacketWalkResult Success (byte[] headerPacket, uint serialNumber, int audioStart, VorbisComment? comment, List<FlacMetadataBlock> blocks)
+			=> new (true, null, headerPacket, serialNumber, audioStart, comment, blocks);
+
+		public static PacketWalkResult Failure (string error)
+			=> new (false, error, null, 0, 0, null, new List<FlacMetadataBlock> ());
 	}
 
 	// ===== File I/O =====
@@ -645,6 +768,9 @@ public sealed class OggFlacFile : IMediaFile
 	{
 		var fs = fileSystem ?? _sourceFileSystem ?? DefaultFileSystem.Instance;
 		var rendered = Render (originalData);
+		if (rendered.Length == 0)
+			return FileWriteResult.Failure ("Failed to render Ogg FLAC file");
+
 		return AtomicFileWriter.Write (path, rendered, fs);
 	}
 
@@ -681,6 +807,9 @@ public sealed class OggFlacFile : IMediaFile
 	{
 		var fs = fileSystem ?? _sourceFileSystem ?? DefaultFileSystem.Instance;
 		var rendered = Render (originalData.Span);
+		if (rendered.Length == 0)
+			return FileWriteResult.Failure ("Failed to render Ogg FLAC file");
+
 		return await AtomicFileWriter.WriteAsync (path, rendered, fs, cancellationToken).ConfigureAwait (false);
 	}
 
