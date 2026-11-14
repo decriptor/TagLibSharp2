@@ -196,10 +196,26 @@ public class Id3v2TagUnsyncAndV22Tests
 	[TestMethod]
 	public void Read_UnsynchronizedV24Tag_ParsesCorrectly ()
 	{
+		// v2.4 unsynchronises the frame, not the whole tag. The syncsafe size
+		// counts the stored bytes, including the 00 inserted after FF.
 		var textWithFF = "Value\xFFHere";
 		var frame = TestBuilders.Id3v2.CreateTextFrame (TestConstants.FrameIds.Title, textWithFF, TestConstants.Id3v2.Version4);
+		var unsyncPayload = TestBuilders.Id3v2.ApplyUnsynchronization (frame[10..]);
+		var sized = new byte[10 + unsyncPayload.Length];
+		frame.AsSpan (0, 10).CopyTo (sized);
+		unsyncPayload.CopyTo (sized.AsSpan (10));
+		var len = unsyncPayload.Length;
+		sized[4] = (byte)((len >> 21) & 0x7F);
+		sized[5] = (byte)((len >> 14) & 0x7F);
+		sized[6] = (byte)((len >> 7) & 0x7F);
+		sized[7] = (byte)(len & 0x7F);
+		sized[9] = 0x02;
 
-		var data = TestBuilders.Id3v2.CreateTagWithUnsynchronization (TestConstants.Id3v2.Version4, frame);
+		var header = TestBuilders.Id3v2.CreateHeaderWithFlags (
+			TestConstants.Id3v2.Version4, (uint)sized.Length, TestConstants.Id3v2.FlagUnsynchronization);
+		var data = new byte[header.Length + sized.Length];
+		header.CopyTo (data, 0);
+		sized.CopyTo (data, header.Length);
 
 		var result = Id3v2Tag.Read (data);
 

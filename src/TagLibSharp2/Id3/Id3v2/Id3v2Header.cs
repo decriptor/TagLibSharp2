@@ -69,7 +69,7 @@ public readonly struct Id3v2Header : IEquatable<Id3v2Header>
 	/// <summary>
 	/// Gets a value indicating whether a footer is present (v2.4 only).
 	/// </summary>
-	public bool HasFooter => Flags.HasFlag (Id3v2HeaderFlags.Footer);
+	public bool HasFooter => MajorVersion == 4 && Flags.HasFlag (Id3v2HeaderFlags.Footer);
 
 	/// <summary>
 	/// Gets the total size of the tag including header and optional footer.
