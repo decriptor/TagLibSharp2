@@ -535,7 +535,7 @@ public sealed class DffFile : IMediaFile
 		using var ms = new MemoryStream ();
 		var removed = new List<RemovedRange> (2);
 		var dstiRegions = new List<(int Position, int Length)> (1);
-		CopySkippingId3Chunks (ms, original, removed, dstiRegions);
+		CopySkippingId3Chunks (ms, original, removed, dstiRegions, Id3v2Tag is not null);
 
 		// The copied length is odd only when the last on-disk chunk had no pad byte.
 		if (Id3v2Tag is not null && (ms.Length & 1) != 0)
@@ -710,7 +710,8 @@ public sealed class DffFile : IMediaFile
 		MemoryStream destination,
 		byte[] original,
 		List<RemovedRange> removed,
-		List<(int Position, int Length)> dstiRegions)
+		List<(int Position, int Length)> dstiRegions,
+		bool appendingId3)
 	{
 		var headerBytes = original.Length < 16 ? original.Length : 16;
 		if (headerBytes > 0)
@@ -759,7 +760,10 @@ public sealed class DffFile : IMediaFile
 			offset = chunkEnd;
 		}
 
-		if (offset < original.Length)
+		// A chunk header is 12 bytes. Read stops on a shorter tail, so those bytes are not a chunk.
+		// Copying them in front of a new ID3 makes the tag the tail's ckDataSize and it will not re-read.
+		// The same remainder is left by zero padding whose length is not a multiple of 12.
+		if (offset < original.Length && !(appendingId3 && original.Length - offset < 12))
 			destination.Write (original, offset, original.Length - offset);
 	}
 

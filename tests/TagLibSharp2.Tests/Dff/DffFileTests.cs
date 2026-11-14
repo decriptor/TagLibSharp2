@@ -867,6 +867,106 @@ public class DffFileTests
 		Assert.AreEqual (renderedComt + 12 + comtData.Length + 1, id3, "Odd truncated chunk keeps a pad before ID3");
 	}
 
+	[TestMethod]
+	[DataRow ("DSD ", 4)]
+	[DataRow ("DST ", 4)]
+	[DataRow ("DSD ", 2048)]
+	[DataRow ("DST ", 2048)]
+	public void Render_ShortTail_AppendedId3RereadsTitle (string soundChunkId, int tailLength)
+	{
+		// A DSDIFF chunk header is 12 bytes. Four stray bytes are not a chunk.
+		// 2048 zero bytes are size-0 chunks plus an 8-byte remainder, which is not one either.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = Concat (fileBytes, new byte[tailLength]);
+		BinaryPrimitives.WriteUInt64BigEndian (fileBytes.AsSpan (4, 8), (ulong)(fileBytes.Length - 12));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "New Title";
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New Title", again.File!.Id3v2Tag?.Title);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
+		Assert.AreEqual ((ulong)payload.Length, declared);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_ClearTag_TruncatedSound_SizeMatchesBytesPresent (string soundChunkId)
+	{
+		// The declared sound size runs past EOF. Clearing the tag keeps the bytes that exist.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		fileBytes = InsertBeforeChunk (fileBytes, soundChunkId, CreateId3Chunk ("Old", forceOddData: false));
+
+		var sound = FindChunkOffset (fileBytes, soundChunkId);
+		var truncated = fileBytes[..(sound + 12 + payload.Length)];
+		BinaryPrimitives.WriteUInt64BigEndian (truncated.AsSpan (sound + 4, 8), 100_000);
+		BinaryPrimitives.WriteUInt64BigEndian (truncated.AsSpan (4, 8), (ulong)(truncated.Length - 12));
+
+		var read = DffFile.Read (truncated);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Old", read.File!.Id3v2Tag?.Title);
+		read.File.Id3v2Tag = null;
+
+		var rendered = read.File.Render ();
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.IsNull (again.File!.Id3v2Tag);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		var declared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedSound + 4, 8));
+		var bytesPresent = rendered.Length - (renderedSound + 12);
+		Assert.AreEqual ((ulong)bytesPresent, declared, "Re-read sound size should match the bytes present");
+		Assert.AreEqual (payload.Length, bytesPresent);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		if (soundChunkId == "DSD ")
+			Assert.AreEqual ((ulong)payload.Length * 8 / (ulong)again.File.Channels, again.File.SampleCount);
+	}
+
+	[TestMethod]
+	[DataRow ("DSD ")]
+	[DataRow ("DST ")]
+	public void Render_ClearTag_OddTruncatedChunk_OutputLengthIsEven (string soundChunkId)
+	{
+		// No ID3 is appended on the clear path, so only this chunk's pad keeps the file even.
+		var payload = new byte[] { 0xA1, 0xB2, 0xC3, 0xD4 };
+		var fileBytes = CreateSoundFile (soundChunkId, payload);
+		var comtData = new byte[] { 0x11, 0x22, 0x33 };
+		var comt = CreateChunk ("COMT", comtData, includePad: false);
+		BinaryPrimitives.WriteUInt64BigEndian (comt.AsSpan (4, 8), 100_000);
+		fileBytes = AppendChunk (fileBytes, comt);
+		fileBytes = InsertBeforeChunk (fileBytes, soundChunkId, CreateId3Chunk ("Old", forceOddData: false));
+
+		var read = DffFile.Read (fileBytes);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.Id3v2Tag = null;
+
+		var rendered = read.File.Render ();
+		Assert.AreEqual (0, rendered.Length & 1, "Odd truncated chunk must be padded so the clear output is even");
+
+		var again = DffFile.Read (rendered.Span);
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.IsNull (again.File!.Id3v2Tag);
+
+		var renderedSound = FindChunkOffset (rendered.ToArray (), soundChunkId);
+		Assert.IsTrue (payload.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedSound + 12, payload.Length)));
+
+		var renderedComt = FindChunkOffset (rendered.ToArray (), "COMT");
+		var comtDeclared = BinaryPrimitives.ReadUInt64BigEndian (rendered.Span.Slice (renderedComt + 4, 8));
+		Assert.AreEqual ((ulong)comtData.Length, comtDeclared);
+		Assert.IsTrue (comtData.AsSpan ().SequenceEqual (rendered.Span.Slice (renderedComt + 12, comtData.Length)));
+		Assert.AreEqual (renderedComt + 12 + comtData.Length + 1, rendered.Length);
+	}
+
 	/// <summary>
 	/// Finds the offset of the DSD chunk in a DFF file.
 	/// </summary>
