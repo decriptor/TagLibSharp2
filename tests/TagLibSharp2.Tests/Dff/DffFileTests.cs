@@ -616,6 +616,26 @@ public class DffFileTests
 		Assert.AreEqual ((ulong)(rendered.Length - 12), frm8Size);
 	}
 
+	[TestMethod]
+	public void Render_Id3ChunkBeforeAudio_KeepsAudioBytes ()
+	{
+		var original = CreateMinimalDffFile (2822400, 2, sampleCount: 16);
+		var dsd = FindDsdChunkOffset (original);
+		original[dsd + 12] = 0xAB;
+
+		var merged = new byte[original.Length + 12];
+		original.AsSpan (0, dsd).CopyTo (merged);
+		"ID3 "u8.CopyTo (merged.AsSpan (dsd));
+		original.AsSpan (dsd).CopyTo (merged.AsSpan (dsd + 12));
+
+		var read = DffFile.Read (merged);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.EnsureId3v2Tag ().Title = "T";
+
+		var rendered = read.File.Render ();
+		Assert.IsTrue (rendered.Span.IndexOf ((byte)0xAB) >= 0);
+	}
+
 	/// <summary>
 	/// Finds the offset of the DSD chunk in a DFF file.
 	/// </summary>
