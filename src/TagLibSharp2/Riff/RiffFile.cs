@@ -159,15 +159,18 @@ public class RiffFile
 				break;
 
 			// ckSize is the data length and does not include the pad byte.
-			// A size near int.MaxValue used to overflow this signed offset and throw.
+			// Drop the chunk when that declared length does not fit. A size whose
+			// end passes int.MaxValue is the same case and must not be kept.
 			var dataSize = chunk.DataSize;
-			var pad = (dataSize & 1) != 0 ? 1L : 0L;
-			var next = (long)offset + RiffChunk.HeaderSize + dataSize + pad;
-			if (next > int.MaxValue)
+			var dataEnd = (long)offset + RiffChunk.HeaderSize + dataSize;
+			if (dataEnd > limit)
 				break;
 
 			file._chunks.Add (chunk);
-			if (next >= limit)
+
+			var pad = (dataSize & 1) != 0 ? 1L : 0L;
+			var next = dataEnd + pad;
+			if (next >= limit || next > int.MaxValue)
 				break;
 
 			offset = (int)next;

@@ -229,25 +229,32 @@ public class WavFileSavePreservationTests
 	}
 
 	[TestMethod]
-	public void SaveToFile_TruncatedDataChunk_WritesRenderedRiffSize ()
+	public void Read_TruncatedDataChunk_DoesNotThrowAndDropsChunk ()
 	{
 		const uint declared = 0x00100000;
 		var original = CreateWaveWithDataChunkSize (declared);
 		var read = WavFile.Read (original);
 		Assert.IsTrue (read.IsSuccess, read.Error);
 		Assert.IsNotNull (read.File);
-		read.File.InfoTag = new RiffInfoTag { Title = "Retitled" };
+		Assert.AreEqual (TimeSpan.Zero, read.File.Properties.Duration);
 
-		var rendered = read.File.Render ();
-		Assert.IsTrue (rendered.Length < declared, $"render allocated or wrote the declared data size ({rendered.Length})");
-		Assert.AreEqual ((uint)(rendered.Length - 8), rendered.ToUInt32LE (4));
+		Assert.IsTrue (RiffFile.TryParse (new BinaryData (original), out var riff));
+		Assert.IsNotNull (riff.GetChunk ("fmt "));
+		Assert.IsFalse (riff.GetChunk ("data").HasValue, "truncated data chunk whose ckSize does not fit was kept");
+	}
 
-		Assert.IsTrue (RiffFile.TryParse (rendered, out var riff));
-		var data = riff.GetChunk ("data");
-		Assert.IsTrue (data.HasValue);
-		Assert.AreEqual (4u, data.Value.DataSize);
-		CollectionAssert.AreEqual (new byte[] { 0x11, 0x22, 0x33, 0x44 }, data.Value.Data.ToArray ());
-		Assert.AreEqual ("Retitled", WavFile.Read (rendered).File?.InfoTag?.Title);
+	[TestMethod]
+	public void Read_ChunkSize7FFFFFF0_DoesNotThrow ()
+	{
+		var data = CreateWaveWithNearMaxChunk (sentinelContainer: false);
+		var read = WavFile.Read (data);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+
+		Assert.IsTrue (RiffFile.TryParse (new BinaryData (data), out var riff));
+		Assert.IsNotNull (riff.GetChunk ("fmt "));
+		Assert.IsNotNull (riff.GetChunk ("data"));
+		foreach (var chunk in riff.AllChunks)
+			Assert.AreNotEqual (0x7FFFFFF0u, chunk.DataSize, "ckSize 0x7FFFFFF0 was kept");
 	}
 
 	[TestMethod]
@@ -318,7 +325,33 @@ public class WavFileSavePreservationTests
 	}
 
 	[TestMethod]
-	public void SaveToFile_SecondInfoList_IsKeptWhenOwnedInfoIsRewritten ()
+	public void SaveToFile_ClearingZeroUmid_StillCopiesOriginalBextBytes ()
+	{
+		var bext = CreateBextWithLatin1DescriptionAndBareHistory ();
+		bext[346] = 1;
+		for (var i = 0; i < 64; i++)
+			Assert.AreEqual (0, bext[348 + i], "UMID bytes 348-411 must already be zero");
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/clip.wav", CreateWaveWithChunks (("bext", bext)));
+		var read = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNull (read.File!.BextTag?.Umid);
+
+		read.File.BextTag!.Umid = null;
+		read.File.InfoTag = new RiffInfoTag { Title = "Retitled" };
+		var save = read.File.SaveToFile ("/clip.wav", fs);
+		Assert.IsTrue (save.IsSuccess, save.Error);
+
+		Assert.IsTrue (RiffFile.TryParse (new BinaryData (fs.ReadAllBytes ("/clip.wav")), out var riff));
+		var saved = riff.GetChunk ("bext");
+		Assert.IsTrue (saved.HasValue, "bext was dropped");
+		CollectionAssert.AreEqual (bext, saved.Value.Data.ToArray ());
+		Assert.AreEqual ("Retitled", WavFile.Read (fs.ReadAllBytes ("/clip.wav")).File?.InfoTag?.Title);
+	}
+
+	[TestMethod]
+	public void SaveToFile_SecondInfoList_IsNotCopiedWhenOwnedInfoIsRewritten ()
 	{
 		var first = CreateInfoPayload ("First");
 		var second = CreateInfoPayload ("SecondKeep");
@@ -330,9 +363,64 @@ public class WavFileSavePreservationTests
 
 		var content = new BinaryData (saved).ToStringLatin1 ();
 		Assert.IsTrue (content.Contains ("Retitled"), "owned INFO list was not rewritten");
-		Assert.IsTrue (content.Contains ("SecondKeep"), "second LIST INFO was dropped");
+		Assert.IsFalse (content.Contains ("SecondKeep"), "second LIST INFO was copied");
 		Assert.IsFalse (content.Contains ("First"), "owned INFO list was copied and rewritten");
 		Assert.IsTrue (content.Contains ("cue-labels"), "non-INFO LIST was dropped");
+		Assert.AreEqual (1, CountInfoLists (saved));
+	}
+
+	[TestMethod]
+	public void SaveToFile_EditTitle_WithSecondInfoList_KeepsNewTitle ()
+	{
+		var first = CreateInfoFields (("INAM", "OldTitle"), ("IART", "KeptArtist"));
+		var second = CreateInfoFields (("INAM", "StaleTitle"), ("ICMT", "FilledComment"));
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/clip.wav", CreateWaveWithChunks (("LIST", first), ("LIST", second)));
+
+		var read = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("OldTitle", read.File!.InfoTag?.Title);
+		Assert.AreEqual ("KeptArtist", read.File.InfoTag?.Artist);
+
+		read.File.InfoTag!.Title = "NewTitle";
+		var save = read.File.SaveToFile ("/clip.wav", fs);
+		Assert.IsTrue (save.IsSuccess, save.Error);
+
+		var roundTrip = WavFile.Read (fs.ReadAllBytes ("/clip.wav")).File;
+		Assert.AreEqual ("NewTitle", roundTrip?.InfoTag?.Title);
+		Assert.AreEqual ("KeptArtist", roundTrip?.InfoTag?.Artist);
+		Assert.AreEqual ("FilledComment", roundTrip?.InfoTag?.Comment);
+		Assert.AreEqual (1, CountInfoLists (fs.ReadAllBytes ("/clip.wav")));
+	}
+
+	[TestMethod]
+	public void SaveToFile_ClearingInfoTag_DropsEveryInfoList ()
+	{
+		var first = CreateInfoPayload ("FirstTitle");
+		var second = CreateInfoPayload ("StaleTitle");
+		var adtl = CreateAdtlPayload ();
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/clip.wav", CreateWaveWithChunks (
+			("LIST", first),
+			("LIST", second),
+			("LIST", adtl)));
+
+		var read = WavFile.ReadFromFile ("/clip.wav", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNotNull (read.File!.InfoTag);
+
+		read.File.InfoTag = null;
+		var save = read.File.SaveToFile ("/clip.wav", fs);
+		Assert.IsTrue (save.IsSuccess, save.Error);
+
+		var written = fs.ReadAllBytes ("/clip.wav");
+		var roundTrip = WavFile.Read (written).File;
+		Assert.IsNull (roundTrip?.InfoTag);
+		var content = new BinaryData (written).ToStringLatin1 ();
+		Assert.IsFalse (content.Contains ("StaleTitle"), "stale second LIST INFO was kept");
+		Assert.IsFalse (content.Contains ("FirstTitle"));
+		Assert.IsTrue (content.Contains ("cue-labels"), "non-INFO LIST was dropped");
+		Assert.AreEqual (0, CountInfoLists (written));
 	}
 
 	[TestMethod]
@@ -362,10 +450,7 @@ public class WavFileSavePreservationTests
 	{
 		var data = CreateWaveWithNearMaxChunk (sentinelContainer);
 		var read = WavFile.Read (data);
-		if (!read.IsSuccess) {
-			Assert.IsNull (read.File);
-			return;
-		}
+		Assert.IsTrue (read.IsSuccess, read.Error);
 
 		Assert.IsTrue (RiffFile.TryParse (new BinaryData (data), out var riff));
 		Assert.IsNotNull (riff.GetChunk ("fmt "));
@@ -522,17 +607,35 @@ public class WavFileSavePreservationTests
 		return bext;
 	}
 
-	static byte[] CreateInfoPayload (string title)
+	static byte[] CreateInfoPayload (string title) =>
+		CreateInfoFields (("INAM", title));
+
+	static byte[] CreateInfoFields (params (string Id, string Value)[] fields)
 	{
-		var titleBytes = System.Text.Encoding.ASCII.GetBytes (title + "\0");
-		using var builder = new BinaryDataBuilder (32);
+		using var builder = new BinaryDataBuilder (64);
 		builder.AddStringLatin1 ("INFO");
-		builder.AddStringLatin1 ("INAM");
-		builder.AddUInt32LE ((uint)titleBytes.Length);
-		builder.Add (titleBytes);
-		if ((titleBytes.Length & 1) != 0)
-			builder.Add (0);
+		foreach (var (id, value) in fields) {
+			var bytes = System.Text.Encoding.ASCII.GetBytes (value + "\0");
+			builder.AddStringLatin1 (id);
+			builder.AddUInt32LE ((uint)bytes.Length);
+			builder.Add (bytes);
+			if ((bytes.Length & 1) != 0)
+				builder.Add (0);
+		}
+
 		return builder.ToBinaryData ().ToArray ();
+	}
+
+	static int CountInfoLists (byte[] wav)
+	{
+		Assert.IsTrue (RiffFile.TryParse (new BinaryData (wav), out var riff));
+		var count = 0;
+		foreach (var chunk in riff.GetChunks ("LIST")) {
+			if (chunk.Data.Length >= 4 && chunk.Data.Slice (0, 4).ToStringLatin1 () == "INFO")
+				count++;
+		}
+
+		return count;
 	}
 
 	static byte[] CreateAdtlPayload ()

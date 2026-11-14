@@ -236,6 +236,23 @@ public class RiffInfoTag : Tag
 	public override bool IsEmpty => _fields.Count == 0;
 
 	/// <summary>
+	/// Copies fields from a later INFO list that this tag left empty.
+	/// A field already set here wins and is not overridden.
+	/// </summary>
+	/// <param name="later">The later list. Its values fill only missing fields.</param>
+	internal void FillMissingFrom (RiffInfoTag later)
+	{
+		foreach (var id in later.FieldIds) {
+			if (!string.IsNullOrEmpty (GetField (id)))
+				continue;
+
+			var value = later.GetField (id);
+			if (!string.IsNullOrEmpty (value))
+				SetField (id, value);
+		}
+	}
+
+	/// <summary>
 	/// Clears all fields from this tag.
 	/// </summary>
 	public override void Clear () => _fields.Clear ();
