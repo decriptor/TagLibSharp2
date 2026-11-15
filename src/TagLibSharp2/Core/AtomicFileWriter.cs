@@ -27,6 +27,8 @@ namespace TagLibSharp2.Core;
 /// temp file is moved back only when that destination existed before the replace and is missing
 /// afterward; otherwise the temp file is deleted. If the move back fails, the temp file is
 /// renamed to the destination file name plus <c>.taglib-recovered</c> and that path is reported.
+/// When that recovered name already exists, the temp is moved to another name that is not a
+/// sweep name and that path is reported. If that move also fails, the original temp path is reported.
 /// </para>
 /// </remarks>
 public static class AtomicFileWriter
@@ -187,30 +189,68 @@ public static class AtomicFileWriter
 		IFileSystem fileSystem,
 		string exceptionMessage)
 	{
+		var reported = fileSystem.FileExists (tempPath)
+			? MoveKeptTempOffSweepName (tempPath, destinationPath, fileSystem)
+			: tempPath;
+		return $"Temporary file kept at '{reported}': {exceptionMessage}";
+	}
+
+	// Moves the temp off a sweep name. An existing recovered file is left unchanged.
+	static string MoveKeptTempOffSweepName (string tempPath, string destinationPath, IFileSystem fileSystem)
+	{
 		var recoveredPath = GetRecoveredPath (destinationPath, fileSystem);
-		if (!SamePath (tempPath, recoveredPath)
-			&& fileSystem.FileExists (tempPath)
-			&& !fileSystem.FileExists (recoveredPath)) {
-			try {
-				fileSystem.Move (tempPath, recoveredPath);
-			} catch (IOException) {
-				// Keep the temp where it is and report whichever path still holds the bytes.
-			} catch (UnauthorizedAccessException) {
-			}
+		if (SamePath (tempPath, recoveredPath))
+			return tempPath;
+
+		if (!fileSystem.FileExists (recoveredPath)) {
+			// A failed move leaves the new bytes in the temp. Do not report recoveredPath.
+			if (TryMoveKeptTemp (fileSystem, tempPath, recoveredPath))
+				return recoveredPath;
+			return tempPath;
 		}
 
-		var reported = fileSystem.FileExists (recoveredPath) ? recoveredPath : tempPath;
-		return $"Temporary file kept at '{reported}': {exceptionMessage}";
+		var sparePath = GetSpareRecoveredPath (destinationPath, fileSystem);
+		if (TryMoveKeptTemp (fileSystem, tempPath, sparePath))
+			return sparePath;
+
+		return tempPath;
+	}
+
+	static bool TryMoveKeptTemp (IFileSystem fileSystem, string sourcePath, string destinationPath)
+	{
+		try {
+			fileSystem.Move (sourcePath, destinationPath);
+			return true;
+		} catch (IOException) {
+			return false;
+		} catch (UnauthorizedAccessException) {
+			return false;
+		}
 	}
 
 	static string GetRecoveredPath (string destinationPath, IFileSystem fileSystem)
 	{
 		var recoveredName = fileSystem.GetFileName (destinationPath) + RecoveredSuffix;
+		return PathInDestinationDirectory (destinationPath, fileSystem, recoveredName);
+	}
+
+	static string GetSpareRecoveredPath (string destinationPath, IFileSystem fileSystem)
+	{
+		// Not a sweep name: sweep names are ".taglib_" plus 32 hex digits plus ".tmp".
+		var spareName = fileSystem.GetFileName (destinationPath)
+			+ RecoveredSuffix
+			+ "."
+			+ Guid.NewGuid ().ToString ("N");
+		return PathInDestinationDirectory (destinationPath, fileSystem, spareName);
+	}
+
+	static string PathInDestinationDirectory (string destinationPath, IFileSystem fileSystem, string fileName)
+	{
 		var directory = fileSystem.GetDirectoryName (destinationPath);
 		if (string.IsNullOrEmpty (directory))
-			return recoveredName;
+			return fileName;
 
-		return fileSystem.CombinePath (directory!, recoveredName);
+		return fileSystem.CombinePath (directory!, fileName);
 	}
 
 	static FileWriteResult FinishAfterFailure (
