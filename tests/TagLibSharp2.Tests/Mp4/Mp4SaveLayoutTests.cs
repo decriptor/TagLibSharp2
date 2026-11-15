@@ -444,6 +444,31 @@ public class Mp4SaveLayoutTests
 	}
 
 	[TestMethod]
+	public void Render_CompleteEntryBeforeTruncatedStsd_MovesThatChunkByMoovDelta ()
+	{
+		// dref entry 1 is self-contained and entry 2 is external. stsd entry 1 is complete and
+		// names data_reference_index 1. Entry 2 declares a size that runs past the box.
+		// stsc maps chunk 1 to description 1. ISO 14496-12 §8.5.2: that index was read, so
+		// the chunk moves by the moov delta. Description 2 is past the last complete entry.
+		// Any external dref means that chunk stays. Do not read the truncated entry as index 1.
+		var dref = DrefBox (DataEntryUrl (true), DataEntryUrl (false));
+		var stsd = StsdBox (SampleEntry (1), TruncatedSampleEntry ());
+		var stsc = StscRows ((1, 1), (2, 2));
+		var file = FileWithChunkTrak (
+			offset => TrakWithChunkOffsets (dref, stsd, stsc, false, offset, offset + 4),
+			out var payloadOffset);
+
+		var rendered = RenderWithTitle (file);
+		var delta = BoxLength (rendered.Span, "moov"u8) - BoxLength (file, "moov"u8);
+		var moved = ReadStco (rendered.Span, 0);
+		Assert.IsTrue (delta > 0);
+		Assert.AreEqual (payloadOffset + (uint)delta, moved, "the complete entry's chunk moves by the moov delta");
+		Assert.AreEqual ((uint)MarkerAt (rendered.Span), moved);
+		Assert.AreNotEqual (payloadOffset, moved);
+		Assert.AreEqual (payloadOffset + 4, ReadStco (rendered.Span, 1), "a description past the last complete entry stays");
+	}
+
+	[TestMethod]
 	public void Render_UnresolvableStsc_ExternalOnly_DoesNotMoveChunkOffset ()
 	{
 		// stsd has one entry. The stsc row asks for sample description 3, which is not there.
@@ -533,7 +558,7 @@ public class Mp4SaveLayoutTests
 	public void Render_ManySelfContainedChunks_PatchesOffsetsWithinASecond ()
 	{
 		// 100k chunks and 100k stsc rows, every dref entry self-contained. mdat stays a few bytes.
-		// Offsets are synthetic and sit past moov. A per-chunk scan of this table exceeds one second.
+		// Offsets are synthetic and sit past moov. The save still has to finish within a second.
 		const int count = 100_000;
 		const uint synthetic = 0x1000_0000;
 		var offsets = new uint[count];
@@ -861,10 +886,10 @@ public class Mp4SaveLayoutTests
 		return FullBox ("stsd", 0, data);
 	}
 
-	static byte[] TruncatedStsd ()
+	static byte[] TruncatedSampleEntry ()
 	{
-		// Declared sample-entry size is 64. Only 16 bytes are in this stsd.
-		// Bytes 8..15 are the next box: size 8, type 'nx' + 0x0001 at the index position.
+		// Declared sample-entry size is 64. Only these 16 bytes are present.
+		// Bytes 8..15 look like the next box, and 0x0001 sits where data_reference_index would be.
 		var entry = new byte[16];
 		BinaryPrimitives.WriteUInt32BigEndian (entry, 64);
 		Encoding.ASCII.GetBytes ("mp4a").CopyTo (entry, 4);
@@ -873,6 +898,12 @@ public class Mp4SaveLayoutTests
 		entry[13] = (byte)'x';
 		entry[14] = 0x00;
 		entry[15] = 0x01;
+		return entry;
+	}
+
+	static byte[] TruncatedStsd ()
+	{
+		var entry = TruncatedSampleEntry ();
 		var data = new byte[4 + entry.Length];
 		BinaryPrimitives.WriteUInt32BigEndian (data, 1);
 		entry.CopyTo (data.AsSpan (4));
