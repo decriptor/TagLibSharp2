@@ -1027,6 +1027,31 @@ public class ApeTagTests
 	}
 
 	[TestMethod]
+	public void Rewrite_Lyrics3SizeDoesNotFit_DoesNotDeleteAudio ()
+	{
+		// Lyrics3 v2: the six digits are the body size, including LYRICSBEGIN and excluding the digits and LYRICS200.
+		// 999999 does not fit in front of those digits. Locate must not throw, and a save must keep the audio prefix.
+		var audio = MarkerAudio (80, 0xD8);
+		var lyrics = new byte[11 + 6 + 9];
+		"LYRICSBEGIN"u8.CopyTo (lyrics);
+		"999999"u8.CopyTo (lyrics.AsSpan (11));
+		"LYRICS200"u8.CopyTo (lyrics.AsSpan (17));
+		var id3 = CreateId3v1Suffix ();
+		var data = new byte[audio.Length + lyrics.Length + id3.Length];
+		audio.CopyTo (data, 0);
+		lyrics.CopyTo (data, audio.Length);
+		id3.CopyTo (data, audio.Length + lyrics.Length);
+
+		var location = ApeTagLocation.Locate (data);
+		var saved = ApeTagLocation.Rewrite (data, location, new ApeTag { Title = "New" }.Render ());
+
+		Assert.AreEqual (data.Length - ApeTagLocation.Id3v1Size, location.AudioEnd);
+		Assert.AreEqual (-1, location.LyricsOffset);
+		Assert.IsTrue (saved.Length >= audio.Length, "save shrank the file below the audio");
+		Assert.IsTrue (saved.AsSpan (0, audio.Length).SequenceEqual (audio), "audio prefix was shortened");
+	}
+
+	[TestMethod]
 	public void Rewrite_BadFooterBeforeLyricsBegin_DoesNotDeleteAudio ()
 	{
 		// Reserved bytes are not zero, so this is not a footer. Its TagSize must not eat the audio in front of LYRICSBEGIN.
