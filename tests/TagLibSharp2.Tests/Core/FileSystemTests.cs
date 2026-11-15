@@ -1404,6 +1404,28 @@ public sealed class AtomicFileWriterTests
 	}
 
 	[TestMethod]
+	public void Write_WhenDestinationNameIsSweepTemp_DoesNotDeleteItBeforeFailure ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			// Doubled separator: the listed path is not ordinal-equal to the destination,
+			// so the name exclusion is what keeps these bytes.
+			var destination = dir + Path.DirectorySeparatorChar + Path.DirectorySeparatorChar + HexTempName ('a');
+			File.WriteAllBytes (destination, [1, 2, 3]);
+			File.SetLastWriteTimeUtc (destination, DateTime.UtcNow.AddHours (-48));
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance) { ThrowAfterWrite = true };
+
+			var result = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+			Assert.IsFalse (result.IsSuccess);
+			CollectionAssert.AreEqual (new byte[] { 1, 2, 3 }, File.ReadAllBytes (destination));
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
 	public void Write_FileSystemWithoutLastWriteTime_KeepsTempFiles ()
 	{
 		var mock = new MockFileSystem ();
@@ -1605,6 +1627,57 @@ public sealed class AtomicFileWriterTests
 	}
 
 	[TestMethod]
+	public void Write_SecondFailedReplace_KeepsNewBytesOffTheSweepName ()
+	{
+		var dir = Path.Combine (Path.GetTempPath (), "tls-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var destination = Path.Combine (dir, "song.bin");
+			File.WriteAllBytes (destination, [1, 2, 3]);
+			var fs = new RecordingFileSystem (DefaultFileSystem.Instance);
+			var now = DateTime.UtcNow;
+			using (AtomicFileWriter.OverrideSweepClockForTests (() => now, TimeSpan.FromHours (1))) {
+				FailReplaceAfterRemovingDestination (fs);
+				var first = AtomicFileWriter.Write (destination, [4, 5], fs);
+
+				var recovered = RecoveredPath (destination);
+				Assert.IsFalse (first.IsSuccess);
+				Assert.IsNotNull (first.Error);
+				AssertKeptTempError (first.Error, "retry failed", recovered);
+				CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (recovered));
+
+				// The first failure removed the destination. Put it back so this is also a failed replace.
+				File.WriteAllBytes (destination, [1, 2, 3]);
+				FailReplaceAfterRemovingDestination (fs);
+				var second = AtomicFileWriter.Write (destination, [6, 7], fs);
+
+				Assert.IsFalse (second.IsSuccess);
+				Assert.IsNotNull (second.Error);
+				CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (recovered));
+				var kept = PathReportedByKeptTempError (second.Error);
+				Assert.AreNotEqual (recovered, kept);
+				Assert.IsFalse (IsSweepTempName (Path.GetFileName (kept)), kept);
+				CollectionAssert.AreEqual (new byte[] { 6, 7 }, File.ReadAllBytes (kept));
+
+				now = now.AddHours (2);
+				foreach (var candidate in Directory.GetFiles (dir)) {
+					if (IsSweepTempName (Path.GetFileName (candidate)))
+						File.SetLastWriteTimeUtc (candidate, now.AddHours (-25));
+				}
+
+				var swept = AtomicFileWriter.Write (Path.Combine (dir, "other.bin"), [9], fs);
+
+				Assert.IsTrue (swept.IsSuccess, swept.Error);
+				Assert.IsTrue (File.Exists (kept), kept);
+				CollectionAssert.AreEqual (new byte[] { 6, 7 }, File.ReadAllBytes (kept));
+				CollectionAssert.AreEqual (new byte[] { 4, 5 }, File.ReadAllBytes (recovered));
+			}
+		} finally {
+			Directory.Delete (dir, true);
+		}
+	}
+
+	[TestMethod]
 	public void Write_SymlinkToOtherDirectory_TempAppearsBesideTarget ()
 	{
 		// Same volume: the link and the target are two directories. A second volume is not mounted.
@@ -1745,6 +1818,45 @@ public sealed class AtomicFileWriterTests
 			File.SetUnixFileMode (dataDir, dirMode);
 			Directory.Delete (root, true);
 		}
+	}
+
+	static void FailReplaceAfterRemovingDestination (RecordingFileSystem fs)
+	{
+		fs.OnNextMove ((inner, _, dest) => {
+			inner.Delete (dest);
+			throw new IOException ("Unable to move replacement");
+		});
+		fs.OnNextMove ((_, _, _) => throw new IOException ("retry failed"));
+	}
+
+	static string PathReportedByKeptTempError (string error)
+	{
+		const string prefix = "Temporary file kept at '";
+		var start = error.IndexOf (prefix, StringComparison.Ordinal);
+		Assert.IsTrue (start >= 0, error);
+		start += prefix.Length;
+		var end = error.IndexOf ("': ", start, StringComparison.Ordinal);
+		Assert.IsTrue (end > start, error);
+		return error.Substring (start, end - start);
+	}
+
+	static bool IsSweepTempName (string name)
+	{
+		const string prefix = ".taglib_";
+		const string suffix = ".tmp";
+		if (name.Length != prefix.Length + 32 + suffix.Length)
+			return false;
+		if (!name.StartsWith (prefix, StringComparison.Ordinal)
+			|| !name.EndsWith (suffix, StringComparison.Ordinal))
+			return false;
+
+		for (var i = prefix.Length; i < prefix.Length + 32; i++) {
+			var value = name[i];
+			if (value is not (>= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F'))
+				return false;
+		}
+
+		return true;
 	}
 
 	static string HexTempName (char digit) => ".taglib_" + new string (digit, 32) + ".tmp";
