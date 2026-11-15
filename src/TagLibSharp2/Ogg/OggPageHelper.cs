@@ -593,6 +593,12 @@ internal static class OggPageHelper
 					return HeaderPacketsResult.Failure (
 						"Ogg FLAC packet continues past a readable page",
 						packets, serialNumber, offset);
+				// https://xiph.org/ogg/doc/framing.html: a page starts with OggS.
+				// Bytes that are not a page are not the audio packet.
+				if (stopAtFlacAudio && offset < data.Length)
+					return HeaderPacketsResult.Failure (
+						$"Ogg FLAC stopped before a readable audio page: {pageResult.Error}",
+						packets, serialNumber, offset);
 				break;
 			}
 
