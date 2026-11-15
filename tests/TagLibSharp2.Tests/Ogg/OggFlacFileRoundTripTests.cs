@@ -717,6 +717,37 @@ public class OggFlacFileRoundTripTests
 	}
 
 	[TestMethod]
+	public void NonPageByteBeforeAudio_SaveLeavesFileUnchanged ()
+	{
+		// https://xiph.org/ogg/doc/framing.html: an Ogg page starts with OggS.
+		// One 0x00 between the metadata packet and the audio page is not audio.
+		var original = MetadataPacketThenByteThenAudio ();
+		var pages = SplitPages (original);
+		Assert.AreEqual (2, pages.Count, "The 0x00 must sit between the metadata packet and the audio page");
+		var gap = pages[0].Length + pages[1].Length;
+		Assert.AreEqual (0x00, original[gap]);
+		Assert.AreEqual ((byte)'O', original[gap + 1]);
+
+		var mock = new MockFileSystem ();
+		const string path = "/gap.oga";
+		mock.AddFile (path, original);
+
+		var read = OggFlacFile.ReadFromFile (path, mock);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Kept", read.File!.VorbisComment?.Title);
+		read.File.VorbisComment!.Title = "Changed";
+
+		var save = read.File.SaveToFile (path, mock);
+		var saved = mock.ReadAllBytes (path);
+		var audio = new byte[] { 0xFF, 0xF8, 0xC9, 0x12, 0x00 };
+		Assert.IsFalse (
+			save.IsSuccess,
+			$"SaveToFile returned success ({original.Length} -> {saved.Length} bytes); " +
+			$"audio packet is {(saved.AsSpan ().IndexOf (audio) < 0 ? "gone" : "present")}.");
+		CollectionAssert.AreEqual (original, saved);
+	}
+
+	[TestMethod]
 	public void CommentAndMaxPicture_UnderPageBudget_RoundTrips ()
 	{
 		// 0xFFFFFF is the largest FLAC metadata block (RFC 9639 section 8.1). With a comment
@@ -853,6 +884,20 @@ public class OggFlacFileRoundTripTests
 		WritePages (output, WrapFlacBlock (0x06, picture), OggPageFlags.None, ref sequence);
 		WritePages (output, [0xFF, 0xF8, 0xC9, 0x12, 0x00], OggPageFlags.EndOfStream, ref sequence);
 		return output.ToArray ();
+	}
+
+	static byte[] MetadataPacketThenByteThenAudio ()
+	{
+		var comment = new VorbisComment ("TagLibSharp2") { Title = "Kept" };
+		var commentPacket = WrapFlacBlock (0x04, comment.Render ().ToArray ());
+		using var metadata = new MemoryStream ();
+		uint sequence = 0;
+		WritePages (metadata, CreateHeaderPacket (1), OggPageFlags.BeginOfStream, ref sequence);
+		WritePages (metadata, commentPacket, OggPageFlags.None, ref sequence);
+
+		using var audio = new MemoryStream ();
+		WritePages (audio, [0xFF, 0xF8, 0xC9, 0x12, 0x00], OggPageFlags.EndOfStream, ref sequence);
+		return Concat (metadata.ToArray (), [0x00], audio.ToArray ());
 	}
 
 	static byte[] RepeatedPicture (int pages, byte marker)
