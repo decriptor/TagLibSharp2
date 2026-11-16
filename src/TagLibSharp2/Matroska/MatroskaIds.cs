@@ -22,7 +22,9 @@ static class MatroskaIds
 	public const ulong Tracks = 0x1654AE6B;
 	public const ulong TrackEntry = 0xAE;
 	public const ulong TrackType = 0x83;
+	public const ulong FlagDefault = 0x88;
 	public const ulong CodecId = 0x86;
+	public const ulong CodecPrivate = 0x63A2;
 	public const ulong CodecName = 0x258688;
 	public const ulong DefaultDuration = 0x23E383;
 	public const ulong Audio = 0xE1;

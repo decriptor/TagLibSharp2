@@ -221,19 +221,19 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override string? TitleSort {
-		get => First ("TITLE_SORT");
+		get => NestedSort ("TITLE") ?? First ("TITLE_SORT");
 		set => SetItem ("TITLE_SORT", value);
 	}
 
 	/// <inheritdoc/>
 	public override string? ArtistSort {
-		get => First ("ARTIST_SORT");
+		get => NestedSort ("ARTIST") ?? First ("ARTIST_SORT");
 		set => SetItem ("ARTIST_SORT", value);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumSort {
-		get => First ("ALBUM_SORT");
+		get => (ItemLevel < AlbumLevel ? NestedSortAt (AlbumLevel, "TITLE") : null) ?? First ("ALBUM_SORT");
 		set => SetItem ("ALBUM_SORT", value);
 	}
 
@@ -433,6 +433,12 @@ public sealed class MatroskaTag : Tag
 	/// </summary>
 	List<string> Values (string name)
 	{
+		var chosen = ChosenLevel (name);
+		return chosen is null ? new List<string> () : ValuesAt (chosen.Value, name);
+	}
+
+	ulong? ChosenLevel (string name)
+	{
 		var item = ItemLevel;
 		ulong? chosen = null;
 		foreach (var block in _blocks) {
@@ -444,10 +450,45 @@ public sealed class MatroskaTag : Tag
 				chosen = block.Level;
 		}
 
-		if (chosen is null)
-			return new List<string> ();
+		return chosen;
+	}
 
-		return ValuesAt (chosen.Value, name);
+	/// <summary>
+	/// <c>SORT_WITH</c> on the same SimpleTag that supplies <paramref name="name"/>.
+	/// An empty nested sort does not borrow one from a later tag.
+	/// </summary>
+	string? NestedSort (string name)
+	{
+		var chosen = ChosenLevel (name);
+		return chosen is null ? null : NestedSortAt (chosen.Value, name);
+	}
+
+	string? NestedSortAt (ulong level, string name)
+	{
+		var preferDefault = false;
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level != level)
+				continue;
+			if (block.HasDefault (name))
+				preferDefault = true;
+		}
+
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level != level)
+				continue;
+			foreach (var tag in block.Tags) {
+				if (tag.Name != name || (preferDefault && !tag.IsDefault) || string.IsNullOrEmpty (tag.Text))
+					continue;
+				foreach (var child in tag.Children) {
+					if (child.Name == "SORT_WITH" && !string.IsNullOrEmpty (child.Text))
+						return child.Text;
+				}
+
+				return null;
+			}
+		}
+
+		return null;
 	}
 
 	List<string> ValuesAt (ulong level, string name)

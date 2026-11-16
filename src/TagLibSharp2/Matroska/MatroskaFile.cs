@@ -1,6 +1,9 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
+using System.Text;
+
 using TagLibSharp2.Core;
 
 namespace TagLibSharp2.Matroska;
@@ -257,6 +260,9 @@ public sealed class MatroskaFile : IMediaFile
 		ulong kind = 0;
 		string? codecId = null;
 		string? codecName = null;
+		var isDefault = true;
+		var privateOffset = -1;
+		var privateLength = 0;
 		var rate = 0;
 		var channels = 0;
 		var bits = 0;
@@ -270,9 +276,14 @@ public sealed class MatroskaFile : IMediaFile
 			var payload = entry.Slice (element.DataOffset, (int)element.DataLength);
 			if (element.Id == MatroskaIds.TrackType)
 				kind = EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.FlagDefault)
+				isDefault = payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
 			else if (element.Id == MatroskaIds.CodecId)
 				codecId = EbmlReader.ReadString (payload).TrimEnd ('\0');
-			else if (element.Id == MatroskaIds.CodecName)
+			else if (element.Id == MatroskaIds.CodecPrivate) {
+				privateOffset = element.DataOffset;
+				privateLength = (int)element.DataLength;
+			} else if (element.Id == MatroskaIds.CodecName)
 				codecName = EbmlReader.ReadString (payload).TrimEnd ('\0');
 			else if (element.Id == MatroskaIds.DefaultDuration && payload.Length > 0) {
 				var nanos = EbmlReader.ReadUInt (payload);
@@ -285,10 +296,16 @@ public sealed class MatroskaFile : IMediaFile
 			offset = element.End;
 		}
 
-		var codec = CodecLabel (codecId, codecName);
+		var codecPrivate = privateOffset >= 0
+			? entry.Slice (privateOffset, privateLength)
+			: ReadOnlySpan<byte>.Empty;
+		var codec = CodecLabel (codecId, codecName, codecPrivate);
+		// FlagDefault defaults to 1. Keep the first default track. A later default replaces one that opted out.
 		if (kind == 2) {
 			layout.Types |= MediaTypes.Audio;
-			if (layout.SampleRate == 0 && layout.AudioCodec is null) {
+			if (!layout.HasAudio || (!layout.AudioIsDefault && isDefault)) {
+				layout.HasAudio = true;
+				layout.AudioIsDefault = isDefault;
 				layout.SampleRate = rate;
 				layout.Channels = channels;
 				layout.BitsPerSample = bits;
@@ -296,7 +313,9 @@ public sealed class MatroskaFile : IMediaFile
 			}
 		} else if (kind == 1) {
 			layout.Types |= MediaTypes.Video;
-			if (layout.Width == 0 && layout.VideoCodec is null) {
+			if (!layout.HasVideo || (!layout.VideoIsDefault && isDefault)) {
+				layout.HasVideo = true;
+				layout.VideoIsDefault = isDefault;
 				layout.Width = width;
 				layout.Height = height;
 				layout.FrameRate = frameRate;
@@ -341,10 +360,12 @@ public sealed class MatroskaFile : IMediaFile
 		}
 	}
 
-	static string CodecLabel (string? codecId, string? codecName)
+	static string CodecLabel (string? codecId, string? codecName, ReadOnlySpan<byte> codecPrivate)
 	{
 		if (!string.IsNullOrEmpty (codecName) && codecName != codecId)
 			return codecName;
+		if (codecId == "V_MS/VFW/FOURCC" && TryVfwFourCc (codecPrivate, out var fourcc))
+			return fourcc;
 		return codecId switch {
 			"A_VORBIS" => "Vorbis",
 			"A_OPUS" => "Opus",
@@ -362,6 +383,37 @@ public sealed class MatroskaFile : IMediaFile
 			"V_THEORA" => "Theora",
 			_ => string.IsNullOrEmpty (codecId) ? "Matroska" : codecId
 		};
+	}
+
+	/// <summary>
+	/// <c>V_MS/VFW/FOURCC</c> stores a BITMAPINFOHEADER. <c>biCompression</c> at offset 16 is the fourcc.
+	/// </summary>
+	static bool TryVfwFourCc (ReadOnlySpan<byte> header, out string name)
+	{
+		name = string.Empty;
+		if (header.Length < 20)
+			return false;
+		var biSize = BinaryPrimitives.ReadUInt32LittleEndian (header);
+		if (biSize < 20 || biSize > (uint)header.Length)
+			return false;
+
+		for (var i = 0; i < 4; i++) {
+			var b = header[16 + i];
+			if (b < 0x20 || b > 0x7E)
+				return false;
+		}
+
+		var bytes = new byte[4];
+		header.Slice (16, 4).CopyTo (bytes);
+		var fourcc = Encoding.ASCII.GetString (bytes).Trim ();
+		if (fourcc.Length == 0)
+			return false;
+
+		name = fourcc switch {
+			"MP41" or "MP42" or "MP43" or "DIVX" or "DX50" or "XVID" or "FMP4" or "MP4V" or "M4S2" or "DIV3" or "3IV2" => "MPEG-4 Visual",
+			_ => fourcc
+		};
+		return true;
 	}
 
 	static void ReadAttachments (ReadOnlySpan<byte> body, MatroskaTag tag)
@@ -420,10 +472,14 @@ public sealed class MatroskaFile : IMediaFile
 		public int Channels;
 		public int BitsPerSample;
 		public string? AudioCodec;
+		public bool HasAudio;
+		public bool AudioIsDefault;
 		public int Width;
 		public int Height;
 		public double FrameRate;
 		public string? VideoCodec;
+		public bool HasVideo;
+		public bool VideoIsDefault;
 	}
 
 	static void ReadTags (ReadOnlySpan<byte> data, ReadOnlySpan<byte> body, MatroskaTag tag)
