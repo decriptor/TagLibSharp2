@@ -228,6 +228,89 @@ public class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_DefaultTrack_WinsOverAnEarlierDisabledTrack ()
+	{
+		// FlagDefault defaults to 1. A commentary track marked 0 must not hide the main track.
+		var commentary = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Element (0x88, new byte[] { 0 }),
+			Master (0xE1, Element (0xB5, Float32 (22050f)))));
+		var main = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Master (0xE1, Element (0xB5, Float32 (48000f)))));
+		var small = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 1 }),
+			Element (0x88, new byte[] { 0 }),
+			Master (0xE0, Concat (Element (0xB0, new byte[] { 1, 0x40 }), Element (0xBA, new byte[] { 0xF0 })))));
+		var picture = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 1 }),
+			Master (0xE0, Concat (Element (0xB0, new byte[] { 0x02, 0x80 }), Element (0xBA, new byte[] { 0x01, 0x68 })))));
+		var file = FileWith (Master (0x1654AE6B, Concat (commentary, main, small, picture)));
+
+		IMediaFile media = MatroskaFile.Read (file).File!;
+		var video = media.VideoProperties!.Value;
+
+		Assert.AreEqual (48000, media.AudioProperties!.SampleRate);
+		Assert.AreEqual (640, video.Width);
+		Assert.AreEqual (360, video.Height);
+	}
+
+	[TestMethod]
+	public void Read_VfwFourCc_Mp42_IsMpeg4Visual ()
+	{
+		var header = new byte[40];
+		header[0] = 40;
+		"MP42"u8.CopyTo (header.AsSpan (16));
+		var video = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 1 }),
+			Element (0x86, "V_MS/VFW/FOURCC"u8),
+			Element (0x63A2, header),
+			Master (0xE0, Concat (Element (0xB0, new byte[] { 0x03, 0x56 }), Element (0xBA, new byte[] { 0x01, 0xE0 })))));
+		var file = FileWith (Master (0x1654AE6B, video));
+
+		var videoProps = ((IMediaFile)MatroskaFile.Read (file).File!).VideoProperties!.Value;
+
+		Assert.AreEqual ("MPEG-4 Visual", videoProps.Codec);
+	}
+
+	[TestMethod]
+	public void Read_VfwFourCc_UnknownPrintable_IsTheFourCc ()
+	{
+		var header = new byte[40];
+		header[0] = 40;
+		"H264"u8.CopyTo (header.AsSpan (16));
+		var video = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 1 }),
+			Element (0x86, "V_MS/VFW/FOURCC"u8),
+			Element (0x63A2, header),
+			Master (0xE0, Concat (Element (0xB0, new byte[] { 0x02, 0x80 }), Element (0xBA, new byte[] { 0x01, 0x68 })))));
+		var file = FileWith (Master (0x1654AE6B, video));
+
+		var videoProps = ((IMediaFile)MatroskaFile.Read (file).File!).VideoProperties!.Value;
+
+		Assert.AreEqual ("H264", videoProps.Codec);
+	}
+
+	[TestMethod]
+	public void Read_NestedSortWith_FillsTheSortNames ()
+	{
+		var file = FileWith (Tags (
+			Tag (50, SimpleSorted ("TITLE", "The Album", "album")),
+			Tag (30,
+				SimpleSorted ("TITLE", "The Song", "song"),
+				SimpleSorted ("ARTIST", "Ada", "ada"),
+				Simple ("TITLE_SORT", "flat"))));
+
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		Assert.AreEqual ("song", tag.TitleSort);
+		Assert.AreEqual ("ada", tag.ArtistSort);
+		Assert.AreEqual ("album", tag.AlbumSort);
+		Assert.AreEqual ("The Song", tag.Title);
+		Assert.AreEqual ("The Album", tag.Album);
+	}
+
+	[TestMethod]
 	public void Read_ImageAttachment_IsAPicture_AndAFontIsNot ()
 	{
 		var png = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3 };
@@ -354,6 +437,17 @@ public class MatroskaFileTests
 	static byte[] Track (ulong uid) => Element (0x63C5, new[] { (byte)uid });
 
 	static byte[] Edition (ulong uid) => Element (0x63C9, new[] { (byte)uid });
+
+	static byte[] SimpleSorted (string name, string text, string sort)
+	{
+		var sortTag = Master (0x67C8, Concat (
+			Element (0x45A3, "SORT_WITH"u8),
+			Element (0x4487, Encoding.UTF8.GetBytes (sort))));
+		return Master (0x67C8, Concat (
+			Element (0x45A3, Encoding.UTF8.GetBytes (name)),
+			Element (0x4487, Encoding.UTF8.GetBytes (text)),
+			sortTag));
+	}
 
 	static byte[] Simple (string name, string text, bool isDefault = true)
 	{
