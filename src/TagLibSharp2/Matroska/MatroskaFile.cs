@@ -529,6 +529,14 @@ public sealed class MatroskaFile : IMediaFile
 
 	static void ReadTargets (ReadOnlySpan<byte> body, TagBlock block)
 	{
+		var chapterAll = false;
+		var chapterSpecific = false;
+		var attachmentAll = false;
+		var attachmentSpecific = false;
+		var trackAll = false;
+		var trackSpecific = false;
+		var editionAll = false;
+		var editionSpecific = false;
 		var offset = 0;
 		while (offset < body.Length) {
 			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
@@ -537,15 +545,30 @@ public sealed class MatroskaFile : IMediaFile
 			if (element.Id == MatroskaIds.TargetTypeValue && payload.Length > 0)
 				block.Level = EbmlReader.ReadUInt (payload);
 			else if (element.Id == MatroskaIds.TagChapterUid)
-				block.HasChapter = EbmlReader.ReadUInt (payload) != 0;
+				NoteTargetUid (payload, ref chapterAll, ref chapterSpecific);
 			else if (element.Id == MatroskaIds.TagAttachmentUid)
-				block.HasAttachment = EbmlReader.ReadUInt (payload) != 0;
+				NoteTargetUid (payload, ref attachmentAll, ref attachmentSpecific);
 			else if (element.Id == MatroskaIds.TagTrackUid)
-				block.HasTrack = EbmlReader.ReadUInt (payload) != 0;
+				NoteTargetUid (payload, ref trackAll, ref trackSpecific);
 			else if (element.Id == MatroskaIds.TagEditionUid)
-				block.HasEdition = EbmlReader.ReadUInt (payload) != 0;
+				NoteTargetUid (payload, ref editionAll, ref editionSpecific);
 			offset = element.End;
 		}
+
+		// A 0 means every item of that kind and sticks, whatever order the UIDs are in.
+		// The block leaves the file only when every UID of that kind is nonzero.
+		block.HasChapter = chapterSpecific && !chapterAll;
+		block.HasAttachment = attachmentSpecific && !attachmentAll;
+		block.HasTrack = trackSpecific && !trackAll;
+		block.HasEdition = editionSpecific && !editionAll;
+	}
+
+	static void NoteTargetUid (ReadOnlySpan<byte> payload, ref bool all, ref bool specific)
+	{
+		if (EbmlReader.ReadUInt (payload) == 0)
+			all = true;
+		else
+			specific = true;
 	}
 
 	static SimpleTag ReadSimpleTag (ReadOnlySpan<byte> body)

@@ -222,19 +222,13 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override string? TitleSort {
 		get => NestedSort ("TITLE") ?? First ("TITLE_SORT");
-		set {
-			ClearNestedSort ("TITLE");
-			SetItem ("TITLE_SORT", value);
-		}
+		set => SetSort ("TITLE", "TITLE_SORT", value, null);
 	}
 
 	/// <inheritdoc/>
 	public override string? ArtistSort {
 		get => NestedSort ("ARTIST") ?? First ("ARTIST_SORT");
-		set {
-			ClearNestedSort ("ARTIST");
-			SetItem ("ARTIST_SORT", value);
-		}
+		set => SetSort ("ARTIST", "ARTIST_SORT", value, null);
 	}
 
 	/// <inheritdoc/>
@@ -242,8 +236,9 @@ public sealed class MatroskaTag : Tag
 		get => (ItemLevel < AlbumLevel ? NestedSortAt (AlbumLevel, "TITLE") : null) ?? First ("ALBUM_SORT");
 		set {
 			if (ItemLevel < AlbumLevel)
-				ClearNestedSortAt (AlbumLevel, "TITLE");
-			SetItem ("ALBUM_SORT", value);
+				SetSort ("TITLE", "ALBUM_SORT", value, AlbumLevel);
+			else
+				SetItem ("ALBUM_SORT", value);
 		}
 	}
 
@@ -473,17 +468,27 @@ public sealed class MatroskaTag : Tag
 		return chosen is null ? null : NestedSortAt (chosen.Value, name);
 	}
 
-	void ClearNestedSort (string name)
+	void SetSort (string name, string flatName, string? value, ulong? level)
+	{
+		var replaced = level is ulong fixedLevel
+			? ReplaceNestedSortAt (fixedLevel, name, value)
+			: ReplaceNestedSort (name, value);
+		if (value is null)
+			SetItem (flatName, null);
+		else if (!replaced)
+			SetItem (flatName, value);
+	}
+
+	bool ReplaceNestedSort (string name, string? value)
 	{
 		var chosen = ChosenLevel (name);
-		if (chosen is not null)
-			ClearNestedSortAt (chosen.Value, name);
+		return chosen is not null && ReplaceNestedSortAt (chosen.Value, name, value);
 	}
 
 	/// <summary>
-	/// Drops <c>SORT_WITH</c> on the tag the getter would use, so a later flat sort is visible.
+	/// Rewrites <c>SORT_WITH</c> on the tag the getter reads. Returns false when that tag has none.
 	/// </summary>
-	void ClearNestedSortAt (ulong level, string name)
+	bool ReplaceNestedSortAt (ulong level, string name, string? value)
 	{
 		var preferDefault = false;
 		foreach (var block in _blocks) {
@@ -499,10 +504,16 @@ public sealed class MatroskaTag : Tag
 			foreach (var tag in block.Tags) {
 				if (tag.Name != name || (preferDefault && !tag.IsDefault) || string.IsNullOrEmpty (tag.Text))
 					continue;
+				if (!tag.Children.Exists (child => child.Name == "SORT_WITH"))
+					return false;
 				tag.Children.RemoveAll (child => child.Name == "SORT_WITH");
-				return;
+				if (value is not null)
+					tag.Children.Add (new SimpleTag ("SORT_WITH", value));
+				return true;
 			}
 		}
+
+		return false;
 	}
 
 	string? NestedSortAt (ulong level, string name)
@@ -638,8 +649,8 @@ internal sealed class TagBlock
 
 	public bool HasEdition { get; set; }
 
-	// A nonzero track, edition, chapter, or attachment UID describes that part, not the file.
-	// Zero is the element default and means every part of that kind, same as omitting it.
+	// The block leaves the file only when every UID of a kind is nonzero.
+	// A zero means every part of that kind and is not cancelled by another UID.
 	public bool IsFileLevel => !HasChapter && !HasAttachment && !HasTrack && !HasEdition;
 
 	public List<SimpleTag> Tags { get; } = new ();
