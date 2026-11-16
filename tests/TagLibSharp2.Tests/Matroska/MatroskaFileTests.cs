@@ -414,6 +414,31 @@ public class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void SortSet_Null_ClearsAFlatSortAboveTheItem ()
+	{
+		var album = MatroskaFile.Read (FileWith (Tags (
+			Tag (50, SimpleSorted ("TITLE", "The Album", "album"), Simple ("ALBUM_SORT", "flat")),
+			Tag (30, Simple ("GENRE", "Jazz"))))).File!.Tag;
+		Assert.AreEqual ("album", album.AlbumSort);
+		album.AlbumSort = null;
+		Assert.IsNull (album.AlbumSort);
+
+		var title = MatroskaFile.Read (FileWith (Tags (
+			Tag (50, Simple ("TITLE", "The Album"), Simple ("TITLE_SORT", "flat")),
+			Tag (30, Simple ("TITLE", "The Song"))))).File!.Tag;
+		Assert.AreEqual ("flat", title.TitleSort);
+		title.TitleSort = null;
+		Assert.IsNull (title.TitleSort);
+
+		var artist = MatroskaFile.Read (FileWith (Tags (
+			Tag (50, Simple ("ARTIST_SORT", "flat")),
+			Tag (30, Simple ("ARTIST", "Ada"))))).File!.Tag;
+		Assert.AreEqual ("flat", artist.ArtistSort);
+		artist.ArtistSort = null;
+		Assert.IsNull (artist.ArtistSort);
+	}
+
+	[TestMethod]
 	public void Read_DecimalBpm_Truncates ()
 	{
 		var whole = FileWith (Tags (Tag (30, Simple ("BPM", "120.0"))));
