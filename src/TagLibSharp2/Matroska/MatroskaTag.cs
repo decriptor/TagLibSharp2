@@ -237,6 +237,8 @@ public sealed class MatroskaTag : Tag
 		set {
 			if (ItemLevel < AlbumLevel)
 				SetSort ("TITLE", "ALBUM_SORT", value, AlbumLevel);
+			else if (value is null)
+				RemoveFlatSort ("ALBUM_SORT");
 			else
 				SetItem ("ALBUM_SORT", value);
 		}
@@ -474,9 +476,21 @@ public sealed class MatroskaTag : Tag
 			? ReplaceNestedSortAt (fixedLevel, name, value)
 			: ReplaceNestedSort (name, value);
 		if (value is null)
-			SetItem (flatName, null);
+			RemoveFlatSort (flatName);
 		else if (!replaced)
 			SetItem (flatName, value);
+	}
+
+	/// <summary>
+	/// A null sort removes the flat name at every file level the getter can still climb to.
+	/// </summary>
+	void RemoveFlatSort (string flatName)
+	{
+		var item = ItemLevel;
+		foreach (var block in _blocks) {
+			if (block.IsFileLevel && block.Level >= item)
+				block.Remove (flatName);
+		}
 	}
 
 	bool ReplaceNestedSort (string name, string? value)
