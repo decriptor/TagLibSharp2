@@ -95,6 +95,24 @@ public class MusepackFileTests
 	}
 
 	[TestMethod]
+	public void Parse_SV7_RateIndexInLowBitsOfByte10_Reports48000 ()
+	{
+		// 48kHz-8.7.mpc stores the rate index in the low 2 bits of byte 10.
+		// 0xA1 is index 1 (48000). Bits 30-31 of the dword at offset 10 stay 0.
+		var data = new byte[32];
+		"MP+"u8.CopyTo (data);
+		data[3] = 0x07;
+		data[4] = 209;
+		data[10] = 0xA1;
+
+		var result = MusepackFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (48000, result.File!.SampleRate);
+		Assert.AreEqual (TimeSpan.FromSeconds (209 * 1152 / 48000.0), result.File.Properties.Duration);
+	}
+
+	[TestMethod]
 	public void Parse_SV7_ExtractsChannels ()
 	{
 		var data = CreateMinimalMusepackSV7File (channels: 2);
@@ -739,13 +757,8 @@ public class MusepackFileTests
 		// [8-9] Max level (unused for parsing)
 		WriteUInt16LE (ms, 0);
 
-		// [10-13] Flags and profile info
-		// Bits 31-30: sample rate index (2 bits) - stored at bit position in DWORD
-		// We need to encode sample rate in the flags field
-		uint flags = 0;
-		flags |= (uint)(sampleRateIndex & 0x3) << 30; // Sample rate at bits 30-31
-													  // Channels are derived: stereo by default unless mid-side only
-													  // For simplicity, we'll treat channels as 2 for standard stereo
+		// [10-13] The sample-rate index is the low 2 bits of byte 10.
+		uint flags = (uint)(sampleRateIndex & 0x3);
 		WriteUInt32LE (ms, flags);
 
 		// [14-15] Encoder info (unused for parsing)
