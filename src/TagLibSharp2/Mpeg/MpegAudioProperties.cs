@@ -125,11 +125,12 @@ public sealed class MpegAudioProperties : IMediaProperties
 		// Determine channel count
 		var channels = frame.ChannelMode == ChannelMode.Mono ? 1 : 2;
 
-		// Try to find Xing header
-		var xingOffset = frameOffset + frame.XingHeaderOffset;
+		// Xing sits at header + side info. A set CRC bit adds two bytes to
+		// XingHeaderOffset, but encoders still store the tag at the side-info offset.
 		XingHeader? xingHeader = null;
-		if (xingOffset + 8 <= data.Length)
-			XingHeader.TryParse (data, xingOffset, out xingHeader);
+		var sideInfoOffset = frame.XingHeaderOffset - (frame.HasCrc ? 2 : 0);
+		if (!TryReadXing (data, frameOffset + sideInfoOffset, out xingHeader) && frame.HasCrc)
+			TryReadXing (data, frameOffset + frame.XingHeaderOffset, out xingHeader);
 
 		// Try to find VBRI header (if no Xing)
 		VbriHeader? vbriHeader = null;
@@ -146,11 +147,14 @@ public sealed class MpegAudioProperties : IMediaProperties
 		uint? frameCount = null;
 
 		var audioDataSize = data.Length - audioOffset;
+		var bytesFromFrame = data.Length - frameOffset;
+		var trustVbri = xingHeader is null && vbriHeader is not null
+			&& DeclaredSizeFits (vbriHeader.ByteCount > 0 ? vbriHeader.ByteCount : null, bytesFromFrame);
 
-		if (xingHeader?.FrameCount != null) {
+		if (xingHeader is { FrameCount: uint xingFrames } && DeclaredSizeFits (xingHeader.ByteCount, bytesFromFrame)) {
 			// VBR with Xing header - accurate duration
-			frameCount = xingHeader.FrameCount;
-			var totalSamples = (double)frameCount.Value * frame.SamplesPerFrame;
+			frameCount = xingFrames;
+			var totalSamples = (double)xingFrames * frame.SamplesPerFrame;
 			duration = TimeSpan.FromSeconds (totalSamples / frame.SampleRate);
 			isVbr = xingHeader.IsVbr;
 
@@ -161,7 +165,7 @@ public sealed class MpegAudioProperties : IMediaProperties
 				bitrate = (int)(audioDataSize * 8 / duration.TotalSeconds / 1000);
 			else
 				bitrate = frame.Bitrate;
-		} else if (vbriHeader != null) {
+		} else if (trustVbri && vbriHeader is not null) {
 			// VBR with VBRI header - accurate duration
 			frameCount = vbriHeader.FrameCount;
 			var totalSamples = (double)frameCount.Value * frame.SamplesPerFrame;
@@ -173,6 +177,18 @@ public sealed class MpegAudioProperties : IMediaProperties
 				bitrate = (int)(vbriHeader.ByteCount * 8 / duration.TotalSeconds / 1000);
 			else
 				bitrate = frame.Bitrate;
+		} else if (xingHeader?.FrameCount != null || vbriHeader is not null) {
+			// The header names a byte count past the end of this buffer, so its frame
+			// count describes a longer file. Count the frames that are actually here.
+			var counted = CountFrames (data, frameOffset);
+			isVbr = xingHeader?.IsVbr ?? true;
+			bitrate = frame.Bitrate;
+			if (counted > 0 && frame.SampleRate > 0) {
+				frameCount = (uint)counted;
+				duration = TimeSpan.FromSeconds (counted * (double)frame.SamplesPerFrame / frame.SampleRate);
+			} else {
+				duration = TimeSpan.Zero;
+			}
 		} else {
 			// CBR or VBR without header - estimate from file size
 			isVbr = false;
@@ -207,22 +223,112 @@ public sealed class MpegAudioProperties : IMediaProperties
 
 		for (int i = startOffset; i < searchLimit; i++) {
 			// Check for frame sync (0xFF + upper 3 bits of next byte)
-			if (span[i] == 0xFF && (span[i + 1] & 0xE0) == 0xE0) {
-				// Verify it's a valid frame
-				if (MpegFrame.TryParse (data, i, out var frame) && frame is not null) {
-					// Extra validation: check if next frame sync exists at expected position
-					if (frame.FrameSize > 0 && i + frame.FrameSize < data.Length - 2) {
-						if (span[i + frame.FrameSize] == 0xFF &&
-							(span[i + frame.FrameSize + 1] & 0xE0) == 0xE0)
-							return i;
-					}
-					// If we can't verify next frame, accept this one anyway
-					return i;
-				}
-			}
+			if (span[i] != 0xFF || (span[i + 1] & 0xE0) != 0xE0)
+				continue;
+
+			if (!MpegFrame.TryParse (data, i, out var frame) || frame is null)
+				continue;
+
+			// Free bitrate has no frame size, so the next header cannot be checked.
+			if (frame.FrameSize <= 0)
+				continue;
+
+			var next = i + frame.FrameSize;
+			// A header alone, or a frame that ends too close to the buffer to hold
+			// another header, cannot be confirmed. Accept it.
+			if (next > data.Length || next + MpegFrame.HeaderSize > data.Length)
+				return i;
+
+			if (MpegFrame.TryParse (data, next, out var nextFrame) && nextFrame is not null)
+				return i;
 		}
 
 		return -1;
+	}
+
+	static bool TryReadXing (BinaryData data, int offset, out XingHeader? header)
+	{
+		header = null;
+		if (offset < 0 || offset + 8 > data.Length)
+			return false;
+		return XingHeader.TryParse (data, offset, out header);
+	}
+
+	/// <summary>
+	/// A missing byte count makes no size claim. A count past the bytes after the
+	/// first frame belongs to a longer file than the one in hand.
+	/// </summary>
+	static bool DeclaredSizeFits (uint? byteCount, int bytesFromFrame)
+	{
+		if (byteCount is null)
+			return true;
+		return bytesFromFrame >= 0 && byteCount.Value <= (uint)bytesFromFrame;
+	}
+
+	static int CountFrames (BinaryData data, int firstOffset)
+	{
+		// A header-sized step can land on a false sync inside the first frame and stop.
+		// The run that actually continues is the audio. The opening frame still counts
+		// when that run starts later. A chain already walked is skipped: a suffix of it
+		// is shorter, so each frame is parsed once.
+		var fromFirst = WalkFrames (data, firstOffset, out var fromFirstEnd);
+		var best = fromFirst;
+		var span = data.Span;
+		var last = data.Length - MpegFrame.HeaderSize;
+		var i = firstOffset + 1;
+		while (i <= last) {
+			if (fromFirst > 0 && i < fromFirstEnd) {
+				i = fromFirstEnd;
+				continue;
+			}
+
+			if (span[i] != 0xFF || (span[i + 1] & 0xE0) != 0xE0) {
+				i++;
+				continue;
+			}
+
+			var count = WalkFrames (data, i, out var end);
+			if (count > best)
+				best = count;
+			if (count > 0 && end > i)
+				i = end;
+			else
+				i++;
+		}
+		if (best > fromFirst)
+			best++;
+		return best;
+	}
+
+	static int WalkFrames (BinaryData data, int offset, out int end)
+	{
+		end = offset;
+		var count = 0;
+		while (offset >= 0 && offset + MpegFrame.HeaderSize <= data.Length) {
+			if (!MpegFrame.TryParse (data, offset, out var frame) || frame is null || frame.FrameSize <= 0)
+				break;
+			if (frame.FrameSize > data.Length - offset)
+				break;
+
+			var next = offset + frame.FrameSize;
+			var nextFits = next + MpegFrame.HeaderSize <= data.Length;
+			var nextParses = nextFits
+				&& MpegFrame.TryParse (data, next, out var nextFrame)
+				&& nextFrame is not null;
+			if (!nextParses) {
+				// The last frame of a run has nothing after it. A lone unconfirmed header does not.
+				if (count > 0 || !nextFits) {
+					count++;
+					end = next;
+				}
+				break;
+			}
+
+			count++;
+			offset = next;
+			end = offset;
+		}
+		return count;
 	}
 
 	static string FormatVersion (MpegVersion version) => version switch {

@@ -392,7 +392,7 @@ public sealed class Mp3FileTests
 		frameData.Add (0x58, 0x69, 0x6E, 0x67); // "Xing"
 		frameData.AddUInt32BE (0x03);            // Flags: frames + bytes
 		frameData.AddUInt32BE (4717);            // Frame count for ~107 seconds
-		frameData.AddUInt32BE (1710336);         // Byte count
+		frameData.AddUInt32BE (400);             // Byte count that fits this frame
 
 		// Pad to full frame size
 		while (frameData.Length < 417)
@@ -425,9 +425,14 @@ public sealed class Mp3FileTests
 		while (frameData.Length < 417)
 			frameData.Add (0);
 
-		// Add more frames to simulate file size
+		// Add more frames to simulate file size. The header at the next frame
+		// boundary is what lets the sync search confirm the first frame.
 		while (frameData.Length < 50000)
 			frameData.Add (0);
+		frameData[417] = 0xFF;
+		frameData[418] = 0xFB;
+		frameData[419] = 0x90;
+		frameData[420] = 0x00;
 
 		var result = Mp3File.Read (frameData.ToArray ());
 
@@ -446,6 +451,10 @@ public sealed class Mp3FileTests
 		frameData.Add (new byte[32]);
 		while (frameData.Length < 50000)
 			frameData.Add (0);
+		frameData[417] = 0xFF;
+		frameData[418] = 0xFB;
+		frameData[419] = 0x90;
+		frameData[420] = 0x00;
 
 		var result = Mp3File.Read (frameData.ToArray ());
 
