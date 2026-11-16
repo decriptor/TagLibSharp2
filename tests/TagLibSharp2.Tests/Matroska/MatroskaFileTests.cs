@@ -323,6 +323,27 @@ public class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_MixedTargetUids_ZeroMeansAll_RegardlessOfOrder ()
+	{
+		foreach (var id in new ulong[] { 0x63C5, 0x63C9, 0x63C4, 0x63C6 }) {
+			var label = id.ToString ("X", System.Globalization.CultureInfo.InvariantCulture);
+			var zeroThenSpecific = Concat (Element (id, new byte[] { 0 }), Element (id, new byte[] { 1 }));
+			var specificThenZero = Concat (Element (id, new byte[] { 1 }), Element (id, new byte[] { 0 }));
+			var twoSpecific = Concat (Element (id, new byte[] { 1 }), Element (id, new byte[] { 2 }));
+
+			Assert.AreEqual ("All", TitleOf (zeroThenSpecific), label);
+			Assert.AreEqual ("All", TitleOf (specificThenZero), label);
+			Assert.IsNull (TitleOf (twoSpecific), label);
+		}
+	}
+
+	static string? TitleOf (byte[] targetUids)
+	{
+		var file = FileWith (Tags (ChapterTag (30, targetUids, Simple ("TITLE", "All"))));
+		return MatroskaFile.Read (file).File!.Tag.Title;
+	}
+
+	[TestMethod]
 	public void Read_DocTypeTerminatedByNul_StillOpens ()
 	{
 		var file = Matroska (Master (0x18538067, Tags (Tag (30, Simple ("TITLE", "Kept")))), "matroska\0");
@@ -369,6 +390,27 @@ public class MatroskaFileTests
 		Assert.IsNull (tag.TitleSort);
 		Assert.IsNull (tag.ArtistSort);
 		Assert.IsNull (tag.AlbumSort);
+	}
+
+	[TestMethod]
+	public void SortSet_SharedAlbumTitle_KeepsBothSorts ()
+	{
+		var file = FileWith (Tags (
+			Tag (50, SimpleSorted ("TITLE", "The Album", "album")),
+			Tag (30, Simple ("GENRE", "Jazz"))));
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		tag.TitleSort = "track sort";
+
+		Assert.AreEqual ("track sort", tag.TitleSort);
+		Assert.AreEqual ("track sort", tag.AlbumSort);
+		Assert.AreEqual ("The Album", tag.Title);
+		Assert.AreEqual ("The Album", tag.Album);
+
+		tag.AlbumSort = "other";
+
+		Assert.AreEqual ("other", tag.TitleSort);
+		Assert.AreEqual ("other", tag.AlbumSort);
 	}
 
 	[TestMethod]
