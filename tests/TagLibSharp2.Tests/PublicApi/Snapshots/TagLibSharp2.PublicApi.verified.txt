@@ -1098,6 +1098,7 @@ namespace TagLibSharp2.Core
         MonkeysAudio = 12,
         Asf = 13,
         Musepack = 14,
+        Matroska = 15,
     }
     [System.Flags]
     public enum MediaTypes
@@ -2216,6 +2217,55 @@ namespace TagLibSharp2.Id3.Id3v2
         Utf16WithBom = 1,
         Utf16BE = 2,
         Utf8 = 3,
+    }
+}
+namespace TagLibSharp2.Matroska
+{
+    public sealed class MatroskaFile : System.IDisposable, TagLibSharp2.Core.IMediaFile
+    {
+        public System.TimeSpan? Duration { get; }
+        public TagLibSharp2.Core.MediaFormat Format { get; }
+        public TagLibSharp2.Core.MediaTypes MediaTypes { get; }
+        public string? SourcePath { get; }
+        public TagLibSharp2.Matroska.MatroskaTag Tag { get; }
+        public void Dispose() { }
+        public static bool IsValidFormat(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Matroska.MatroskaFileReadResult Read(System.ReadOnlySpan<byte> data) { }
+        public static bool TryRead(System.ReadOnlySpan<byte> data, out TagLibSharp2.Matroska.MatroskaFile? file) { }
+    }
+    public readonly struct MatroskaFileReadResult : System.IEquatable<TagLibSharp2.Matroska.MatroskaFileReadResult>
+    {
+        public string? Error { get; }
+        public TagLibSharp2.Matroska.MatroskaFile? File { get; }
+        public bool IsSuccess { get; }
+        public bool Equals(TagLibSharp2.Matroska.MatroskaFileReadResult other) { }
+        public override bool Equals(object? obj) { }
+        public override int GetHashCode() { }
+        public static TagLibSharp2.Matroska.MatroskaFileReadResult Failure(string error) { }
+        public static TagLibSharp2.Matroska.MatroskaFileReadResult Success(TagLibSharp2.Matroska.MatroskaFile file) { }
+        public static bool operator !=(TagLibSharp2.Matroska.MatroskaFileReadResult left, TagLibSharp2.Matroska.MatroskaFileReadResult right) { }
+        public static bool operator ==(TagLibSharp2.Matroska.MatroskaFileReadResult left, TagLibSharp2.Matroska.MatroskaFileReadResult right) { }
+    }
+    public sealed class MatroskaTag : TagLibSharp2.Core.Tag
+    {
+        public override string? Album { get; set; }
+        public override string[] AlbumArtists { get; set; }
+        public override string? Artist { get; set; }
+        public override string? Comment { get; set; }
+        public override string[] Composers { get; set; }
+        public override string? Copyright { get; set; }
+        public override string? Description { get; set; }
+        public override string? Genre { get; set; }
+        public override string[] Genres { get; set; }
+        public override string? Lyrics { get; set; }
+        public override string[] Performers { get; set; }
+        public override TagLibSharp2.Core.TagTypes TagType { get; }
+        public override string? Title { get; set; }
+        public override uint? TotalTracks { get; set; }
+        public override uint? Track { get; set; }
+        public override string? Year { get; set; }
+        public override void Clear() { }
+        public override TagLibSharp2.Core.BinaryData Render() { }
     }
 }
 namespace TagLibSharp2.Mp4

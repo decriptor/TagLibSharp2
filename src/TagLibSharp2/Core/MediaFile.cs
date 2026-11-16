@@ -6,6 +6,7 @@ using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
+using TagLibSharp2.Matroska;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Musepack;
@@ -35,6 +36,7 @@ namespace TagLibSharp2.Core;
 /// <item>DSF (DSD Stream File - ID3v2 metadata)</item>
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
+/// <item>Matroska/WebM (Matroska tags; reading)</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -129,6 +131,7 @@ public static class MediaFile
 	static readonly byte[] AsfMagic = [0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C];
 	static readonly byte[] MusepackSV7Magic = [(byte)'M', (byte)'P', (byte)'+'];
 	static readonly byte[] MusepackSV8Magic = [(byte)'M', (byte)'P', (byte)'C', (byte)'K'];
+	static readonly byte[] EbmlMagic = [0x1A, 0x45, 0xDF, 0xA3];
 
 	/// <summary>
 	/// Reads a media file and returns a unified result.
@@ -204,6 +207,7 @@ public static class MediaFile
 			MediaFormat.MonkeysAudio => OpenMonkeysAudio (data),
 			MediaFormat.Asf => OpenAsf (data),
 			MediaFormat.Musepack => OpenMusepack (data),
+			MediaFormat.Matroska => OpenMatroska (data),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 	}
@@ -275,6 +279,11 @@ public static class MediaFile
 				data[2] == MonkeysAudioMagic[2] && data[3] == MonkeysAudioMagic[3])
 				return MediaFormat.MonkeysAudio;
 
+			// Matroska/WebM: EBML header 0x1A45DFA3
+			if (data[0] == EbmlMagic[0] && data[1] == EbmlMagic[1] &&
+				data[2] == EbmlMagic[2] && data[3] == EbmlMagic[3])
+				return MediaFormat.Matroska;
+
 			// Musepack SV8: starts with "MPCK"
 			if (data[0] == MusepackSV8Magic[0] && data[1] == MusepackSV8Magic[1] &&
 				data[2] == MusepackSV8Magic[2] && data[3] == MusepackSV8Magic[3])
@@ -318,6 +327,7 @@ public static class MediaFile
 				".APE" => MediaFormat.MonkeysAudio,
 				".WMA" or ".WMV" or ".ASF" => MediaFormat.Asf,
 				".MPC" or ".MP+" or ".MPP" => MediaFormat.Musepack,
+				".MKV" or ".MKA" or ".MKS" or ".MK3D" or ".WEBM" => MediaFormat.Matroska,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -508,6 +518,15 @@ public static class MediaFile
 
 		return MediaFileResult.Success (result.File!, result.File!.ApeTag, MediaFormat.Musepack);
 	}
+
+	static MediaFileResult OpenMatroska (ReadOnlyMemory<byte> data)
+	{
+		var result = MatroskaFile.Read (data.Span);
+		if (!result.IsSuccess)
+			return MediaFileResult.Failure (result.Error!);
+
+		return MediaFileResult.Success (result.File!, result.File!.Tag, MediaFormat.Matroska);
+	}
 }
 
 /// <summary>
@@ -647,5 +666,10 @@ public enum MediaFormat
 	/// <summary>
 	/// Musepack audio format (.mpc, .mp+, .mpp).
 	/// </summary>
-	Musepack
+	Musepack,
+
+	/// <summary>
+	/// Matroska and WebM (.mkv, .mka, .mks, .mk3d, .webm).
+	/// </summary>
+	Matroska
 }
