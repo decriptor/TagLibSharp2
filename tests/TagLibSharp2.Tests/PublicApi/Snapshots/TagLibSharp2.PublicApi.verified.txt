@@ -2250,17 +2250,47 @@ namespace TagLibSharp2.Matroska
     {
         public override string? Album { get; set; }
         public override string[] AlbumArtists { get; set; }
+        public override string? AlbumSort { get; set; }
         public override string? Artist { get; set; }
+        public override string? ArtistSort { get; set; }
+        public override string? Barcode { get; set; }
+        public override uint? BeatsPerMinute { get; set; }
+        public override string? CatalogNumber { get; set; }
         public override string? Comment { get; set; }
         public override string[] Composers { get; set; }
+        public override string? Conductor { get; set; }
         public override string? Copyright { get; set; }
+        public override string? DateTagged { get; set; }
         public override string? Description { get; set; }
+        public override string? EncodedBy { get; set; }
+        public override string? EncoderSettings { get; set; }
         public override string? Genre { get; set; }
         public override string[] Genres { get; set; }
+        public override string? Grouping { get; set; }
+        public override string? InitialKey { get; set; }
+        public override string? Isrc { get; set; }
         public override string? Lyrics { get; set; }
+        public override string? Mood { get; set; }
+        public override string? MusicBrainzAlbumArtistId { get; set; }
+        public override string? MusicBrainzArtistId { get; set; }
+        public override string? MusicBrainzDiscId { get; set; }
+        public override string? MusicBrainzReleaseGroupId { get; set; }
+        public override string? MusicBrainzReleaseId { get; set; }
+        public override string? MusicBrainzTrackId { get; set; }
+        public override string? MusicBrainzWorkId { get; set; }
+        public override string? OriginalReleaseDate { get; set; }
         public override string[] Performers { get; set; }
+        public override TagLibSharp2.Core.IPicture[] Pictures { get; set; }
+        public override string? Publisher { get; set; }
+        public override string? Remixer { get; set; }
+        public override string? ReplayGainAlbumGain { get; set; }
+        public override string? ReplayGainAlbumPeak { get; set; }
+        public override string? ReplayGainTrackGain { get; set; }
+        public override string? ReplayGainTrackPeak { get; set; }
+        public override string? Subtitle { get; set; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
+        public override string? TitleSort { get; set; }
         public override uint? TotalTracks { get; set; }
         public override uint? Track { get; set; }
         public override string? Year { get; set; }

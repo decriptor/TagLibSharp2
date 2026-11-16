@@ -50,7 +50,10 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override string[] Performers {
-		get => All ("ARTIST");
+		get {
+			var artists = All ("ARTIST");
+			return artists.Length > 0 ? artists : All ("ACTOR");
+		}
 		set => SetItemValues ("ARTIST", value);
 	}
 
@@ -70,6 +73,12 @@ public sealed class MatroskaTag : Tag
 	public override string? Year {
 		get => First ("DATE_RELEASED");
 		set => SetItem ("DATE_RELEASED", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? OriginalReleaseDate {
+		get => First ("DATE_RECORDED");
+		set => SetItem ("DATE_RECORDED", value);
 	}
 
 	/// <inheritdoc/>
@@ -127,7 +136,197 @@ public sealed class MatroskaTag : Tag
 	}
 
 	/// <inheritdoc/>
-	public override void Clear () => _blocks.Clear ();
+	public override string? Subtitle {
+		get => First ("SUBTITLE");
+		set => SetItem ("SUBTITLE", value);
+	}
+
+	/// <inheritdoc/>
+	public override uint? BeatsPerMinute {
+		get => ParseNumber (First ("BPM"));
+		set => SetItem ("BPM", value?.ToString (CultureInfo.InvariantCulture));
+	}
+
+	/// <inheritdoc/>
+	public override string? Conductor {
+		get => First ("CONDUCTOR");
+		set => SetItem ("CONDUCTOR", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Publisher {
+		get => First ("PUBLISHER") ?? First ("LABEL");
+		set => SetItem ("PUBLISHER", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? EncodedBy {
+		get => First ("ENCODED_BY");
+		set => SetItem ("ENCODED_BY", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? EncoderSettings {
+		get => First ("ENCODER_SETTINGS");
+		set => SetItem ("ENCODER_SETTINGS", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Grouping {
+		get => First ("GROUPING");
+		set => SetItem ("GROUPING", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Remixer {
+		get => First ("REMIXED_BY");
+		set => SetItem ("REMIXED_BY", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Isrc {
+		get => First ("ISRC");
+		set => SetItem ("ISRC", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? CatalogNumber {
+		get => First ("CATALOG_NUMBER");
+		set => SetItem ("CATALOG_NUMBER", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Barcode {
+		get => First ("BARCODE");
+		set => SetItem ("BARCODE", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? InitialKey {
+		get => First ("INITIAL_KEY");
+		set => SetItem ("INITIAL_KEY", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? Mood {
+		get => First ("MOOD");
+		set => SetItem ("MOOD", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? DateTagged {
+		get => First ("DATE_TAGGED");
+		set => SetItem ("DATE_TAGGED", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? TitleSort {
+		get => First ("TITLE_SORT");
+		set => SetItem ("TITLE_SORT", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ArtistSort {
+		get => First ("ARTIST_SORT");
+		set => SetItem ("ARTIST_SORT", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? AlbumSort {
+		get => First ("ALBUM_SORT");
+		set => SetItem ("ALBUM_SORT", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ReplayGainTrackGain {
+		get => First ("REPLAYGAIN_TRACK_GAIN") ?? First ("REPLAYGAIN_GAIN");
+		set => SetItem ("REPLAYGAIN_TRACK_GAIN", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ReplayGainTrackPeak {
+		get => First ("REPLAYGAIN_TRACK_PEAK") ?? First ("REPLAYGAIN_PEAK");
+		set => SetItem ("REPLAYGAIN_TRACK_PEAK", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ReplayGainAlbumGain {
+		get => First ("REPLAYGAIN_ALBUM_GAIN");
+		set => SetItem ("REPLAYGAIN_ALBUM_GAIN", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? ReplayGainAlbumPeak {
+		get => First ("REPLAYGAIN_ALBUM_PEAK");
+		set => SetItem ("REPLAYGAIN_ALBUM_PEAK", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzTrackId {
+		get => First ("MUSICBRAINZ_TRACKID");
+		set => SetItem ("MUSICBRAINZ_TRACKID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseId {
+		get => First ("MUSICBRAINZ_ALBUMID");
+		set => SetItem ("MUSICBRAINZ_ALBUMID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzArtistId {
+		get => First ("MUSICBRAINZ_ARTISTID");
+		set => SetItem ("MUSICBRAINZ_ARTISTID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseGroupId {
+		get => First ("MUSICBRAINZ_RELEASEGROUPID");
+		set => SetItem ("MUSICBRAINZ_RELEASEGROUPID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzAlbumArtistId {
+		get => First ("MUSICBRAINZ_ALBUMARTISTID");
+		set => SetItem ("MUSICBRAINZ_ALBUMARTISTID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzWorkId {
+		get => First ("MUSICBRAINZ_WORKID");
+		set => SetItem ("MUSICBRAINZ_WORKID", value);
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzDiscId {
+		get => First ("MUSICBRAINZ_DISCID");
+		set => SetItem ("MUSICBRAINZ_DISCID", value);
+	}
+
+	readonly List<IPicture> _pictures = new ();
+
+	/// <inheritdoc/>
+	public override IPicture[] Pictures {
+		get => _pictures.ToArray ();
+		set {
+			_pictures.Clear ();
+			if (value is null)
+				return;
+			foreach (var picture in value) {
+				if (picture is not null)
+					_pictures.Add (picture);
+			}
+		}
+	}
+
+	/// <inheritdoc/>
+	public override void Clear ()
+	{
+		_blocks.Clear ();
+		_pictures.Clear ();
+	}
+
+	internal void AddPicture (IPicture picture) => _pictures.Add (picture);
 
 	/// <summary>
 	/// Writes the current tags as one <c>Tags</c> element.
@@ -426,4 +625,24 @@ internal sealed class SimpleTag
 			body.Add (child.Render ());
 		return EbmlWriter.Master (MatroskaIds.SimpleTag, body.ToBinaryData ().Span);
 	}
+}
+
+/// <summary>One image attachment.</summary>
+sealed class MatroskaPicture : IPicture
+{
+	public MatroskaPicture (string mimeType, PictureType pictureType, string description, byte[] data)
+	{
+		MimeType = mimeType;
+		PictureType = pictureType;
+		Description = description;
+		PictureData = new BinaryData (data);
+	}
+
+	public string MimeType { get; }
+
+	public PictureType PictureType { get; }
+
+	public string Description { get; }
+
+	public BinaryData PictureData { get; }
 }

@@ -55,12 +55,29 @@ public sealed class MatroskaFile : IMediaFile
 {
 	const ulong DefaultTimestampScale = 1_000_000;
 
-	MatroskaFile (MatroskaTag tag, TimeSpan? duration, MediaTypes mediaTypes)
+	MatroskaFile (MatroskaTag tag, TimeSpan? duration, TrackLayout layout)
 	{
 		Tag = tag;
 		Duration = duration;
-		MediaTypes = mediaTypes;
+		MediaTypes = layout.Types;
+		_sampleRate = layout.SampleRate;
+		_channels = layout.Channels;
+		_bitsPerSample = layout.BitsPerSample;
+		_audioCodec = layout.AudioCodec;
+		_width = layout.Width;
+		_height = layout.Height;
+		_frameRate = layout.FrameRate;
+		_videoCodec = layout.VideoCodec;
 	}
+
+	readonly int _sampleRate;
+	readonly int _channels;
+	readonly int _bitsPerSample;
+	readonly string? _audioCodec;
+	readonly int _width;
+	readonly int _height;
+	readonly double _frameRate;
+	readonly string? _videoCodec;
 
 	/// <summary>Gets the Matroska tags.</summary>
 	public MatroskaTag Tag { get; }
@@ -74,13 +91,13 @@ public sealed class MatroskaFile : IMediaFile
 	public MediaTypes MediaTypes { get; }
 
 	IMediaProperties? IMediaFile.AudioProperties =>
-		(MediaTypes & MediaTypes.Audio) != 0 && Duration is TimeSpan duration
-			? new AudioProperties (duration, 0, 0, 0, 0, "Matroska")
+		(MediaTypes & MediaTypes.Audio) != 0
+			? new AudioProperties (Duration ?? TimeSpan.Zero, 0, _sampleRate, _bitsPerSample, _channels, _audioCodec ?? "Matroska")
 			: null;
 
 	VideoProperties? IMediaFile.VideoProperties =>
-		(MediaTypes & MediaTypes.Video) != 0 && Duration is TimeSpan duration
-			? new VideoProperties (duration, 0, 0, 0, 0, "Matroska")
+		(MediaTypes & MediaTypes.Video) != 0
+			? new VideoProperties (Duration ?? TimeSpan.Zero, _width, _height, 0, _frameRate, _videoCodec ?? "Matroska")
 			: null;
 
 	ImageProperties? IMediaFile.ImageProperties => null;
@@ -138,19 +155,25 @@ public sealed class MatroskaFile : IMediaFile
 		var tag = new MatroskaTag ();
 		var scale = DefaultTimestampScale;
 		double? durationTicks = null;
-		var mediaTypes = MediaTypes.None;
+		var layout = new TrackLayout ();
 		var segmentEnd = segment.UnknownSize ? data.Length : segment.End;
 		offset = segment.DataOffset;
 		while (offset < segmentEnd) {
-			if (!EbmlReader.TryRead (data, offset, segmentEnd, out var element))
-				break;
+			// Padding and a short illegal ID are skipped. A live segment can put
+			// 0x0A bytes between an unknown size and the first real element.
+			if (!EbmlReader.TryRead (data, offset, segmentEnd, out var element)) {
+				offset++;
+				continue;
+			}
 
 			if (element.Id == MatroskaIds.Info)
 				ReadInfo (data, Range (data, element, segmentEnd), ref scale, ref durationTicks, tag);
 			else if (element.Id == MatroskaIds.Tracks)
-				mediaTypes |= ReadTrackTypes (data, Range (data, element, segmentEnd));
+				ReadTracks (Range (data, element, segmentEnd), ref layout);
 			else if (element.Id == MatroskaIds.Tags)
 				ReadTags (data, Range (data, element, segmentEnd), tag);
+			else if (element.Id == MatroskaIds.Attachments)
+				ReadAttachments (Range (data, element, segmentEnd), tag);
 
 			if (element.UnknownSize)
 				offset = NextSibling (data, element.DataOffset, segmentEnd);
@@ -165,7 +188,7 @@ public sealed class MatroskaFile : IMediaFile
 				duration = TimeSpan.FromSeconds (seconds);
 		}
 
-		return MatroskaFileReadResult.Success (new MatroskaFile (tag, duration, mediaTypes));
+		return MatroskaFileReadResult.Success (new MatroskaFile (tag, duration, layout));
 	}
 
 	/// <summary>Reads a file without an error string.</summary>
@@ -215,42 +238,192 @@ public sealed class MatroskaFile : IMediaFile
 		}
 	}
 
-	static MediaTypes ReadTrackTypes (ReadOnlySpan<byte> data, ReadOnlySpan<byte> body)
+	static void ReadTracks (ReadOnlySpan<byte> body, ref TrackLayout layout)
 	{
-		var types = MediaTypes.None;
 		var offset = 0;
 		while (offset < body.Length) {
 			if (!EbmlReader.TryRead (body, offset, body.Length, out var element))
 				break;
 			if (element.Id == MatroskaIds.TrackEntry && !element.UnknownSize)
-				types |= ReadTrackType (body.Slice (element.DataOffset, (int)element.DataLength));
+				ReadTrackEntry (body.Slice (element.DataOffset, (int)element.DataLength), ref layout);
 			if (element.UnknownSize)
 				break;
 			offset = element.End;
 		}
-
-		return types;
 	}
 
-	static MediaTypes ReadTrackType (ReadOnlySpan<byte> entry)
+	static void ReadTrackEntry (ReadOnlySpan<byte> entry, ref TrackLayout layout)
 	{
+		ulong kind = 0;
+		string? codecId = null;
+		string? codecName = null;
+		var rate = 0;
+		var channels = 0;
+		var bits = 0;
+		var width = 0;
+		var height = 0;
+		double frameRate = 0;
 		var offset = 0;
 		while (offset < entry.Length) {
 			if (!EbmlReader.TryRead (entry, offset, entry.Length, out var element) || element.UnknownSize)
 				break;
-			if (element.Id == MatroskaIds.TrackType) {
-				var kind = EbmlReader.ReadUInt (entry.Slice (element.DataOffset, (int)element.DataLength));
-				if (kind == 1)
-					return MediaTypes.Video;
-				if (kind == 2)
-					return MediaTypes.Audio;
-				return MediaTypes.None;
-			}
-
+			var payload = entry.Slice (element.DataOffset, (int)element.DataLength);
+			if (element.Id == MatroskaIds.TrackType)
+				kind = EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.CodecId)
+				codecId = EbmlReader.ReadString (payload).TrimEnd ('\0');
+			else if (element.Id == MatroskaIds.CodecName)
+				codecName = EbmlReader.ReadString (payload).TrimEnd ('\0');
+			else if (element.Id == MatroskaIds.DefaultDuration && payload.Length > 0) {
+				var nanos = EbmlReader.ReadUInt (payload);
+				if (nanos > 0)
+					frameRate = 1_000_000_000d / nanos;
+			} else if (element.Id == MatroskaIds.Audio)
+				ReadAudio (payload, ref rate, ref channels, ref bits);
+			else if (element.Id == MatroskaIds.Video)
+				ReadVideoSize (payload, ref width, ref height);
 			offset = element.End;
 		}
 
-		return MediaTypes.None;
+		var codec = CodecLabel (codecId, codecName);
+		if (kind == 2) {
+			layout.Types |= MediaTypes.Audio;
+			if (layout.SampleRate == 0 && layout.AudioCodec is null) {
+				layout.SampleRate = rate;
+				layout.Channels = channels;
+				layout.BitsPerSample = bits;
+				layout.AudioCodec = codec;
+			}
+		} else if (kind == 1) {
+			layout.Types |= MediaTypes.Video;
+			if (layout.Width == 0 && layout.VideoCodec is null) {
+				layout.Width = width;
+				layout.Height = height;
+				layout.FrameRate = frameRate;
+				layout.VideoCodec = codec;
+			}
+		}
+	}
+
+	static void ReadAudio (ReadOnlySpan<byte> body, ref int rate, ref int channels, ref int bits)
+	{
+		var offset = 0;
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
+				break;
+			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
+			if (element.Id == MatroskaIds.SamplingFrequency && EbmlReader.TryReadFloat (payload, out var frequency) && frequency > 0)
+				rate = (int)frequency;
+			else if (element.Id == MatroskaIds.Channels && payload.Length > 0)
+				channels = (int)EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.BitDepth && payload.Length > 0)
+				bits = (int)EbmlReader.ReadUInt (payload);
+			offset = element.End;
+		}
+
+		// The Channels element defaults to 1 when an Audio element omits it.
+		if (channels == 0)
+			channels = 1;
+	}
+
+	static void ReadVideoSize (ReadOnlySpan<byte> body, ref int width, ref int height)
+	{
+		var offset = 0;
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
+				break;
+			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
+			if (element.Id == MatroskaIds.PixelWidth)
+				width = (int)EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.PixelHeight)
+				height = (int)EbmlReader.ReadUInt (payload);
+			offset = element.End;
+		}
+	}
+
+	static string CodecLabel (string? codecId, string? codecName)
+	{
+		if (!string.IsNullOrEmpty (codecName) && codecName != codecId)
+			return codecName;
+		return codecId switch {
+			"A_VORBIS" => "Vorbis",
+			"A_OPUS" => "Opus",
+			"A_AAC" or "A_AAC/MPEG2/LC" or "A_AAC/MPEG4/LC" => "AAC",
+			"A_MPEG/L3" => "MP3",
+			"A_FLAC" => "FLAC",
+			"A_PCM/INT/LIT" or "A_PCM/INT/BIG" => "PCM",
+			"A_AC3" => "AC-3",
+			"A_DTS" => "DTS",
+			"V_VP8" => "VP8",
+			"V_VP9" => "VP9",
+			"V_AV1" => "AV1",
+			"V_MPEG4/ISO/AVC" => "H.264",
+			"V_MPEGH/ISO/HEVC" => "HEVC",
+			"V_THEORA" => "Theora",
+			_ => string.IsNullOrEmpty (codecId) ? "Matroska" : codecId
+		};
+	}
+
+	static void ReadAttachments (ReadOnlySpan<byte> body, MatroskaTag tag)
+	{
+		var offset = 0;
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out var element))
+				break;
+			if (element.Id == MatroskaIds.AttachedFile && !element.UnknownSize)
+				ReadAttachedFile (body.Slice (element.DataOffset, (int)element.DataLength), tag);
+			if (element.UnknownSize)
+				break;
+			offset = element.End;
+		}
+	}
+
+	static void ReadAttachedFile (ReadOnlySpan<byte> body, MatroskaTag tag)
+	{
+		string? name = null;
+		string? description = null;
+		string? mime = null;
+		byte[]? bytes = null;
+		var offset = 0;
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
+				break;
+			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
+			if (element.Id == MatroskaIds.FileName)
+				name = EbmlReader.ReadString (payload);
+			else if (element.Id == MatroskaIds.FileDescription)
+				description = EbmlReader.ReadString (payload);
+			else if (element.Id == MatroskaIds.FileMimeType)
+				mime = EbmlReader.ReadString (payload);
+			else if (element.Id == MatroskaIds.FileData && payload.Length > 0)
+				bytes = payload.ToArray ();
+			offset = element.End;
+		}
+
+		if (bytes is null || mime is null || !mime.StartsWith ("image/", StringComparison.OrdinalIgnoreCase))
+			return;
+
+		var cover = (name is not null && name.Contains ("cover", StringComparison.OrdinalIgnoreCase))
+			|| (description is not null && description.Contains ("cover", StringComparison.OrdinalIgnoreCase))
+			|| string.Equals (description, "Front", StringComparison.OrdinalIgnoreCase);
+		tag.AddPicture (new MatroskaPicture (
+			mime,
+			cover ? PictureType.FrontCover : PictureType.Other,
+			description ?? name ?? string.Empty,
+			bytes));
+	}
+
+	struct TrackLayout
+	{
+		public MediaTypes Types;
+		public int SampleRate;
+		public int Channels;
+		public int BitsPerSample;
+		public string? AudioCodec;
+		public int Width;
+		public int Height;
+		public double FrameRate;
+		public string? VideoCodec;
 	}
 
 	static void ReadTags (ReadOnlySpan<byte> data, ReadOnlySpan<byte> body, MatroskaTag tag)

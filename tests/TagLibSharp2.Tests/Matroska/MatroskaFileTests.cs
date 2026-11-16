@@ -183,6 +183,97 @@ public class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_PaddingBeforeInfo_StillReadsTheSegment ()
+	{
+		// A live-style segment uses an unknown size and then padding before the first element.
+		var info = Master (0x1549A966, Concat (
+			Element (0x7BA9, "After Junk"u8),
+			Element (0x4489, Float32 (2000f))));
+		var segment = Concat (Id (0x18538067), new byte[] { 0xFF }, new byte[] { 0x0A, 0x0A, 0x0A, 0x0A }, info);
+		var result = MatroskaFile.Read (Matroska (segment));
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("After Junk", result.File!.Tag.Title);
+		Assert.AreEqual (TimeSpan.FromSeconds (2), result.File.Duration);
+	}
+
+	[TestMethod]
+	public void Read_Tracks_ReportAudioAndVideoProperties ()
+	{
+		var audio = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Element (0x86, "A_VORBIS"u8),
+			Master (0xE1, Concat (
+				Element (0xB5, Float32 (48000f)),
+				Element (0x9F, new byte[] { 2 }),
+				Element (0x6264, new byte[] { 16 })))));
+		var video = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 1 }),
+			Element (0x86, "V_VP8"u8),
+			Master (0xE0, Concat (
+				Element (0xB0, new byte[] { 0x02, 0x80 }),
+				Element (0xBA, new byte[] { 0x01, 0x68 })))));
+		var file = FileWith (Master (0x1654AE6B, Concat (audio, video)));
+
+		IMediaFile media = MatroskaFile.Read (file).File!;
+
+		Assert.AreEqual (48000, media.AudioProperties!.SampleRate);
+		Assert.AreEqual (2, media.AudioProperties.Channels);
+		Assert.AreEqual (16, media.AudioProperties.BitsPerSample);
+		Assert.AreEqual ("Vorbis", media.AudioProperties.Codec);
+		var videoProps = media.VideoProperties!.Value;
+		Assert.AreEqual (640, videoProps.Width);
+		Assert.AreEqual (360, videoProps.Height);
+		Assert.AreEqual ("VP8", videoProps.Codec);
+	}
+
+	[TestMethod]
+	public void Read_ImageAttachment_IsAPicture_AndAFontIsNot ()
+	{
+		var png = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3 };
+		var cover = Master (0x61A7, Concat (
+			Element (0x466E, "cover.png"u8),
+			Element (0x4660, "image/png"u8),
+			Element (0x467E, "Front"u8),
+			Element (0x465C, png)));
+		var font = Master (0x61A7, Concat (
+			Element (0x466E, "font.ttf"u8),
+			Element (0x4660, "application/x-truetype-font"u8),
+			Element (0x465C, new byte[] { 1, 2, 3, 4 })));
+		var file = FileWith (Master (0x1941A469, Concat (cover, font)));
+
+		var pictures = MatroskaFile.Read (file).File!.Tag.Pictures;
+
+		Assert.AreEqual (1, pictures.Length);
+		Assert.AreEqual ("image/png", pictures[0].MimeType);
+		Assert.AreEqual (PictureType.FrontCover, pictures[0].PictureType);
+		Assert.AreEqual ("Front", pictures[0].Description);
+		CollectionAssert.AreEqual (png, pictures[0].PictureData.ToArray ());
+	}
+
+	[TestMethod]
+	public void Read_OfficialTagNames_FillTheCommonProperties ()
+	{
+		var file = FileWith (Tags (Tag (30,
+			Simple ("DATE_RECORDED", "2017"),
+			Simple ("ACTOR", "Lime"),
+			Simple ("SUBTITLE", "Theme"),
+			Simple ("BPM", "96"),
+			Simple ("MUSICBRAINZ_TRACKID", "abc"),
+			Simple ("TITLE_SORT", "lime"))));
+
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		Assert.AreEqual ("2017", tag.OriginalReleaseDate);
+		Assert.IsNull (tag.Artist);
+		Assert.AreEqual ("Lime", tag.Performers[0]);
+		Assert.AreEqual ("Theme", tag.Subtitle);
+		Assert.AreEqual (96u, tag.BeatsPerMinute);
+		Assert.AreEqual ("abc", tag.MusicBrainzTrackId);
+		Assert.AreEqual ("lime", tag.TitleSort);
+	}
+
+	[TestMethod]
 	public void Read_TagsAfterKnownCluster_AreRead ()
 	{
 		var cluster = Master (0x1F43B675, Element (0xEC, new byte[4]));
