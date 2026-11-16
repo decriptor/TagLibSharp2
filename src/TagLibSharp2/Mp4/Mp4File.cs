@@ -1199,8 +1199,15 @@ public sealed class Mp4File : IMediaFile
 			if (i == moovIndex) {
 				builder.Add (newMoov);
 			} else {
-				var (_, start, length) = boxes[i];
-				builder.Add (new BinaryData (originalData.Slice (start, length)));
+				var (box, start, length) = boxes[i];
+				var slice = originalData.Slice (start, length);
+				if (delta != 0 && HoldsShiftedFileOffset (box.Type)) {
+					var copy = slice.ToArray ();
+					PatchChunkOffsets (copy, oldMoovEnd, delta);
+					builder.Add (copy);
+				} else {
+					builder.Add (new BinaryData (slice));
+				}
 			}
 		}
 
@@ -1250,13 +1257,30 @@ public sealed class Mp4File : IMediaFile
 		} else if (type.SequenceEqual ("co64"u8)) {
 			if (!adjust.LeavesChunkTable)
 				PatchOffsets (payload, 8, threshold, delta, adjust);
-		} else if (type.SequenceEqual ("trak"u8))
+		} else if (type.SequenceEqual ("tfhd"u8))
+			PatchTfhd (payload, threshold, delta);
+		else if (type.SequenceEqual ("tfra"u8))
+			PatchTfra (payload, threshold, delta);
+		else if (type.SequenceEqual ("saio"u8))
+			PatchSaio (payload, threshold, delta);
+		else if (type.SequenceEqual ("iloc"u8))
+			PatchIloc (payload, threshold, delta);
+		else if (type.SequenceEqual ("trak"u8))
 			PatchTrakOffsets (payload, threshold, delta);
 		else if (adjust.InTrak && type.SequenceEqual ("stbl"u8))
 			PatchStblOffsets (payload, threshold, delta, adjust);
-		else if (IsOffsetContainer (type))
+		else if (type.SequenceEqual ("meta"u8)) {
+			// ISO meta keeps version and flags in front of its children.
+			if (Mp4BoxParser.IsIsoMeta (payload))
+				WalkBoxes (payload.Slice (4), threshold, delta, adjust);
+			else
+				WalkBoxes (payload, threshold, delta, adjust);
+		} else if (IsOffsetContainer (type))
 			WalkBoxes (payload, threshold, delta, adjust);
 	}
+
+	static bool HoldsShiftedFileOffset (string type) =>
+		type is "moof" or "mfra" or "meta" or "udta";
 
 	/// <summary>
 	/// One stsc table applies to the chunk offset box in the same sample table.
@@ -1319,7 +1343,11 @@ public sealed class Mp4File : IMediaFile
 		|| type.SequenceEqual ("mdia"u8)
 		|| type.SequenceEqual ("minf"u8)
 		|| type.SequenceEqual ("stbl"u8)
-		|| type.SequenceEqual ("edts"u8);
+		|| type.SequenceEqual ("edts"u8)
+		|| type.SequenceEqual ("udta"u8)
+		|| type.SequenceEqual ("moof"u8)
+		|| type.SequenceEqual ("traf"u8)
+		|| type.SequenceEqual ("mfra"u8);
 
 	/// <summary>
 	/// True when every sample entry this trak references is an external dref.
@@ -1547,6 +1575,211 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
+	/// tfhd always stores track_ID. Flag 1 then stores the 64-bit base data offset. ISO 14496-12 §8.8.7.
+	/// </summary>
+	static void PatchTfhd (Span<byte> payload, int threshold, int delta)
+	{
+		if (payload.Length < 16)
+			return;
+
+		var flags = BinaryPrimitives.ReadUInt32BigEndian (payload) & 0xFFFFFF;
+		if ((flags & 0x1) == 0)
+			return;
+
+		PatchWide (payload.Slice (8), 8, threshold, delta);
+	}
+
+	/// <summary>
+	/// tfra moof_offset is 32 bits in version 0 and 64 bits in version 1. ISO 14496-12 §8.8.10.
+	/// </summary>
+	static void PatchTfra (Span<byte> payload, int threshold, int delta)
+	{
+		if (payload.Length < 16)
+			return;
+
+		var version = payload[0];
+		var packed = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (8));
+		var trafSize = (int)((packed >> 4) & 0x3) + 1;
+		var trunSize = (int)((packed >> 2) & 0x3) + 1;
+		var sampleSize = (int)(packed & 0x3) + 1;
+		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (12));
+		var timeSize = version == 0 ? 4 : 8;
+		var pos = 16;
+		for (var i = 0u; i < count; i++) {
+			if (pos > payload.Length - timeSize)
+				return;
+			pos += timeSize;
+			if (!SkipOrPatch (payload, ref pos, timeSize, true, threshold, delta))
+				return;
+			pos += trafSize + trunSize + sampleSize;
+			if (pos > payload.Length)
+				return;
+		}
+	}
+
+	/// <summary>
+	/// Flag 1 inserts 8 bytes before entry_count. Version 0 offsets are 32 bits, later versions 64. §8.7.9.
+	/// </summary>
+	static void PatchSaio (Span<byte> payload, int threshold, int delta)
+	{
+		if (payload.Length < 8)
+			return;
+
+		var header = BinaryPrimitives.ReadUInt32BigEndian (payload);
+		var version = payload[0];
+		var pos = 4;
+		if ((header & 0x1) != 0) {
+			if (payload.Length < pos + 8)
+				return;
+			pos += 8;
+		}
+
+		if (payload.Length < pos + 4)
+			return;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos));
+		pos += 4;
+		var width = version == 0 ? 4 : 8;
+		for (var i = 0u; i < count; i++) {
+			if (!SkipOrPatch (payload, ref pos, width, true, threshold, delta))
+				return;
+		}
+	}
+
+	/// <summary>
+	/// iloc base_offset and extent_offset move only for construction method 0 in this file. §8.11.3.
+	/// </summary>
+	static void PatchIloc (Span<byte> payload, int threshold, int delta)
+	{
+		if (payload.Length < 8)
+			return;
+
+		var version = payload[0];
+		var offsetSize = payload[4] >> 4;
+		var lengthSize = payload[4] & 0x0F;
+		var baseSize = payload[5] >> 4;
+		var indexSize = version is 1 or 2 ? payload[5] & 0x0F : 0;
+		var pos = 6;
+		uint count;
+		if (version < 2) {
+			if (payload.Length < pos + 2)
+				return;
+			count = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos));
+			pos += 2;
+		} else {
+			if (payload.Length < pos + 4)
+				return;
+			count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos));
+			pos += 4;
+		}
+
+		for (var i = 0u; i < count; i++) {
+			var idSize = version < 2 ? 2 : 4;
+			if (pos > payload.Length - idSize)
+				return;
+			pos += idSize;
+
+			var construction = 0;
+			if (version is 1 or 2) {
+				if (pos > payload.Length - 2)
+					return;
+				construction = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos)) & 0xF;
+				pos += 2;
+			}
+
+			if (pos > payload.Length - 2)
+				return;
+			var dataReference = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos));
+			pos += 2;
+			var inThisFile = dataReference == 0 && construction == 0;
+			var basePos = pos;
+			if (!TryReadWide (payload, pos, baseSize, out var baseValue))
+				return;
+			pos += WidthBytes (baseSize);
+			if (pos > payload.Length - 2)
+				return;
+			var extents = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos));
+			pos += 2;
+			// Construction method 0: the file position is base_offset + extent_offset.
+			// A base at or past the old moov is the item's file position, so it moves once
+			// and the extent stays relative. A zero base makes each extent a file offset.
+			var moveBase = inThisFile && baseSize != 0 && baseValue >= (ulong)threshold;
+			for (var extent = 0; extent < extents; extent++) {
+				if (indexSize > 0 && !SkipOrPatch (payload, ref pos, indexSize, false, threshold, delta))
+					return;
+				var extentPos = pos;
+				if (!TryReadWide (payload, pos, offsetSize, out var extentValue))
+					return;
+				pos += WidthBytes (offsetSize);
+				if (inThisFile && !moveBase && offsetSize != 0) {
+					var absolute = baseValue + extentValue;
+					if (absolute >= (ulong)threshold)
+						AddDelta (payload.Slice (extentPos, offsetSize), offsetSize, delta);
+				}
+				if (!SkipOrPatch (payload, ref pos, lengthSize, false, threshold, delta))
+					return;
+			}
+			if (moveBase)
+				AddDelta (payload.Slice (basePos, baseSize), baseSize, delta);
+		}
+	}
+
+	static int WidthBytes (int width) => width is 4 or 8 ? width : 0;
+
+	static bool TryReadWide (ReadOnlySpan<byte> payload, int pos, int width, out ulong value)
+	{
+		value = 0;
+		if (width == 0)
+			return true;
+		if (width != 4 && width != 8)
+			return false;
+		if (pos < 0 || pos > payload.Length - width)
+			return false;
+		value = width == 4
+			? BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos))
+			: BinaryPrimitives.ReadUInt64BigEndian (payload.Slice (pos));
+		return true;
+	}
+
+	static void AddDelta (Span<byte> field, int width, int delta)
+	{
+		if (width == 4) {
+			var value = BinaryPrimitives.ReadUInt32BigEndian (field);
+			BinaryPrimitives.WriteUInt32BigEndian (field, (uint)(value + delta));
+		} else {
+			var value = BinaryPrimitives.ReadUInt64BigEndian (field);
+			BinaryPrimitives.WriteUInt64BigEndian (field, (ulong)((long)value + delta));
+		}
+	}
+
+	static bool SkipOrPatch (Span<byte> payload, ref int pos, int width, bool patch, int threshold, int delta)
+	{
+		if (width == 0)
+			return true;
+		if (width != 4 && width != 8)
+			return false;
+		if (pos > payload.Length - width)
+			return false;
+		if (patch)
+			PatchWide (payload.Slice (pos, width), width, threshold, delta);
+		pos += width;
+		return true;
+	}
+
+	static void PatchWide (Span<byte> field, int width, int threshold, int delta)
+	{
+		if (width == 4) {
+			var value = BinaryPrimitives.ReadUInt32BigEndian (field);
+			if (value >= (uint)threshold)
+				BinaryPrimitives.WriteUInt32BigEndian (field, (uint)(value + delta));
+		} else {
+			var value = BinaryPrimitives.ReadUInt64BigEndian (field);
+			if (value >= (ulong)threshold)
+				BinaryPrimitives.WriteUInt64BigEndian (field, (ulong)((long)value + delta));
+		}
+	}
+
+	/// <summary>
 	/// §8.7.4: entry_count, then first_chunk, samples_per_chunk, sample_description_index.
 	/// A short table stops at the last complete row. samples_per_chunk does not select the file.
 	/// </summary>
@@ -1653,7 +1886,7 @@ public sealed class Mp4File : IMediaFile
 	{
 		using var moovContent = new BinaryDataBuilder ();
 
-		var newUdta = BuildUdtaBox ();
+		var newUdta = BuildUdtaBox (originalMoov);
 		var emittedChild = false;
 		foreach (var child in originalMoov.Children) {
 			if (child.Type == "udta")
@@ -1748,62 +1981,145 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
-	/// Builds the udta box containing meta and ilst.
+	/// Builds moov/udta. An existing udta keeps every child except meta, and meta keeps
+	/// every child except ilst. Chapters and the meta version/flags survive a tag edit.
 	/// </summary>
-	BinaryData BuildUdtaBox ()
+	BinaryData BuildUdtaBox (Mp4Box originalMoov)
 	{
-		if (Tag is null)
+		var ilstContent = Tag is null ? BinaryData.Empty : Tag.Render ();
+		var original = originalMoov.FindChild ("udta");
+		if (original is null) {
+			if (ilstContent.IsEmpty)
+				return BinaryData.Empty;
+			return WrapBox ("udta", FreshMeta (ilstContent));
+		}
+
+		return RebuildUdta (original, ilstContent);
+	}
+
+	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent)
+	{
+		using var content = new BinaryDataBuilder ();
+		var payload = udta.Data.Span;
+		var offset = 0;
+		var replacedMeta = false;
+		while (offset + 8 <= payload.Length) {
+			if (!TryMeasureBox (payload.Slice (offset), out var size, out _))
+				break;
+			if (size <= 0 || size > payload.Length - offset)
+				break;
+
+			// A size below the header stops the parser. Put the new meta ahead of it,
+			// matching moov, so the following read can see the tag.
+			if (size < 8) {
+				if (!replacedMeta && !ilstContent.IsEmpty) {
+					content.Add (FreshMeta (ilstContent));
+					replacedMeta = true;
+				}
+				content.Add (payload.Slice (offset, size));
+				offset += size;
+				continue;
+			}
+
+			var isMeta = payload.Slice (offset + 4, 4).SequenceEqual ("meta"u8);
+			if (isMeta && !replacedMeta) {
+				var meta = udta.FindChild ("meta");
+				if (meta is not null) {
+					var rebuilt = RebuildMeta (meta, ilstContent);
+					if (!rebuilt.IsEmpty)
+						content.Add (rebuilt);
+				} else if (!ilstContent.IsEmpty) {
+					content.Add (FreshMeta (ilstContent));
+				} else {
+					content.Add (payload.Slice (offset, size));
+				}
+				replacedMeta = true;
+			} else if (isMeta && udta.FindChild ("meta") is null) {
+				// The original sits after the box that stopped parsing. It is not readable.
+			} else {
+				content.Add (payload.Slice (offset, size));
+			}
+
+			offset += size;
+		}
+
+		if (offset < payload.Length)
+			content.Add (payload.Slice (offset));
+		if (!replacedMeta && !ilstContent.IsEmpty)
+			content.Add (FreshMeta (ilstContent));
+		if (content.Length == 0)
 			return BinaryData.Empty;
 
-		// Build ilst content
-		var ilstContent = Tag.Render ();
-		if (ilstContent.IsEmpty)
+		return WrapBox ("udta", content.ToBinaryData ());
+	}
+
+	static BinaryData RebuildMeta (Mp4Box meta, BinaryData ilstContent)
+	{
+		var children = new List<Mp4Box> ();
+		var sawHandler = false;
+		var placedList = false;
+		foreach (var child in meta.Children) {
+			if (child.Type == "hdlr")
+				sawHandler = true;
+			if (child.Type == "ilst") {
+				if (!placedList && !ilstContent.IsEmpty) {
+					children.Add (new Mp4Box ("ilst", ilstContent));
+					placedList = true;
+				}
+				continue;
+			}
+
+			children.Add (child);
+		}
+
+		if (!sawHandler && !ilstContent.IsEmpty)
+			children.Insert (0, HandlerBox ());
+		if (!placedList && !ilstContent.IsEmpty)
+			children.Add (new Mp4Box ("ilst", ilstContent));
+		if (children.Count == 0 && meta.UnparsedTail.Length == 0)
 			return BinaryData.Empty;
 
-		// Build ilst box
-		using var ilstBuilder = new BinaryDataBuilder ();
-		ilstBuilder.AddUInt32BE ((uint)(Mp4Box.HeaderSize + ilstContent.Length));
-		ilstBuilder.AddStringLatin1 ("ilst");
-		ilstBuilder.Add (ilstContent);
-		var ilstBox = ilstBuilder.ToBinaryData ();
+		var rebuilt = new Mp4Box (
+			"meta",
+			meta.Data,
+			children,
+			meta.UsesExtendedSize,
+			meta.UnparsedTail,
+			meta.HeaderPrefix);
+		return rebuilt.Render ();
+	}
 
-		// Build hdlr box for meta (handler type: mdir/appl)
-		using var hdlrContent = new BinaryDataBuilder ();
-		hdlrContent.AddUInt32BE (0); // version + flags
-		hdlrContent.AddUInt32BE (0); // pre_defined
-		hdlrContent.AddStringLatin1 ("mdir"); // handler_type
-		hdlrContent.AddStringLatin1 ("appl"); // manufacturer
-		hdlrContent.AddUInt32BE (0); // reserved
-		hdlrContent.AddUInt32BE (0); // reserved
-		hdlrContent.Add ((byte)0); // null-terminated name
+	static BinaryData FreshMeta (BinaryData ilstContent)
+	{
+		var prefix = new byte[4];
+		var meta = new Mp4Box (
+			"meta",
+			BinaryData.Empty,
+			[HandlerBox (), new Mp4Box ("ilst", ilstContent)],
+			headerPrefix: new BinaryData (prefix));
+		return meta.Render ();
+	}
 
-		using var hdlrBuilder = new BinaryDataBuilder ();
-		var hdlrContentData = hdlrContent.ToBinaryData ();
-		hdlrBuilder.AddUInt32BE ((uint)(Mp4Box.HeaderSize + hdlrContentData.Length));
-		hdlrBuilder.AddStringLatin1 ("hdlr");
-		hdlrBuilder.Add (hdlrContentData);
-		var hdlrBox = hdlrBuilder.ToBinaryData ();
+	static Mp4Box HandlerBox ()
+	{
+		using var body = new BinaryDataBuilder ();
+		body.AddUInt32BE (0);
+		body.AddUInt32BE (0);
+		body.AddStringLatin1 ("mdir");
+		body.AddStringLatin1 ("appl");
+		body.AddUInt32BE (0);
+		body.AddUInt32BE (0);
+		body.Add ((byte)0);
+		return new Mp4Box ("hdlr", body.ToBinaryData ());
+	}
 
-		// Build meta box (FullBox: version + flags prefix)
-		using var metaContent = new BinaryDataBuilder ();
-		metaContent.AddUInt32BE (0); // version(1) + flags(3) = 0
-		metaContent.Add (hdlrBox);
-		metaContent.Add (ilstBox);
-
-		using var metaBuilder = new BinaryDataBuilder ();
-		var metaContentData = metaContent.ToBinaryData ();
-		metaBuilder.AddUInt32BE ((uint)(Mp4Box.HeaderSize + metaContentData.Length));
-		metaBuilder.AddStringLatin1 ("meta");
-		metaBuilder.Add (metaContentData);
-		var metaBox = metaBuilder.ToBinaryData ();
-
-		// Build udta box
-		using var udtaBuilder = new BinaryDataBuilder ();
-		udtaBuilder.AddUInt32BE ((uint)(Mp4Box.HeaderSize + metaBox.Length));
-		udtaBuilder.AddStringLatin1 ("udta");
-		udtaBuilder.Add (metaBox);
-
-		return udtaBuilder.ToBinaryData ();
+	static BinaryData WrapBox (string type, BinaryData body)
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.AddUInt32BE ((uint)(Mp4Box.HeaderSize + body.Length));
+		builder.AddStringLatin1 (type);
+		builder.Add (body);
+		return builder.ToBinaryData ();
 	}
 
 	/// <summary>
