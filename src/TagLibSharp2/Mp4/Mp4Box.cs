@@ -46,12 +46,14 @@ public class Mp4Box
 		BinaryData data,
 		IReadOnlyList<Mp4Box>? children = null,
 		bool usesExtendedSize = false,
-		BinaryData? unparsedTail = null)
+		BinaryData? unparsedTail = null,
+		BinaryData? headerPrefix = null)
 	{
 		Type = type;
 		Data = data;
 		UsesExtendedSize = usesExtendedSize;
 		UnparsedTail = unparsedTail ?? BinaryData.Empty;
+		HeaderPrefix = headerPrefix ?? BinaryData.Empty;
 
 		if (children is not null) {
 			foreach (var child in children)
@@ -102,6 +104,11 @@ public class Mp4Box
 	/// Gets the bytes left unread when child parsing stopped before the end of this box.
 	/// </summary>
 	internal BinaryData UnparsedTail { get; }
+
+	/// <summary>
+	/// Gets the bytes written before the children. ISO meta stores version and flags here.
+	/// </summary>
+	internal BinaryData HeaderPrefix { get; }
 
 	/// <summary>
 	/// Finds the first direct child box with the specified type.
@@ -155,6 +162,8 @@ public class Mp4Box
 		BinaryData contentData;
 		if (IsContainer) {
 			using var childBuilder = new BinaryDataBuilder ();
+			if (HeaderPrefix.Length > 0)
+				childBuilder.Add (HeaderPrefix);
 			for (int i = 0; i < _children.Count; i++)
 				childBuilder.Add (_children[i].Render ());
 			// Parsed children stop at the first bad box. The unread suffix is still part of this box.

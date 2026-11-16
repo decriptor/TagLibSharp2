@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Core;
 
 namespace TagLibSharp2.Mp4;
@@ -98,11 +99,13 @@ internal static class Mp4BoxParser
 		// Parse children if this is a container box
 		IReadOnlyList<Mp4Box>? children = null;
 		BinaryData? unparsedTail = null;
+		BinaryData? headerPrefix = null;
 		if (IsContainerBox (type)) {
-			// meta is a FullBox: skip version(1) + flags(3) before children
+			// ISO meta is a FullBox. QuickTime meta starts with a child box and has no prefix.
 			var childData = boxData.Span;
 			var prefix = 0;
-			if (type == "meta" && boxData.Length >= 4) {
+			if (type == "meta" && IsIsoMeta (boxData.Span)) {
+				headerPrefix = boxData.Slice (0, 4);
 				childData = boxData.Slice (4).Span;
 				prefix = 4;
 			}
@@ -112,7 +115,7 @@ internal static class Mp4BoxParser
 				unparsedTail = boxData.Slice (prefix + consumed);
 		}
 
-		var box = new Mp4Box (type, boxData, children, usesExtendedSize, unparsedTail);
+		var box = new Mp4Box (type, boxData, children, usesExtendedSize, unparsedTail, headerPrefix);
 		return new Mp4BoxReadResult (box, (int)boxSize);
 	}
 
@@ -124,6 +127,42 @@ internal static class Mp4BoxParser
 	public static bool IsContainerBox (string type)
 	{
 		return ContainerBoxes.Contains (type);
+	}
+
+	/// <summary>
+	/// True when <paramref name="payload"/> is version and flags followed by a child box.
+	/// A child box at offset 0 is QuickTime meta and is not a FullBox.
+	/// </summary>
+	internal static bool IsIsoMeta (ReadOnlySpan<byte> payload)
+	{
+		if (payload.Length < 12 || LooksLikeBox (payload))
+			return false;
+		return LooksLikeBox (payload.Slice (4));
+	}
+
+	static bool LooksLikeBox (ReadOnlySpan<byte> data)
+	{
+		if (data.Length < 8)
+			return false;
+
+		var size = BinaryPrimitives.ReadUInt32BigEndian (data);
+		if (size == 1) {
+			if (data.Length < 16)
+				return false;
+			var large = BinaryPrimitives.ReadUInt64BigEndian (data.Slice (8));
+			if (large < 16 || large > (ulong)data.Length)
+				return false;
+		} else if (size < 8 || size > (uint)data.Length) {
+			return false;
+		}
+
+		for (var i = 4; i < 8; i++) {
+			var value = data[i];
+			if (value < 0x20 || value > 0x7E)
+				return false;
+		}
+
+		return true;
 	}
 
 	/// <summary>

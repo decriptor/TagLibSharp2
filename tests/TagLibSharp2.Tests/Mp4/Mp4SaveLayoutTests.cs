@@ -34,6 +34,172 @@ public class Mp4SaveLayoutTests
 	}
 
 	[TestMethod]
+	public void Render_IsoMetaInTrak_KeepsVersionAndFlags ()
+	{
+		// ISO 14496-12 meta is a FullBox. The four bytes are not a child box.
+		var trak = TrakWithMeta (new byte[] { 0x00, 0x00, 0x01, 0x23 }, Box ("hdlr", HdlrBody ()));
+		var file = FileWithMoov (trak);
+
+		var rendered = RenderWithTitle (file);
+
+		Assert.IsTrue (TrakBytes (rendered.Span).SequenceEqual (trak));
+	}
+
+	[TestMethod]
+	public void Render_QuickTimeMetaInTrak_StaysByteIdentical ()
+	{
+		// A meta whose first bytes are already a child box has no version/flags prefix.
+		var trak = TrakWithMeta (Box ("hdlr", HdlrBody ()));
+		var file = FileWithMoov (trak);
+
+		var rendered = RenderWithTitle (file);
+
+		Assert.IsTrue (TrakBytes (rendered.Span).SequenceEqual (trak));
+	}
+
+	[TestMethod]
+	public void Render_UdtaChapter_SurvivesTitleChange ()
+	{
+		var chpl = Box ("chpl", "CHAP"u8.ToArray ());
+		var meta = Box ("meta", Concat (new byte[] { 0x00, 0x00, 0x00, 0x05 }, Box ("hdlr", HdlrBody ()), Box ("ilst", Array.Empty<byte> ())));
+		var udta = Box ("udta", Concat (meta, chpl));
+		var file = FileWithMoov (udta);
+
+		var rendered = RenderWithTitle (file);
+
+		Assert.IsTrue (IndexOf (rendered.Span, "CHAP"u8) >= 0);
+		Assert.IsTrue (IndexOf (rendered.Span, new byte[] { 0x00, 0x00, 0x00, 0x05 }) >= 0);
+	}
+
+	[TestMethod]
+	public void Render_ClearTag_KeepsChapterBox ()
+	{
+		var chpl = Box ("chpl", "CHAP"u8.ToArray ());
+		var file = FileWithMoov (Box ("udta", Concat (UdtaMeta ("Old"), chpl)));
+		var read = Mp4File.Read (file);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.AreEqual ("Old", read.File!.Title);
+
+		read.File.Tag!.Clear ();
+		var rendered = read.File.Render (file);
+		var again = Mp4File.Read (rendered.Span);
+
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.IsNull (again.File!.Title);
+		Assert.IsTrue (IndexOf (rendered.Span, "CHAP"u8) >= 0);
+	}
+
+	[TestMethod]
+	public void Render_FragmentOffsets_MoveWithMoov ()
+	{
+		// tfhd base_data_offset, tfra moof_offset, and saio follow the same rule as stco:
+		// add the moov delta when the stored offset is at or after the old end of moov.
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var stco = Box ("stco", StcoBody (0));
+		var saio = Saio (0, auxInfo: true);
+		var saio64 = Saio64 (0);
+		var moov = Box ("moov", Concat (stco, saio, saio64));
+		var mdat = Box ("mdat", Marker);
+		var payload = (uint)(ftyp.Length + moov.Length + 8);
+		stco = Box ("stco", StcoBody (payload));
+		saio = Saio (payload, auxInfo: true);
+		saio64 = Saio64 (payload);
+		moov = Box ("moov", Concat (stco, saio, saio64));
+		var early = Tfhd (8);
+		var late = Tfhd (payload);
+		var moof = Box ("moof", Concat (Box ("mfhd", new byte[8]), Box ("traf", early), Box ("traf", late)));
+		var tfra = Tfra (payload);
+		var mfra = Box ("mfra", tfra);
+		var file = Concat (ftyp, moov, mdat, moof, mfra);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+
+		Assert.AreEqual (markerAt, ReadStco (rendered.Span));
+		Assert.AreEqual (8ul, ReadTfhdOffset (rendered.Span, 0));
+		Assert.AreEqual ((ulong)markerAt, ReadTfhdOffset (rendered.Span, 1));
+		Assert.AreEqual (markerAt, ReadSaio32 (rendered.Span));
+		Assert.AreEqual ((ulong)markerAt, ReadSaio64 (rendered.Span));
+		Assert.AreEqual (markerAt, ReadTfraOffset (rendered.Span));
+		Assert.AreNotEqual (payload, markerAt);
+	}
+
+	[TestMethod]
+	public void Render_IlocInThisFile_MovesExtentAndBaseOffset ()
+	{
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var stco = Box ("stco", StcoBody (0));
+		var iloc = Iloc (0, 0, 0);
+		var meta = Box ("meta", Concat (new byte[4], Box ("hdlr", HdlrBody ()), iloc));
+		var moov = Box ("moov", Concat (stco, Box ("udta", meta)));
+		var mdat = Box ("mdat", Marker);
+		var payload = (uint)(ftyp.Length + moov.Length + 8);
+		stco = Box ("stco", StcoBody (payload));
+		iloc = Iloc (payload, payload, payload);
+		meta = Box ("meta", Concat (new byte[4], Box ("hdlr", HdlrBody ()), iloc));
+		moov = Box ("moov", Concat (stco, Box ("udta", meta)));
+		var file = Concat (ftyp, moov, mdat);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		var body = IlocBody (rendered.Span);
+
+		Assert.AreEqual (markerAt, ReadIlocOffset (body, 0, baseOffset: true));
+		Assert.AreEqual (payload, ReadIlocOffset (body, 0, baseOffset: false), "relative extent stays");
+		Assert.AreEqual (payload, ReadIlocOffset (body, 1, baseOffset: true), "external data_reference_index stays");
+		Assert.AreEqual (payload, ReadIlocOffset (body, 2, baseOffset: false), "construction_method 1 is not a file offset");
+	}
+
+	[TestMethod]
+	public void Render_IlocSum_MovesOnce ()
+	{
+		// The file position is base_offset + extent_offset. A non-zero base makes the
+		// extent relative, so the delta is added once.
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var stco = Box ("stco", StcoBody (0));
+		var iloc = IlocSums (0, 0, 0, 0);
+		var meta = Box ("meta", Concat (new byte[4], Box ("hdlr", HdlrBody ()), iloc));
+		var moov = Box ("moov", Concat (stco, Box ("udta", meta)));
+		var mdat = Box ("mdat", Marker);
+		var payload = (uint)(ftyp.Length + moov.Length + 8);
+		var half = payload / 2;
+		stco = Box ("stco", StcoBody (payload));
+		iloc = IlocSums (payload, payload, half, payload - half);
+		meta = Box ("meta", Concat (new byte[4], Box ("hdlr", HdlrBody ()), iloc));
+		moov = Box ("moov", Concat (stco, Box ("udta", meta)));
+		var file = Concat (ftyp, moov, mdat);
+
+		var rendered = RenderWithTitle (file);
+		var markerAt = (uint)MarkerAt (rendered.Span);
+		var delta = markerAt - payload;
+		var body = IlocBody (rendered.Span);
+
+		Assert.AreEqual (markerAt, ReadIlocOffset (body, 0, baseOffset: true), "base past the moov moves");
+		Assert.AreEqual (payload, ReadIlocOffset (body, 0, baseOffset: false), "relative extent stays");
+		Assert.AreEqual (0u, ReadIlocOffset (body, 1, baseOffset: true));
+		Assert.AreEqual (markerAt, ReadIlocOffset (body, 1, baseOffset: false), "extent is the file offset when base is 0");
+		Assert.AreEqual (payload - half + delta, ReadIlocOffset (body, 2, baseOffset: false), "sum past the moov moves once");
+		Assert.AreEqual (half, ReadIlocOffset (body, 2, baseOffset: true));
+		Assert.AreEqual (markerAt, ReadIlocOffset (body, 2, baseOffset: true) + ReadIlocOffset (body, 2, baseOffset: false));
+	}
+
+	[TestMethod]
+	public void Render_MetaAfterShortBoxInUdta_KeepsTheNewTitle ()
+	{
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		var udta = Box ("udta", Concat (BadBox (), UdtaMeta ("Old")));
+		var file = Concat (ftyp, Box ("moov", udta), Box ("mdat", Marker));
+
+		var read = Mp4File.Read (file);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.Title = "New";
+		var again = Mp4File.Read (read.File.Render (file).Span);
+
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		Assert.AreEqual ("New", again.File!.Title);
+	}
+
+	[TestMethod]
 	public void Render_UnparsedBoxBeforeMdat_KeepsTheMedia ()
 	{
 		// The only mdat follows the size-7 box. A copy of the 8-byte "junk" header is not enough.
@@ -1014,6 +1180,199 @@ public class Mp4SaveLayoutTests
 		}
 
 		Assert.Fail ($"stco occurrence {occurrence} missing");
+		return 0;
+	}
+
+	static byte[] HdlrBody ()
+	{
+		var hdlr = new byte[25];
+		"mdir"u8.CopyTo (hdlr.AsSpan (8));
+		"appl"u8.CopyTo (hdlr.AsSpan (12));
+		return hdlr;
+	}
+
+	static byte[] UdtaMeta (string title)
+	{
+		var text = Encoding.UTF8.GetBytes (title);
+		var dataBody = new byte[8 + text.Length];
+		dataBody[3] = 1;
+		text.CopyTo (dataBody.AsSpan (8));
+		var nam = BoxBytes ([0xA9, (byte)'n', (byte)'a', (byte)'m'], Box ("data", dataBody));
+		return Box ("meta", Concat (new byte[4], Box ("hdlr", HdlrBody ()), Box ("ilst", nam)));
+	}
+
+	static byte[] TrakWithMeta (params byte[][] metaBody)
+	{
+		var meta = Box ("meta", Concat (metaBody));
+		return Box ("trak", Concat (Box ("tkhd", new byte[4]), Box ("udta", meta)));
+	}
+
+	static byte[] FileWithMoov (params byte[][] children)
+	{
+		var ftyp = Box ("ftyp", "M4A "u8.ToArray ());
+		return Concat (ftyp, Box ("moov", Concat (children)), Box ("mdat", Marker));
+	}
+
+	static ReadOnlySpan<byte> TrakBytes (ReadOnlySpan<byte> file)
+	{
+		var typeAt = IndexOf (file, "trak"u8);
+		Assert.IsTrue (typeAt >= 4);
+		var length = BinaryPrimitives.ReadUInt32BigEndian (file.Slice (typeAt - 4, 4));
+		return file.Slice (typeAt - 4, (int)length);
+	}
+
+	static byte[] Tfhd (ulong baseDataOffset)
+	{
+		var body = new byte[16];
+		body[3] = 1;
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt64BigEndian (body.AsSpan (8), baseDataOffset);
+		return Box ("tfhd", body);
+	}
+
+	static byte[] Tfra (uint moofOffset)
+	{
+		var body = new byte[27];
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (12), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (20), moofOffset);
+		body[24] = 1;
+		body[25] = 1;
+		body[26] = 1;
+		return Box ("tfra", body);
+	}
+
+	static byte[] Saio (uint offset, bool auxInfo)
+	{
+		var extra = auxInfo ? 8 : 0;
+		var body = new byte[12 + extra];
+		if (auxInfo)
+			body[3] = 1;
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (4 + extra), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (8 + extra), offset);
+		return Box ("saio", body);
+	}
+
+	static byte[] Saio64 (uint offset)
+	{
+		var body = new byte[16];
+		body[0] = 1;
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt64BigEndian (body.AsSpan (8), offset);
+		return Box ("saio", body);
+	}
+
+	static byte[] IlocSums (uint both, uint extentOnly, uint splitBase, uint splitExtent)
+	{
+		var body = new byte[8 + (16 * 3)];
+		body[0] = 1;
+		body[4] = 0x40;
+		body[5] = 0x40;
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (6), 3);
+		WriteIlocPair (body, 0, construction: 0, dataReference: 0, both, both);
+		WriteIlocPair (body, 1, construction: 0, dataReference: 0, 0, extentOnly);
+		WriteIlocPair (body, 2, construction: 0, dataReference: 0, splitBase, splitExtent);
+		return Box ("iloc", body);
+	}
+
+	static void WriteIlocPair (byte[] body, int item, ushort construction, ushort dataReference, uint baseOffset, uint extent)
+	{
+		var at = 8 + (item * 16);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at), (ushort)(item + 1));
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at + 2), construction);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at + 4), dataReference);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (at + 6), baseOffset);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at + 10), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (at + 12), extent);
+	}
+
+	static byte[] Iloc (uint fileOffset, uint externalOffset, uint idatOffset)
+	{
+		var body = new byte[8 + (16 * 3)];
+		body[0] = 1;
+		body[4] = 0x40;
+		body[5] = 0x40;
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (6), 3);
+		WriteIlocItem (body, 0, construction: 0, dataReference: 0, fileOffset);
+		WriteIlocItem (body, 1, construction: 0, dataReference: 1, externalOffset);
+		WriteIlocItem (body, 2, construction: 1, dataReference: 0, idatOffset);
+		return Box ("iloc", body);
+	}
+
+	static void WriteIlocItem (byte[] body, int item, ushort construction, ushort dataReference, uint offset)
+	{
+		var at = 8 + (item * 16);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at), 1);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at + 2), construction);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at + 4), dataReference);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (at + 6), offset);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (at + 10), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (at + 12), offset);
+	}
+
+	static ReadOnlySpan<byte> IlocBody (ReadOnlySpan<byte> file)
+	{
+		var typeAt = IndexOf (file, "iloc"u8);
+		Assert.IsTrue (typeAt >= 4);
+		var length = BinaryPrimitives.ReadUInt32BigEndian (file.Slice (typeAt - 4, 4));
+		return file.Slice (typeAt + 4, (int)length - 8);
+	}
+
+	static uint ReadIlocOffset (ReadOnlySpan<byte> body, int item, bool baseOffset)
+	{
+		var at = 8 + (item * 16) + (baseOffset ? 6 : 12);
+		return BinaryPrimitives.ReadUInt32BigEndian (body.Slice (at, 4));
+	}
+
+	static ulong ReadTfhdOffset (ReadOnlySpan<byte> data, int occurrence) =>
+		ReadBoxField (data, "tfhd"u8, occurrence, 12, 8);
+
+	static uint ReadSaio32 (ReadOnlySpan<byte> data)
+	{
+		var typeAt = IndexOf (data, "saio"u8);
+		Assert.IsTrue (typeAt >= 0);
+		return BinaryPrimitives.ReadUInt32BigEndian (data.Slice (typeAt + 20, 4));
+	}
+
+	static ulong ReadSaio64 (ReadOnlySpan<byte> data)
+	{
+		var start = 0;
+		while (start <= data.Length - 4) {
+			var rel = IndexOf (data.Slice (start), "saio"u8);
+			if (rel < 0)
+				break;
+			var typeAt = start + rel;
+			if (data[typeAt + 4] == 1)
+				return BinaryPrimitives.ReadUInt64BigEndian (data.Slice (typeAt + 12, 8));
+			start = typeAt + 4;
+		}
+
+		Assert.Fail ("version 1 saio missing");
+		return 0;
+	}
+
+	static uint ReadTfraOffset (ReadOnlySpan<byte> data)
+	{
+		var typeAt = IndexOf (data, "tfra"u8);
+		Assert.IsTrue (typeAt >= 0);
+		return BinaryPrimitives.ReadUInt32BigEndian (data.Slice (typeAt + 24, 4));
+	}
+
+	static ulong ReadBoxField (ReadOnlySpan<byte> data, ReadOnlySpan<byte> type, int occurrence, int fieldAt, int width)
+	{
+		var start = 0;
+		var seen = 0;
+		while (start <= data.Length - type.Length) {
+			var rel = IndexOf (data.Slice (start), type);
+			if (rel < 0)
+				break;
+			if (seen == occurrence)
+				return BinaryPrimitives.ReadUInt64BigEndian (data.Slice (start + rel + fieldAt, width));
+			seen++;
+			start += rel + type.Length;
+		}
+
+		Assert.Fail ($"{Encoding.ASCII.GetString (type)} occurrence {occurrence} missing");
 		return 0;
 	}
 }
