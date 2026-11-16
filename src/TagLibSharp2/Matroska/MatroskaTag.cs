@@ -143,7 +143,7 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override uint? BeatsPerMinute {
-		get => ParseNumber (First ("BPM"));
+		get => ParseWholeOrDecimal (First ("BPM"));
 		set => SetItem ("BPM", value?.ToString (CultureInfo.InvariantCulture));
 	}
 
@@ -222,19 +222,29 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override string? TitleSort {
 		get => NestedSort ("TITLE") ?? First ("TITLE_SORT");
-		set => SetItem ("TITLE_SORT", value);
+		set {
+			ClearNestedSort ("TITLE");
+			SetItem ("TITLE_SORT", value);
+		}
 	}
 
 	/// <inheritdoc/>
 	public override string? ArtistSort {
 		get => NestedSort ("ARTIST") ?? First ("ARTIST_SORT");
-		set => SetItem ("ARTIST_SORT", value);
+		set {
+			ClearNestedSort ("ARTIST");
+			SetItem ("ARTIST_SORT", value);
+		}
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumSort {
 		get => (ItemLevel < AlbumLevel ? NestedSortAt (AlbumLevel, "TITLE") : null) ?? First ("ALBUM_SORT");
-		set => SetItem ("ALBUM_SORT", value);
+		set {
+			if (ItemLevel < AlbumLevel)
+				ClearNestedSortAt (AlbumLevel, "TITLE");
+			SetItem ("ALBUM_SORT", value);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -463,6 +473,38 @@ public sealed class MatroskaTag : Tag
 		return chosen is null ? null : NestedSortAt (chosen.Value, name);
 	}
 
+	void ClearNestedSort (string name)
+	{
+		var chosen = ChosenLevel (name);
+		if (chosen is not null)
+			ClearNestedSortAt (chosen.Value, name);
+	}
+
+	/// <summary>
+	/// Drops <c>SORT_WITH</c> on the tag the getter would use, so a later flat sort is visible.
+	/// </summary>
+	void ClearNestedSortAt (ulong level, string name)
+	{
+		var preferDefault = false;
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level != level)
+				continue;
+			if (block.HasDefault (name))
+				preferDefault = true;
+		}
+
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level != level)
+				continue;
+			foreach (var tag in block.Tags) {
+				if (tag.Name != name || (preferDefault && !tag.IsDefault) || string.IsNullOrEmpty (tag.Text))
+					continue;
+				tag.Children.RemoveAll (child => child.Name == "SORT_WITH");
+				return;
+			}
+		}
+	}
+
 	string? NestedSortAt (ulong level, string name)
 	{
 		var preferDefault = false;
@@ -567,6 +609,18 @@ public sealed class MatroskaTag : Tag
 			? value
 			: null;
 	}
+
+	static uint? ParseWholeOrDecimal (string? text)
+	{
+		var whole = ParseNumber (text);
+		if (whole is not null || text is null)
+			return whole;
+		return decimal.TryParse (text, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var number)
+			&& number >= 0
+			&& number <= uint.MaxValue
+			? (uint)number
+			: null;
+	}
 }
 
 /// <summary>One <c>Tag</c> element and the target it describes.</summary>
@@ -584,8 +638,8 @@ internal sealed class TagBlock
 
 	public bool HasEdition { get; set; }
 
-	// A track, edition, chapter, or attachment target describes that part, not the file.
-	// The element is enough, including a UID of 0.
+	// A nonzero track, edition, chapter, or attachment UID describes that part, not the file.
+	// Zero is the element default and means every part of that kind, same as omitting it.
 	public bool IsFileLevel => !HasChapter && !HasAttachment && !HasTrack && !HasEdition;
 
 	public List<SimpleTag> Tags { get; } = new ();

@@ -25,6 +25,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Multi-Target**: Supports .NET Standard 2.0/2.1, .NET 8.0, and .NET 10.0
 - **Format Support**:
   - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
+  - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): reading only — tags, duration, audio and video properties, and pictures. Saving the file is not supported yet.
 
 ## Format Support Matrix
 

@@ -264,6 +264,9 @@ public sealed class MatroskaFile : IMediaFile
 		var privateOffset = -1;
 		var privateLength = 0;
 		var rate = 0;
+		var outputRate = 0;
+		var sawOutputRate = false;
+		var sawAudio = false;
 		var channels = 0;
 		var bits = 0;
 		var width = 0;
@@ -289,9 +292,10 @@ public sealed class MatroskaFile : IMediaFile
 				var nanos = EbmlReader.ReadUInt (payload);
 				if (nanos > 0)
 					frameRate = 1_000_000_000d / nanos;
-			} else if (element.Id == MatroskaIds.Audio)
-				ReadAudio (payload, ref rate, ref channels, ref bits);
-			else if (element.Id == MatroskaIds.Video)
+			} else if (element.Id == MatroskaIds.Audio) {
+				sawAudio = true;
+				ReadAudio (payload, ref rate, ref outputRate, ref sawOutputRate, ref channels, ref bits);
+			} else if (element.Id == MatroskaIds.Video)
 				ReadVideoSize (payload, ref width, ref height);
 			offset = element.End;
 		}
@@ -299,6 +303,12 @@ public sealed class MatroskaFile : IMediaFile
 		var codecPrivate = privateOffset >= 0
 			? entry.Slice (privateOffset, privateLength)
 			: ReadOnlySpan<byte>.Empty;
+		if (sawOutputRate)
+			rate = outputRate;
+		else if (codecId == "A_OPUS")
+			rate = 48000;
+		else if (sawAudio && rate == 0)
+			rate = 8000;
 		var codec = CodecLabel (codecId, codecName, codecPrivate);
 		// FlagDefault defaults to 1. Keep the first default track. A later default replaces one that opted out.
 		if (kind == 2) {
@@ -324,7 +334,7 @@ public sealed class MatroskaFile : IMediaFile
 		}
 	}
 
-	static void ReadAudio (ReadOnlySpan<byte> body, ref int rate, ref int channels, ref int bits)
+	static void ReadAudio (ReadOnlySpan<byte> body, ref int rate, ref int outputRate, ref bool sawOutputRate, ref int channels, ref int bits)
 	{
 		var offset = 0;
 		while (offset < body.Length) {
@@ -333,7 +343,10 @@ public sealed class MatroskaFile : IMediaFile
 			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
 			if (element.Id == MatroskaIds.SamplingFrequency && EbmlReader.TryReadFloat (payload, out var frequency) && frequency > 0)
 				rate = (int)frequency;
-			else if (element.Id == MatroskaIds.Channels && payload.Length > 0)
+			else if (element.Id == MatroskaIds.OutputSamplingFrequency && EbmlReader.TryReadFloat (payload, out var output) && output > 0) {
+				outputRate = (int)output;
+				sawOutputRate = true;
+			} else if (element.Id == MatroskaIds.Channels && payload.Length > 0)
 				channels = (int)EbmlReader.ReadUInt (payload);
 			else if (element.Id == MatroskaIds.BitDepth && payload.Length > 0)
 				bits = (int)EbmlReader.ReadUInt (payload);
@@ -362,8 +375,8 @@ public sealed class MatroskaFile : IMediaFile
 
 	static string CodecLabel (string? codecId, string? codecName, ReadOnlySpan<byte> codecPrivate)
 	{
-		if (!string.IsNullOrEmpty (codecName) && codecName != codecId)
-			return codecName;
+		if (codecName is { Length: > 0 } name && name != codecId)
+			return name;
 		if (codecId == "V_MS/VFW/FOURCC" && TryVfwFourCc (codecPrivate, out var fourcc))
 			return fourcc;
 		return codecId switch {
@@ -381,7 +394,7 @@ public sealed class MatroskaFile : IMediaFile
 			"V_MPEG4/ISO/AVC" => "H.264",
 			"V_MPEGH/ISO/HEVC" => "HEVC",
 			"V_THEORA" => "Theora",
-			_ => string.IsNullOrEmpty (codecId) ? "Matroska" : codecId
+			_ => codecId is { Length: > 0 } id ? id : "Matroska"
 		};
 	}
 
@@ -524,13 +537,13 @@ public sealed class MatroskaFile : IMediaFile
 			if (element.Id == MatroskaIds.TargetTypeValue && payload.Length > 0)
 				block.Level = EbmlReader.ReadUInt (payload);
 			else if (element.Id == MatroskaIds.TagChapterUid)
-				block.HasChapter = true;
+				block.HasChapter = EbmlReader.ReadUInt (payload) != 0;
 			else if (element.Id == MatroskaIds.TagAttachmentUid)
-				block.HasAttachment = true;
+				block.HasAttachment = EbmlReader.ReadUInt (payload) != 0;
 			else if (element.Id == MatroskaIds.TagTrackUid)
-				block.HasTrack = true;
+				block.HasTrack = EbmlReader.ReadUInt (payload) != 0;
 			else if (element.Id == MatroskaIds.TagEditionUid)
-				block.HasEdition = true;
+				block.HasEdition = EbmlReader.ReadUInt (payload) != 0;
 			offset = element.End;
 		}
 	}
