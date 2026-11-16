@@ -2,11 +2,11 @@
 
 > Generated: January 2026
 > Last Updated: January 2026 (v0.5.0 release)
-> Status: Production ready - 15 formats complete, polish phase
+> Status: Production ready - 15 formats read and write, Matroska/WebM reading, polish phase
 
 ## Executive Summary
 
-TagLibSharp2 currently supports **15 of 20** formats with comprehensive tag support and 90% test coverage. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene).
+TagLibSharp2 currently supports **15 formats** with read and write, plus Matroska/WebM reading. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). Matroska/WebM file save is still open.
 
 ---
 
@@ -28,6 +28,7 @@ TagLibSharp2 currently supports **15 of 20** formats with comprehensive tag supp
 | DFF | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | WavPack | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | Musepack | P1 | ✅ | ✅ | ✅ | - | SV7 and SV8 support |
+| Matroska/WebM | P2 | partial | ✅ | — | - | Tags and duration. File save is still open |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |
 | TrueAudio | P2 | ❌ | ❌ | ❌ | LOW | Uses ID3v2 |
@@ -198,7 +199,6 @@ These items from the requirements are explicitly not planned:
 
 | Item | Reason |
 |------|--------|
-| Matroska/MKV | No audio-only use case |
 | XMP metadata | Out of scope for audio files |
 | DVD/BD audio | Not standard audio files |
 
