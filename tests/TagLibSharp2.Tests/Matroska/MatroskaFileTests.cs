@@ -311,6 +311,123 @@ public class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_ZeroTargetUid_StaysOnTheFile ()
+	{
+		foreach (var id in new ulong[] { 0x63C5, 0x63C9, 0x63C4, 0x63C6 }) {
+			var file = FileWith (Tags (ChapterTag (30, Element (id, new byte[] { 0 }), Simple ("TITLE", "All"))));
+			Assert.AreEqual ("All", MatroskaFile.Read (file).File!.Tag.Title, id.ToString ("X", System.Globalization.CultureInfo.InvariantCulture));
+		}
+
+		var empty = FileWith (Tags (ChapterTag (30, Element (0x63C5, Array.Empty<byte> ()), Simple ("TITLE", "Empty"))));
+		Assert.AreEqual ("Empty", MatroskaFile.Read (empty).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_DocTypeTerminatedByNul_StillOpens ()
+	{
+		var file = Matroska (Master (0x18538067, Tags (Tag (30, Simple ("TITLE", "Kept")))), "matroska\0");
+
+		var result = MatroskaFile.Read (file);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Kept", result.File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_TagString_StopsAtTheFirstNul ()
+	{
+		var file = FileWith (Tags (Tag (30, Simple ("TITLE", "eb\0l"))));
+
+		Assert.AreEqual ("eb", MatroskaFile.Read (file).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void SortSet_ReplacesTheNestedSort ()
+	{
+		var file = FileWith (Tags (
+			Tag (50, SimpleSorted ("TITLE", "The Album", "album")),
+			Tag (30,
+				SimpleSorted ("TITLE", "The Song", "song"),
+				SimpleSorted ("ARTIST", "Ada", "ada"))));
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		tag.TitleSort = "other";
+		tag.ArtistSort = "other artist";
+		tag.AlbumSort = "other album";
+
+		Assert.AreEqual ("other", tag.TitleSort);
+		Assert.AreEqual ("other artist", tag.ArtistSort);
+		Assert.AreEqual ("other album", tag.AlbumSort);
+		Assert.AreEqual ("The Song", tag.Title);
+		Assert.AreEqual ("Ada", tag.Artist);
+		Assert.AreEqual ("The Album", tag.Album);
+
+		tag.TitleSort = null;
+		tag.ArtistSort = null;
+		tag.AlbumSort = null;
+
+		Assert.IsNull (tag.TitleSort);
+		Assert.IsNull (tag.ArtistSort);
+		Assert.IsNull (tag.AlbumSort);
+	}
+
+	[TestMethod]
+	public void Read_DecimalBpm_Truncates ()
+	{
+		var whole = FileWith (Tags (Tag (30, Simple ("BPM", "120.0"))));
+		var fraction = FileWith (Tags (Tag (30, Simple ("BPM", "98.7"))));
+
+		Assert.AreEqual (120u, MatroskaFile.Read (whole).File!.Tag.BeatsPerMinute);
+		Assert.AreEqual (98u, MatroskaFile.Read (fraction).File!.Tag.BeatsPerMinute);
+	}
+
+	[TestMethod]
+	public void Read_OmittedSamplingFrequency_DefaultsTo8000 ()
+	{
+		var audio = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Master (0xE1, Element (0x9F, new byte[] { 2 }))));
+		var file = FileWith (Master (0x1654AE6B, audio));
+
+		var media = (IMediaFile)MatroskaFile.Read (file).File!;
+
+		Assert.AreEqual (8000, media.AudioProperties!.SampleRate);
+		Assert.AreEqual (2, media.AudioProperties.Channels);
+	}
+
+	[TestMethod]
+	public void Read_OutputSamplingFrequency_IsThePlaybackRate ()
+	{
+		var audio = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Element (0x86, "A_AAC"u8),
+			Master (0xE1, Concat (
+				Element (0xB5, Float32 (24000f)),
+				Element (0x78B5, Float32 (48000f))))));
+		var file = FileWith (Master (0x1654AE6B, audio));
+
+		Assert.AreEqual (48000, ((IMediaFile)MatroskaFile.Read (file).File!).AudioProperties!.SampleRate);
+	}
+
+	[TestMethod]
+	public void Read_Opus_Reports48000UnlessTheOutputFrequencyIsSet ()
+	{
+		var stored = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Element (0x86, "A_OPUS"u8),
+			Master (0xE1, Element (0xB5, Float32 (44100f)))));
+		var overridden = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Element (0x86, "A_OPUS"u8),
+			Master (0xE1, Concat (
+				Element (0xB5, Float32 (44100f)),
+				Element (0x78B5, Float32 (16000f))))));
+
+		Assert.AreEqual (48000, ((IMediaFile)MatroskaFile.Read (FileWith (Master (0x1654AE6B, stored))).File!).AudioProperties!.SampleRate);
+		Assert.AreEqual (16000, ((IMediaFile)MatroskaFile.Read (FileWith (Master (0x1654AE6B, overridden))).File!).AudioProperties!.SampleRate);
+	}
+
+	[TestMethod]
 	public void Read_ImageAttachment_IsAPicture_AndAFontIsNot ()
 	{
 		var png = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3 };

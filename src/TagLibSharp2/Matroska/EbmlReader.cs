@@ -134,8 +134,14 @@ internal static class EbmlReader
 		return false;
 	}
 
-	public static string ReadString (ReadOnlySpan<byte> data) =>
-		data.Length == 0 ? string.Empty : System.Text.Encoding.UTF8.GetString (data.ToArray ());
+	public static string ReadString (ReadOnlySpan<byte> data)
+	{
+		// RFC 8794: the first NUL and every byte after it are not part of the string.
+		var end = data.IndexOf ((byte)0);
+		if (end >= 0)
+			data = data.Slice (0, end);
+		return data.Length == 0 ? string.Empty : System.Text.Encoding.UTF8.GetString (data.ToArray ());
+	}
 
 	static int Width (byte first)
 	{

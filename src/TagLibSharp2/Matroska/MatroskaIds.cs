@@ -29,6 +29,7 @@ static class MatroskaIds
 	public const ulong DefaultDuration = 0x23E383;
 	public const ulong Audio = 0xE1;
 	public const ulong SamplingFrequency = 0xB5;
+	public const ulong OutputSamplingFrequency = 0x78B5;
 	public const ulong Channels = 0x9F;
 	public const ulong BitDepth = 0x6264;
 	public const ulong Video = 0xE0;
