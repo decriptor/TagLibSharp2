@@ -2,9 +2,9 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Aiff;
-using TagLibSharp2.Core;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
+using TagLibSharp2.Core;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Mp4;
