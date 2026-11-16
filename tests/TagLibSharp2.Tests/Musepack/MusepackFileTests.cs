@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
 using TagLibSharp2.Musepack;
@@ -513,6 +514,48 @@ public class MusepackFileTests
 	}
 
 	[TestMethod]
+	public void Read_Sv7PnsVersionByte_ReadsApeTitle ()
+	{
+		var data = CreateMusepackFileWithTag ("MPC title");
+		data[3] = 0x17;
+
+		var result = MusepackFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (7, result.File!.StreamVersion);
+		Assert.AreEqual ("MPC title", result.File.ApeTag!.Title);
+	}
+
+	[TestMethod]
+	public void Parse_SV8_PackedSampleRateByte_UsesTheHighThreeBits ()
+	{
+		var data = CreateSv8WithPackedBytes (0x1b, 0x10, sampleCount: 44100);
+
+		var result = MusepackFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (44100, result.File!.SampleRate);
+		Assert.AreEqual (TimeSpan.FromSeconds (1), result.File.Properties.Duration);
+	}
+
+	[TestMethod]
+	public void Read_Sv8_ApeItemCountHigherThanItems_KeepsTheTitle ()
+	{
+		var audio = CreateMinimalMusepackSV8File (totalSamples: 44100);
+		var item = CreateApeTagItem ("Title", "Mpc Title");
+		var tag = new byte[32 + item.Length + 32];
+		WriteFooter (tag.AsSpan (0, 32), (uint)(item.Length + 32), itemCount: 2, flags: 0x80000000);
+		item.CopyTo (tag.AsSpan (32));
+		WriteFooter (tag.AsSpan (32 + item.Length), (uint)(item.Length + 32), itemCount: 2, flags: 0x80000000);
+		var data = audio.Concat (tag).ToArray ();
+
+		var result = MusepackFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Mpc Title", result.File!.ApeTag!.Title);
+	}
+
+	[TestMethod]
 	public void MusepackFile_Parse_SV7_Version3_Fails ()
 	{
 		var data = CreateMinimalMusepackSV7File (streamVersion: 3);
@@ -671,7 +714,7 @@ public class MusepackFileTests
 	/// Creates a minimal Musepack SV7 file.
 	/// SV7 header structure (per Musepack spec):
 	/// [0-2] Magic "MP+"
-	/// [3] Stream version (upper 4 bits) | intensity stereo (lower 4 bits)
+	/// [3] Stream version in the low nibble. 0x10 in the high nibble is the PNS flag.
 	/// [4-7] Frame count (32-bit LE)
 	/// ... other header fields
 	/// </summary>
@@ -686,10 +729,9 @@ public class MusepackFileTests
 		// [0-2] Magic "MP+"
 		ms.Write ("MP+"u8);
 
-		// [3] Version (upper 4 bits) | flags (lower 4 bits)
-		// Bits 7-4: stream version
-		// Bits 3-0: intensity stereo flags
-		ms.WriteByte ((byte)((streamVersion << 4) | 0));
+		// The stream version is the low nibble. 0x10 in the high nibble is the PNS flag,
+		// so a normal SV7 file is 0x07 or 0x17, not 0x70.
+		ms.WriteByte ((byte)(streamVersion & 0x0F));
 
 		// [4-7] Frame count (32-bit LE)
 		WriteUInt32LE (ms, frameCount);
@@ -767,8 +809,8 @@ public class MusepackFileTests
 		// Beginning silence as variable-length integer
 		WriteVarInt (payloadMs, 0);
 
-		// Sample rate index (3 bits) | channels - 1 (lower 5 bits) combined
-		// Sample rate: 0=44100, 1=48000, 2=37800, 3=32000
+		// Sample frequency is the top 3 bits of the next byte, then 5 bits of max band.
+		// The following byte starts with channel count minus 1 in its top 4 bits.
 		var sampleRateIdx = sampleRate switch {
 			44100 => 0,
 			48000 => 1,
@@ -776,9 +818,8 @@ public class MusepackFileTests
 			32000 => 3,
 			_ => 0
 		};
-		// Encode as: sample_rate_index (3 bits) + padding, then channels
-		payloadMs.WriteByte ((byte)sampleRateIdx);
-		payloadMs.WriteByte ((byte)(channels - 1));
+		payloadMs.WriteByte ((byte)(sampleRateIdx << 5));
+		payloadMs.WriteByte ((byte)((channels - 1) << 4));
 
 		var payload = payloadMs.ToArray ();
 
@@ -832,6 +873,33 @@ public class MusepackFileTests
 		ms.Write (new byte[8]);
 
 		return ms.ToArray ();
+	}
+
+	private static byte[] CreateSv8WithPackedBytes (byte first, byte second, ulong sampleCount)
+	{
+		using var ms = new MemoryStream ();
+		ms.Write ("MPCK"u8);
+		ms.Write ("SH"u8);
+		using var payload = new MemoryStream ();
+		payload.Write (new byte[4]);
+		payload.WriteByte (8);
+		WriteVarInt (payload, sampleCount);
+		WriteVarInt (payload, 0);
+		payload.WriteByte (first);
+		payload.WriteByte (second);
+		var body = payload.ToArray ();
+		WriteVarInt (ms, (ulong)(2 + 1 + body.Length));
+		ms.Write (body);
+		return ms.ToArray ();
+	}
+
+	private static void WriteFooter (Span<byte> destination, uint tagSize, uint itemCount, uint flags)
+	{
+		"APETAGEX"u8.CopyTo (destination);
+		BinaryPrimitives.WriteUInt32LittleEndian (destination[8..], 2000);
+		BinaryPrimitives.WriteUInt32LittleEndian (destination[12..], tagSize);
+		BinaryPrimitives.WriteUInt32LittleEndian (destination[16..], itemCount);
+		BinaryPrimitives.WriteUInt32LittleEndian (destination[20..], flags);
 	}
 
 	private static byte[] CreateApeTagItem (string key, string value)

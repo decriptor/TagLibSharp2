@@ -181,8 +181,8 @@ public sealed class MusepackFile : IMediaFile
 
 		var file = new MusepackFile ();
 
-		// Extract version from byte 3 (upper 4 bits)
-		file.StreamVersion = (data[3] >> 4) & 0x0F;
+		// The stream version is the low nibble. 0x17 is SV7 with the PNS flag in the high nibble.
+		file.StreamVersion = data[3] & 0x0F;
 
 		// Validate version (should be 7 for SV7)
 		if (file.StreamVersion < 4 || file.StreamVersion > 7)
@@ -357,9 +357,10 @@ public sealed class MusepackFile : IMediaFile
 			return;
 		}
 
-		// Sample frequency index (next byte, bits 2-0)
+		// The next 16 bits are packed MSB first: frequency index (3), max band (5),
+		// channels minus 1 (4), mid-side (1), block power (3).
 		if (offset >= payload.Length) return;
-		var sampleRateIndex = payload[offset] & 0x07;
+		var sampleRateIndex = payload[offset] >> 5;
 		file.SampleRate = sampleRateIndex switch {
 			0 => 44100,
 			1 => 48000,
@@ -369,9 +370,8 @@ public sealed class MusepackFile : IMediaFile
 		};
 		offset++;
 
-		// Channels (next byte + 1)
 		if (offset < payload.Length) {
-			file.Channels = (payload[offset] & 0x0F) + 1;
+			file.Channels = (payload[offset] >> 4) + 1;
 		} else {
 			file.Channels = 2;
 		}

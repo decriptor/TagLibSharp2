@@ -387,7 +387,8 @@ internal readonly struct ApeTagLocation
 			parsed++;
 		}
 
-		return parsed == footer.ItemCount;
+		// A footer count higher than the items that fill the block still describes those items.
+		return parsed == footer.ItemCount || (offset == items.Length && parsed > 0);
 	}
 
 	private static int HeaderSpan (ReadOnlySpan<byte> data, ApeTagFooter footer, int tagEnd)

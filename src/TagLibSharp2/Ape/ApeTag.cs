@@ -820,7 +820,7 @@ public sealed class ApeTag : Tag
 			itemsParsed++;
 		}
 
-		if (itemsParsed != footer.ItemCount) {
+		if (itemsParsed != footer.ItemCount && (offset != itemsData.Length || itemsParsed == 0)) {
 			return ApeTagParseResult.Failure (
 				$"Item count mismatch: expected {footer.ItemCount}, parsed {itemsParsed}");
 		}
