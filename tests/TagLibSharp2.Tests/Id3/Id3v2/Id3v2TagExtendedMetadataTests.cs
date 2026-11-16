@@ -252,6 +252,34 @@ public class Id3v2TagExtendedMetadataTests
 	}
 
 	[TestMethod]
+	public void Track_Set_KeepsSlashTotal ()
+	{
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame ("TRCK", "5/12", TestConstants.Id3v2.Version4);
+		var result = Id3v2Tag.Read (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		result.Tag!.Track = 6;
+
+		Assert.AreEqual ("6/12", result.Tag.GetTextFrame ("TRCK"));
+		Assert.AreEqual (6u, result.Tag.Track);
+		Assert.AreEqual (12u, result.Tag.TotalTracks);
+	}
+
+	[TestMethod]
+	public void DiscNumber_Set_KeepsSlashTotal ()
+	{
+		var data = TestBuilders.Id3v2.CreateTagWithTextFrame ("TPOS", "1/2", TestConstants.Id3v2.Version4);
+		var result = Id3v2Tag.Read (data);
+		Assert.IsTrue (result.IsSuccess);
+
+		result.Tag!.DiscNumber = 2;
+
+		Assert.AreEqual ("2/2", result.Tag.GetTextFrame ("TPOS"));
+		Assert.AreEqual (2u, result.Tag.DiscNumber);
+		Assert.AreEqual (2u, result.Tag.TotalDiscs);
+	}
+
+	[TestMethod]
 	public void TotalTracks_SetWithTrack_FormatsCorrectly ()
 	{
 		var tag = new Id3v2Tag (Id3v2Version.V24);
