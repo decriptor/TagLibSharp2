@@ -1373,6 +1373,36 @@ public class ApeTagTests
 	}
 
 	[TestMethod]
+	public void ValueAsString_TrailingNul_IsNotPartOfTheText ()
+	{
+		var item = CreateTextItem ("Title", "Tagged Monkey\0");
+		var result = ApeTagItem.Parse (item);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Tagged Monkey", result.Item!.ValueAsString);
+	}
+
+	[TestMethod]
+	public void ValueAsString_EmbeddedNul_JoinsTheValues ()
+	{
+		var item = CreateTextItem ("Artist", "Elvis\0& Friends");
+		var result = ApeTagItem.Parse (item);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Elvis, & Friends", result.Item!.ValueAsString);
+	}
+
+	[TestMethod]
+	public void ValueAsString_EmptyMiddleValue_IsNotABlankSlot ()
+	{
+		var item = CreateTextItem ("Artist", "Elvis\0\0Friends");
+		var result = ApeTagItem.Parse (item);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Elvis, Friends", result.Item!.ValueAsString);
+	}
+
+	[TestMethod]
 	public void ApeTagItem_ValueAsString_ForBinary_ReturnsNull ()
 	{
 		var item = ApeTagItem.CreateBinary ("Cover", "cover.jpg", [0x89, 0x50]);

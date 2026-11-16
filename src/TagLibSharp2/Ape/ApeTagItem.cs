@@ -164,10 +164,25 @@ public sealed class ApeTagItem
 	/// <summary>
 	/// Gets the value as a UTF-8 string (for text and external locator items).
 	/// </summary>
-	public string? ValueAsString =>
-		ItemType == ApeItemType.Text || ItemType == ApeItemType.ExternalLocator
-			? Encoding.UTF8.GetString (RawValue)
-			: null;
+	public string? ValueAsString {
+		get {
+			if (ItemType != ApeItemType.Text && ItemType != ApeItemType.ExternalLocator)
+				return null;
+
+			// A text value is not NUL-terminated. A zero byte separates values.
+			// An empty part, including a trailing zero, is not a value.
+			var text = Encoding.UTF8.GetString (RawValue);
+			var parts = text.Split ('\0');
+			string? joined = null;
+			foreach (var part in parts) {
+				if (part.Length == 0)
+					continue;
+				joined = joined is null ? part : joined + ", " + part;
+			}
+
+			return joined ?? string.Empty;
+		}
+	}
 
 	/// <summary>
 	/// Gets the value as binary data (for binary items like cover art).
