@@ -186,6 +186,25 @@ public class WavPackFileTests
 	}
 
 	[TestMethod]
+	public void Read_DsdFlag_ReportsByteRateTimesEightPerChannel ()
+	{
+		// dsd.wv: 3528 samples, rate index 12 (88200), stereo, DSD flag set.
+		// libwavpack reports 352800 Hz and 0.010 s.
+		var data = CreateMinimalWavPackFile (
+			sampleRateIndex: 12,
+			bytesPerSample: 1,
+			isMono: false,
+			totalSamples: 3528,
+			dsd: true);
+
+		var result = WavPackFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (352800, result.File!.SampleRate);
+		Assert.AreEqual (TimeSpan.FromSeconds (3528 / 352800.0), result.File.Properties.Duration);
+	}
+
+	[TestMethod]
 	public void Properties_MatchesFileProperties ()
 	{
 		var data = CreateMinimalWavPackFile (sampleRateIndex: 10, bytesPerSample: 3, isMono: false);
@@ -800,7 +819,8 @@ public class WavPackFileTests
 		int sampleRateIndex = 9, // 44100
 		int bytesPerSample = 2, // 16-bit
 		bool isMono = false,
-		uint totalSamples = 44100)
+		uint totalSamples = 44100,
+		bool dsd = false)
 	{
 		using var ms = new MemoryStream ();
 
@@ -837,6 +857,8 @@ public class WavPackFileTests
 		flags |= (uint)(bytesPerSample - 1) & 0x3; // bits 0-1
 		if (isMono) flags |= 0x4; // bit 2
 		flags |= (uint)(sampleRateIndex & 0xF) << 23; // bits 23-26
+		if (dsd)
+			flags |= 0x80000000;
 		WriteUInt32LE (ms, flags);
 
 		// [28-31] CRC

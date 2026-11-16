@@ -209,6 +209,11 @@ public sealed class WavPackFile : IMediaFile
 			file.Channels = channelCount;
 		}
 
+		// DSD_FLAG: the rate index is the combined byte rate. libwavpack reports
+		// one 8-bit sample per stored sample at byteRate * 8 / channel.
+		if ((flags & 0x80000000) != 0 && file.Channels > 0 && file.SampleRate > 0)
+			file.SampleRate = file.SampleRate * 8 / file.Channels;
+
 		// Store original data
 		file._originalData = data.ToArray ();
 
