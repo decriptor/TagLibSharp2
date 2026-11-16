@@ -171,10 +171,10 @@ public sealed class MusepackFile : IMediaFile
 	{
 		// SV7 Header structure:
 		// [0-2] Magic "MP+"
-		// [3] Version (upper 4 bits) | flags (lower 4 bits)
+		// [3] Stream version in the low nibble. The high nibble holds flags such as PNS.
 		// [4-7] Frame count (32-bit LE)
 		// [8-9] Max level
-		// [10-13] Flags with sample rate
+		// [10] Sample-rate index in the low 2 bits
 
 		if (data.Length < 16)
 			return MusepackFileReadResult.Failure ("Invalid Musepack file: data too short for SV7 header");
@@ -191,11 +191,8 @@ public sealed class MusepackFile : IMediaFile
 		// Frame count (bytes 4-7, LE)
 		file.FrameCount = BinaryPrimitives.ReadUInt32LittleEndian (data.Slice (4, 4));
 
-		// Flags (bytes 10-13, LE) - contains sample rate index in upper 2 bits
-		var flags = BinaryPrimitives.ReadUInt32LittleEndian (data.Slice (10, 4));
-
-		// Sample rate index is in bits 30-31
-		var sampleRateIndex = (int)((flags >> 30) & 0x3);
+		// The sample-rate index is the low 2 bits of the byte at offset 10.
+		var sampleRateIndex = data[10] & 0x3;
 		file.SampleRate = SampleRateTable[sampleRateIndex];
 
 		// Channels: SV7 is always stereo unless mid-side only flag set
