@@ -516,7 +516,17 @@ public sealed class Id3v2Tag : Tag
 
 			return uint.TryParse (trackStr, out var track) ? track : null;
 		}
-		set => SetTextFrame ("TRCK", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+		set {
+			if (value is null) {
+				SetTextFrame ("TRCK", null);
+				return;
+			}
+
+			var text = value.Value.ToString (System.Globalization.CultureInfo.InvariantCulture);
+			if (TotalTracks is uint total)
+				text = text + "/" + total.ToString (System.Globalization.CultureInfo.InvariantCulture);
+			SetTextFrame ("TRCK", text);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -543,7 +553,17 @@ public sealed class Id3v2Tag : Tag
 
 			return uint.TryParse (discStr, out var disc) ? disc : null;
 		}
-		set => SetTextFrame ("TPOS", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+		set {
+			if (value is null) {
+				SetTextFrame ("TPOS", null);
+				return;
+			}
+
+			var text = value.Value.ToString (System.Globalization.CultureInfo.InvariantCulture);
+			if (TotalDiscs is uint total)
+				text = text + "/" + total.ToString (System.Globalization.CultureInfo.InvariantCulture);
+			SetTextFrame ("TPOS", text);
+		}
 	}
 
 	/// <inheritdoc/>
