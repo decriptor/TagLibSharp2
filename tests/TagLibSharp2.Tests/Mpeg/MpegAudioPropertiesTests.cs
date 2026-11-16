@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Diagnostics;
 using TagLibSharp2.Core;
 using TagLibSharp2.Mpeg;
 
@@ -259,14 +260,15 @@ public class MpegAudioPropertiesTests
 	}
 
 	[TestMethod]
-	public void Duration_ZeroBitrateCbr_ReturnsZero ()
+	public void TryParse_FreeBitrateOnly_ReturnsFalse ()
 	{
-		// Free bitrate (index 0) has bitrate = 0, duration can't be calculated
+		// A free-bitrate header has no frame size, so the next header cannot confirm it.
 		var data = CreateFreeBitrateMp3 ();
 
-		MpegAudioProperties.TryParse (data, 0, out var props);
+		var parsed = MpegAudioProperties.TryParse (data, 0, out var props);
 
-		Assert.AreEqual (TimeSpan.Zero, props!.Duration);
+		Assert.IsFalse (parsed);
+		Assert.IsNull (props);
 	}
 
 	[TestMethod]
@@ -359,6 +361,176 @@ public class MpegAudioPropertiesTests
 	}
 
 	[TestMethod]
+	public void Duration_XingDespiteCrcBit_UsesFrameCount ()
+	{
+		// The protection bit says a CRC follows the header. This frame stores Xing at
+		// header + side info (36), and the 210-frame count fits the declared byte count.
+		// 210 * 1152 / 48000 = 5.040 s.
+		var builder = new BinaryDataBuilder ();
+		builder.Add (0xFF, 0xFA, 0x94, 0x00);
+		builder.Add (new byte[32]);
+		builder.Add (0x58, 0x69, 0x6E, 0x67); // "Xing"
+		builder.AddUInt32BE (0x03);
+		builder.AddUInt32BE (210);
+		builder.AddUInt32BE (384);
+		while (builder.Length < 384)
+			builder.Add (0);
+
+		var parsed = MpegAudioProperties.TryParse (builder.ToBinaryData (), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		Assert.AreEqual (5.04, props!.Duration.TotalSeconds, 0.001);
+		Assert.AreEqual (210u, props.FrameCount);
+	}
+
+	[TestMethod]
+	public void Duration_XingByteCountPastEnd_UsesFramesPresent ()
+	{
+		const int frameSize = 417;
+		const int framesPresent = 3;
+		var builder = new BinaryDataBuilder ();
+		builder.Add (0xFF, 0xFB, 0x90, 0x00);
+		builder.Add (new byte[32]);
+		builder.Add (0x58, 0x69, 0x6E, 0x67);
+		builder.AddUInt32BE (0x03);
+		builder.AddUInt32BE (8000);
+		builder.AddUInt32BE (5_000_000);
+		while (builder.Length < frameSize * framesPresent)
+			builder.Add (0);
+		StampFrameHeader (builder, frameSize);
+		StampFrameHeader (builder, frameSize * 2);
+
+		var parsed = MpegAudioProperties.TryParse (builder.ToBinaryData (), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		Assert.AreEqual (framesPresent * 1152.0 / 44100, props!.Duration.TotalSeconds, 0.001);
+		Assert.AreEqual ((uint)framesPresent, props.FrameCount);
+	}
+
+	[TestMethod]
+	public void Duration_LongTruncatedXing_CountsTheFramesThatArePresent ()
+	{
+		// A byte count past the buffer counts frames in one forward scan.
+		// Restarting at every later sync makes a few thousand frames take seconds.
+		const int frameSize = 417;
+		const int framesPresent = 6000;
+		var builder = new BinaryDataBuilder ();
+		builder.Add (0xFF, 0xFB, 0x90, 0x00);
+		builder.Add (new byte[32]);
+		builder.Add (0x58, 0x69, 0x6E, 0x67); // "Xing"
+		builder.AddUInt32BE (0x03);
+		builder.AddUInt32BE (8000);
+		builder.AddUInt32BE (uint.MaxValue);
+		while (builder.Length < frameSize * framesPresent)
+			builder.Add (0);
+		for (var n = 1; n < framesPresent; n++)
+			StampFrameHeader (builder, frameSize * n);
+
+		var clock = Stopwatch.StartNew ();
+		var parsed = MpegAudioProperties.TryParse (builder.ToBinaryData (), 0, out var props);
+		clock.Stop ();
+
+		Assert.IsTrue (parsed);
+		Assert.AreEqual ((uint)framesPresent, props!.FrameCount);
+		Assert.IsTrue (clock.ElapsedMilliseconds < 500, $"scan took {clock.ElapsedMilliseconds} ms");
+	}
+
+	[TestMethod]
+	public void Duration_FalseSyncInsideFirstFrame_CountsTheLaterRun ()
+	{
+		// The first frame's bitrate lands on a header whose own successor is not a frame.
+		// Four real frames follow. The opening frame still counts. 8000 does not.
+		const int frameSize = 417;
+		const int laterFrames = 4;
+		const int laterStart = 1000;
+		var builder = new BinaryDataBuilder ();
+		builder.Add (0xFF, 0xFB, 0x90, 0x00);
+		builder.Add (new byte[32]);
+		builder.Add (0x58, 0x69, 0x6E, 0x67);
+		builder.AddUInt32BE (0x03);
+		builder.AddUInt32BE (8000);
+		builder.AddUInt32BE (5_000_000);
+		while (builder.Length < laterStart + frameSize * laterFrames)
+			builder.Add (0);
+		StampFrameHeader (builder, frameSize);
+		for (var n = 0; n < laterFrames; n++)
+			StampFrameHeader (builder, laterStart + frameSize * n);
+
+		var parsed = MpegAudioProperties.TryParse (builder.ToBinaryData (), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		const int framesPresent = laterFrames + 1;
+		Assert.AreEqual (framesPresent * 1152.0 / 44100, props!.Duration.TotalSeconds, 0.001);
+		Assert.AreEqual ((uint)framesPresent, props.FrameCount);
+	}
+
+	[TestMethod]
+	public void Duration_VbriByteCountPastEnd_UsesFramesPresent ()
+	{
+		const int frameSize = 417;
+		const int framesPresent = 2;
+		var builder = new BinaryDataBuilder ();
+		builder.Add (0xFF, 0xFB, 0x90, 0x00);
+		builder.Add (new byte[32]);
+		builder.Add (0x56, 0x42, 0x52, 0x49); // "VBRI"
+		builder.AddUInt16BE (1);
+		builder.AddUInt16BE (0);
+		builder.AddUInt16BE (75);
+		builder.AddUInt32BE (5_000_000);
+		builder.AddUInt32BE (9000);
+		builder.AddUInt16BE (0);
+		builder.AddUInt16BE (1);
+		builder.AddUInt16BE (2);
+		builder.AddUInt16BE (100);
+		while (builder.Length < frameSize * framesPresent)
+			builder.Add (0);
+		StampFrameHeader (builder, frameSize);
+
+		var parsed = MpegAudioProperties.TryParse (builder.ToBinaryData (), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		Assert.AreEqual (framesPresent * 1152.0 / 44100, props!.Duration.TotalSeconds, 0.001);
+		Assert.AreEqual ((uint)framesPresent, props.FrameCount);
+	}
+
+	[TestMethod]
+	public void TryParse_UnconfirmedNextFrame_SkipsToAFrameThatSyncs ()
+	{
+		// A header whose following frame is inside the buffer and is not a frame
+		// must not hide the later 48000 Hz frame.
+		var builder = new BinaryDataBuilder ();
+		builder.Add (0xFF, 0xFB, 0x90, 0x00);
+		while (builder.Length < 500)
+			builder.Add (0);
+		builder.Add (0xFF, 0xFB, 0x94, 0x00);
+		while (builder.Length < 500 + 384)
+			builder.Add (0);
+
+		var parsed = MpegAudioProperties.TryParse (builder.ToBinaryData (), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		Assert.AreEqual (48000, props!.SampleRate);
+	}
+
+	[TestMethod]
+	public void TryParse_FreeBitrateHeader_DoesNotHideTheFollowingFrame ()
+	{
+		var builder = new BinaryDataBuilder ();
+		builder.Add (0xFF, 0xFB, 0x00, 0x00);
+		while (builder.Length < 50)
+			builder.Add (0);
+		builder.Add (0xFF, 0xFB, 0x90, 0x00);
+		while (builder.Length < 50 + 417)
+			builder.Add (0);
+
+		var parsed = MpegAudioProperties.TryParse (builder.ToBinaryData (), 0, out var props);
+
+		Assert.IsTrue (parsed);
+		Assert.AreEqual (128, props!.Bitrate);
+		Assert.AreEqual (44100, props.SampleRate);
+	}
+
+	[TestMethod]
 	public void CreateMpeg2Mp3_PadsToFrameSizeForSampleRate ()
 	{
 		// 64 kbps MPEG-2 Layer III. A constant 208-byte pad is only correct at 22050 Hz.
@@ -373,6 +545,14 @@ public class MpegAudioPropertiesTests
 	}
 
 	// Helper methods
+
+	static void StampFrameHeader (BinaryDataBuilder builder, int offset, byte rateAndPadding = 0x90, byte channelMode = 0x00)
+	{
+		builder[offset] = 0xFF;
+		builder[offset + 1] = 0xFB;
+		builder[offset + 2] = rateAndPadding;
+		builder[offset + 3] = channelMode;
+	}
 
 	static BinaryData CreateMp3WithInfoHeader (
 		uint frameCount,
@@ -487,9 +667,17 @@ public class MpegAudioPropertiesTests
 		if (byteCount.HasValue)
 			builder.AddUInt32BE (byteCount.Value);
 
-		// Pad to frame size
-		while (builder.Length < 417) // Typical MPEG1 L3 128kbps frame size
+		if (!MpegFrame.TryParse (builder.ToBinaryData (), 0, out var frame) || frame is null || frame.FrameSize <= 0)
+			return builder.ToBinaryData ();
+
+		var target = frame.FrameSize;
+		if (byteCount is uint declared && declared > (uint)target)
+			target = (int)declared;
+		while (builder.Length < target)
 			builder.Add (0);
+		// A buffer longer than one frame must contain the next header so the search can confirm it.
+		if (target > frame.FrameSize)
+			StampFrameHeader (builder, frame.FrameSize, byte2, byte3);
 
 		return builder.ToBinaryData ();
 	}
@@ -525,9 +713,14 @@ public class MpegAudioPropertiesTests
 		builder.AddUInt16BE (2);
 		builder.AddUInt16BE (100);
 
-		// Pad to frame size
-		while (builder.Length < 417)
+		if (!MpegFrame.TryParse (builder.ToBinaryData (), 0, out var frame) || frame is null || frame.FrameSize <= 0)
+			return builder.ToBinaryData ();
+
+		var target = Math.Max (frame.FrameSize, (int)Math.Min (byteCount, int.MaxValue));
+		while (builder.Length < target)
 			builder.Add (0);
+		if (target > frame.FrameSize)
+			StampFrameHeader (builder, frame.FrameSize, byte2);
 
 		return builder.ToBinaryData ();
 	}
@@ -569,6 +762,10 @@ public class MpegAudioPropertiesTests
 		// No Xing/VBRI header - just pad to total size
 		while (builder.Length < totalSize)
 			builder.Add (0);
+
+		if (MpegFrame.TryParse (builder.ToBinaryData (), 0, out var frame) && frame is not null
+			&& frame.FrameSize > 0 && frame.FrameSize + MpegFrame.HeaderSize <= builder.Length)
+			StampFrameHeader (builder, frame.FrameSize, byte2);
 
 		return builder.ToBinaryData ();
 	}
