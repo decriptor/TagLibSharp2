@@ -154,7 +154,20 @@ public sealed class MpegFrame
 		if (data.Length < offset + HeaderSize)
 			return false;
 
-		var span = data.Span.Slice (offset, HeaderSize);
+		return TryParse (data.Span.Slice (offset), out frame);
+	}
+
+	/// <summary>
+	/// Attempts to parse an MPEG frame header from the start of <paramref name="data"/>.
+	/// </summary>
+	internal static bool TryParse (ReadOnlySpan<byte> data, out MpegFrame? frame)
+	{
+		frame = null;
+
+		if (data.Length < HeaderSize)
+			return false;
+
+		var span = data.Slice (0, HeaderSize);
 
 		// Check sync word (11 bits = 0xFF + upper 3 bits of second byte)
 		if (span[0] != 0xFF || (span[1] & 0xE0) != 0xE0)
@@ -210,6 +223,25 @@ public sealed class MpegFrame
 
 		frame = new MpegFrame (version, layer, bitrate, sampleRate, channelMode, hasCrc, hasPadding);
 		return true;
+	}
+
+	/// <summary>
+	/// True when <paramref name="data"/> begins with an MPEG audio frame and, if more
+	/// bytes follow that frame, those bytes begin with another frame header.
+	/// A UTF-16 LE BOM is FF FE, which has the sync bits set and is not a frame.
+	/// </summary>
+	internal static bool IsStartOfAudio (ReadOnlySpan<byte> data)
+	{
+		if (!TryParse (data, out var frame) || frame is null)
+			return false;
+
+		if (frame.FrameSize < HeaderSize || frame.FrameSize > data.Length)
+			return false;
+
+		if (data.Length == frame.FrameSize)
+			return true;
+
+		return TryParse (data.Slice (frame.FrameSize), out _);
 	}
 
 	/// <summary>

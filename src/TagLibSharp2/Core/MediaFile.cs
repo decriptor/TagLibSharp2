@@ -296,8 +296,8 @@ public static class MediaFile
 				return MediaFormat.Mp3;
 		}
 
-		// Check for MP3 frame sync (0xFF 0xFB, 0xFF 0xFA, 0xFF 0xF3, 0xFF 0xF2)
-		if (data.Length >= 2 && data[0] == 0xFF && (data[1] & 0xE0) == 0xE0)
+		// A bare sync (0xFF plus the top 3 bits) also matches a UTF-16 LE BOM (FF FE).
+		if (MpegFrame.IsStartOfAudio (data))
 			return MediaFormat.Mp3;
 
 		// Fall back to extension
