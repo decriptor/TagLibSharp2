@@ -60,12 +60,62 @@ public class MediaFileTests
 	[TestMethod]
 	public void DetectFormat_Mp3FrameSync_ReturnsMp3 ()
 	{
-		// MP3 frame sync (0xFF 0xFB)
-		var data = new byte[] { 0xFF, 0xFB, 0x90, 0x00 };
+		// MPEG-1 Layer III, 128 kbps, 44100 Hz. The header is 0xFF 0xFB 0x90 0x00.
+		var header = new byte[] { 0xFF, 0xFB, 0x90, 0x00 };
+		Assert.IsTrue (MpegFrame.TryParse (new BinaryData (header), 0, out var frame));
+		var data = new byte[frame!.FrameSize];
+		header.CopyTo (data, 0);
 
 		var format = MediaFile.DetectFormat (data);
 
 		Assert.AreEqual (MediaFormat.Mp3, format);
+	}
+
+	[TestMethod]
+	public void DetectFormat_Mpeg2Layer3Frame_ReturnsMp3 ()
+	{
+		// MPEG-2 Layer III. Frame length uses 72, not the MPEG-1 coefficient.
+		var header = new byte[] { 0xFF, 0xF2, 0x90, 0x00 };
+		Assert.IsTrue (MpegFrame.TryParse (new BinaryData (header), 0, out var frame));
+		Assert.AreEqual (MpegVersion.Version2, frame!.Version);
+		var data = new byte[frame.FrameSize];
+		header.CopyTo (data, 0);
+
+		var format = MediaFile.DetectFormat (data);
+
+		Assert.AreEqual (MediaFormat.Mp3, format);
+	}
+
+	[TestMethod]
+	public void DetectFormat_Utf16LeBom_ReturnsUnknown ()
+	{
+		// desktop.ini and other UTF-16 LE text start with FF FE.
+		// FE has the top 3 bits set, so a sync check of only those bits says MP3.
+		var data = new byte[] { 0xFF, 0xFE, 0x5B, 0x00, 0x2E, 0x00, 0x53, 0x00 };
+
+		var format = MediaFile.DetectFormat (data, "desktop.ini");
+
+		Assert.AreEqual (MediaFormat.Unknown, format);
+	}
+
+	[TestMethod]
+	public void DetectFormat_Utf16LeTextWithHeaderShapedPrefix_ReturnsUnknown ()
+	{
+		// FF FE 5B 00 can parse as a Layer I header. The bytes that follow are
+		// UTF-16 text, not the next MPEG frame.
+		var data = new byte[400];
+		data[0] = 0xFF;
+		data[1] = 0xFE;
+		data[2] = 0x5B;
+		data[3] = 0x00;
+		for (var i = 4; i < data.Length; i += 2) {
+			data[i] = 0x20;
+			data[i + 1] = 0x00;
+		}
+
+		var format = MediaFile.DetectFormat (data);
+
+		Assert.AreEqual (MediaFormat.Unknown, format);
 	}
 
 	[TestMethod]

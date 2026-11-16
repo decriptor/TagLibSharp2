@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Aiff;
+using TagLibSharp2.Core;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
 using TagLibSharp2.Dff;
@@ -64,10 +65,18 @@ public class IsValidFormatTests
 	[TestMethod]
 	public void Mp3File_IsValidFormat_MpegSync_ReturnsTrue ()
 	{
-		// MPEG sync: 0xFF + frame header with valid layer/version bits
-		// 0xFF 0xFB = MPEG1 Layer3
-		var data = new byte[] { 0xFF, 0xFB, 0x90, 0x00 };
+		var header = new byte[] { 0xFF, 0xFB, 0x90, 0x00 };
+		Assert.IsTrue (MpegFrame.TryParse (new BinaryData (header), 0, out var frame));
+		var data = new byte[frame!.FrameSize];
+		header.CopyTo (data, 0);
 		Assert.IsTrue (Mp3File.IsValidFormat (data));
+	}
+
+	[TestMethod]
+	public void Mp3File_IsValidFormat_Utf16LeBom_ReturnsFalse ()
+	{
+		var data = new byte[] { 0xFF, 0xFE, 0x5B, 0x00, 0x2E, 0x00 };
+		Assert.IsFalse (Mp3File.IsValidFormat (data));
 	}
 
 	[TestMethod]
