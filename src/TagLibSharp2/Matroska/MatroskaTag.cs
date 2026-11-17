@@ -32,11 +32,14 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override string? Title {
 		get {
-			// TITLE at 30 is the track. An empty one blocks the segment title.
-			// TITLE at 50 is the album and is not this property.
+			// TITLE at 30 is the track. An empty one blocks every broader title.
 			if (HasFileLevelName (TrackLevel, "TITLE"))
 				return FirstAt (TrackLevel, "TITLE");
-			return _segmentTitle;
+			// The segment title is the file title. A lone album or movie TITLE at 50
+			// is what a caller still displays when the file has no track title.
+			if (!string.IsNullOrEmpty (_segmentTitle))
+				return _segmentTitle;
+			return FirstAt (AlbumLevel, "TITLE");
 		}
 		set => SetAt (TrackLevel, "TITLE", value);
 	}

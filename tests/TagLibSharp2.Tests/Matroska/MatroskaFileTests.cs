@@ -77,7 +77,7 @@ public partial class MatroskaFileTests
 
 		var tag = MatroskaFile.Read (file).File!.Tag;
 
-		Assert.IsNull (tag.Title);
+		Assert.AreEqual ("Movie", tag.Title);
 		Assert.AreEqual ("Movie", tag.Album);
 	}
 
@@ -400,7 +400,7 @@ public partial class MatroskaFileTests
 			Tag (30, Simple ("GENRE", "Jazz"))));
 		var tag = MatroskaFile.Read (file).File!.Tag;
 
-		Assert.IsNull (tag.Title);
+		Assert.AreEqual ("The Album", tag.Title);
 		Assert.AreEqual ("The Album", tag.Album);
 		Assert.AreEqual ("album", tag.AlbumSort);
 
@@ -408,7 +408,7 @@ public partial class MatroskaFileTests
 
 		Assert.AreEqual ("track sort", tag.TitleSort);
 		Assert.AreEqual ("album", tag.AlbumSort);
-		Assert.IsNull (tag.Title);
+		Assert.AreEqual ("The Album", tag.Title);
 		Assert.AreEqual ("The Album", tag.Album);
 
 		tag.AlbumSort = "other";
@@ -568,7 +568,7 @@ public partial class MatroskaFileTests
 		var file = Matroska (Master (0x18538067, Tags (Tag (50, Simple ("TITLE", "Web")))), "webm");
 
 		var tag = MatroskaFile.Read (file).File!.Tag;
-		Assert.IsNull (tag.Title);
+		Assert.AreEqual ("Web", tag.Title);
 		Assert.AreEqual ("Web", tag.Album);
 	}
 
@@ -874,7 +874,7 @@ public partial class MatroskaFileTests
 	{
 		var tag = MatroskaFile.Read (FileWith (Tags (Tag (50, Simple ("TITLE", "Album"))))).File!.Tag;
 
-		Assert.IsNull (tag.Title);
+		Assert.AreEqual ("Album", tag.Title);
 		Assert.AreEqual ("Album", tag.Album);
 
 		tag.Title = "Song";
@@ -895,10 +895,10 @@ public partial class MatroskaFileTests
 
 		tag.Title = "";
 
-		Assert.IsNull (tag.Title);
+		Assert.AreEqual ("Album", tag.Title);
 		Assert.AreEqual ("Album", tag.Album);
 		var again = Reread (tag);
-		Assert.IsNull (again.Title);
+		Assert.AreEqual ("Album", again.Title);
 		Assert.AreEqual ("Album", again.Album);
 	}
 
