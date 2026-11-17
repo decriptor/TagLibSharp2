@@ -601,6 +601,91 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_ClearingEveryTag_VoidsTheTagsElement ()
+	{
+		var marker = new byte[] { 0xC1, 0xC2, 0xC3 };
+		var original = FileWith (Tags (Tag (30, Simple ("TITLE", "Gone"))), Master (0x1F43B675, marker));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Clear ();
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/clear.mkv", original);
+		var saved = parsed.SaveToFile ("/clear.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/clear.mkv");
+		Assert.IsNull (MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+	}
+
+	[TestMethod]
+	public void Save_VoidAfterSeekHead_GainsATagsPointer ()
+	{
+		var marker = new byte[] { 0xD1, 0xD2 };
+		var info = Master (0x1549A966, Element (0x7BA9, "Info"u8));
+		var hole = Element (0xEC, new byte[24]);
+		var cluster = Master (0x1F43B675, marker);
+		var seek = Master (0x114D9B74, SeekEntry (MatroskaIds.Info, 0));
+		var infoAt = seek.Length + hole.Length;
+		Assert.IsTrue (infoAt < 0x80);
+		seek = Master (0x114D9B74, SeekEntry (MatroskaIds.Info, (ulong)infoAt));
+		Assert.AreEqual (infoAt, seek.Length + hole.Length);
+		var original = FileWith (seek, hole, info, cluster);
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Added";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/addseek.mkv", original);
+		var saved = parsed.SaveToFile ("/addseek.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/addseek.mkv");
+		Assert.AreEqual ("Added", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		var tagsSeek = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Tags);
+		Assert.AreNotEqual (0UL, tagsSeek.Id);
+		Assert.IsTrue (IsElementAt (bytes, tagsSeek.Position, MatroskaIds.Tags));
+	}
+
+	[TestMethod]
+	public void Save_UnknownChildInSeekHead_DoesNotWriteWhenTheClusterMoves ()
+	{
+		var info = Master (0x1549A966, Element (0x7BA9, "Info"u8));
+		var seek = Master (0x114D9B74, Concat (SeekEntry (MatroskaIds.Info, 20), new byte[] { 0xEC, 0xFF }));
+		var cluster = Unknown (0x1F43B675, Element (0xEC, new byte[] { 1, 2, 3, 4 }));
+		var original = FileWith (seek, info, cluster);
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Nope";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/badseek.mkv", original);
+		var saved = parsed.SaveToFile ("/badseek.mkv", original, fs);
+
+		Assert.IsFalse (saved.IsSuccess);
+		Assert.IsTrue (saved.Error!.Contains ("SeekHead cannot be bounded", StringComparison.Ordinal), saved.Error);
+		Assert.AreEqual (original.Length, fs.ReadAllBytes ("/badseek.mkv").Length);
+	}
+
+	[TestMethod]
+	public void Save_UnknownChildInCues_DoesNotWriteWhenTheClusterMoves ()
+	{
+		var info = Master (0x1549A966, Element (0x7BA9, "Info"u8));
+		var cues = Master (0x1C53BB6B, Concat (Element (0xBB, new byte[] { 0 }), new byte[] { 0xEC, 0xFF }));
+		var cluster = Unknown (0x1F43B675, Element (0xEC, new byte[] { 9, 8, 7 }));
+		var original = FileWith (info, cues, cluster);
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Nope";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/badcues.mkv", original);
+		var saved = parsed.SaveToFile ("/badcues.mkv", original, fs);
+
+		Assert.IsFalse (saved.IsSuccess);
+		Assert.IsTrue (saved.Error!.Contains ("Cues cannot", StringComparison.Ordinal), saved.Error);
+		Assert.AreEqual (original.Length, fs.ReadAllBytes ("/badcues.mkv").Length);
+	}
+
+	[TestMethod]
 	public void Render_UnreadableContainer_ReturnsEmpty ()
 	{
 		var file = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
