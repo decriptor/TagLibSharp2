@@ -67,7 +67,7 @@ internal static class StreamBytes
 		return copy.ToArray ();
 	}
 
-	static int Read (Stream stream, byte[] buffer, int offset, int count)
+	internal static int Read (Stream stream, byte[] buffer, int offset, int count)
 	{
 		var read = 0;
 		while (read < count) {
@@ -80,7 +80,7 @@ internal static class StreamBytes
 		return read;
 	}
 
-	static async Task<int> ReadAsync (Stream stream, byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+	internal static async Task<int> ReadAsync (Stream stream, byte[] buffer, int offset, int count, CancellationToken cancellationToken)
 	{
 		var read = 0;
 		while (read < count) {
