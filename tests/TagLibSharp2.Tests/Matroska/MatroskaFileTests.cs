@@ -602,6 +602,225 @@ public class MatroskaFileTests
 		Assert.AreEqual ("Album Name", tag.Album);
 	}
 
+	[TestMethod]
+	public void Read_RejectsAFileThatIsNotMatroska ()
+	{
+		AssertFailure (new byte[] { 1, 2, 3, 4 }, "missing EBML header");
+		AssertFailure (new byte[] { 0x1A, 0x45, 0xDF, 0xA3 }, "truncated");
+		AssertFailure (Matroska (Master (0x18538067), "mkv"), "DocType is mkv");
+		AssertFailure (Concat (EbmlWithoutDocType (), Master (0x18538067)), "DocType is missing");
+		AssertFailure (Concat (EbmlHeader (), new byte[] { 0xEC, 0xFF }), "unknown before Segment");
+		AssertFailure (EbmlHeader (), "no Segment");
+	}
+
+	[TestMethod]
+	public void Read_ZeroByteBeforeInfo_StillReadsTheTitle ()
+	{
+		var file = Matroska (Master (0x18538067, Concat (new byte[] { 0 }, Tags (Tag (30, Simple ("TITLE", "Kept"))))));
+
+		Assert.AreEqual ("Kept", MatroskaFile.Read (file).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_EightByteDuration_IsUsed ()
+	{
+		var payload = new byte[8];
+		BinaryPrimitives.WriteDoubleBigEndian (payload, 1000d);
+		var file = FileWith (Master (0x1549A966, Element (0x4489, payload)));
+
+		Assert.AreEqual (TimeSpan.FromSeconds (1), MatroskaFile.Read (file).File!.Duration);
+	}
+
+	[TestMethod]
+	public void Read_TryReadAndResultEquality_MatchTheReadResult ()
+	{
+		var bad = new byte[] { 1, 2, 3, 4 };
+		var first = MatroskaFile.Read (bad);
+		var second = MatroskaFile.Read (bad);
+
+		Assert.IsFalse (MatroskaFile.TryRead (bad, out var file));
+		Assert.IsNull (file);
+		Assert.IsTrue (first == second);
+		Assert.IsFalse (first != second);
+		Assert.IsTrue (first.Equals ((object)second));
+		Assert.IsFalse (first.Equals (null));
+		Assert.AreEqual (first.GetHashCode (), second.GetHashCode ());
+	}
+
+	[TestMethod]
+	public void Read_AudioOnlyFile_ExposesAudioAndNotVideo ()
+	{
+		var audio = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 2 }),
+			Element (0x258688, "Pretty"u8),
+			Element (0x23E383, new byte[] { 0 }),
+			Master (0xE1, Element (0xB5, Float32 (44100f)))));
+		var parsed = MatroskaFile.Read (FileWith (Master (0x1654AE6B, audio))).File!;
+		parsed.SetSourcePath ("clip.mka");
+		IMediaFile media = parsed;
+
+		Assert.AreEqual ("Pretty", media.AudioProperties!.Codec);
+		Assert.IsNull (media.VideoProperties);
+		Assert.IsNull (media.ImageProperties);
+		Assert.AreEqual (MediaFormat.Matroska, parsed.Format);
+		Assert.AreEqual ("clip.mka", parsed.SourcePath);
+		Assert.AreSame (parsed.Tag, media.Tag);
+		parsed.Dispose ();
+	}
+
+	[TestMethod]
+	public void Read_KnownCodecIds_UseTheFriendlyName ()
+	{
+		Assert.AreEqual ("AC-3", CodecOf ("A_AC3"));
+		Assert.AreEqual ("DTS", CodecOf ("A_DTS"));
+		Assert.AreEqual ("FLAC", CodecOf ("A_FLAC"));
+		Assert.AreEqual ("PCM", CodecOf ("A_PCM/INT/BIG"));
+		Assert.AreEqual ("AAC", CodecOf ("A_AAC/MPEG2/LC"));
+		Assert.AreEqual ("VP9", CodecOf ("V_VP9", video: true));
+		Assert.AreEqual ("AV1", CodecOf ("V_AV1", video: true));
+		Assert.AreEqual ("HEVC", CodecOf ("V_MPEGH/ISO/HEVC", video: true));
+		Assert.AreEqual ("Matroska", CodecOf (null, video: true));
+	}
+
+	[TestMethod]
+	public void Read_VfwFourCc_RejectsAHeaderThatIsNotAFourCc ()
+	{
+		Assert.AreEqual ("V_MS/VFW/FOURCC", FourCcCodec (new byte[10]));
+		var shortSize = new byte[40];
+		shortSize[0] = 10;
+		Assert.AreEqual ("V_MS/VFW/FOURCC", FourCcCodec (shortSize));
+		var binary = new byte[40];
+		binary[0] = 40;
+		binary[16] = 1;
+		Assert.AreEqual ("V_MS/VFW/FOURCC", FourCcCodec (binary));
+		var blank = new byte[40];
+		blank[0] = 40;
+		"    "u8.CopyTo (blank.AsSpan (16));
+		Assert.AreEqual ("V_MS/VFW/FOURCC", FourCcCodec (blank));
+	}
+
+	[TestMethod]
+	public void Read_UnknownSizeInsideACluster_StopsAtTheParent ()
+	{
+		var cluster = Concat (new byte[] { 0x1F, 0x43, 0xB6, 0x75, 0xFF, 0xEC, 0xFF });
+		var file = Matroska (Master (0x18538067, Concat (Tags (Tag (30, Simple ("TITLE", "Before"))), cluster)));
+
+		Assert.AreEqual ("Before", MatroskaFile.Read (file).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Tag_Setters_RoundTripAndRender ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("GENRE", "Jazz"))))).File!.Tag;
+		tag.Title = "Song";
+		tag.Artist = "Ada";
+		tag.Performers = new[] { "Ada", "Bea" };
+		tag.Album = "Album";
+		tag.AlbumArtists = new[] { "Ada" };
+		tag.Year = "2010";
+		tag.OriginalReleaseDate = "2009";
+		tag.Comment = "note";
+		tag.Genre = "Jazz";
+		tag.Genres = new[] { "Jazz" };
+		tag.Track = 2;
+		tag.TotalTracks = 9;
+		tag.Composers = new[] { "Ada" };
+		tag.Copyright = "c";
+		tag.Description = "d";
+		tag.Lyrics = "la";
+		tag.Subtitle = "sub";
+		tag.BeatsPerMinute = 120;
+		tag.Conductor = "con";
+		tag.Publisher = "pub";
+		tag.EncodedBy = "enc";
+		tag.EncoderSettings = "set";
+		tag.Grouping = "grp";
+		tag.Remixer = "mix";
+		tag.Isrc = "ISRC";
+		tag.CatalogNumber = "CAT";
+		tag.Barcode = "BAR";
+		tag.InitialKey = "C";
+		tag.Mood = "glad";
+		tag.DateTagged = "2020";
+		tag.TitleSort = "song";
+		tag.ArtistSort = "ada";
+		tag.AlbumSort = "album";
+		tag.ReplayGainTrackGain = "-1";
+		tag.ReplayGainTrackPeak = "1";
+		tag.ReplayGainAlbumGain = "-2";
+		tag.ReplayGainAlbumPeak = "0.9";
+		tag.MusicBrainzTrackId = "t";
+		tag.MusicBrainzReleaseId = "r";
+		tag.MusicBrainzArtistId = "a";
+		tag.MusicBrainzReleaseGroupId = "g";
+		tag.MusicBrainzAlbumArtistId = "aa";
+		tag.MusicBrainzWorkId = "w";
+		tag.MusicBrainzDiscId = "d";
+		tag.Pictures = new IPicture[] { new MatroskaPicture ("image/png", PictureType.FrontCover, "cover", new byte[] { 1 }) };
+		tag.Pictures = null!;
+
+		Assert.AreEqual ("Song", tag.Title);
+		Assert.AreEqual (2u, tag.Track);
+		Assert.AreEqual (0, tag.Pictures.Length);
+		Assert.IsTrue (tag.Render ().Length > 0);
+
+		tag.Comment = new string ('a', 20_000);
+		Assert.IsTrue (tag.Render ().Length > 20_000);
+		tag.Comment = new string ('b', 0x20_0000);
+		Assert.IsTrue (tag.Render ().Length > 0x20_0000);
+
+		var hidden = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("COMMENT", "quiet", isDefault: false))))).File!.Tag;
+		Assert.AreEqual ("quiet", hidden.Comment);
+		Assert.IsTrue (hidden.Render ().Length > 0);
+
+		var albumOnly = MatroskaFile.Read (FileWith (Tags (Tag (50, Simple ("TITLE", "Album"))))).File!.Tag;
+		albumOnly.AlbumSort = "album sort";
+		Assert.AreEqual ("album sort", albumOnly.AlbumSort);
+		albumOnly.AlbumSort = null;
+		Assert.IsNull (albumOnly.AlbumSort);
+
+		tag.Title = "";
+		tag.Performers = Array.Empty<string> ();
+		tag.Clear ();
+		Assert.AreEqual (0, tag.Render ().Length);
+		Assert.IsNull (tag.Title);
+	}
+
+	static void AssertFailure (byte[] data, string fragment)
+	{
+		var result = MatroskaFile.Read (data);
+		Assert.IsFalse (result.IsSuccess);
+		StringAssert.Contains (result.Error, fragment);
+	}
+
+	static byte[] EbmlHeader () => Master (0x1A45DFA3, Element (0x4282, "matroska"u8));
+
+	static byte[] EbmlWithoutDocType () => Master (0x1A45DFA3, Element (0xEC, Array.Empty<byte> ()));
+
+	static string CodecOf (string? codecId, bool video = false)
+	{
+		var body = new List<byte[]> { Element (0x83, new byte[] { (byte)(video ? 1 : 2) }) };
+		if (codecId is not null)
+			body.Add (Element (0x86, Encoding.ASCII.GetBytes (codecId)));
+		body.Add (video
+			? Master (0xE0, Concat (Element (0xB0, new byte[] { 1 }), Element (0xBA, new byte[] { 1 })))
+			: Master (0xE1, Element (0xB5, Float32 (44100f))));
+		var parsed = MatroskaFile.Read (FileWith (Master (0x1654AE6B, Master (0xAE, Concat (body.ToArray ()))))).File!;
+		IMediaFile media = parsed;
+		return video ? media.VideoProperties!.Value.Codec! : media.AudioProperties!.Codec!;
+	}
+
+	static string FourCcCodec (byte[] header)
+	{
+		var video = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 1 }),
+			Element (0x86, "V_MS/VFW/FOURCC"u8),
+			Element (0x63A2, header),
+			Master (0xE0, Concat (Element (0xB0, new byte[] { 1 }), Element (0xBA, new byte[] { 1 })))));
+		IMediaFile media = MatroskaFile.Read (FileWith (Master (0x1654AE6B, video))).File!;
+		return media.VideoProperties!.Value.Codec!;
+	}
+
 	static byte[] Tags (params byte[][] tags) => Master (0x1254C367, Concat (tags));
 
 	static byte[] FileWith (params byte[][] segmentChildren) =>
