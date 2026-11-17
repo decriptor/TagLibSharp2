@@ -21,7 +21,9 @@ public partial class MatroskaFileTests
 		var parsed = MatroskaFile.Read (Matroska (Concat (first, second)));
 
 		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
-		Assert.AreEqual ("Movie", parsed.File!.Tag.Title);
+		Assert.IsNull (parsed.File!.Tag.Title);
+		Assert.AreEqual ("Movie", parsed.File.Tag.Album);
+		Assert.AreNotEqual ("Later", parsed.File.Tag.Title);
 	}
 
 	[TestMethod]
@@ -48,7 +50,8 @@ public partial class MatroskaFileTests
 		var head = bytes.AsSpan (0, bytes.Length - second.Length).ToArray ();
 		var again = MatroskaFile.Read (head);
 		Assert.IsTrue (again.IsSuccess, again.Error);
-		Assert.AreEqual ("First", again.File!.Tag.Title);
+		Assert.IsNull (again.File!.Tag.Title);
+		Assert.AreEqual ("First", again.File.Tag.Album);
 		Assert.AreEqual ("Added", again.File.Tag.Artist);
 		Assert.AreEqual (1, CountOf (head, marker));
 	}
@@ -62,7 +65,8 @@ public partial class MatroskaFileTests
 				ChapterTag (30, Chapter (7), Simple ("TITLE", "Chapter"))),
 			Master (0x1F43B675, new byte[] { 0x33 }));
 		var parsed = MatroskaFile.Read (original);
-		Assert.AreEqual ("Movie", parsed.File!.Tag.Title);
+		Assert.IsNull (parsed.File!.Tag.Title);
+		Assert.AreEqual ("Movie", parsed.File.Tag.Album);
 
 		parsed.File.Tag.Artist = "Someone";
 		var fs = new MockFileSystem ();
@@ -72,9 +76,9 @@ public partial class MatroskaFileTests
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		var bytes = fs.ReadAllBytes ("/chap.mkv");
 		var again = MatroskaFile.Read (bytes).File!;
-		Assert.AreEqual ("Movie", again.Tag.Title);
+		Assert.IsNull (again.Tag.Title);
+		Assert.AreEqual ("Movie", again.Tag.Album);
 		Assert.AreEqual ("Someone", again.Tag.Artist);
-		Assert.IsNull (again.Tag.Album);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x63C4, new byte[] { 7 })) >= 0);
 	}
 
@@ -97,7 +101,9 @@ public partial class MatroskaFileTests
 
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		var bytes = fs.ReadAllBytes ("/lang.mkv");
-		Assert.AreEqual ("Movie", MatroskaFile.Read (bytes).File!.Tag.Title);
+		var round = MatroskaFile.Read (bytes).File!.Tag;
+		Assert.IsNull (round.Title);
+		Assert.AreEqual ("Movie", round.Album);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x447A, "eng"u8)) >= 0);
 	}
 
@@ -203,7 +209,6 @@ public partial class MatroskaFileTests
 		var original = FileWith (info, Master (0x1F43B675, marker));
 		var parsed = MatroskaFile.Read (original).File!;
 
-		// With no existing tag block the item level is 50, so TITLE there is the title.
 		parsed.Tag.Title = "Added";
 		parsed.Tag.Artist = "Someone";
 
@@ -589,7 +594,7 @@ public partial class MatroskaFileTests
 	{
 		var original = FileWith (Tags (Tag (70, Simple ("TITLE", "Collection"))), Master (0x1F43B675, new byte[] { 3 }));
 		var parsed = MatroskaFile.Read (original).File!;
-		Assert.AreEqual ("Collection", parsed.Tag.Title);
+		Assert.IsNull (parsed.Tag.Title);
 		Assert.IsNull (parsed.Tag.Album);
 		parsed.Tag.Title = "Renamed";
 
@@ -601,8 +606,9 @@ public partial class MatroskaFileTests
 		var again = MatroskaFile.Read (bytes).File!;
 		Assert.AreEqual ("Renamed", again.Tag.Title);
 		Assert.IsNull (again.Tag.Album);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf ("Collection"u8) >= 0);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 70 })) >= 0);
-		Assert.IsFalse (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 30 })) >= 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 30 })) >= 0);
 	}
 
 	[TestMethod]
@@ -778,7 +784,8 @@ public partial class MatroskaFileTests
 			Element (0x4487, "Movie"u8)));
 		var original = FileWith (Tags (Master (0x7373, Concat (targets, title))), Master (0x1F43B675, new byte[] { 9 }));
 		var parsed = MatroskaFile.Read (original).File!;
-		Assert.AreEqual ("Movie", parsed.Tag.Title);
+		Assert.IsNull (parsed.Tag.Title);
+		Assert.AreEqual ("Movie", parsed.Tag.Album);
 		parsed.Tag.Artist = "Someone";
 
 		var fs = new MockFileSystem ();
@@ -786,7 +793,9 @@ public partial class MatroskaFileTests
 		var saved = parsed.SaveToFile ("/lang.mkv", original, fs);
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		var bytes = fs.ReadAllBytes ("/lang.mkv");
-		Assert.AreEqual ("Movie", MatroskaFile.Read (bytes).File!.Tag.Title);
+		var round = MatroskaFile.Read (bytes).File!.Tag;
+		Assert.IsNull (round.Title);
+		Assert.AreEqual ("Movie", round.Album);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x447B, "en-US"u8)) >= 0);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x4485, new byte[] { 1, 2, 3 })) >= 0);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x63CA, "MOVIE"u8)) >= 0);
