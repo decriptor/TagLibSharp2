@@ -387,7 +387,7 @@ public sealed class Mp3File : IMediaFile
 			cancellationToken.ThrowIfCancellationRequested ();
 			switch (window.Next (stream.Position, out var count, out var seek)) {
 				case Mp3WindowStep.ReadPrefix:
-					window.AddPrefix (await StreamBytes.ReadAtMostAsync (stream, count, cancellationToken).ConfigureAwait (false));
+					await FillPrefixAsync (window, stream, count, cancellationToken).ConfigureAwait (false);
 					break;
 				case Mp3WindowStep.ReadTail:
 					var asyncTail = await StreamBytes.ReadAtMostAsync (stream, count, cancellationToken).ConfigureAwait (false);
@@ -405,6 +405,22 @@ public sealed class Mp3File : IMediaFile
 		}
 	}
 
+	static void FillPrefix (Mp3Window window, Stream stream, int count)
+	{
+		window.Prepare (count, out var buffer, out var offset);
+		var read = count <= 0 ? 0 : StreamBytes.Read (stream, buffer, offset, count);
+		window.Commit (read);
+	}
+
+	static async Task FillPrefixAsync (Mp3Window window, Stream stream, int count, CancellationToken cancellationToken)
+	{
+		window.Prepare (count, out var buffer, out var offset);
+		var read = count <= 0
+			? 0
+			: await StreamBytes.ReadAsync (stream, buffer, offset, count, cancellationToken).ConfigureAwait (false);
+		window.Commit (read);
+	}
+
 	static Mp3FileReadResult ReadWindow (Stream stream, Func<Stream, int, byte[]> read)
 	{
 		if (stream.Position != 0)
@@ -418,7 +434,7 @@ public sealed class Mp3File : IMediaFile
 		while (true) {
 			switch (window.Next (stream.Position, out var count, out var seek)) {
 				case Mp3WindowStep.ReadPrefix:
-					window.AddPrefix (read (stream, count));
+					FillPrefix (window, stream, count);
 					break;
 				case Mp3WindowStep.ReadTail:
 					if (TryFinishWindow (window, read (stream, count), out var parsed))
@@ -457,7 +473,8 @@ public sealed class Mp3File : IMediaFile
 	{
 		const int AudioProbeBytes = 32 * 1024;
 
-		readonly List<byte> _prefix = [];
+		byte[] _prefix = [];
+		int _count;
 		readonly long _length;
 		int _stage;
 
@@ -465,7 +482,43 @@ public sealed class Mp3File : IMediaFile
 
 		public long Length => _length;
 
-		public byte[] Prefix () => _prefix.ToArray ();
+		public byte[] Prefix ()
+		{
+			if (_count == _prefix.Length)
+				return _prefix;
+			if (_count == 0)
+				return [];
+
+			var exact = new byte[_count];
+			Array.Copy (_prefix, exact, _count);
+			return exact;
+		}
+
+		public void Prepare (int count, out byte[] buffer, out int offset)
+		{
+			offset = _count;
+			if (count <= 0) {
+				buffer = [];
+				return;
+			}
+
+			var needed = offset + count;
+			if (_prefix.Length < needed) {
+				var next = new byte[needed];
+				if (_count > 0)
+					Array.Copy (_prefix, next, _count);
+				_prefix = next;
+			}
+
+			buffer = _prefix;
+		}
+
+		public void Commit (int read)
+		{
+			if (read > 0)
+				_count += read;
+			_stage++;
+		}
 
 		public Mp3WindowStep Next (long position, out int count, out long seek)
 		{
@@ -503,22 +556,15 @@ public sealed class Mp3File : IMediaFile
 			}
 		}
 
-		public void AddPrefix (byte[] data)
-		{
-			if (data.Length > 0)
-				_prefix.AddRange (data);
-			_stage++;
-		}
-
 		public void NoteSeek () => _stage++;
 
 		int Id3Remainder ()
 		{
-			var header = Id3v2Header.Read (_prefix.ToArray ());
+			var header = Id3v2Header.Read (_prefix.AsSpan (0, _count));
 			if (!header.IsSuccess)
 				return 0;
 			var total = Math.Min ((long)header.Header.TotalSize, _length);
-			return (int)Math.Max (0, total - _prefix.Count);
+			return (int)Math.Max (0, total - _count);
 		}
 	}
 
@@ -538,7 +584,7 @@ public sealed class Mp3File : IMediaFile
 				file.Id3v1Tag = id3v1Result.Tag;
 		}
 
-		if (MpegAudioProperties.TryParse (new BinaryData (prefix), file.Id3v2Size, fileLength, out var audioProps, out needsEntireFile))
+		if (MpegAudioProperties.TryParse (BinaryData.WrapUnsafe (prefix), file.Id3v2Size, fileLength, out var audioProps, out needsEntireFile))
 			file.Properties = audioProps;
 		else if (needsEntireFile) {
 			file.Dispose ();

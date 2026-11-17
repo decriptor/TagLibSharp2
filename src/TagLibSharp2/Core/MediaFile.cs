@@ -149,12 +149,13 @@ public static class MediaFile
 #endif
 
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
-		if (!fs.FileExists (path))
-			return MediaFileResult.Failure ($"File not found: {path}");
-
 		try {
 			using var stream = fs.OpenRead (path);
 			return Read (stream, path, path, fs);
+		} catch (FileNotFoundException) {
+			return MediaFileResult.Failure ($"File not found: {path}");
+		} catch (DirectoryNotFoundException) {
+			return MediaFileResult.Failure ($"File not found: {path}");
 		} catch (IOException ex) {
 			return MediaFileResult.Failure ($"Failed to read file: {ex.Message}");
 		} catch (UnauthorizedAccessException ex) {
@@ -207,12 +208,13 @@ public static class MediaFile
 #endif
 
 		var fs = fileSystem ?? DefaultFileSystem.Instance;
-		if (!fs.FileExists (path))
-			return MediaFileResult.Failure ($"File not found: {path}");
-
 		try {
 			using var stream = fs.OpenRead (path);
 			return await ReadAsync (stream, path, path, fs, cancellationToken).ConfigureAwait (false);
+		} catch (FileNotFoundException) {
+			return MediaFileResult.Failure ($"File not found: {path}");
+		} catch (DirectoryNotFoundException) {
+			return MediaFileResult.Failure ($"File not found: {path}");
 		} catch (IOException ex) {
 			return MediaFileResult.Failure ($"Failed to read file: {ex.Message}");
 		} catch (UnauthorizedAccessException ex) {
@@ -265,13 +267,48 @@ public static class MediaFile
 		if (stream.Position != 0)
 			stream.Position = 0;
 
-		var peek = StreamBytes.ReadAtMost (stream, 4096);
+		var peek = ReadPeek (stream, pathHint);
 		stream.Position = 0;
 		return RememberMatroskaSource (
 			OpenDetected (DetectFormat (peek, pathHint), stream, sourcePath, fileSystem, pathHint),
 			sourcePath,
 			fileSystem);
 	}
+
+	// A read smaller than FileStream's 4096-byte buffer is cached, so the parser
+	// reuses it. Ogg and unrecognized files still get a longer prefix.
+	const int ShortPeekBytes = 32;
+	const int LongPeekBytes = 4095;
+
+	static byte[] ReadPeek (Stream stream, string? pathHint)
+	{
+		var peek = StreamBytes.ReadAtMost (stream, ShortPeekBytes);
+		if (!NeedsLongerPeek (peek, pathHint))
+			return peek;
+
+		stream.Position = 0;
+		return StreamBytes.ReadAtMost (stream, LongPeekBytes);
+	}
+
+	static async Task<byte[]> ReadPeekAsync (Stream stream, string? pathHint, CancellationToken cancellationToken)
+	{
+		var peek = await StreamBytes.ReadAtMostAsync (stream, ShortPeekBytes, cancellationToken).ConfigureAwait (false);
+		if (!NeedsLongerPeek (peek, pathHint))
+			return peek;
+
+		stream.Position = 0;
+		return await StreamBytes.ReadAtMostAsync (stream, LongPeekBytes, cancellationToken).ConfigureAwait (false);
+	}
+
+	static bool NeedsLongerPeek (ReadOnlySpan<byte> peek, string? pathHint) =>
+		IsOgg (peek) || DetectFormat (peek, pathHint) == MediaFormat.Unknown;
+
+	static bool IsOgg (ReadOnlySpan<byte> peek) =>
+		peek.Length >= OggMagic.Length
+		&& peek[0] == OggMagic[0]
+		&& peek[1] == OggMagic[1]
+		&& peek[2] == OggMagic[2]
+		&& peek[3] == OggMagic[3];
 
 	static async Task<MediaFileResult> ReadAsync (
 		Stream stream,
@@ -290,7 +327,7 @@ public static class MediaFile
 		if (stream.Position != 0)
 			stream.Position = 0;
 
-		var peek = await StreamBytes.ReadAtMostAsync (stream, 4096, cancellationToken).ConfigureAwait (false);
+		var peek = await ReadPeekAsync (stream, pathHint, cancellationToken).ConfigureAwait (false);
 		stream.Position = 0;
 		var format = DetectFormat (peek, pathHint);
 		var result = format switch {
