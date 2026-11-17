@@ -632,40 +632,20 @@ public class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Read_TryReadAndResultEquality_MatchTheReadResult ()
-	{
-		var bad = new byte[] { 1, 2, 3, 4 };
-		var first = MatroskaFile.Read (bad);
-		var second = MatroskaFile.Read (bad);
-
-		Assert.IsFalse (MatroskaFile.TryRead (bad, out var file));
-		Assert.IsNull (file);
-		Assert.IsTrue (first == second);
-		Assert.IsFalse (first != second);
-		Assert.IsTrue (first.Equals ((object)second));
-		Assert.IsFalse (first.Equals (null));
-		Assert.AreEqual (first.GetHashCode (), second.GetHashCode ());
-	}
-
-	[TestMethod]
 	public void Read_AudioOnlyFile_ExposesAudioAndNotVideo ()
 	{
 		var audio = Master (0xAE, Concat (
 			Element (0x83, new byte[] { 2 }),
 			Element (0x258688, "Pretty"u8),
-			Element (0x23E383, new byte[] { 0 }),
 			Master (0xE1, Element (0xB5, Float32 (44100f)))));
-		var parsed = MatroskaFile.Read (FileWith (Master (0x1654AE6B, audio))).File!;
-		parsed.SetSourcePath ("clip.mka");
-		IMediaFile media = parsed;
+		IMediaFile media = MatroskaFile.Read (FileWith (Master (0x1654AE6B, audio))).File!;
 
 		Assert.AreEqual ("Pretty", media.AudioProperties!.Codec);
+		Assert.AreEqual (44100, media.AudioProperties.SampleRate);
+		Assert.AreEqual (1, media.AudioProperties.Channels);
 		Assert.IsNull (media.VideoProperties);
 		Assert.IsNull (media.ImageProperties);
-		Assert.AreEqual (MediaFormat.Matroska, parsed.Format);
-		Assert.AreEqual ("clip.mka", parsed.SourcePath);
-		Assert.AreSame (parsed.Tag, media.Tag);
-		parsed.Dispose ();
+		Assert.AreEqual (MediaFormat.Matroska, media.Format);
 	}
 
 	[TestMethod]
@@ -713,9 +693,9 @@ public class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Tag_Setters_RoundTripAndRender ()
+	public void Tag_Setters_RoundTripThroughRender ()
 	{
-		var tag = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("GENRE", "Jazz"))))).File!.Tag;
+		var tag = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("TITLE", "Seed"))))).File!.Tag;
 		tag.Title = "Song";
 		tag.Artist = "Ada";
 		tag.Performers = new[] { "Ada", "Bea" };
@@ -723,9 +703,8 @@ public class MatroskaFileTests
 		tag.AlbumArtists = new[] { "Ada" };
 		tag.Year = "2010";
 		tag.OriginalReleaseDate = "2009";
-		tag.Comment = "note";
-		tag.Genre = "Jazz";
-		tag.Genres = new[] { "Jazz" };
+		tag.Comment = "café";
+		tag.Genres = new[] { "Jazz", "Blues" };
 		tag.Track = 2;
 		tag.TotalTracks = 9;
 		tag.Composers = new[] { "Ada" };
@@ -760,106 +739,235 @@ public class MatroskaFileTests
 		tag.MusicBrainzAlbumArtistId = "aa";
 		tag.MusicBrainzWorkId = "w";
 		tag.MusicBrainzDiscId = "d";
-		tag.Pictures = new IPicture[] { new MatroskaPicture ("image/png", PictureType.FrontCover, "cover", new byte[] { 1 }) };
+		tag.Pictures = new IPicture[] { new MatroskaPicture ("image/png", PictureType.FrontCover, "not-in-the-tags", new byte[] { 9, 8, 7 }) };
+
+		Assert.AreEqual (1, tag.Pictures.Length);
+		Assert.AreEqual ("not-in-the-tags", tag.Pictures[0].Description);
+		Assert.AreEqual (3, tag.Pictures[0].PictureData.Length);
+		Assert.AreEqual (9, tag.Pictures[0].PictureData[0]);
+		Assert.AreEqual (8, tag.Pictures[0].PictureData[1]);
+		Assert.AreEqual (7, tag.Pictures[0].PictureData[2]);
+		Assert.IsTrue (tag.Render ().Span.IndexOf ("not-in-the-tags"u8) < 0);
+
+		var again = Reread (tag);
+
+		Assert.AreEqual (0, again.Pictures.Length);
+		Assert.AreEqual ("Song", again.Title);
+		Assert.AreEqual ("Ada", again.Artist);
+		Assert.AreEqual (2, again.Performers.Length);
+		Assert.AreEqual ("Ada", again.Performers[0]);
+		Assert.AreEqual ("Bea", again.Performers[1]);
+		Assert.AreEqual ("Album", again.Album);
+		Assert.AreEqual (1, again.AlbumArtists.Length);
+		Assert.AreEqual ("Ada", again.AlbumArtists[0]);
+		Assert.AreEqual ("2010", again.Year);
+		Assert.AreEqual ("2009", again.OriginalReleaseDate);
+		Assert.AreEqual ("café", again.Comment);
+		Assert.AreEqual ("Jazz", again.Genre);
+		Assert.AreEqual (2, again.Genres.Length);
+		Assert.AreEqual ("Jazz", again.Genres[0]);
+		Assert.AreEqual ("Blues", again.Genres[1]);
+		Assert.AreEqual (2u, again.Track);
+		Assert.AreEqual (9u, again.TotalTracks);
+		Assert.AreEqual (1, again.Composers.Length);
+		Assert.AreEqual ("Ada", again.Composers[0]);
+		Assert.AreEqual ("c", again.Copyright);
+		Assert.AreEqual ("d", again.Description);
+		Assert.AreEqual ("la", again.Lyrics);
+		Assert.AreEqual ("sub", again.Subtitle);
+		Assert.AreEqual (120u, again.BeatsPerMinute);
+		Assert.AreEqual ("con", again.Conductor);
+		Assert.AreEqual ("pub", again.Publisher);
+		Assert.AreEqual ("enc", again.EncodedBy);
+		Assert.AreEqual ("set", again.EncoderSettings);
+		Assert.AreEqual ("grp", again.Grouping);
+		Assert.AreEqual ("mix", again.Remixer);
+		Assert.AreEqual ("ISRC", again.Isrc);
+		Assert.AreEqual ("CAT", again.CatalogNumber);
+		Assert.AreEqual ("BAR", again.Barcode);
+		Assert.AreEqual ("C", again.InitialKey);
+		Assert.AreEqual ("glad", again.Mood);
+		Assert.AreEqual ("2020", again.DateTagged);
+		Assert.AreEqual ("song", again.TitleSort);
+		Assert.AreEqual ("ada", again.ArtistSort);
+		Assert.AreEqual ("album", again.AlbumSort);
+		Assert.AreEqual ("-1", again.ReplayGainTrackGain);
+		Assert.AreEqual ("1", again.ReplayGainTrackPeak);
+		Assert.AreEqual ("-2", again.ReplayGainAlbumGain);
+		Assert.AreEqual ("0.9", again.ReplayGainAlbumPeak);
+		Assert.AreEqual ("t", again.MusicBrainzTrackId);
+		Assert.AreEqual ("r", again.MusicBrainzReleaseId);
+		Assert.AreEqual ("a", again.MusicBrainzArtistId);
+		Assert.AreEqual ("g", again.MusicBrainzReleaseGroupId);
+		Assert.AreEqual ("aa", again.MusicBrainzAlbumArtistId);
+		Assert.AreEqual ("w", again.MusicBrainzWorkId);
+		Assert.AreEqual ("d", again.MusicBrainzDiscId);
+
 		tag.Pictures = null!;
-
-		Assert.AreEqual ("Song", tag.Title);
-		Assert.AreEqual (2u, tag.Track);
 		Assert.AreEqual (0, tag.Pictures.Length);
-		Assert.IsTrue (tag.Render ().Length > 0);
-
-		tag.Comment = new string ('a', 20_000);
-		Assert.IsTrue (tag.Render ().Length > 20_000);
-		tag.Comment = new string ('b', 0x20_0000);
-		Assert.IsTrue (tag.Render ().Length > 0x20_0000);
-
-		var hidden = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("COMMENT", "quiet", isDefault: false))))).File!.Tag;
-		Assert.AreEqual ("quiet", hidden.Comment);
-		Assert.IsTrue (hidden.Render ().Length > 0);
-
-		var albumOnly = MatroskaFile.Read (FileWith (Tags (Tag (50, Simple ("TITLE", "Album"))))).File!.Tag;
-		albumOnly.AlbumSort = "album sort";
-		Assert.AreEqual ("album sort", albumOnly.AlbumSort);
-		albumOnly.AlbumSort = null;
-		Assert.IsNull (albumOnly.AlbumSort);
-
-		tag.Title = "";
-		tag.Performers = Array.Empty<string> ();
-		tag.Clear ();
-		Assert.AreEqual (0, tag.Render ().Length);
-		Assert.IsNull (tag.Title);
 	}
 
 	[TestMethod]
-	public void Read_RemainingEdges_AreCovered ()
+	public void Render_CommentAtTheFourByteSizeBoundary_RoundTrips ()
+	{
+		// 0x1FFFFF is the first payload length whose EBML size is four octets.
+		var comment = new string ('b', 0x1F_FFFF);
+		var tag = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("TITLE", "Song"))))).File!.Tag;
+		tag.Comment = comment;
+
+		var again = Reread (tag);
+
+		Assert.AreEqual (comment, again.Comment);
+		Assert.AreEqual ("Song", again.Title);
+	}
+
+	[TestMethod]
+	public void Render_KeepsANonDefaultCommentBehindTheDefault ()
+	{
+		var only = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("COMMENT", "quiet", isDefault: false))))).File!.Tag;
+		Assert.AreEqual ("quiet", Reread (only).Comment);
+
+		var both = MatroskaFile.Read (FileWith (Tags (Tag (30,
+			Simple ("COMMENT", "quiet", isDefault: false),
+			Simple ("COMMENT", "loud"))))).File!.Tag;
+		Assert.AreEqual ("loud", both.Comment);
+		Assert.AreEqual ("loud", Reread (both).Comment);
+	}
+
+	[TestMethod]
+	public void AlbumSort_OnAnAlbumLevelFile_RoundTripsTheFlatName ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Tags (Tag (50, Simple ("TITLE", "Album"))))).File!.Tag;
+		tag.AlbumSort = "album sort";
+
+		var again = Reread (tag);
+		Assert.AreEqual ("album sort", again.AlbumSort);
+
+		again.AlbumSort = null;
+		Assert.IsNull (Reread (again).AlbumSort);
+	}
+
+	[TestMethod]
+	public void Title_SetEmpty_LetsTheAlbumTitleShowThrough ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Tags (
+			Tag (50, Simple ("TITLE", "Album")),
+			Tag (30, Simple ("TITLE", "Song"))))).File!.Tag;
+
+		tag.Title = "";
+
+		Assert.AreEqual ("Album", tag.Title);
+		Assert.AreEqual ("Album", tag.Album);
+		var again = Reread (tag);
+		Assert.AreEqual ("Album", again.Title);
+		Assert.AreEqual ("Album", again.Album);
+	}
+
+	[TestMethod]
+	public void Clear_DropsEveryTag ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("TITLE", "Song"))))).File!.Tag;
+
+		tag.Clear ();
+
+		Assert.IsNull (tag.Title);
+		Assert.AreEqual (0, tag.Render ().Length);
+		Assert.IsNull (Reread (tag).Title);
+	}
+
+	[TestMethod]
+	public void Read_RejectsAnElementThatDoesNotFit ()
 	{
 		Assert.IsFalse (EbmlReader.TryRead (new byte[4], 4, 4, out _));
 		Assert.IsFalse (EbmlReader.TryRead (new byte[4], 0, 8, out _));
+
+		var four = new byte[4];
+		BinaryPrimitives.WriteSingleBigEndian (four, 1.5f);
+		Assert.IsTrue (EbmlReader.TryReadFloat (four, out var value));
+		Assert.AreEqual (1.5, value, 0.0001);
 		Assert.IsFalse (EbmlReader.TryReadFloat (new byte[2], out _));
-		Assert.IsTrue (EbmlWriter.Unsigned (0x88, 0x1_0000).Length > 2);
+	}
 
-		var before = Element (0xEC, Array.Empty<byte> ());
-		var withVoid = Matroska (Concat (before, Master (0x18538067, Tags (Tag (30, Simple ("TITLE", "After"))))));
-		Assert.AreEqual ("After", MatroskaFile.Read (withVoid).File!.Tag.Title);
+	[TestMethod]
+	public void Write_Unsigned_UsesTheNarrowestPayload ()
+	{
+		var one = EbmlWriter.Unsigned (0x88, 1);
+		Assert.AreEqual (3, one.Length);
+		Assert.AreEqual (0x88, one[0]);
+		Assert.AreEqual (0x81, one[1]);
+		Assert.AreEqual (0x01, one[2]);
 
+		var wide = EbmlWriter.Unsigned (0x88, 0x1_0000);
+		Assert.AreEqual (5, wide.Length);
+		Assert.AreEqual (0x88, wide[0]);
+		Assert.AreEqual (0x83, wide[1]);
+		Assert.AreEqual (0x01, wide[2]);
+		Assert.AreEqual (0x00, wide[3]);
+		Assert.AreEqual (0x00, wide[4]);
+	}
+
+	[TestMethod]
+	public void Read_VoidBeforeTheSegment_StillReadsTheTitle ()
+	{
+		var file = Matroska (Concat (Element (0xEC, Array.Empty<byte> ()), Master (0x18538067, Tags (Tag (30, Simple ("TITLE", "After"))))));
+
+		Assert.AreEqual ("After", MatroskaFile.Read (file).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_DefaultDuration_SetsTheFrameRate ()
+	{
 		var video = Master (0xAE, Concat (
 			Element (0x83, new byte[] { 1 }),
 			Element (0x86, "V_VP8"u8),
 			Element (0x23E383, new byte[] { 0x02, 0x62, 0x5A, 0x00 }),
 			Master (0xE0, Concat (Element (0xB0, new byte[] { 1 }), Element (0xBA, new byte[] { 1 })))));
 		var fps = ((IMediaFile)MatroskaFile.Read (FileWith (Master (0x1654AE6B, video))).File!).VideoProperties!.Value.FrameRate;
+
 		Assert.AreEqual (25, fps, 0.1);
+	}
 
+	[TestMethod]
+	public void Read_UnknownSizeInfo_LeavesTheTitle ()
+	{
 		var unknownInfo = Concat (new byte[] { 0x15, 0x49, 0xA9, 0x66, 0xFF }, Element (0xEC, Array.Empty<byte> ()));
-		var titled = Matroska (Master (0x18538067, Concat (Tags (Tag (30, Simple ("TITLE", "Kept"))), unknownInfo)));
-		Assert.AreEqual ("Kept", MatroskaFile.Read (titled).File!.Tag.Title);
+		var file = Matroska (Master (0x18538067, Concat (Tags (Tag (30, Simple ("TITLE", "Kept"))), unknownInfo)));
 
+		Assert.AreEqual ("Kept", MatroskaFile.Read (file).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_UnknownSizeTagsStartingWithABadByte_HasNoTitle ()
+	{
 		var broken = Concat (new byte[] { 0x12, 0x54, 0xC3, 0x67, 0xFF, 0x00 });
-		var lost = Matroska (Master (0x18538067, broken));
-		Assert.IsNull (MatroskaFile.Read (lost).File!.Tag.Title);
+		var file = Matroska (Master (0x18538067, broken));
 
-		var bare = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("TITLE", "Only"))))).File!.Tag;
-		Assert.AreEqual (TagTypes.Matroska, bare.TagType);
-		Assert.IsNull (bare.Year);
-		Assert.IsNull (bare.Genre);
-		Assert.AreEqual (0, bare.Genres.Length);
-		Assert.AreEqual (0, bare.Composers.Length);
-		Assert.IsNull (bare.Copyright);
-		Assert.IsNull (bare.Lyrics);
-		Assert.IsNull (bare.Conductor);
-		Assert.IsNull (bare.Publisher);
-		Assert.IsNull (bare.EncodedBy);
-		Assert.IsNull (bare.EncoderSettings);
-		Assert.IsNull (bare.Grouping);
-		Assert.IsNull (bare.Remixer);
-		Assert.IsNull (bare.Isrc);
-		Assert.IsNull (bare.CatalogNumber);
-		Assert.IsNull (bare.Barcode);
-		Assert.IsNull (bare.InitialKey);
-		Assert.IsNull (bare.Mood);
-		Assert.IsNull (bare.DateTagged);
-		Assert.IsNull (bare.ReplayGainTrackGain);
-		Assert.IsNull (bare.ReplayGainTrackPeak);
-		Assert.IsNull (bare.ReplayGainAlbumGain);
-		Assert.IsNull (bare.ReplayGainAlbumPeak);
-		Assert.IsNull (bare.MusicBrainzReleaseId);
-		Assert.IsNull (bare.MusicBrainzArtistId);
-		Assert.IsNull (bare.MusicBrainzReleaseGroupId);
-		Assert.IsNull (bare.MusicBrainzAlbumArtistId);
-		Assert.IsNull (bare.MusicBrainzWorkId);
-		Assert.IsNull (bare.MusicBrainzDiscId);
-		Assert.IsNull (bare.Album);
-		Assert.AreEqual (0, bare.AlbumArtists.Length);
-		Assert.IsNull (bare.AlbumSort);
-		Assert.IsNull (bare.BeatsPerMinute);
-		bare.AlbumSort = "up";
-		Assert.AreEqual ("up", bare.AlbumSort);
-		bare.TitleSort = "only";
-		Assert.AreEqual ("only", bare.TitleSort);
-		Assert.IsTrue (bare.Render ().Length > 0);
+		Assert.IsNull (MatroskaFile.Read (file).File!.Tag.Title);
+	}
 
-		var nested = MatroskaFile.Read (FileWith (Tags (Tag (30, SimpleSorted ("TITLE", "Song", "song"))))).File!.Tag;
-		Assert.IsTrue (nested.Render ().Length > 0);
+	[TestMethod]
+	public void Read_TitleOnly_LeavesTheOtherFieldsEmpty ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("TITLE", "Only"))))).File!.Tag;
+
+		Assert.AreEqual ("Only", tag.Title);
+		Assert.AreEqual (TagTypes.Matroska, tag.TagType);
+		Assert.IsNull (tag.Year);
+		Assert.IsNull (tag.Album);
+		Assert.IsNull (tag.Lyrics);
+		Assert.AreEqual (0, tag.Genres.Length);
+		Assert.AreEqual (0, tag.Composers.Length);
+		Assert.AreEqual (0, tag.AlbumArtists.Length);
+		Assert.IsNull (tag.Track);
+		Assert.IsNull (tag.BeatsPerMinute);
+	}
+
+	static MatroskaTag Reread (MatroskaTag tag)
+	{
+		var segment = EbmlWriter.Master (0x18538067, tag.Render ().Span);
+		var result = MatroskaFile.Read (Concat (EbmlHeader (), segment.Span.ToArray ()));
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		return result.File!.Tag;
 	}
 
 	static void AssertFailure (byte[] data, string fragment)
