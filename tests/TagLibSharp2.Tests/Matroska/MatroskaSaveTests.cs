@@ -502,6 +502,105 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_SeekHeadCrc32_ReadsAndKeepsAValidCrc ()
+	{
+		var marker = new byte[] { 0xC0, 0x1A, 0x42 };
+		var info = Master (0x1549A966, Element (0x7BA9, "Info"u8));
+		var tags = Tags (Tag (30, Simple ("TITLE", "Old")));
+		var cluster = Master (0x1F43B675, marker);
+		var seek = SeekHeadWithCrc (0, 0);
+		var infoAt = seek.Length;
+		var tagsAt = seek.Length + info.Length;
+		seek = SeekHeadWithCrc ((ulong)infoAt, (ulong)tagsAt);
+		Assert.AreEqual (infoAt, seek.Length);
+		var original = FileWith (seek, info, tags, cluster);
+		var parsed = MatroskaFile.Read (original);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.AreEqual ("Old", parsed.File!.Tag.Title);
+		Assert.IsTrue (SeekHeadCrcOk (original));
+
+		parsed.File.Tag.Title = "New";
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/crc.mkv", original);
+		var saved = parsed.File.SaveToFile ("/crc.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/crc.mkv");
+		Assert.AreEqual ("New", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		Assert.IsTrue (SeekHeadCrcOk (bytes));
+	}
+
+	[TestMethod]
+	public void Save_UnicodeTitle_RoundTripsUtf8 ()
+	{
+		var title = "So schön anders";
+		var marker = new byte[] { 0x11, 0x22 };
+		var original = FileWith (Tags (Tag (30, Simple ("TITLE", title))), Master (0x1F43B675, marker));
+		var parsed = MatroskaFile.Read (original);
+		Assert.AreEqual (title, parsed.File!.Tag.Title);
+		parsed.File.Tag.Comment = "Anmerkung";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/utf.mkv", original);
+		var saved = parsed.File.SaveToFile ("/utf.mkv", original, fs);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/utf.mkv");
+		var again = MatroskaFile.Read (bytes).File!;
+		Assert.AreEqual (title, again.Tag.Title);
+		Assert.AreEqual ("Anmerkung", again.Tag.Comment);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes (title)) >= 0);
+	}
+
+	[TestMethod]
+	public void Save_Level70Title_StaysOnThatTarget ()
+	{
+		var original = FileWith (Tags (Tag (70, Simple ("TITLE", "Collection"))), Master (0x1F43B675, new byte[] { 3 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual ("Collection", parsed.Tag.Title);
+		Assert.IsNull (parsed.Tag.Album);
+		parsed.Tag.Title = "Renamed";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/level.mkv", original);
+		var saved = parsed.SaveToFile ("/level.mkv", original, fs);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/level.mkv");
+		var again = MatroskaFile.Read (bytes).File!;
+		Assert.AreEqual ("Renamed", again.Tag.Title);
+		Assert.IsNull (again.Tag.Album);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 70 })) >= 0);
+		Assert.IsFalse (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 30 })) >= 0);
+	}
+
+	[TestMethod]
+	public void Save_ExistingAttachmentName_IsLeftAlone ()
+	{
+		var picture = new byte[] { 9, 8, 7, 6 };
+		var attachment = Master (0x1941A469, Master (0x61A7, Concat (
+			Element (0x4660, "image/png"u8),
+			Element (0x466E, "cover.png"u8),
+			Element (0x465C, picture))));
+		var original = FileWith (Tags (Tag (30, Simple ("TITLE", "Film"))), attachment, Master (0x1F43B675, new byte[] { 4 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (1, parsed.Tag.Pictures.Length);
+		parsed.Tag.Artist = "Someone";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/art.mkv", original);
+		var saved = parsed.SaveToFile ("/art.mkv", original, fs);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/art.mkv");
+		var again = MatroskaFile.Read (bytes).File!;
+		Assert.AreEqual ("Film", again.Tag.Title);
+		Assert.AreEqual ("Someone", again.Tag.Artist);
+		Assert.AreEqual (1, again.Tag.Pictures.Length);
+		CollectionAssert.AreEqual (picture, again.Tag.Pictures[0].PictureData.ToArray ());
+		Assert.IsTrue (bytes.AsSpan ().IndexOf ("cover.png"u8) >= 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf ("FrontCover.jpg"u8) < 0);
+	}
+
+	[TestMethod]
 	public void Render_UnreadableContainer_ReturnsEmpty ()
 	{
 		var file = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
@@ -684,6 +783,25 @@ public partial class MatroskaFileTests
 				Element (0xF7, new byte[] { 1 }),
 				Element (0xF1, UIntBytes (clusterPos))))));
 		return WithCrc (MatroskaIds.Cues, inner);
+	}
+
+	static byte[] SeekHeadWithCrc (ulong infoAt, ulong tagsAt) =>
+		WithCrc (MatroskaIds.SeekHead, Concat (
+			SeekEntry (MatroskaIds.Info, infoAt),
+			SeekEntry (MatroskaIds.Tags, tagsAt)));
+
+	static bool SeekHeadCrcOk (byte[] file)
+	{
+		if (!TrySegmentBody (file, out var body, out _))
+			return false;
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
+			if (element.Id == MatroskaIds.SeekHead)
+				return CrcMatches (body.AsSpan (element.DataOffset, (int)element.DataLength));
+			offset = element.End;
+		}
+
+		return false;
 	}
 
 	static byte[] WithCrc (ulong id, byte[] payload)
