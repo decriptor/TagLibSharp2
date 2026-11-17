@@ -501,6 +501,159 @@ public partial class MatroskaFileTests
 		Assert.AreNotEqual ((ulong)clusterPos, position);
 	}
 
+	[TestMethod]
+	public void Render_UnreadableContainer_ReturnsEmpty ()
+	{
+		var file = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
+		Assert.AreEqual (0, file.Render (new byte[] { 1, 2, 3 }).Length);
+	}
+
+	[TestMethod]
+	public void Save_WithoutASourcePath_DoesNotWrite ()
+	{
+		var file = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
+		var saved = file.SaveToFile ();
+		Assert.IsFalse (saved.IsSuccess);
+		Assert.AreEqual ("No source path available. File was not read from disk.", saved.Error);
+		saved = file.SaveToFile ("/song.mkv");
+		Assert.AreEqual ("No source path available. File was not read from disk.", saved.Error);
+	}
+
+	[TestMethod]
+	public async Task SaveAsync_WithoutASourcePath_DoesNotWrite ()
+	{
+		var file = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
+		var saved = await file.SaveToFileAsync ();
+		Assert.AreEqual ("No source path available. File was not read from disk.", saved.Error);
+		saved = await file.SaveToFileAsync ("/song.mkv");
+		Assert.AreEqual ("No source path available. File was not read from disk.", saved.Error);
+	}
+
+	[TestMethod]
+	public void Save_MissingSourceFile_DoesNotWrite ()
+	{
+		var file = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
+		file.SetSourcePath ("/missing.mkv", new MockFileSystem ());
+		var saved = file.SaveToFile ();
+		Assert.IsFalse (saved.IsSuccess);
+		Assert.IsTrue (saved.Error!.Contains ("Failed to re-read source file", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	public async Task SaveAsync_MissingSourceFile_DoesNotWrite ()
+	{
+		var file = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
+		file.SetSourcePath ("/missing.mkv", new MockFileSystem ());
+		var saved = await file.SaveToFileAsync ();
+		Assert.IsFalse (saved.IsSuccess);
+		Assert.IsTrue (saved.Error!.Contains ("Failed to re-read source file", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	public void Save_FileLevelLanguageAndBinary_AreWrittenBack ()
+	{
+		var targets = Master (0x63C0, Concat (
+			Element (0x68CA, new byte[] { 50 }),
+			Element (0x63CA, "MOVIE"u8)));
+		var title = Master (0x67C8, Concat (
+			Element (0x45A3, "TITLE"u8),
+			Element (0x447B, "en-US"u8),
+			Element (0x4485, new byte[] { 1, 2, 3 }),
+			Element (0x4487, "Movie"u8)));
+		var original = FileWith (Tags (Master (0x7373, Concat (targets, title))), Master (0x1F43B675, new byte[] { 9 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual ("Movie", parsed.Tag.Title);
+		parsed.Tag.Artist = "Someone";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/lang.mkv", original);
+		var saved = parsed.SaveToFile ("/lang.mkv", original, fs);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/lang.mkv");
+		Assert.AreEqual ("Movie", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x447B, "en-US"u8)) >= 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x4485, new byte[] { 1, 2, 3 })) >= 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x63CA, "MOVIE"u8)) >= 0);
+	}
+
+	[TestMethod]
+	public void Read_UnknownClusterEndingAtAnInfoElement_KeepsTheTitle ()
+	{
+		var cluster = Unknown (0x1F43B675, Element (0xEC, new byte[] { 1, 2, 3, 4 }));
+		var info = Master (0x1549A966, Element (0x7BA9, "After"u8));
+		var parsed = MatroskaFile.Read (Matroska (Unknown (0x18538067, Concat (cluster, info))));
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.AreEqual ("After", parsed.File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_UnknownClusterThatDoesNotParse_StillOpens ()
+	{
+		var cluster = Unknown (0x1F43B675, new byte[] { 0xFF });
+		var parsed = MatroskaFile.Read (Matroska (Unknown (0x18538067, cluster)));
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.IsNull (parsed.File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_UnknownClusterOfOnlyAVoid_RunsToTheEnd ()
+	{
+		var cluster = Unknown (0x1F43B675, Element (0xEC, new byte[] { 9 }));
+		var parsed = MatroskaFile.Read (Matroska (Unknown (0x18538067, cluster)));
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+	}
+
+	[TestMethod]
+	public void Save_RejectsAContainerThatCannotBeRewritten ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
+		var fs = new MockFileSystem ();
+		AssertFailure (tag, fs, "/a.mkv", new byte[] { 0x1A, 0x45, 0xDF, 0xA3 }, "truncated");
+		AssertFailure (tag, fs, "/b.mkv", Matroska (Array.Empty<byte> (), "avi"), "DocType is avi");
+		AssertFailure (tag, fs, "/c.mkv", Master (0x1A45DFA3, Element (0x4286, new byte[] { 1 })), "DocType is missing");
+		AssertFailure (tag, fs, "/d.mkv", Concat (Master (0x1A45DFA3, Element (0x4282, "matroska"u8)), new byte[] { 0xEC, 0xFF }), "unknown before Segment");
+		AssertFailure (tag, fs, "/e.mkv", Master (0x1A45DFA3, Element (0x4282, "matroska"u8)), "no Segment");
+	}
+
+	[TestMethod]
+	public void Save_LeadingPaddingInsideTheSegment_IsKept ()
+	{
+		var cluster = Master (0x1F43B675, new byte[] { 0xAB, 0xCD });
+		var original = Matroska (Master (0x18538067, Concat (new byte[] { 0x00, 0x00 }, cluster)));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Padded";
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/pad.mkv", original);
+		var saved = parsed.SaveToFile ("/pad.mkv", original, fs);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/pad.mkv");
+		Assert.AreEqual ("Padded", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, new byte[] { 0xAB, 0xCD }));
+	}
+
+	[TestMethod]
+	public void Save_GarbageAfterARealElement_DoesNotWrite ()
+	{
+		var info = Master (0x1549A966, Element (0x7BA9, "T"u8));
+		var original = Matroska (Master (0x18538067, Concat (info, new byte[] { 0x01 })));
+		var parsed = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!;
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/bad.mkv", new byte[] { 1 });
+		var saved = parsed.SaveToFile ("/bad.mkv", original, fs);
+		Assert.IsFalse (saved.IsSuccess);
+		Assert.IsTrue (saved.Error!.Contains ("cannot be bounded", StringComparison.Ordinal));
+		Assert.AreEqual (1, fs.ReadAllBytes ("/bad.mkv").Length);
+	}
+
+	static void AssertFailure (MatroskaFile file, MockFileSystem fs, string path, byte[] original, string error)
+	{
+		fs.AddFile (path, new byte[] { 1 });
+		var saved = file.SaveToFile (path, original, fs);
+		Assert.IsFalse (saved.IsSuccess, path);
+		Assert.IsTrue (saved.Error!.Contains (error, StringComparison.Ordinal), saved.Error);
+		Assert.AreEqual (1, fs.ReadAllBytes (path).Length);
+	}
+
 	static byte[] Unknown (ulong id, byte[] payload)
 	{
 		var idBytes = Id (id);
