@@ -98,6 +98,7 @@ public sealed class WavPackFile : IMediaFile
 	private const byte MetaIdChannelInfo = 0x0D; // Multi-channel info
 
 	private byte[] _originalData = Array.Empty<byte> ();
+	private long _fileLength;
 
 	/// <summary>
 	/// Gets the source file path if the file was read from disk.
@@ -227,6 +228,106 @@ public sealed class WavPackFile : IMediaFile
 	}
 
 	/// <summary>
+	/// Reads the first block header and the trailing APE tag. Later blocks stay on disk.
+	/// </summary>
+	internal static WavPackFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return Finish (Read (StreamBytes.ReadToEnd (stream)), sourcePath, fileSystem, keepPayload: sourcePath is null);
+
+		stream.Position = 0;
+		var header = StreamBytes.ReadAtMost (stream, BlockHeaderSize);
+		if (header.Length < BlockHeaderSize)
+			return Finish (Read (header), sourcePath, fileSystem, keepPayload: true);
+
+		var blockSize = BinaryPrimitives.ReadUInt32LittleEndian (header.AsSpan (4, 4));
+		var block = ReadFirstBlock (stream, header, blockSize);
+		ApeTagTail.TryRead (stream, out var tag, out var tagAt);
+		if (tagAt < block.Length)
+			return Finish (Read (ReadWhole (stream)), sourcePath, fileSystem, keepPayload: sourcePath is null);
+
+		return Finish (Read (Join (block, tag)), sourcePath, fileSystem, keepPayload: false, fileLength: stream.Length);
+	}
+
+	static byte[] ReadWhole (Stream stream)
+	{
+		stream.Position = 0;
+		return StreamBytes.ReadToEnd (stream);
+	}
+
+	static byte[] ReadFirstBlock (Stream stream, byte[] header, uint blockSize)
+	{
+		var total = 8L + blockSize;
+		if (total <= header.Length)
+			return header.AsSpan (0, (int)Math.Min (header.Length, Math.Max (total, 0))).ToArray ();
+		if (total <= 64 * 1024) {
+			var rest = StreamBytes.ReadAtMost (stream, (int)(total - header.Length));
+			return Join (header, rest);
+		}
+
+		// The audio bitstream lives in this block. Keep small metadata sub-blocks and seek over the rest.
+		using var kept = new MemoryStream ();
+		kept.Write (header, 0, Math.Min (header.Length, BlockHeaderSize));
+		var end = Math.Min (stream.Length, total);
+		stream.Position = BlockHeaderSize;
+		while (stream.Position + 2 <= end) {
+			var idByte = StreamBytes.ReadAtMost (stream, 1);
+			if (idByte.Length == 0)
+				break;
+			var large = (idByte[0] & 0x80) != 0;
+			var sizeRaw = StreamBytes.ReadAtMost (stream, large ? 3 : 1);
+			if (sizeRaw.Length != (large ? 3 : 1))
+				break;
+			var words = large
+				? sizeRaw[0] | (sizeRaw[1] << 8) | (sizeRaw[2] << 16)
+				: sizeRaw[0];
+			var dataBytes = (long)words * 2;
+			var actualId = (byte)(idByte[0] & 0x1F);
+			var bitstream = actualId is 0x0A or 0x0B or 0x0C or 0x0E;
+			if (bitstream || dataBytes > 4096) {
+				StreamBytes.Skip (stream, dataBytes);
+				continue;
+			}
+
+			var data = StreamBytes.ReadAtMost (stream, (int)dataBytes);
+			kept.Write (idByte);
+			kept.Write (sizeRaw);
+			kept.Write (data);
+		}
+
+		var bytes = kept.ToArray ();
+		if (bytes.Length >= 8)
+			BinaryPrimitives.WriteUInt32LittleEndian (bytes.AsSpan (4), (uint)(bytes.Length - 8));
+		return bytes;
+	}
+
+	static byte[] Join (byte[] left, byte[] right)
+	{
+		if (right.Length == 0)
+			return left;
+		var combined = new byte[left.Length + right.Length];
+		left.CopyTo (combined, 0);
+		right.CopyTo (combined, left.Length);
+		return combined;
+	}
+
+	static WavPackFileReadResult Finish (WavPackFileReadResult result, string? sourcePath, IFileSystem? fileSystem, bool keepPayload, long? fileLength = null)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return result;
+
+		result.File.SourcePath = sourcePath;
+		result.File._sourceFileSystem = fileSystem;
+		if (!keepPayload) {
+			result.File._fileLength = fileLength ?? 0;
+			result.File._originalData = [];
+			result.File.CalculateProperties ();
+		}
+
+		return result;
+	}
+
+	/// <summary>
 	/// Attempts to read a WavPack file from binary data.
 	/// </summary>
 	/// <param name="data">The file data.</param>
@@ -275,9 +376,9 @@ public sealed class WavPackFile : IMediaFile
 
 		// Calculate bitrate from file size
 		var bitrate = 0;
-		if (_originalData.Length > 0 && durationSeconds > 0) {
-			bitrate = (int)(_originalData.Length * 8 / durationSeconds / 1000);
-		}
+		var length = _fileLength > 0 ? _fileLength : _originalData.Length;
+		if (length > 0 && durationSeconds > 0)
+			bitrate = (int)(length * 8 / durationSeconds / 1000);
 
 		Properties = new AudioProperties (
 			duration,
@@ -512,8 +613,19 @@ public sealed class WavPackFile : IMediaFile
 	/// <summary>
 	/// Save the file to a new path using internally stored data.
 	/// </summary>
-	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null) =>
-		SaveToFile (path, _originalData, fileSystem);
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return SaveToFile (path, _originalData, fs);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return SaveToFile (path, read.Data!.Value.Span, fs);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path.
@@ -548,11 +660,22 @@ public sealed class WavPackFile : IMediaFile
 	/// <summary>
 	/// Save the file asynchronously using internally stored data.
 	/// </summary>
-	public Task<FileWriteResult> SaveToFileAsync (
+	public async Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
-		CancellationToken cancellationToken = default) =>
-		SaveToFileAsync (path, _originalData, fileSystem, cancellationToken);
+		CancellationToken cancellationToken = default)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath, fs, cancellationToken).ConfigureAwait (false);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path asynchronously.

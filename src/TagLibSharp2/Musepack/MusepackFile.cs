@@ -96,6 +96,7 @@ public sealed class MusepackFile : IMediaFile
 	private const int SamplesPerFrameSV7 = 1152;
 
 	private byte[] _originalData = [];
+	private long _fileLength;
 
 	/// <summary>
 	/// Gets the source file path if the file was read from disk.
@@ -281,6 +282,102 @@ public sealed class MusepackFile : IMediaFile
 	}
 
 	/// <summary>
+	/// Reads the stream header and the trailing APE tag. Audio packets stay on disk.
+	/// </summary>
+	internal static MusepackFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return Finish (Read (StreamBytes.ReadToEnd (stream)), sourcePath, fileSystem, keepPayload: sourcePath is null);
+
+		stream.Position = 0;
+		var magic = StreamBytes.ReadAtMost (stream, 4);
+		using var kept = new MemoryStream ();
+		kept.Write (magic);
+		if (magic.Length >= 3 && magic[0] == (byte)'M' && magic[1] == (byte)'P' && magic[2] == (byte)'+') {
+			var rest = StreamBytes.ReadAtMost (stream, 12);
+			kept.Write (rest);
+		} else {
+			while (stream.Position + 3 <= stream.Length) {
+				var key = StreamBytes.ReadAtMost (stream, 2);
+				if (key.Length < 2 || !TryReadVarInt (stream, out var packetSize, out var sizeBytes))
+					break;
+				var payloadLen = (long)packetSize - 2 - sizeBytes.Length;
+				if (payloadLen < 0 || payloadLen > 1024 * 1024)
+					break;
+				var payload = StreamBytes.ReadAtMost (stream, (int)payloadLen);
+				kept.Write (key);
+				kept.Write (sizeBytes);
+				kept.Write (payload);
+				if (key[0] == (byte)'S' && key[1] == (byte)'H')
+					break;
+			}
+		}
+
+		var header = kept.ToArray ();
+		ApeTagTail.TryRead (stream, out var tag, out var tagAt);
+		if (tagAt < header.Length) {
+			stream.Position = 0;
+			return Finish (Read (StreamBytes.ReadToEnd (stream)), sourcePath, fileSystem, keepPayload: sourcePath is null);
+		}
+
+		return Finish (Read (Join (header, tag)), sourcePath, fileSystem, keepPayload: false, fileLength: stream.Length);
+	}
+
+	static bool TryReadVarInt (Stream stream, out ulong value, out byte[] raw)
+	{
+		var bytes = new List<byte> (4);
+		value = 0;
+		for (var i = 0; i < 9; i++) {
+			var one = StreamBytes.ReadAtMost (stream, 1);
+			if (one.Length == 0) {
+				raw = [];
+				return false;
+			}
+
+			bytes.Add (one[0]);
+			value = (value << 7) | (uint)(one[0] & 0x7F);
+			if ((one[0] & 0x80) == 0) {
+				raw = bytes.ToArray ();
+				return true;
+			}
+		}
+
+		raw = [];
+		return false;
+	}
+
+	static byte[] Join (byte[] left, byte[] right)
+	{
+		if (right.Length == 0)
+			return left;
+		var combined = new byte[left.Length + right.Length];
+		left.CopyTo (combined, 0);
+		right.CopyTo (combined, left.Length);
+		return combined;
+	}
+
+	static MusepackFileReadResult Finish (
+		MusepackFileReadResult result,
+		string? sourcePath,
+		IFileSystem? fileSystem,
+		bool keepPayload,
+		long? fileLength = null)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return result;
+
+		result.File.SourcePath = sourcePath;
+		result.File._sourceFileSystem = fileSystem;
+		if (!keepPayload) {
+			result.File._fileLength = fileLength ?? 0;
+			result.File._originalData = [];
+			result.File.CalculateProperties ();
+		}
+
+		return result;
+	}
+
+	/// <summary>
 	/// Attempts to read a Musepack file from binary data.
 	/// </summary>
 	/// <param name="data">The file data.</param>
@@ -413,9 +510,9 @@ public sealed class MusepackFile : IMediaFile
 
 		// Calculate bitrate from file size
 		var bitrate = 0;
-		if (_originalData.Length > 0 && durationSeconds > 0) {
-			bitrate = (int)(_originalData.Length * 8 / durationSeconds / 1000);
-		}
+		var length = _fileLength > 0 ? _fileLength : _originalData.Length;
+		if (length > 0 && durationSeconds > 0)
+			bitrate = (int)(length * 8 / durationSeconds / 1000);
 
 		Properties = new AudioProperties (
 			duration,
@@ -520,8 +617,19 @@ public sealed class MusepackFile : IMediaFile
 	/// <summary>
 	/// Save the file to a new path using internally stored data.
 	/// </summary>
-	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null) =>
-		SaveToFile (path, _originalData, fileSystem);
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return SaveToFile (path, _originalData, fs);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return SaveToFile (path, read.Data!.Value.Span, fs);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path.
@@ -556,11 +664,22 @@ public sealed class MusepackFile : IMediaFile
 	/// <summary>
 	/// Save the file asynchronously using internally stored data.
 	/// </summary>
-	public Task<FileWriteResult> SaveToFileAsync (
+	public async Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
-		CancellationToken cancellationToken = default) =>
-		SaveToFileAsync (path, _originalData, fileSystem, cancellationToken);
+		CancellationToken cancellationToken = default)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath, fs, cancellationToken).ConfigureAwait (false);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path asynchronously.

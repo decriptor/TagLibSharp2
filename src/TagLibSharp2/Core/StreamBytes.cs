@@ -90,6 +90,23 @@ internal static class StreamBytes
 		return read;
 	}
 
+	/// <summary>
+	/// Moves forward without copying. A seekable stream jumps. Anything else is not skipped.
+	/// </summary>
+	public static void Skip (Stream stream, long count)
+	{
+		if (count <= 0)
+			return;
+
+		if (!stream.CanSeek)
+			return;
+
+		var room = stream.Length - stream.Position;
+		if (count > room)
+			count = room < 0 ? 0 : room;
+		stream.Position += count;
+	}
+
 	static byte[] Trim (byte[] buffer, int length)
 	{
 		if (length == 0)

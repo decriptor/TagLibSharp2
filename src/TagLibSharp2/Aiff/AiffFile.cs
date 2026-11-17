@@ -126,6 +126,23 @@ public sealed class AiffFile : IMediaFile
 	public MediaFormat Format => MediaFormat.Aiff;
 
 	readonly List<AiffChunk> _chunks = [];
+	readonly List<SkippedChunk> _skipped = [];
+
+	readonly struct SkippedChunk
+	{
+		public SkippedChunk (int index, long offset, uint presentBytes)
+		{
+			Index = index;
+			Offset = offset;
+			PresentBytes = presentBytes;
+		}
+
+		public int Index { get; }
+
+		public long Offset { get; }
+
+		public uint PresentBytes { get; }
+	}
 
 	/// <summary>
 	/// Releases resources used by this instance.
@@ -228,6 +245,88 @@ public sealed class AiffFile : IMediaFile
 
 		return AiffFileReadResult.Success (file);
 	}
+
+	/// <summary>
+	/// Reads an AIFF file from a stream. SSND sample bytes stay in the file.
+	/// </summary>
+	internal static AiffFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return Read (StreamBytes.ReadToEnd (stream));
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		var header = StreamBytes.ReadAtMost (stream, HeaderSize);
+		if (header.Length < HeaderSize || header[0] != (byte)'F' || header[1] != (byte)'O' || header[2] != (byte)'R' || header[3] != (byte)'M')
+			return AiffFileReadResult.Failure ("Invalid AIFF file: missing magic (expected 'FORM')");
+
+		AiffFile? file = new () {
+			FileSize = ReadUInt32BE (header, 4),
+			FormType = FourCC (header, 8)
+		};
+		if (file.FormType != "AIFF" && file.FormType != "AIFC") {
+			var form = file.FormType;
+			file.Dispose ();
+			return AiffFileReadResult.Failure ($"Invalid AIFF file: invalid form type (expected 'AIFF' or 'AIFC', got '{form}')");
+		}
+
+		file.IsValid = true;
+		var limit = file.FileSize == 0xFFFFFFFF
+			? stream.Length
+			: Math.Min (stream.Length, 8L + file.FileSize);
+
+		while (stream.Position + 8 <= limit) {
+			var chunkHeader = StreamBytes.ReadAtMost (stream, 8);
+			if (chunkHeader.Length < 8)
+				break;
+
+			var id = FourCC (chunkHeader, 0);
+			var size = ReadUInt32BE (chunkHeader, 4);
+			var dataPos = stream.Position;
+			var available = limit - dataPos;
+			if (available < 0)
+				available = 0;
+			var present = available < size ? (uint)available : size;
+			var pad = (size & 1) == 1 && present == size ? 1 : 0;
+			if (id == "SSND" || size > int.MaxValue) {
+				if (present > 0 && present <= int.MaxValue)
+					file._skipped.Add (new SkippedChunk (file._chunks.Count, dataPos, present));
+				file._chunks.Add (AiffChunk.WithDeclaredSize (id, size, BinaryData.Empty));
+				var skip = (long)present + pad;
+				var room = stream.Length - stream.Position;
+				if (skip > room)
+					skip = room < 0 ? 0 : room;
+				stream.Position += skip;
+				if (present < size)
+					break;
+				continue;
+			}
+
+			var data = StreamBytes.ReadAtMost (stream, (int)present);
+			if (pad == 1 && stream.Position < limit)
+				StreamBytes.ReadAtMost (stream, 1);
+			var chunk = present == size
+				? new AiffChunk (id, new BinaryData (data))
+				: AiffChunk.WithDeclaredSize (id, size, new BinaryData (data));
+			file._chunks.Add (chunk);
+			file.ProcessChunk (chunk);
+			if (present < size)
+				break;
+		}
+
+		file.SourcePath = sourcePath;
+		file._sourceFileSystem = fileSystem;
+		var parsed = file;
+		file = null;
+		return AiffFileReadResult.Success (parsed);
+	}
+
+	static uint ReadUInt32BE (byte[] data, int offset) =>
+		((uint)data[offset] << 24) | ((uint)data[offset + 1] << 16) | ((uint)data[offset + 2] << 8) | data[offset + 3];
+
+	static string FourCC (byte[] data, int offset) =>
+		new ([(char)data[offset], (char)data[offset + 1], (char)data[offset + 2], (char)data[offset + 3]]);
 
 	/// <summary>
 	/// Reads an AIFF file from a file path.
@@ -361,6 +460,9 @@ public sealed class AiffFile : IMediaFile
 		if (!IsValid)
 			throw new InvalidOperationException ("Cannot render invalid AIFF file");
 
+		if (!TryLoadSkipped (null, out var skipped))
+			throw new InvalidOperationException (skipped);
+
 		// Calculate total size of all chunks. TotalSize is a long file length, not a wrapped int.
 		long chunksSize = 0;
 		foreach (var chunk in _chunks) {
@@ -421,9 +523,50 @@ public sealed class AiffFile : IMediaFile
 	/// <returns>The write result.</returns>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (!TryLoadSkipped (fs, out var skipped))
+			return FileWriteResult.Failure (skipped!);
+
 		var data = Render ();
-		fileSystem ??= _sourceFileSystem;
-		return AtomicFileWriter.Write (path, data.Span, fileSystem);
+		return AtomicFileWriter.Write (path, data.Span, fs);
+	}
+
+	bool TryLoadSkipped (IFileSystem? fileSystem, out string? error)
+	{
+		error = null;
+		if (_skipped.Count == 0)
+			return true;
+
+		foreach (var chunk in _skipped) {
+			if (chunk.PresentBytes > int.MaxValue) {
+				error = "Cannot save an AIFF file whose sound data does not fit in memory.";
+				return false;
+			}
+		}
+
+		if (SourcePath is not { Length: > 0 } path) {
+			error = "Cannot save an AIFF file whose sound data was not loaded.";
+			return false;
+		}
+
+		var fs = fileSystem ?? _sourceFileSystem ?? DefaultFileSystem.Instance;
+		using var stream = fs.OpenRead (path);
+		foreach (var chunk in _skipped) {
+			if (stream.Length < chunk.Offset + chunk.PresentBytes) {
+				error = "Cannot save an AIFF file whose sound data is no longer in the source file.";
+				return false;
+			}
+		}
+
+		foreach (var chunk in _skipped) {
+			stream.Position = chunk.Offset;
+			var samples = StreamBytes.ReadAtMost (stream, (int)chunk.PresentBytes);
+			var existing = _chunks[chunk.Index];
+			_chunks[chunk.Index] = AiffChunk.WithDeclaredSize (existing.FourCC, existing.Size, new BinaryData (samples));
+		}
+
+		_skipped.Clear ();
+		return true;
 	}
 
 	/// <summary>
@@ -438,9 +581,12 @@ public sealed class AiffFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (!TryLoadSkipped (fs, out var skipped))
+			return Task.FromResult (FileWriteResult.Failure (skipped!));
+
 		var data = Render ();
-		fileSystem ??= _sourceFileSystem;
-		return AtomicFileWriter.WriteAsync (path, data.Memory, fileSystem, cancellationToken);
+		return AtomicFileWriter.WriteAsync (path, data.Memory, fs, cancellationToken);
 	}
 
 	/// <summary>

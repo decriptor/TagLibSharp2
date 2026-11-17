@@ -364,6 +364,97 @@ public sealed class DffFile : IMediaFile
 	}
 
 	/// <summary>
+	/// Reads metadata chunks and records audio chunk sizes. DSD and DST payloads are not copied.
+	/// </summary>
+	internal static DffFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek) {
+			var copied = Read (StreamBytes.ReadToEnd (stream));
+			if (sourcePath is not null && copied.IsSuccess && copied.File is not null)
+				copied.File._originalData = null;
+			return WithSource (copied, sourcePath, fileSystem);
+		}
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		var head = StreamBytes.ReadAtMost (stream, 16);
+		if (head.Length < 16)
+			return DffFileReadResult.Failure ($"Data too short for DFF file: {stream.Length} bytes");
+
+		using var kept = new MemoryStream ();
+		kept.Write (head);
+		using var audioHeaders = new MemoryStream ();
+		long pos = 16;
+		var length = stream.Length;
+		while (pos + 12 <= length) {
+			stream.Position = pos;
+			var chunkHeader = StreamBytes.ReadAtMost (stream, 12);
+			if (chunkHeader.Length < 12)
+				break;
+
+			var id = System.Text.Encoding.ASCII.GetString (chunkHeader, 0, 4);
+			var size = BinaryPrimitives.ReadUInt64BigEndian (chunkHeader.AsSpan (4));
+			var dataEnd = pos + 12 + (long)size;
+			var pad = (size & 1) == 1 ? 1 : 0;
+			if (id is "DSD " or "DST ") {
+				audioHeaders.Write (chunkHeader);
+				if (dataEnd < pos)
+					break;
+				pos = dataEnd + pad;
+				if (pos > length)
+					pos = length;
+				continue;
+			}
+
+			var chunkEnd = dataEnd + pad;
+			if (chunkEnd < pos || dataEnd > length) {
+				var rest = (int)Math.Min (length - pos, int.MaxValue);
+				stream.Position = pos;
+				kept.Write (StreamBytes.ReadAtMost (stream, rest));
+				break;
+			}
+
+			var chunkLen = chunkEnd - pos;
+			if (chunkLen > int.MaxValue)
+				break;
+			stream.Position = pos;
+			kept.Write (StreamBytes.ReadAtMost (stream, (int)chunkLen));
+			pos = chunkEnd;
+		}
+
+		var audio = audioHeaders.ToArray ();
+		if (audio.Length > 0)
+			kept.Write (audio);
+
+		var result = Read (kept.ToArray ());
+		if (result.IsSuccess && result.File is not null)
+			result.File._originalData = null;
+		return WithSource (result, sourcePath, fileSystem);
+	}
+
+	static DffFileReadResult WithSource (DffFileReadResult result, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (result.IsSuccess && result.File is not null) {
+			result.File.SourcePath = sourcePath;
+			result.File._sourceFileSystem = fileSystem;
+		}
+
+		return result;
+	}
+
+	BinaryData RenderFrom (byte[] original)
+	{
+		var previous = _originalData;
+		_originalData = original;
+		try {
+			return Render ();
+		} finally {
+			_originalData = previous;
+		}
+	}
+
+	/// <summary>
 	/// Attempts to read a DFF file from binary data.
 	/// </summary>
 	/// <param name="data">The file data.</param>
@@ -584,10 +675,10 @@ public sealed class DffFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DffFile));
 
+		var fs = fileSystem ?? _sourceFileSystem;
 		try {
-			var rendered = Render ();
-			fileSystem ??= _sourceFileSystem;
-			return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
+			var rendered = _originalData is null ? RenderFrom (originalData.ToArray ()) : Render ();
+			return AtomicFileWriter.Write (path, rendered.Span, fs);
 		} catch (Exception ex) {
 			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
 		}
@@ -619,16 +710,23 @@ public sealed class DffFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DffFile));
 
-		if (_originalData is null)
-			return FileWriteResult.Failure ("No original data available");
-
-		try {
-			var rendered = Render ();
-			fileSystem ??= _sourceFileSystem;
-			return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
-		} catch (Exception ex) {
-			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData is not null) {
+			try {
+				var rendered = Render ();
+				return AtomicFileWriter.Write (path, rendered.Span, fs);
+			} catch (Exception ex) {
+				return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
+			}
 		}
+
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return SaveToFile (path, read.Data!.Value.Span, fs);
 	}
 
 	/// <summary>
@@ -687,11 +785,21 @@ public sealed class DffFile : IMediaFile
 		IFileSystem? fileSystem,
 		CancellationToken cancellationToken)
 	{
+		var fs = fileSystem ?? _sourceFileSystem;
 		try {
-			var rendered = Render ();
-			fileSystem ??= _sourceFileSystem;
-			return await AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken)
-				.ConfigureAwait (false);
+			BinaryData rendered;
+			if (_originalData is not null) {
+				rendered = Render ();
+			} else {
+				if (SourcePath is not { Length: > 0 } source)
+					return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+				var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
+				if (!read.IsSuccess)
+					return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+				rendered = RenderFrom (read.Data!.Value.ToArray ());
+			}
+
+			return await AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken).ConfigureAwait (false);
 		} catch (Exception ex) {
 			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
 		}

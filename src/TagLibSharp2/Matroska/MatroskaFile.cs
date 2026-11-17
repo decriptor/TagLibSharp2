@@ -195,6 +195,124 @@ public sealed class MatroskaFile : IMediaFile
 		return MatroskaFileReadResult.Success (new MatroskaFile (tag, duration, layout));
 	}
 
+	/// <summary>
+	/// Reads tags and duration from a stream. Cluster payloads stay on disk.
+	/// An unknown-size cluster stops the walk; it is not scanned to resync.
+	/// </summary>
+	internal static MatroskaFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return WithSource (Read (StreamBytes.ReadToEnd (stream)), sourcePath, fileSystem);
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		using var kept = new MemoryStream ();
+		if (!TryCollect (stream, kept, out var error))
+			return MatroskaFileReadResult.Failure (error);
+
+		return WithSource (Read (kept.GetBuffer ().AsSpan (0, (int)kept.Length)), sourcePath, fileSystem);
+	}
+
+	static MatroskaFileReadResult WithSource (MatroskaFileReadResult result, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (result.IsSuccess && result.File is not null)
+			result.File.SetSourcePath (sourcePath, fileSystem);
+		return result;
+	}
+
+	static bool TryCollect (Stream stream, MemoryStream kept, out string error)
+	{
+		error = "";
+		var length = stream.Length;
+		long pos = 0;
+		while (pos + 2 <= length) {
+			if (!TryPeek (stream, pos, out var id, out var headerLength, out var dataLength))
+				break;
+
+			var known = dataLength >= 0;
+			if (id == MatroskaIds.Segment) {
+				kept.Write (new byte[] { 0x18, 0x53, 0x80, 0x67, 0xFF });
+				var childEnd = known ? pos + headerLength + dataLength : length;
+				if (childEnd > length)
+					childEnd = length;
+				CollectChildren (stream, pos + headerLength, childEnd, kept);
+				return true;
+			}
+
+			if (!known) {
+				error = "Matroska element size is unknown before Segment";
+				return false;
+			}
+
+			var end = pos + headerLength + dataLength;
+			if (end > length || end < pos)
+				break;
+			if (!Copy (stream, pos, end, kept))
+				break;
+			pos = end;
+		}
+
+		error = "Matroska file has no Segment";
+		return false;
+	}
+
+	static void CollectChildren (Stream stream, long start, long end, MemoryStream kept)
+	{
+		var pos = start;
+		while (pos + 2 <= end) {
+			if (!TryPeek (stream, pos, out var id, out var headerLength, out var dataLength))
+				break;
+			if (id == MatroskaIds.Cluster) {
+				// Unknown-size clusters are not scanned. Known clusters are seeked past.
+				if (dataLength < 0)
+					break;
+				var clusterEnd = pos + headerLength + dataLength;
+				if (clusterEnd > end || clusterEnd < pos)
+					break;
+				pos = clusterEnd;
+				continue;
+			}
+
+			if (dataLength < 0)
+				break;
+
+			var childEnd = pos + headerLength + dataLength;
+			if (childEnd > end || childEnd < pos)
+				break;
+			if (!Copy (stream, pos, childEnd, kept))
+				break;
+			pos = childEnd;
+		}
+	}
+
+	static bool TryPeek (Stream stream, long pos, out ulong id, out int headerLength, out long dataLength)
+	{
+		id = 0;
+		headerLength = 0;
+		dataLength = -1;
+		if (pos < 0 || pos >= stream.Length)
+			return false;
+
+		stream.Position = pos;
+		var probe = StreamBytes.ReadAtMost (stream, 12);
+		return EbmlReader.TryPeekHeader (probe, out id, out headerLength, out dataLength);
+	}
+
+	static bool Copy (Stream stream, long start, long end, MemoryStream kept)
+	{
+		var length = end - start;
+		if (length < 0 || length > int.MaxValue)
+			return false;
+
+		stream.Position = start;
+		var bytes = StreamBytes.ReadAtMost (stream, (int)length);
+		if (bytes.Length != length)
+			return false;
+		kept.Write (bytes);
+		return true;
+	}
+
 	/// <summary>Reads a file without an error string.</summary>
 	public static bool TryRead (ReadOnlySpan<byte> data, out MatroskaFile? file)
 	{
@@ -231,7 +349,7 @@ public sealed class MatroskaFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fs);
 	}
 
 	/// <summary>Saves tags back to <see cref="SourcePath"/>.</summary>
@@ -271,7 +389,7 @@ public sealed class MatroskaFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken).ConfigureAwait (false);
+		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
 	}
 
 	/// <summary>Saves tags back to <see cref="SourcePath"/>.</summary>

@@ -39,7 +39,7 @@ public sealed class Mp4File : IMediaFile
 	/// </summary>
 	/// <remarks>
 	/// This is set when using <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
-	/// It is null when the file was read from binary data using <see cref="Read"/>.
+	/// It is null when the file was read from binary data using <see cref="Read(ReadOnlySpan{byte})"/>.
 	/// </remarks>
 	public string? SourcePath { get; private set; }
 
@@ -679,15 +679,23 @@ public sealed class Mp4File : IMediaFile
 		if (data.Length < Mp4Box.HeaderSize)
 			return Mp4FileReadResult.Failure ("Invalid MP4 file: data too short");
 
-		// Parse all top-level boxes
+		// Parse top-level boxes. mdat is the media payload: keep its size, not its bytes.
 		var boxes = new List<Mp4Box> ();
 		var offset = 0;
 		while (offset < data.Length) {
-			var remaining = data[offset..];
-			if (remaining.Length < Mp4Box.HeaderSize)
+			var remaining = data.Length - offset;
+			if (remaining < Mp4Box.HeaderSize)
 				break;
+			if (!TryMeasure (data.Slice (offset, remaining), out var type, out var boxSize, out _))
+				break;
+			if (boxSize > remaining)
+				break;
+			if (type == "mdat") {
+				offset += (int)boxSize;
+				continue;
+			}
 
-			var result = Mp4Box.Parse (remaining);
+			var result = Mp4Box.Parse (data[offset..]);
 			if (!result.IsSuccess)
 				break;
 
@@ -1087,6 +1095,118 @@ public sealed class Mp4File : IMediaFile
 			tag.SetAtoms (key, dataAtoms);
 		}
 	}
+
+	/// <summary>
+	/// Reads an MP4 file from a stream. <c>mdat</c> payloads are not copied.
+	/// </summary>
+	internal static Mp4FileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return WithSource (Read (StreamBytes.ReadToEnd (stream)), sourcePath, fileSystem);
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		using var kept = new MemoryStream ();
+		while (stream.Position + Mp4Box.HeaderSize <= stream.Length) {
+			var start = stream.Position;
+			var probe = StreamBytes.ReadAtMost (stream, Mp4Box.ExtendedHeaderSize);
+			if (!TryMeasureStream (probe, start, stream.Length, out var type, out var boxEnd))
+				break;
+			if (boxEnd < start)
+				break;
+
+			var end = boxEnd > stream.Length ? stream.Length : boxEnd;
+			if (type == "mdat") {
+				stream.Position = end;
+				continue;
+			}
+
+			var length = end - start;
+			if (length > int.MaxValue)
+				break;
+
+			stream.Position = start;
+			var box = StreamBytes.ReadAtMost (stream, (int)length);
+			if (box.Length == 0)
+				break;
+			kept.Write (box);
+			if (box.Length < length)
+				break;
+		}
+
+		return WithSource (Read (kept.ToArray ()), sourcePath, fileSystem);
+	}
+
+	static Mp4FileReadResult WithSource (Mp4FileReadResult result, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (result.IsSuccess && result.File is not null) {
+			result.File.SourcePath = sourcePath;
+			result.File._sourceFileSystem = fileSystem;
+		}
+
+		return result;
+	}
+
+	static bool TryMeasure (ReadOnlySpan<byte> data, out string type, out long boxSize, out int headerSize)
+	{
+		type = "";
+		boxSize = 0;
+		headerSize = 0;
+		if (data.Length < Mp4Box.HeaderSize)
+			return false;
+
+		var size32 = BinaryPrimitives.ReadUInt32BigEndian (data);
+		type = FourCC (data.Slice (4, 4));
+		if (size32 == 1) {
+			if (data.Length < Mp4Box.ExtendedHeaderSize)
+				return false;
+			boxSize = (long)BinaryPrimitives.ReadUInt64BigEndian (data.Slice (8, 8));
+			headerSize = Mp4Box.ExtendedHeaderSize;
+		} else if (size32 == 0) {
+			boxSize = data.Length;
+			headerSize = Mp4Box.HeaderSize;
+		} else {
+			boxSize = size32;
+			headerSize = Mp4Box.HeaderSize;
+		}
+
+		return boxSize >= headerSize;
+	}
+
+	static bool TryMeasureStream (ReadOnlySpan<byte> probe, long start, long fileLength, out string type, out long boxEnd)
+	{
+		type = "";
+		boxEnd = start;
+		if (probe.Length < Mp4Box.HeaderSize)
+			return false;
+
+		var size32 = BinaryPrimitives.ReadUInt32BigEndian (probe);
+		type = FourCC (probe.Slice (4, 4));
+		if (size32 == 1) {
+			if (probe.Length < Mp4Box.ExtendedHeaderSize)
+				return false;
+			var boxSize = (long)BinaryPrimitives.ReadUInt64BigEndian (probe.Slice (8, 8));
+			if (boxSize < Mp4Box.ExtendedHeaderSize)
+				return false;
+			boxEnd = start + boxSize;
+			return true;
+		}
+
+		if (size32 == 0) {
+			boxEnd = fileLength;
+			return true;
+		}
+
+		if (size32 < Mp4Box.HeaderSize)
+			return false;
+
+		boxEnd = start + size32;
+		return true;
+	}
+
+	static string FourCC (ReadOnlySpan<byte> data) =>
+		new ([(char)data[0], (char)data[1], (char)data[2], (char)data[3]]);
 
 	/// <summary>
 	/// Attempts to read an MP4 file from a file path.
@@ -2182,7 +2302,7 @@ public sealed class Mp4File : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fs);
 	}
 
 	/// <summary>
@@ -2224,7 +2344,7 @@ public sealed class Mp4File : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
+		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken)
 			.ConfigureAwait (false);
 	}
 

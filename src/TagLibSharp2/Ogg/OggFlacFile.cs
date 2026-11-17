@@ -93,6 +93,7 @@ public sealed class OggFlacFile : IMediaFile
 	private static readonly byte[] FlacMagic = "FLAC"u8.ToArray ();
 
 	private byte[] _originalData = Array.Empty<byte> ();
+	private long _fileLength;
 	private PacketWalkResult? _cachedWalk;
 
 	// Counts packet walks. A cache hit does not increment. Test hook only.
@@ -253,6 +254,39 @@ public sealed class OggFlacFile : IMediaFile
 	}
 
 	/// <summary>
+	/// Reads header pages and stops at the first FLAC audio page. Cluster-sized audio is not copied.
+	/// </summary>
+	internal static OggFlacFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek) {
+			var copied = Read (StreamBytes.ReadToEnd (stream));
+			return WithSource (copied, sourcePath, fileSystem, sourcePath is null ? null : stream.CanSeek ? stream.Length : null);
+		}
+
+		var headers = OggWindow.ReadHeaders (stream, OggHeaderKind.Flac);
+		var result = Read (headers);
+		return WithSource (result, sourcePath, fileSystem, stream.Length);
+	}
+
+	static OggFlacFileReadResult WithSource (OggFlacFileReadResult result, string? sourcePath, IFileSystem? fileSystem, long? fileLength)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return result;
+
+		var file = result.File;
+		file._sourcePath = sourcePath;
+		file._sourceFileSystem = fileSystem;
+		if (fileLength is long length) {
+			file._fileLength = length;
+			file._originalData = [];
+			file._cachedWalk = null;
+			file.CalculateProperties ();
+		}
+
+		return result;
+	}
+
+	/// <summary>
 	/// Attempts to read an Ogg FLAC file from binary data.
 	/// </summary>
 	/// <param name="data">The file data.</param>
@@ -338,9 +372,9 @@ public sealed class OggFlacFile : IMediaFile
 		var duration = TimeSpan.FromSeconds (durationSeconds);
 
 		var bitrate = 0;
-		if (_originalData.Length > 0 && durationSeconds > 0) {
-			bitrate = (int)(_originalData.Length * 8 / durationSeconds / 1000);
-		}
+		var length = _fileLength > 0 ? _fileLength : _originalData.Length;
+		if (length > 0 && durationSeconds > 0)
+			bitrate = (int)(length * 8 / durationSeconds / 1000);
 
 		Properties = new AudioProperties (
 			duration,
@@ -712,8 +746,21 @@ public sealed class OggFlacFile : IMediaFile
 	/// <summary>
 	/// Save the file to a new path using internally stored data.
 	/// </summary>
-	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null) =>
-		SaveToFile (path, _originalData, fileSystem);
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return SaveToFile (path, _originalData, fs);
+
+		if (string.IsNullOrEmpty (_sourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = FileHelper.SafeReadAllBytes (_sourcePath, fs);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+
+		return SaveToFile (path, read.Data!.Value.Span, fs);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path.
@@ -751,11 +798,24 @@ public sealed class OggFlacFile : IMediaFile
 	/// <summary>
 	/// Save the file asynchronously using internally stored data.
 	/// </summary>
-	public Task<FileWriteResult> SaveToFileAsync (
+	public async Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
-		CancellationToken cancellationToken = default) =>
-		SaveToFileAsync (path, _originalData, fileSystem, cancellationToken);
+		CancellationToken cancellationToken = default)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
+
+		if (string.IsNullOrEmpty (_sourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = await FileHelper.SafeReadAllBytesAsync (_sourcePath, fs, cancellationToken).ConfigureAwait (false);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+
+		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path asynchronously.

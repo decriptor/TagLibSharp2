@@ -224,7 +224,7 @@ public sealed class DsfFile : IMediaFile
 	public MediaFormat Format => MediaFormat.Dsf;
 
 	private DsfFile (
-		byte[] originalData,
+		byte[]? originalData,
 		DsfDsdChunk dsdChunk,
 		DsfFmtChunk fmtChunk,
 		DsfDataChunk dataChunk,
@@ -320,6 +320,80 @@ public sealed class DsfFile : IMediaFile
 		var file = new DsfFile (originalData, dsdChunk, fmtChunk, dataChunk, audioDataOffset, tag);
 		file.Properties = new DsfAudioProperties (fmtChunk);
 		return DsfFileReadResult.Success (file);
+	}
+
+	/// <summary>
+	/// Reads the DSD, fmt, and data headers, then the ID3 tag. Sample bytes stay on disk.
+	/// </summary>
+	internal static DsfFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek) {
+			var copied = Read (StreamBytes.ReadToEnd (stream));
+			if (sourcePath is not null && copied.IsSuccess && copied.File is not null)
+				copied.File._originalData = null;
+			return WithSource (copied, sourcePath, fileSystem);
+		}
+
+		stream.Position = 0;
+		var headerBytes = DsfDsdChunk.Size + DsfFmtChunk.Size + DsfDataChunk.HeaderSize;
+		var headers = StreamBytes.ReadAtMost (stream, headerBytes);
+		if (headers.Length < headerBytes)
+			return DsfFileReadResult.Failure ($"Data too short for DSF file: {stream.Length} bytes, need at least {headerBytes}");
+
+		var dsdResult = DsfDsdChunk.Parse (headers);
+		if (!dsdResult.IsSuccess)
+			return DsfFileReadResult.Failure ($"Failed to parse DSD chunk: {dsdResult.Error}");
+		var dsdChunk = dsdResult.Chunk!;
+
+		var fmtResult = DsfFmtChunk.Parse (headers.AsSpan (DsfDsdChunk.Size));
+		if (!fmtResult.IsSuccess)
+			return DsfFileReadResult.Failure ($"Failed to parse format chunk: {fmtResult.Error}");
+		var fmtChunk = fmtResult.Chunk!;
+
+		var dataOffset = DsfDsdChunk.Size + DsfFmtChunk.Size;
+		var dataResult = DsfDataChunk.Parse (headers.AsSpan (dataOffset));
+		if (!dataResult.IsSuccess)
+			return DsfFileReadResult.Failure ($"Failed to parse data chunk: {dataResult.Error}");
+		var dataChunk = dataResult.Chunk!;
+		var audioDataOffset = dataOffset + DsfDataChunk.HeaderSize;
+		var dataEnd = (ulong)audioDataOffset + dataChunk.AudioDataSize;
+		if (dsdChunk.HasMetadata) {
+			if (dataEnd > dsdChunk.MetadataOffset)
+				return DsfFileReadResult.Failure (
+					$"Data chunk extends beyond metadata offset: data ends at {dataEnd}, metadata at {dsdChunk.MetadataOffset}");
+			if (dsdChunk.MetadataOffset > (ulong)stream.Length)
+				return DsfFileReadResult.Failure (
+					$"Metadata offset {dsdChunk.MetadataOffset} beyond file size {stream.Length}");
+		} else if (dataEnd > (ulong)stream.Length) {
+			return DsfFileReadResult.Failure (
+				$"Data chunk size exceeds available data: claims {dataChunk.AudioDataSize} bytes, but only {stream.Length - audioDataOffset} available");
+		}
+
+		Id3v2Tag? tag = null;
+		if (dsdChunk.HasMetadata) {
+			stream.Position = (long)dsdChunk.MetadataOffset;
+			var id3 = StreamBytes.ReadToEnd (stream);
+			var id3Result = Id3v2Tag.Read (id3);
+			if (id3Result.IsSuccess)
+				tag = id3Result.Tag;
+		}
+
+		var parsed = new DsfFile (null, dsdChunk, fmtChunk, dataChunk, audioDataOffset, tag) {
+			Properties = new DsfAudioProperties (fmtChunk),
+			SourcePath = sourcePath,
+			_sourceFileSystem = fileSystem
+		};
+		return DsfFileReadResult.Success (parsed);
+	}
+
+	static DsfFileReadResult WithSource (DsfFileReadResult result, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (result.IsSuccess && result.File is not null) {
+			result.File.SourcePath = sourcePath;
+			result.File._sourceFileSystem = fileSystem;
+		}
+
+		return result;
 	}
 
 	/// <summary>
@@ -490,12 +564,25 @@ public sealed class DsfFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DsfFile));
 
-		var rendered = Render ();
+		var fs = fileSystem ?? _sourceFileSystem;
+		var rendered = RenderWith (originalData);
 		if (rendered.IsEmpty)
 			return FileWriteResult.Failure ("Failed to render DSF file");
 
-		fileSystem ??= _sourceFileSystem;
-		return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
+		return AtomicFileWriter.Write (path, rendered.Span, fs);
+	}
+
+	BinaryData RenderWith (ReadOnlySpan<byte> originalData)
+	{
+		if (_originalData is not null)
+			return Render ();
+
+		_originalData = originalData.ToArray ();
+		try {
+			return Render ();
+		} finally {
+			_originalData = null;
+		}
 	}
 
 	/// <summary>
@@ -517,12 +604,12 @@ public sealed class DsfFile : IMediaFile
 
 		cancellationToken.ThrowIfCancellationRequested ();
 
-		var rendered = Render ();
+		var fs = fileSystem ?? _sourceFileSystem;
+		var rendered = RenderWith (originalData.Span);
 		if (rendered.IsEmpty)
 			return Task.FromResult (FileWriteResult.Failure ("Failed to render DSF file"));
 
-		fileSystem ??= _sourceFileSystem;
-		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken);
+		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken);
 	}
 
 	/// <summary>
@@ -544,7 +631,7 @@ public sealed class DsfFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fs);
 	}
 
 	/// <summary>
@@ -586,7 +673,7 @@ public sealed class DsfFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken).ConfigureAwait (false);
+		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
 	}
 
 	/// <summary>
