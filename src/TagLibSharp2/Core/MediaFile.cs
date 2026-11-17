@@ -36,7 +36,7 @@ namespace TagLibSharp2.Core;
 /// <item>DSF (DSD Stream File - ID3v2 metadata)</item>
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
-/// <item>Matroska/WebM (Matroska tags; reading)</item>
+/// <item>Matroska/WebM (Matroska tags)</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -152,7 +152,7 @@ public static class MediaFile
 		if (!readResult.IsSuccess)
 			return MediaFileResult.Failure (readResult.Error!);
 
-		return ReadFromData (readResult.Data!.Value, path);
+		return ReadCore (readResult.Data!.Value, path, fileSystem, rememberPath: true);
 	}
 
 	/// <summary>
@@ -179,7 +179,7 @@ public static class MediaFile
 		if (!readResult.IsSuccess)
 			return MediaFileResult.Failure (readResult.Error!);
 
-		return ReadFromData (readResult.Data!.Value, path);
+		return ReadCore (readResult.Data!.Value, path, fileSystem, rememberPath: true);
 	}
 
 	/// <summary>
@@ -188,11 +188,14 @@ public static class MediaFile
 	/// <param name="data">The file data.</param>
 	/// <param name="pathHint">Optional file path hint for extension-based detection.</param>
 	/// <returns>A result containing the parsed file or an error.</returns>
-	public static MediaFileResult ReadFromData (ReadOnlyMemory<byte> data, string? pathHint = null)
+	public static MediaFileResult ReadFromData (ReadOnlyMemory<byte> data, string? pathHint = null) =>
+		ReadCore (data, pathHint, sourceFileSystem: null, rememberPath: false);
+
+	static MediaFileResult ReadCore (ReadOnlyMemory<byte> data, string? pathHint, IFileSystem? sourceFileSystem, bool rememberPath)
 	{
 		var format = DetectFormat (data.Span, pathHint);
 
-		return format switch {
+		var result = format switch {
 			MediaFormat.Flac => OpenFlac (data),
 			MediaFormat.OggVorbis => OpenOggVorbis (data),
 			MediaFormat.Opus => OpenOpus (data),
@@ -210,6 +213,12 @@ public static class MediaFile
 			MediaFormat.Matroska => OpenMatroska (data),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
+
+		// ReadFromData's path is only an extension hint. A path read can save Matroska back to that file.
+		if (rememberPath && result.IsSuccess && pathHint is not null && result.File is MatroskaFile matroska)
+			matroska.SetSourcePath (pathHint, sourceFileSystem);
+
+		return result;
 	}
 
 	/// <summary>

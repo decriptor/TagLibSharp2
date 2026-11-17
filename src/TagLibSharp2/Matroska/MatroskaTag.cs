@@ -594,6 +594,18 @@ public sealed class MatroskaTag : Tag
 
 	void SetAtValues (ulong level, string name, string[]? values)
 	{
+		SimpleTag? previous = null;
+		foreach (var existing in _blocks) {
+			if (!existing.IsFileLevel || existing.Level != level)
+				continue;
+			foreach (var tag in existing.Tags) {
+				if (tag.Name != name)
+					continue;
+				previous = tag;
+				break;
+			}
+		}
+
 		RemoveAt (level, name);
 		if (values is null || values.Length == 0)
 			return;
@@ -602,7 +614,11 @@ public sealed class MatroskaTag : Tag
 		foreach (var value in values) {
 			if (string.IsNullOrEmpty (value))
 				continue;
-			block.Tags.Add (new SimpleTag (name, value));
+			block.Tags.Add (new SimpleTag (name, value) {
+				Language = previous?.Language,
+				LanguageBcp47 = previous?.LanguageBcp47,
+				Binary = previous?.Binary
+			});
 		}
 	}
 
@@ -669,6 +685,14 @@ internal sealed class TagBlock
 
 	public List<SimpleTag> Tags { get; } = new ();
 
+	readonly List<byte[]> _targetChildren = [];
+
+	byte[]? _original;
+
+	internal void KeepOriginal (byte[] element) => _original = element;
+
+	internal void KeepTarget (byte[] element) => _targetChildren.Add (element);
+
 	public bool HasName (string name)
 	{
 		foreach (var tag in Tags) {
@@ -704,8 +728,13 @@ internal sealed class TagBlock
 
 	public BinaryData Render ()
 	{
+		if (_original is not null)
+			return new BinaryData (_original);
+
 		using var body = new BinaryDataBuilder ();
 		body.Add (EbmlWriter.Unsigned (MatroskaIds.TargetTypeValue, Level));
+		foreach (var child in _targetChildren)
+			body.Add (child);
 		var targets = EbmlWriter.Master (MatroskaIds.Targets, body.ToBinaryData ().Span);
 		using var tag = new BinaryDataBuilder ();
 		tag.Add (targets);
@@ -731,16 +760,28 @@ internal sealed class SimpleTag
 
 	public bool IsDefault { get; }
 
+	public string? Language { get; set; }
+
+	public string? LanguageBcp47 { get; set; }
+
+	public byte[]? Binary { get; set; }
+
 	public List<SimpleTag> Children { get; } = new ();
 
 	public BinaryData Render ()
 	{
 		using var body = new BinaryDataBuilder ();
 		body.Add (EbmlWriter.String (MatroskaIds.TagName, Name));
+		if (Language is not null)
+			body.Add (EbmlWriter.String (MatroskaIds.TagLanguage, Language));
+		if (LanguageBcp47 is not null)
+			body.Add (EbmlWriter.String (MatroskaIds.TagLanguageBcp47, LanguageBcp47));
 		if (!IsDefault)
 			body.Add (EbmlWriter.Unsigned (MatroskaIds.TagDefault, 0));
 		if (Text is not null)
 			body.Add (EbmlWriter.String (MatroskaIds.TagString, Text));
+		if (Binary is not null)
+			body.Add (EbmlWriter.Master (MatroskaIds.TagBinary, Binary));
 		foreach (var child in Children)
 			body.Add (child.Render ());
 		return EbmlWriter.Master (MatroskaIds.SimpleTag, body.ToBinaryData ().Span);

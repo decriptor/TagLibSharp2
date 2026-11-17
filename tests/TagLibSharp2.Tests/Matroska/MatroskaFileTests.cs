@@ -11,7 +11,7 @@ namespace TagLibSharp2.Tests.Matroska;
 [TestClass]
 [TestCategory ("Unit")]
 [TestCategory ("Matroska")]
-public class MatroskaFileTests
+public partial class MatroskaFileTests
 {
 	[TestMethod]
 	public void Read_AlbumAndTrackTargets_KeepsEachLevel ()
