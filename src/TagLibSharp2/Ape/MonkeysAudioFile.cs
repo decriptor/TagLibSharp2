@@ -100,6 +100,7 @@ public sealed class MonkeysAudioFile : IMediaFile
 	private const int MinNewFormatSize = 4 + DescriptorSize + HeaderSize;
 
 	private byte[] _originalData = Array.Empty<byte> ();
+	private long _fileLength;
 
 	/// <summary>
 	/// Gets the source file path if the file was read from disk.
@@ -202,6 +203,89 @@ public sealed class MonkeysAudioFile : IMediaFile
 		file.ParseApeTag (data);
 
 		return MonkeysAudioFileReadResult.Success (file);
+	}
+
+	/// <summary>
+	/// Reads the descriptor and header, then the trailing APE tag. Audio bytes stay on disk.
+	/// </summary>
+	internal static MonkeysAudioFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return Finish (Read (StreamBytes.ReadToEnd (stream)), sourcePath, fileSystem, keepPayload: sourcePath is null);
+
+		stream.Position = 0;
+		var prefix = StreamBytes.ReadAtMost (stream, 16);
+		if (prefix.Length < MagicSize + 2)
+			return Finish (Read (prefix), sourcePath, fileSystem, keepPayload: true);
+
+		var version = BinaryPrimitives.ReadUInt16LittleEndian (prefix.AsSpan (MagicSize, 2));
+		int need;
+		if (version >= NewFormatVersion) {
+			if (prefix.Length < 16)
+				return MonkeysAudioFileReadResult.Failure ("Invalid Monkey's Audio file: truncated descriptor");
+			var descriptor = BinaryPrimitives.ReadUInt32LittleEndian (prefix.AsSpan (8, 4));
+			need = (int)descriptor + HeaderSize;
+			if (need < MinNewFormatSize)
+				need = MinNewFormatSize;
+		} else {
+			need = MinOldFormatSize;
+		}
+
+		if (need > 1024 * 1024)
+			return MonkeysAudioFileReadResult.Failure ("Invalid Monkey's Audio file: header is too large");
+
+		byte[] header;
+		if (need <= prefix.Length) {
+			header = prefix.AsSpan (0, need).ToArray ();
+		} else {
+			var rest = StreamBytes.ReadAtMost (stream, need - prefix.Length);
+			header = new byte[prefix.Length + rest.Length];
+			prefix.CopyTo (header, 0);
+			rest.CopyTo (header, prefix.Length);
+		}
+
+		ApeTagTail.TryRead (stream, out var tag, out var tagAt);
+		if (tagAt < header.Length)
+			return Finish (Read (ReadWhole (stream)), sourcePath, fileSystem, keepPayload: sourcePath is null);
+
+		return Finish (Read (Join (header, tag)), sourcePath, fileSystem, keepPayload: false, fileLength: stream.Length);
+	}
+
+	static byte[] ReadWhole (Stream stream)
+	{
+		stream.Position = 0;
+		return StreamBytes.ReadToEnd (stream);
+	}
+
+	static byte[] Join (byte[] left, byte[] right)
+	{
+		if (right.Length == 0)
+			return left;
+		var combined = new byte[left.Length + right.Length];
+		left.CopyTo (combined, 0);
+		right.CopyTo (combined, left.Length);
+		return combined;
+	}
+
+	static MonkeysAudioFileReadResult Finish (
+		MonkeysAudioFileReadResult result,
+		string? sourcePath,
+		IFileSystem? fileSystem,
+		bool keepPayload,
+		long? fileLength = null)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return result;
+
+		result.File.SourcePath = sourcePath;
+		result.File._sourceFileSystem = fileSystem;
+		if (!keepPayload) {
+			result.File._fileLength = fileLength ?? 0;
+			result.File._originalData = [];
+			result.File.CalculateProperties ();
+		}
+
+		return result;
 	}
 
 	/// <summary>
@@ -378,9 +462,9 @@ public sealed class MonkeysAudioFile : IMediaFile
 
 		// Calculate bitrate from file size if we have original data
 		var bitrate = 0;
-		if (_originalData.Length > 0 && durationSeconds > 0) {
-			bitrate = (int)(_originalData.Length * 8 / durationSeconds / 1000);
-		}
+		var length = _fileLength > 0 ? _fileLength : _originalData.Length;
+		if (length > 0 && durationSeconds > 0)
+			bitrate = (int)(length * 8 / durationSeconds / 1000);
 
 		// AudioProperties: duration, bitrate, sampleRate, bitsPerSample, channels, codec
 		Properties = new AudioProperties (
@@ -487,8 +571,19 @@ public sealed class MonkeysAudioFile : IMediaFile
 	/// <summary>
 	/// Save the file to a new path using internally stored data.
 	/// </summary>
-	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null) =>
-		SaveToFile (path, _originalData, fileSystem);
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return SaveToFile (path, _originalData, fs);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return SaveToFile (path, read.Data!.Value.Span, fs);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path.
@@ -523,11 +618,22 @@ public sealed class MonkeysAudioFile : IMediaFile
 	/// <summary>
 	/// Save the file asynchronously using internally stored data.
 	/// </summary>
-	public Task<FileWriteResult> SaveToFileAsync (
+	public async Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
-		CancellationToken cancellationToken = default) =>
-		SaveToFileAsync (path, _originalData, fileSystem, cancellationToken);
+		CancellationToken cancellationToken = default)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath, fs, cancellationToken).ConfigureAwait (false);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+	}
 
 	/// <summary>
 	/// Save the file back to its source path asynchronously.

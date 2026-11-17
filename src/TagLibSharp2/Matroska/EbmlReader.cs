@@ -38,6 +38,26 @@ internal readonly struct EbmlElement
 /// </summary>
 internal static class EbmlReader
 {
+	/// <summary>
+	/// Reads an element header. The payload does not have to be in <paramref name="data"/>.
+	/// <paramref name="dataLength"/> is -1 when the size is unknown.
+	/// </summary>
+	public static bool TryPeekHeader (ReadOnlySpan<byte> data, out ulong id, out int headerLength, out long dataLength)
+	{
+		id = 0;
+		headerLength = 0;
+		dataLength = -1;
+		if (!TryReadVint (data, 0, data.Length, keepMarker: true, maxWidth: 4, out id, out var idWidth, out _))
+			return false;
+		if (!TryReadVint (data, idWidth, data.Length, keepMarker: false, maxWidth: 8, out var size, out var sizeWidth, out var unknown))
+			return false;
+
+		headerLength = idWidth + sizeWidth;
+		if (!unknown)
+			dataLength = (long)size;
+		return true;
+	}
+
 	public static bool TryRead (ReadOnlySpan<byte> data, int offset, int limit, out EbmlElement element)
 	{
 		element = default;

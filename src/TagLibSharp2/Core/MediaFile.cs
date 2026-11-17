@@ -169,8 +169,8 @@ public static class MediaFile
 	/// <param name="pathHint">Optional file name used when the bytes do not identify a format.</param>
 	/// <returns>A result containing the parsed file or an error.</returns>
 	/// <remarks>
-	/// A seekable stream is read by the ranges the format needs. MP3, FLAC, and WAV
-	/// do not read the audio payload. A stream that cannot seek is copied once.
+	/// A seekable stream is read by the ranges the format needs and does not read the
+	/// audio or video payload. A stream that cannot seek is copied once.
 	/// </remarks>
 	public static MediaFileResult Read (Stream stream, string? pathHint = null)
 	{
@@ -230,8 +230,8 @@ public static class MediaFile
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>A result containing the parsed file or an error.</returns>
 	/// <remarks>
-	/// A seekable stream is read by the ranges the format needs. MP3, FLAC, and WAV
-	/// do not read the audio payload. A stream that cannot seek is copied once.
+	/// A seekable stream is read by the ranges the format needs and does not read the
+	/// audio or video payload. A stream that cannot seek is copied once.
 	/// </remarks>
 	public static Task<MediaFileResult> ReadAsync (
 		Stream stream,
@@ -297,7 +297,7 @@ public static class MediaFile
 			MediaFormat.Mp3 => FromMp3 (await Mp3File.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Flac => FromFlac (await FlacFile.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
-			_ => ReadFromData (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false), pathHint)
+			_ => OpenDetected (format, stream, sourcePath, fileSystem, pathHint)
 		};
 		return RememberMatroskaSource (result, sourcePath, fileSystem);
 	}
@@ -307,6 +307,18 @@ public static class MediaFile
 			MediaFormat.Mp3 => FromMp3 (Mp3File.Read (stream)),
 			MediaFormat.Flac => FromFlac (FlacFile.Read (stream)),
 			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Mp4 => FromMp4 (Mp4File.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Matroska => FromMatroska (MatroskaFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.OggVorbis => FromOggVorbis (OggVorbisFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Opus => FromOpus (OggOpusFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.OggFlac => FromOggFlac (OggFlacFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Aiff => FromAiff (AiffFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.WavPack => FromWavPack (WavPackFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.MonkeysAudio => FromMonkeys (MonkeysAudioFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Musepack => FromMusepack (MusepackFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Dsf => FromDsf (DsfFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Dff => FromDff (DffFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Asf => FromAsf (AsfFile.Read (stream, sourcePath, fileSystem)),
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
@@ -330,6 +342,90 @@ public static class MediaFile
 		if (!result.IsSuccess || result.File is null)
 			return MediaFileResult.Failure (result.Error ?? "Failed to parse FLAC file");
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Flac);
+	}
+
+	static MediaFileResult FromMp4 (Mp4FileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse MP4 file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Mp4);
+	}
+
+	static MediaFileResult FromMatroska (MatroskaFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse Matroska file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Matroska);
+	}
+
+	static MediaFileResult FromOggVorbis (OggVorbisFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse Ogg Vorbis file");
+		return MediaFileResult.Success (result.File, result.File.VorbisComment, MediaFormat.OggVorbis);
+	}
+
+	static MediaFileResult FromOpus (OggOpusFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse Opus file");
+		return MediaFileResult.Success (result.File, result.File.VorbisComment, MediaFormat.Opus);
+	}
+
+	static MediaFileResult FromOggFlac (OggFlacFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse Ogg FLAC file");
+		return MediaFileResult.Success (result.File, result.File.VorbisComment, MediaFormat.OggFlac);
+	}
+
+	static MediaFileResult FromAiff (AiffFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse AIFF file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Aiff);
+	}
+
+	static MediaFileResult FromWavPack (WavPackFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse WavPack file");
+		return MediaFileResult.Success (result.File, result.File.ApeTag, MediaFormat.WavPack);
+	}
+
+	static MediaFileResult FromMonkeys (MonkeysAudioFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse Monkey's Audio file");
+		return MediaFileResult.Success (result.File, result.File.ApeTag, MediaFormat.MonkeysAudio);
+	}
+
+	static MediaFileResult FromMusepack (MusepackFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse Musepack file");
+		return MediaFileResult.Success (result.File, result.File.ApeTag, MediaFormat.Musepack);
+	}
+
+	static MediaFileResult FromDsf (DsfFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse DSF file");
+		return MediaFileResult.Success (result.File, result.File.Id3v2Tag, MediaFormat.Dsf);
+	}
+
+	static MediaFileResult FromDff (DffFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse DFF file");
+		return MediaFileResult.Success (result.File, result.File.Id3v2Tag, MediaFormat.Dff);
+	}
+
+	static MediaFileResult FromAsf (AsfFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse ASF file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Asf);
 	}
 
 	static MediaFileResult FromWav (WavFileReadResult result)

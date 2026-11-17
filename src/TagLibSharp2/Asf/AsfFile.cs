@@ -190,6 +190,43 @@ public sealed class AsfFile : IMediaFile
 	}
 
 	/// <summary>
+	/// Reads the header object. The data object that follows is not copied.
+	/// </summary>
+	internal static AsfFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return Finish (Read (StreamBytes.ReadToEnd (stream)), sourcePath, fileSystem, dropPayload: sourcePath is not null);
+
+		stream.Position = 0;
+		var head = StreamBytes.ReadAtMost (stream, 30);
+		if (head.Length < 30)
+			return Finish (Read (head), sourcePath, fileSystem, dropPayload: false);
+
+		var headerSize = BinaryPrimitives.ReadUInt64LittleEndian (head.AsSpan (16));
+		if (headerSize < 30 || headerSize > int.MaxValue)
+			return AsfFileReadResult.Failure ("Invalid ASF file: header size is out of range");
+
+		var rest = StreamBytes.ReadAtMost (stream, (int)headerSize - head.Length);
+		var header = new byte[head.Length + rest.Length];
+		head.CopyTo (header, 0);
+		rest.CopyTo (header, head.Length);
+		var coversFile = headerSize >= (ulong)stream.Length;
+		return Finish (Read (header), sourcePath, fileSystem, dropPayload: !coversFile);
+	}
+
+	static AsfFileReadResult Finish (AsfFileReadResult result, string? sourcePath, IFileSystem? fileSystem, bool dropPayload)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return result;
+
+		result.File.SourcePath = sourcePath;
+		result.File._sourceFileSystem = fileSystem;
+		if (dropPayload)
+			result.File._originalData = [];
+		return result;
+	}
+
+	/// <summary>
 	/// Attempts to read an ASF file from binary data.
 	/// </summary>
 	/// <param name="data">The file data.</param>
@@ -487,8 +524,19 @@ public sealed class AsfFile : IMediaFile
 	/// <param name="path">The file path to save to.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <returns>The result of the write operation.</returns>
-	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null) =>
-		SaveToFile (path, _originalData, fileSystem);
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return SaveToFile (path, _originalData, fs);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. Use SaveToFile(path) instead.");
+
+		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return SaveToFile (path, read.Data!.Value.Span, fs);
+	}
 
 	/// <summary>
 	/// Saves the file back to its source path.
@@ -529,11 +577,22 @@ public sealed class AsfFile : IMediaFile
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The result of the write operation.</returns>
-	public Task<FileWriteResult> SaveToFileAsync (
+	public async Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
-		CancellationToken cancellationToken = default) =>
-		SaveToFileAsync (path, _originalData, fileSystem, cancellationToken);
+		CancellationToken cancellationToken = default)
+	{
+		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData.Length > 0)
+			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. Use SaveToFileAsync(path) instead.");
+
+		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath, fs, cancellationToken).ConfigureAwait (false);
+		if (!read.IsSuccess)
+			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+	}
 
 	/// <summary>
 	/// Saves the file back to its source path asynchronously.

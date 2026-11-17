@@ -34,7 +34,7 @@ public sealed class OggVorbisFile : IMediaFile
 	/// </summary>
 	/// <remarks>
 	/// This is set when using <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
-	/// It is null when the file was read from binary data using <see cref="Read"/>.
+	/// It is null when the file was read from binary data using <see cref="Read(ReadOnlySpan{byte}, bool)"/>.
 	/// </remarks>
 	public string? SourcePath { get; private set; }
 
@@ -234,6 +234,38 @@ public sealed class OggVorbisFile : IMediaFile
 		};
 
 		return OggVorbisFileReadResult.Success (file, data.Length);
+	}
+
+	/// <summary>
+	/// Reads header pages and the last page. Audio pages between them are not copied.
+	/// </summary>
+	internal static OggVorbisFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem, bool validateCrc = false)
+	{
+		if (!stream.CanSeek)
+			return WithSource (Read (StreamBytes.ReadToEnd (stream), validateCrc), sourcePath, fileSystem);
+
+		var headers = OggWindow.ReadHeaders (stream, OggHeaderKind.Vorbis);
+		var last = OggWindow.ReadLastPage (stream);
+		var window = last.Length == 0 ? headers : Concat (headers, last);
+		return WithSource (Read (window, validateCrc), sourcePath, fileSystem);
+	}
+
+	static OggVorbisFileReadResult WithSource (OggVorbisFileReadResult result, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (result.IsSuccess && result.File is not null) {
+			result.File.SourcePath = sourcePath;
+			result.File._sourceFileSystem = fileSystem;
+		}
+
+		return result;
+	}
+
+	static byte[] Concat (byte[] left, byte[] right)
+	{
+		var combined = new byte[left.Length + right.Length];
+		left.CopyTo (combined, 0);
+		right.CopyTo (combined, left.Length);
+		return combined;
 	}
 
 	/// <summary>
@@ -542,7 +574,7 @@ public sealed class OggVorbisFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fs);
 	}
 
 	/// <summary>
@@ -584,7 +616,7 @@ public sealed class OggVorbisFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
+		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken)
 			.ConfigureAwait (false);
 	}
 

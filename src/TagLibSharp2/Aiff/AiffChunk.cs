@@ -56,6 +56,12 @@ public class AiffChunk
 	}
 
 	/// <summary>
+	/// A chunk whose declared size is kept when the bytes were left in the file.
+	/// </summary>
+	internal static AiffChunk WithDeclaredSize (string fourCC, uint size, BinaryData data) =>
+		new (fourCC, size, data);
+
+	/// <summary>
 	/// Creates a new AiffChunk with the specified FourCC and data.
 	/// </summary>
 	/// <param name="fourCC">The 4-character chunk identifier.</param>

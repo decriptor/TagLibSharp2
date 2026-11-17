@@ -36,7 +36,7 @@ public sealed class OggOpusFile : IMediaFile
 	/// </summary>
 	/// <remarks>
 	/// This is set when using <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
-	/// It is null when the file was read from binary data using <see cref="Read"/>.
+	/// It is null when the file was read from binary data using <see cref="Read(ReadOnlySpan{byte}, bool)"/>.
 	/// </remarks>
 	public string? SourcePath { get; private set; }
 
@@ -287,6 +287,56 @@ public sealed class OggOpusFile : IMediaFile
 		};
 
 		return OggOpusFileReadResult.Success (file, data.Length);
+	}
+
+	/// <summary>
+	/// Reads the Opus header pages and the last page. Audio pages between them are not copied.
+	/// </summary>
+	internal static OggOpusFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem, bool validateCrc = false)
+	{
+		if (!stream.CanSeek)
+			return WithSource (Read (StreamBytes.ReadToEnd (stream), validateCrc), sourcePath, fileSystem, stream.CanSeek ? stream.Length : null);
+
+		var headers = OggWindow.ReadHeaders (stream, OggHeaderKind.Opus);
+		var last = OggWindow.ReadLastPage (stream);
+		var window = last.Length == 0 ? headers : Concat (headers, last);
+		return WithSource (Read (window, validateCrc), sourcePath, fileSystem, stream.Length);
+	}
+
+	static OggOpusFileReadResult WithSource (OggOpusFileReadResult result, string? sourcePath, IFileSystem? fileSystem, long? fileLength)
+	{
+		if (result.IsSuccess && result.File is not null) {
+			result.File.SourcePath = sourcePath;
+			result.File._sourceFileSystem = fileSystem;
+			if (fileLength is long length && length > 0)
+				result.File.UseFileLength (length);
+		}
+
+		return result;
+	}
+
+	void UseFileLength (long length)
+	{
+		_fileSize = length;
+		if (Properties.Duration.TotalSeconds <= 0)
+			return;
+
+		var bitrate = (int)(length * 8 / Properties.Duration.TotalSeconds / 1000);
+		Properties = new AudioProperties (
+			Properties.Duration,
+			bitrate,
+			Properties.SampleRate,
+			Properties.BitsPerSample,
+			Properties.Channels,
+			Properties.Codec);
+	}
+
+	static byte[] Concat (byte[] left, byte[] right)
+	{
+		var combined = new byte[left.Length + right.Length];
+		left.CopyTo (combined, 0);
+		right.CopyTo (combined, left.Length);
+		return combined;
 	}
 
 	/// <summary>
@@ -632,7 +682,7 @@ public sealed class OggOpusFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+		return SaveToFile (path, readResult.Data!.Value.Span, fs);
 	}
 
 	/// <summary>
@@ -674,7 +724,7 @@ public sealed class OggOpusFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
+		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken)
 			.ConfigureAwait (false);
 	}
 
