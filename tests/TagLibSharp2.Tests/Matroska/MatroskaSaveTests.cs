@@ -391,6 +391,38 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public async Task Save_MediaFileReadAsync_SetsSourcePath ()
+	{
+		var original = FileWith (Tags (Tag (30, Simple ("TITLE", "Media"))));
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/media-async.mkv", original);
+
+		var opened = await MediaFile.ReadAsync ("/media-async.mkv", fs);
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		var file = opened.GetFileAs<MatroskaFile> ();
+		Assert.IsNotNull (file);
+		Assert.AreEqual ("/media-async.mkv", file!.SourcePath);
+		file.Tag.Album = "From MediaFile";
+		var saved = await file.SaveToFileAsync (fs);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		Assert.AreEqual ("From MediaFile", MatroskaFile.Read (fs.ReadAllBytes ("/media-async.mkv")).File!.Tag.Album);
+		Assert.AreEqual ("Media", MatroskaFile.Read (fs.ReadAllBytes ("/media-async.mkv")).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_StreamPathHint_DoesNotBecomeTheMatroskaSource ()
+	{
+		var original = FileWith (Tags (Tag (30, Simple ("TITLE", "Media"))));
+		using var stream = new MemoryStream (original);
+
+		var opened = MediaFile.Read (stream, "/hint.mkv");
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.IsNull (opened.GetFileAs<MatroskaFile> ()!.SourcePath);
+	}
+
+	[TestMethod]
 	public void Save_SeekHead_KeepsATagsPointerThatStillFits ()
 	{
 		var marker = new byte[] { 0xAB, 0xCD };
