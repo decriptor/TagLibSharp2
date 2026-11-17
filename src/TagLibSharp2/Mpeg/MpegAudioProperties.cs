@@ -110,9 +110,26 @@ public sealed class MpegAudioProperties : IMediaProperties
 	/// <param name="audioOffset">The offset where audio data starts (after ID3v2).</param>
 	/// <param name="properties">The parsed properties, or null if parsing failed.</param>
 	/// <returns>True if parsing succeeded, false otherwise.</returns>
-	public static bool TryParse (BinaryData data, int audioOffset, out MpegAudioProperties? properties)
+	public static bool TryParse (BinaryData data, int audioOffset, out MpegAudioProperties? properties) =>
+		TryParse (data, audioOffset, data.Length, out properties, out _);
+
+	/// <summary>
+	/// Parses audio properties when <paramref name="fileLength"/> is the real file
+	/// and <paramref name="data"/> is only the tag plus the first audio frames.
+	/// <paramref name="needsEntireFile"/> is set when a Xing or VBRI byte count does
+	/// not fit that file, so the frame count has to be walked from the audio itself.
+	/// </summary>
+	internal static bool TryParse (
+		BinaryData data,
+		int audioOffset,
+		long fileLength,
+		out MpegAudioProperties? properties,
+		out bool needsEntireFile)
 	{
 		properties = null;
+		needsEntireFile = false;
+		if (fileLength < data.Length)
+			fileLength = data.Length;
 
 		// Find the first valid MPEG frame
 		var frameOffset = FindFirstFrame (data, audioOffset);
@@ -146,8 +163,8 @@ public sealed class MpegAudioProperties : IMediaProperties
 		bool isVbr;
 		uint? frameCount = null;
 
-		var audioDataSize = data.Length - audioOffset;
-		var bytesFromFrame = data.Length - frameOffset;
+		var audioDataSize = fileLength - audioOffset;
+		var bytesFromFrame = fileLength - frameOffset;
 		var trustVbri = xingHeader is null && vbriHeader is not null
 			&& DeclaredSizeFits (vbriHeader.ByteCount > 0 ? vbriHeader.ByteCount : null, bytesFromFrame);
 
@@ -178,6 +195,13 @@ public sealed class MpegAudioProperties : IMediaProperties
 			else
 				bitrate = frame.Bitrate;
 		} else if (xingHeader?.FrameCount != null || vbriHeader is not null) {
+			// The bytes we hold are not the whole file. Counting frames here would
+			// stop at the end of the probe instead of the end of the audio.
+			if (fileLength > data.Length) {
+				needsEntireFile = true;
+				return false;
+			}
+
 			// The header names a byte count past the end of this buffer, so its frame
 			// count describes a longer file. Count the frames that are actually here.
 			var counted = CountFrames (data, frameOffset);
@@ -258,11 +282,11 @@ public sealed class MpegAudioProperties : IMediaProperties
 	/// A missing byte count makes no size claim. A count past the bytes after the
 	/// first frame belongs to a longer file than the one in hand.
 	/// </summary>
-	static bool DeclaredSizeFits (uint? byteCount, int bytesFromFrame)
+	static bool DeclaredSizeFits (uint? byteCount, long bytesFromFrame)
 	{
 		if (byteCount is null)
 			return true;
-		return bytesFromFrame >= 0 && byteCount.Value <= (uint)bytesFromFrame;
+		return bytesFromFrame >= 0 && byteCount.Value <= bytesFromFrame;
 	}
 
 	static int CountFrames (BinaryData data, int firstOffset)

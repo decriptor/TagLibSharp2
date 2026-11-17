@@ -41,7 +41,7 @@ namespace TagLibSharp2.Core;
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
 /// <para>
-/// Use <see cref="Read"/> or <see cref="ReadAsync"/> to open a file. The result contains
+/// Use <see cref="Read(string, IFileSystem)"/> or <see cref="ReadAsync(string, IFileSystem, CancellationToken)"/> to open a file. The result contains
 /// the strongly-typed file object (e.g., <see cref="TagLibSharp2.Xiph.FlacFile"/>,
 /// <see cref="TagLibSharp2.Mpeg.Mp3File"/>) with Tag and audio property access.
 /// Modify tag properties directly on the file object.
@@ -148,11 +148,39 @@ public static class MediaFile
 		ArgumentNullException.ThrowIfNull (path);
 #endif
 
-		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
-		if (!readResult.IsSuccess)
-			return MediaFileResult.Failure (readResult.Error!);
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		if (!fs.FileExists (path))
+			return MediaFileResult.Failure ($"File not found: {path}");
 
-		return ReadCore (readResult.Data!.Value, path, fileSystem, rememberPath: true);
+		try {
+			using var stream = fs.OpenRead (path);
+			return Read (stream, path, path, fs);
+		} catch (IOException ex) {
+			return MediaFileResult.Failure ($"Failed to read file: {ex.Message}");
+		} catch (UnauthorizedAccessException ex) {
+			return MediaFileResult.Failure ($"Access denied: {ex.Message}");
+		}
+	}
+
+	/// <summary>
+	/// Reads a media file from a stream.
+	/// </summary>
+	/// <param name="stream">The stream to read. The caller keeps ownership of it.</param>
+	/// <param name="pathHint">Optional file name used when the bytes do not identify a format.</param>
+	/// <returns>A result containing the parsed file or an error.</returns>
+	/// <remarks>
+	/// A seekable stream is read by the ranges the format needs. MP3, FLAC, and WAV
+	/// do not read the audio payload. A stream that cannot seek is copied once.
+	/// </remarks>
+	public static MediaFileResult Read (Stream stream, string? pathHint = null)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (stream is null)
+			throw new ArgumentNullException (nameof (stream));
+#else
+		ArgumentNullException.ThrowIfNull (stream);
+#endif
+		return Read (stream, pathHint, sourcePath: null, fileSystem: null);
 	}
 
 	/// <summary>
@@ -174,12 +202,131 @@ public static class MediaFile
 		ArgumentNullException.ThrowIfNull (path);
 #endif
 
-		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fileSystem, cancellationToken)
-			.ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return MediaFileResult.Failure (readResult.Error!);
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		if (!fs.FileExists (path))
+			return MediaFileResult.Failure ($"File not found: {path}");
 
-		return ReadCore (readResult.Data!.Value, path, fileSystem, rememberPath: true);
+		try {
+			using var stream = fs.OpenRead (path);
+			return await ReadAsync (stream, path, path, fs, cancellationToken).ConfigureAwait (false);
+		} catch (IOException ex) {
+			return MediaFileResult.Failure ($"Failed to read file: {ex.Message}");
+		} catch (UnauthorizedAccessException ex) {
+			return MediaFileResult.Failure ($"Access denied: {ex.Message}");
+		} catch (OperationCanceledException) {
+			return MediaFileResult.Failure ("Operation was cancelled");
+		}
+	}
+
+	/// <summary>
+	/// Reads a media file from a stream asynchronously.
+	/// </summary>
+	/// <param name="stream">The stream to read. The caller keeps ownership of it.</param>
+	/// <param name="pathHint">Optional file name used when the bytes do not identify a format.</param>
+	/// <param name="cancellationToken">Cancellation token.</param>
+	/// <returns>A result containing the parsed file or an error.</returns>
+	/// <remarks>
+	/// A seekable stream is read by the ranges the format needs. MP3, FLAC, and WAV
+	/// do not read the audio payload. A stream that cannot seek is copied once.
+	/// </remarks>
+	public static Task<MediaFileResult> ReadAsync (
+		Stream stream,
+		string? pathHint = null,
+		CancellationToken cancellationToken = default)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (stream is null)
+			throw new ArgumentNullException (nameof (stream));
+#else
+		ArgumentNullException.ThrowIfNull (stream);
+#endif
+		return ReadAsync (stream, pathHint, sourcePath: null, fileSystem: null, cancellationToken);
+	}
+
+	static MediaFileResult Read (Stream stream, string? pathHint, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return RememberMatroskaSource (ReadFromData (StreamBytes.ReadToEnd (stream), pathHint), sourcePath, fileSystem);
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		var peek = StreamBytes.ReadAtMost (stream, 4096);
+		stream.Position = 0;
+		return RememberMatroskaSource (
+			OpenDetected (DetectFormat (peek, pathHint), stream, sourcePath, fileSystem, pathHint),
+			sourcePath,
+			fileSystem);
+	}
+
+	static async Task<MediaFileResult> ReadAsync (
+		Stream stream,
+		string? pathHint,
+		string? sourcePath,
+		IFileSystem? fileSystem,
+		CancellationToken cancellationToken)
+	{
+		cancellationToken.ThrowIfCancellationRequested ();
+		if (!stream.CanSeek)
+			return RememberMatroskaSource (
+				ReadFromData (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false), pathHint),
+				sourcePath,
+				fileSystem);
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		var peek = await StreamBytes.ReadAtMostAsync (stream, 4096, cancellationToken).ConfigureAwait (false);
+		stream.Position = 0;
+		var format = DetectFormat (peek, pathHint);
+		var result = format switch {
+			MediaFormat.Mp3 => FromMp3 (await Mp3File.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
+			MediaFormat.Flac => FromFlac (await FlacFile.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
+			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
+			_ => ReadFromData (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false), pathHint)
+		};
+		return RememberMatroskaSource (result, sourcePath, fileSystem);
+	}
+
+	static MediaFileResult OpenDetected (MediaFormat format, Stream stream, string? sourcePath, IFileSystem? fileSystem, string? pathHint) =>
+		format switch {
+			MediaFormat.Mp3 => FromMp3 (Mp3File.Read (stream)),
+			MediaFormat.Flac => FromFlac (FlacFile.Read (stream)),
+			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
+			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
+		};
+
+	// ReadFromData's path is only an extension hint. A path read can save Matroska back to that file.
+	static MediaFileResult RememberMatroskaSource (MediaFileResult result, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (sourcePath is not null && result.IsSuccess && result.File is MatroskaFile matroska)
+			matroska.SetSourcePath (sourcePath, fileSystem);
+		return result;
+	}
+
+	static MediaFileResult FromMp3 (Mp3FileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse MP3 file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Mp3);
+	}
+
+	static MediaFileResult FromFlac (FlacFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse FLAC file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Flac);
+	}
+
+	static MediaFileResult FromWav (WavFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse WAV file");
+
+		Tag? tag = result.File.Id3v2Tag is not null
+			? result.File.Id3v2Tag
+			: result.File.InfoTag;
+		return MediaFileResult.Success (result.File, tag, MediaFormat.Wav);
 	}
 
 	/// <summary>

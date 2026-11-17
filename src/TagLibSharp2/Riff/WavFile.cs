@@ -153,10 +153,13 @@ public sealed class WavFile : IMediaFile
 	bool _keepUnparsedBext;
 
 	/// <summary>
-	/// The <see cref="BextTag"/> instance produced by <see cref="Read"/>.
+	/// The <see cref="BextTag"/> instance produced by <see cref="Read(ReadOnlySpan{byte})"/>.
 	/// Original bytes are copied only while <see cref="BextTag"/> is still this instance.
 	/// </summary>
 	BextTag? _parsedBext;
+
+	/// <summary>File offset of sample bytes that were not copied during a stream read.</summary>
+	readonly List<RiffFile.SkippedChunk> _skippedChunks = [];
 
 	WavFile (RiffFile riff)
 	{
@@ -254,6 +257,36 @@ public sealed class WavFile : IMediaFile
 		if (!RiffFile.TryParse (new BinaryData (data.ToArray ()), out var riff))
 			return WavFileReadResult.Failure ("Invalid WAV file: invalid RIFF structure");
 
+		return FromParsed (riff, null);
+	}
+
+	/// <summary>
+	/// Reads a WAV file from a stream. Sample bytes in the data chunk are skipped.
+	/// A later save reloads them from <paramref name="sourcePath"/> when that path is set.
+	/// </summary>
+	internal static WavFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
+	{
+		if (!stream.CanSeek)
+			return Read (StreamBytes.ReadToEnd (stream));
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		if (!RiffFile.TryRead (stream, out var riff, out var skipped))
+			return WavFileReadResult.Failure ("Invalid WAV file: invalid RIFF structure");
+
+		var result = FromParsed (riff, FirstDataBytes (riff, skipped));
+		if (result.IsSuccess && result.File is not null) {
+			result.File.SourcePath = sourcePath;
+			result.File._sourceFileSystem = fileSystem;
+			result.File._skippedChunks.AddRange (skipped);
+		}
+
+		return result;
+	}
+
+	static WavFileReadResult FromParsed (RiffFile riff, uint? sampleBytes)
+	{
 		if (riff.FormType != "WAVE")
 			return WavFileReadResult.Failure ($"Invalid WAV file: invalid form type (expected 'WAVE', got '{riff.FormType}')");
 
@@ -265,9 +298,10 @@ public sealed class WavFile : IMediaFile
 
 		if (fmtChunk.HasValue) {
 			// Duration uses the sample bytes held. A declared ckSize larger than
-			// those bytes is not the audio that was parsed.
-			var dataBytes = dataChunk is { } present ? present.Data.Length : 0;
-			wav.Properties = WavAudioPropertiesParser.Parse (fmtChunk.Value.Data, dataBytes) ?? default;
+			// those bytes is not the audio that was parsed. A stream read passes
+			// the skipped count, because those bytes exist and were not copied.
+			var held = sampleBytes ?? (dataChunk is { } present ? (uint)present.Data.Length : 0u);
+			wav.Properties = WavAudioPropertiesParser.Parse (fmtChunk.Value.Data, held) ?? default;
 
 			// Parse WAVEFORMATEXTENSIBLE if present
 			wav.ExtendedProperties = WavAudioPropertiesParser.ParseExtended (fmtChunk.Value.Data);
@@ -430,6 +464,9 @@ public sealed class WavFile : IMediaFile
 		if (!HasDataChunk)
 			throw new InvalidOperationException ("Cannot render a WAV file that has no data chunk.");
 
+		if (!TryLoadSkippedSamples (out var skipped))
+			throw new InvalidOperationException (skipped);
+
 		// Start with a new RIFF structure
 		var riff = new RiffFile ();
 		var copyBext = ShouldCopyBextChunk ();
@@ -486,12 +523,31 @@ public sealed class WavFile : IMediaFile
 
 	/// <summary>
 	/// True when a data chunk was parsed. A short payload still counts.
-	/// A ckSize above <see cref="int.MaxValue"/> is not a chunk.
+	/// A ckSize above <see cref="int.MaxValue"/> still counts; its samples stay in the file.
 	/// </summary>
 	bool HasDataChunk => _riff.GetChunk (DataChunkId) is not null;
 
 	/// <summary>
-	/// Copy the original bext bytes only for the instance <see cref="Read"/> parsed,
+	/// Duration follows the first data chunk, which is the chunk <see cref="RiffFile.GetChunk"/> returns.
+	/// </summary>
+	static uint? FirstDataBytes (RiffFile riff, List<RiffFile.SkippedChunk> skipped)
+	{
+		for (var i = 0; i < riff.AllChunks.Count; i++) {
+			if (riff.AllChunks[i].FourCC != DataChunkId)
+				continue;
+			foreach (var chunk in skipped) {
+				if (chunk.Index == i)
+					return chunk.PresentBytes;
+			}
+
+			return (uint)riff.AllChunks[i].Data.Length;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Copy the original bext bytes only for the instance <see cref="Read(ReadOnlySpan{byte})"/> parsed,
 	/// and only while that instance still matches its source.
 	/// A <see cref="BextTag"/> assigned from another file is rendered instead.
 	/// Null removes a parsed bext. An unparsed bext is kept while the property stays null.
@@ -500,6 +556,44 @@ public sealed class WavFile : IMediaFile
 		_riff.GetChunk (BextChunkId) is not null
 		&& ((_keepUnparsedBext && BextTag is null)
 			|| (ReferenceEquals (BextTag, _parsedBext) && BextTag is { } tag && tag.MatchesSource ()));
+
+	bool TryLoadSkippedSamples (out string? error)
+	{
+		error = null;
+		if (_skippedChunks.Count == 0)
+			return true;
+
+		foreach (var chunk in _skippedChunks) {
+			if (chunk.PresentBytes > int.MaxValue) {
+				error = "Cannot save a WAV file whose sample data does not fit in memory.";
+				return false;
+			}
+		}
+
+		if (SourcePath is not { Length: > 0 } path) {
+			error = "Cannot save a WAV file whose sample data was not loaded.";
+			return false;
+		}
+
+		var fs = _sourceFileSystem ?? DefaultFileSystem.Instance;
+		using var stream = fs.OpenRead (path);
+		foreach (var chunk in _skippedChunks) {
+			if (stream.Length < chunk.Offset + chunk.PresentBytes) {
+				error = "Cannot save a WAV file whose sample data is no longer in the source file.";
+				return false;
+			}
+		}
+
+		foreach (var chunk in _skippedChunks) {
+			stream.Position = chunk.Offset;
+			var samples = StreamBytes.ReadAtMost (stream, (int)chunk.PresentBytes);
+			var fourCC = _riff.AllChunks[chunk.Index].FourCC;
+			_riff.ReplaceChunkAt (chunk.Index, new RiffChunk (fourCC, new BinaryData (samples)));
+		}
+
+		_skippedChunks.Clear ();
+		return true;
+	}
 
 	FileWriteResult? MissingDataChunkFailure ()
 	{
@@ -522,6 +616,9 @@ public sealed class WavFile : IMediaFile
 		if (MissingDataChunkFailure () is { } failure)
 			return failure;
 
+		if (!TryLoadSkippedSamples (out var skipped))
+			return FileWriteResult.Failure (skipped!);
+
 		var data = Render ();
 		return AtomicFileWriter.Write (path, data.Span, fileSystem);
 	}
@@ -542,6 +639,9 @@ public sealed class WavFile : IMediaFile
 	{
 		if (MissingDataChunkFailure () is { } failure)
 			return Task.FromResult (failure);
+
+		if (!TryLoadSkippedSamples (out var skipped))
+			return Task.FromResult (FileWriteResult.Failure (skipped!));
 
 		var data = Render ();
 		return AtomicFileWriter.WriteAsync (path, data.Memory, fileSystem, cancellationToken);

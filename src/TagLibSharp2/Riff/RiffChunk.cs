@@ -88,6 +88,13 @@ public readonly struct RiffChunk : IEquatable<RiffChunk>
 	}
 
 	/// <summary>
+	/// A chunk whose stored size is <paramref name="dataSize"/> even when
+	/// <paramref name="data"/> does not hold those bytes.
+	/// </summary>
+	internal static RiffChunk WithDeclaredSize (string fourCC, uint dataSize, BinaryData data) =>
+		new (fourCC, dataSize, data);
+
+	/// <summary>
 	/// Attempts to parse a RIFF chunk from binary data at the specified offset.
 	/// </summary>
 	/// <param name="data">The source data containing the chunk.</param>
