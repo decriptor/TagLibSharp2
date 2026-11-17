@@ -1130,7 +1130,7 @@ public sealed class Mp4File : IMediaFile
 			var box = StreamBytes.ReadAtMost (stream, (int)length);
 			if (box.Length == 0)
 				break;
-			kept.Write (box);
+			StreamBytes.Append (kept, box);
 			if (box.Length < length)
 				break;
 		}

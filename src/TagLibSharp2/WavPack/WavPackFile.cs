@@ -290,9 +290,9 @@ public sealed class WavPackFile : IMediaFile
 			}
 
 			var data = StreamBytes.ReadAtMost (stream, (int)dataBytes);
-			kept.Write (idByte);
-			kept.Write (sizeRaw);
-			kept.Write (data);
+			StreamBytes.Append (kept, idByte);
+			StreamBytes.Append (kept, sizeRaw);
+			StreamBytes.Append (kept, data);
 		}
 
 		var bytes = kept.ToArray ();
@@ -618,10 +618,10 @@ public sealed class WavPackFile : IMediaFile
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
 			return SaveToFile (path, _originalData, fs);
-		if (string.IsNullOrEmpty (SourcePath))
+		if (SourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		var read = FileHelper.SafeReadAllBytes (source, fs);
 		if (!read.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
 		return SaveToFile (path, read.Data!.Value.Span, fs);
@@ -668,10 +668,10 @@ public sealed class WavPackFile : IMediaFile
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
 			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
-		if (string.IsNullOrEmpty (SourcePath))
+		if (SourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath, fs, cancellationToken).ConfigureAwait (false);
+		var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
 		if (!read.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
 		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);

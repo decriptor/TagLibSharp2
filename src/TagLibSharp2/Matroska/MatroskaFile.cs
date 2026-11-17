@@ -232,7 +232,7 @@ public sealed class MatroskaFile : IMediaFile
 
 			var known = dataLength >= 0;
 			if (id == MatroskaIds.Segment) {
-				kept.Write (new byte[] { 0x18, 0x53, 0x80, 0x67, 0xFF });
+				StreamBytes.Append (kept, new byte[] { 0x18, 0x53, 0x80, 0x67, 0xFF });
 				var childEnd = known ? pos + headerLength + dataLength : length;
 				if (childEnd > length)
 					childEnd = length;
@@ -309,7 +309,7 @@ public sealed class MatroskaFile : IMediaFile
 		var bytes = StreamBytes.ReadAtMost (stream, (int)length);
 		if (bytes.Length != length)
 			return false;
-		kept.Write (bytes);
+		StreamBytes.Append (kept, bytes);
 		return true;
 	}
 
