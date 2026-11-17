@@ -180,7 +180,11 @@ public static class MediaFile
 #else
 		ArgumentNullException.ThrowIfNull (stream);
 #endif
-		return Read (stream, pathHint, sourcePath: null, fileSystem: null);
+		try {
+			return Read (stream, pathHint, sourcePath: null, fileSystem: null);
+		} catch (IOException ex) {
+			return MediaFileResult.Failure (ex.Message);
+		}
 	}
 
 	/// <summary>
@@ -240,7 +244,17 @@ public static class MediaFile
 #else
 		ArgumentNullException.ThrowIfNull (stream);
 #endif
-		return ReadAsync (stream, pathHint, sourcePath: null, fileSystem: null, cancellationToken);
+		return ReadStreamAsync (stream, pathHint, cancellationToken);
+	}
+
+	static async Task<MediaFileResult> ReadStreamAsync (Stream stream, string? pathHint, CancellationToken cancellationToken)
+	{
+		try {
+			return await ReadAsync (stream, pathHint, sourcePath: null, fileSystem: null, cancellationToken)
+				.ConfigureAwait (false);
+		} catch (IOException ex) {
+			return MediaFileResult.Failure (ex.Message);
+		}
 	}
 
 	static MediaFileResult Read (Stream stream, string? pathHint, string? sourcePath, IFileSystem? fileSystem)
@@ -336,9 +350,9 @@ public static class MediaFile
 	/// <param name="pathHint">Optional file path hint for extension-based detection.</param>
 	/// <returns>A result containing the parsed file or an error.</returns>
 	public static MediaFileResult ReadFromData (ReadOnlyMemory<byte> data, string? pathHint = null) =>
-		ReadCore (data, pathHint, sourceFileSystem: null, rememberPath: false);
+		ReadCore (data, pathHint);
 
-	static MediaFileResult ReadCore (ReadOnlyMemory<byte> data, string? pathHint, IFileSystem? sourceFileSystem, bool rememberPath)
+	static MediaFileResult ReadCore (ReadOnlyMemory<byte> data, string? pathHint)
 	{
 		var format = DetectFormat (data.Span, pathHint);
 
@@ -360,10 +374,6 @@ public static class MediaFile
 			MediaFormat.Matroska => OpenMatroska (data),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
-
-		// ReadFromData's path is only an extension hint. A path read can save Matroska back to that file.
-		if (rememberPath && result.IsSuccess && pathHint is not null && result.File is MatroskaFile matroska)
-			matroska.SetSourcePath (pathHint, sourceFileSystem);
 
 		return result;
 	}

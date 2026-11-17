@@ -371,6 +371,85 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_InPlaceSeekAndCue_KeepsNestedCrc32 ()
+	{
+		var marker = new byte[] { 0xC0, 0x1A };
+		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
+		var cues = CueTreeWithCrc (0);
+		var seek = SeekHeadWithNestedCrc (0);
+		ulong clusterPos = 0;
+		for (var i = 0; i < 6; i++) {
+			clusterPos = (ulong)(seek.Length + info.Length + cues.Length);
+			cues = CueTreeWithCrc (clusterPos);
+			seek = SeekHeadWithNestedCrc (clusterPos);
+		}
+
+		Assert.IsTrue (clusterPos is > 0 and < 0x80);
+		var cluster = Concat (new byte[] { 0x1F, 0x43, 0xB6, 0x75, 0xFF }, Element (0xEC, marker));
+		var original = FileWith (seek, info, cues, cluster);
+		Assert.IsTrue (EveryCrcMatches (original));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Moved";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/crc.mkv", original);
+		var saved = parsed.SaveToFile ("/crc.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/crc.mkv");
+		Assert.AreEqual ("Moved", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		Assert.IsTrue (EveryCrcMatches (bytes), "A Seek or cue CRC no longer matches its element");
+	}
+
+	[TestMethod]
+	public void Save_SettingTitle_KeepsSortAndOtherLanguages ()
+	{
+		var french = Master (0x67C8, Concat (
+			Element (0x45A3, "TITLE"u8),
+			Element (0x447A, "fre"u8),
+			Element (0x4484, new byte[] { 0 }),
+			Element (0x4487, "Bonjour"u8)));
+		var original = FileWith (
+			Tags (Tag (30, french, SimpleSorted ("TITLE", "Hello", "Sort"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual ("Hello", parsed.Tag.Title);
+		Assert.AreEqual ("Sort", parsed.Tag.TitleSort);
+		parsed.Tag.Title = "Hi";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/lang.mkv", original);
+		var saved = parsed.SaveToFile ("/lang.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/lang.mkv");
+		var again = MatroskaFile.Read (bytes).File!;
+		Assert.AreEqual ("Hi", again.Tag.Title);
+		Assert.AreEqual ("Sort", again.Tag.TitleSort);
+		Assert.IsTrue (CountOf (bytes, "Bonjour"u8.ToArray ()) == 1);
+	}
+
+	[TestMethod]
+	public void Save_Parameterless_WritesTheFileSystemFromRead ()
+	{
+		var original = FileWith (Tags (Tag (30, Simple ("TITLE", "Media"))), Master (0x1F43B675, new byte[] { 1 }));
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/virtual.mkv", original);
+		var opened = MediaFile.Read ("/virtual.mkv", fs);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		var file = opened.GetFileAs<MatroskaFile> ();
+		Assert.IsNotNull (file);
+		file!.Tag.Album = "Stored";
+
+		var saved = file.SaveToFile ();
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		Assert.AreEqual ("Stored", MatroskaFile.Read (fs.ReadAllBytes ("/virtual.mkv")).File!.Tag.Album);
+		Assert.AreEqual ("Media", MatroskaFile.Read (fs.ReadAllBytes ("/virtual.mkv")).File!.Tag.Title);
+	}
+
+	[TestMethod]
 	public void Save_MediaFileRead_SetsSourcePath ()
 	{
 		var original = FileWith (Tags (Tag (30, Simple ("TITLE", "Media"))));
@@ -900,6 +979,49 @@ public partial class MatroskaFileTests
 				Element (0xF7, new byte[] { 1 }),
 				Element (0xF1, UIntBytes (clusterPos))))));
 		return WithCrc (MatroskaIds.Cues, inner);
+	}
+
+	static byte[] SeekHeadWithNestedCrc (ulong clusterPos) =>
+		WithCrc (MatroskaIds.SeekHead, WithCrc (0x4DBB, Concat (
+			Element (0x53AB, Id (MatroskaIds.Cluster)),
+			Element (0x53AC, UIntBytes (clusterPos)))));
+
+	static byte[] CueTreeWithCrc (ulong clusterPos)
+	{
+		var positions = WithCrc (0xB7, Concat (
+			Element (0xF7, new byte[] { 1 }),
+			Element (0xF1, UIntBytes (clusterPos))));
+		var point = WithCrc (0xBB, Concat (Element (0xB3, new byte[] { 0 }), positions));
+		return WithCrc (MatroskaIds.Cues, point);
+	}
+
+	static bool EveryCrcMatches (byte[] file)
+	{
+		if (!TrySegmentBody (file, out var body, out _))
+			return false;
+		return CrcTreeMatches (body);
+	}
+
+	static bool CrcTreeMatches (ReadOnlySpan<byte> body)
+	{
+		var offset = 0;
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
+				return true;
+			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
+			if (payload.Length > 0 && EbmlReader.TryRead (payload, 0, payload.Length, out var first) && first.Id == MatroskaIds.Crc32) {
+				if (!CrcMatches (payload))
+					return false;
+				if (!CrcTreeMatches (payload.Slice (first.End)))
+					return false;
+			} else if (!CrcTreeMatches (payload)) {
+				return false;
+			}
+
+			offset = element.End;
+		}
+
+		return true;
 	}
 
 	static byte[] SeekHeadWithCrc (ulong infoAt, ulong tagsAt) =>

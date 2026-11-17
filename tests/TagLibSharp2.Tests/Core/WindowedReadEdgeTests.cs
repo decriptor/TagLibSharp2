@@ -359,6 +359,90 @@ public class WindowedReadEdgeTests
 	}
 
 	[TestMethod]
+	public void Save_ShortSampleReload_DoesNotWrite ()
+	{
+		var samples = new byte[] { 1, 2, 3, 4 };
+		var original = WavWithTitle ("Keep", samples);
+		var fs = new ShortReloadFileSystem ();
+		fs.AddFile ("/song.wav", original);
+		var opened = MediaFile.Read ("/song.wav", fs);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		var wav = opened.GetFileAs<WavFile> ();
+		Assert.IsNotNull (wav);
+
+		var saved = wav!.SaveToFile ("/song.wav", fs);
+
+		Assert.IsFalse (saved.IsSuccess, saved.Error);
+		CollectionAssert.AreEqual (original, fs.ReadAllBytes ("/song.wav"));
+	}
+
+	[TestMethod]
+	public void Read_UnknownRiffSize_ReadsTheChunkPastFourGigabytes ()
+	{
+		const long Cap = 4294967295L + 8;
+		var list = ListChunk ("Past");
+		var dataSize = (uint)(Cap - 44);
+		var prefix = WavPrefix (dataSize);
+		var listAt = 44L + dataSize + ((dataSize & 1) == 1 ? 1 : 0);
+		var stream = new SparseStream (listAt + list.Length, prefix, listAt, list);
+
+		var opened = MediaFile.Read (stream, "song.wav");
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.IsNotNull (opened.Tag, opened.Error);
+		Assert.AreEqual ("Past", opened.Tag!.Title);
+	}
+
+	[TestMethod]
+	public void Save_DataChunkJustOverTheArrayLimit_FailsClosed ()
+	{
+		var count = (uint)Array.MaxLength + 1;
+		var prefix = WavPrefix (count);
+		var streamLength = prefix.Length + count;
+		var fs = new SparseFileSystem (streamLength, prefix);
+		var opened = WavFile.Read (fs.OpenRead ("/huge.wav"), "/huge.wav", fs);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+
+		FileWriteResult saved;
+		try {
+			saved = opened.File!.SaveToFile ("/huge.wav", fs);
+		} catch (Exception ex) {
+			Assert.Fail ("Save threw " + ex.GetType ().Name + " instead of returning a failure");
+			return;
+		}
+
+		Assert.IsFalse (saved.IsSuccess, saved.Error);
+		Assert.AreEqual (0, fs.Writes);
+	}
+
+	[TestMethod]
+	public void Read_StreamLongerThanAnArray_ReturnsFailure ()
+	{
+		using var stream = new ReportedLengthStream ((long)int.MaxValue + 8);
+
+		var opened = MediaFile.Read (stream, "clip.mkv");
+
+		Assert.IsFalse (opened.IsSuccess);
+		StringAssert.Contains (opened.Error, "too large");
+	}
+
+	[TestMethod]
+	public void Save_Mp3Parameterless_WritesTheFileSystemFromRead ()
+	{
+		var original = TinyMp3 (800);
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/virtual.mp3", original);
+		var opened = Mp3File.ReadFromFile ("/virtual.mp3", fs);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		opened.File!.Title = "Stored";
+
+		var saved = opened.File.SaveToFile ();
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		Assert.AreEqual ("Stored", Mp3File.Read (fs.ReadAllBytes ("/virtual.mp3")).File!.Tag!.Title);
+	}
+
+	[TestMethod]
 	public async Task ReadAsync_FlacHeaderTooShort_Stops ()
 	{
 		var bytes = "fLaC"u8.ToArray ().Concat (new byte[] { 0x00 }).ToArray ();
@@ -426,6 +510,47 @@ public class WindowedReadEdgeTests
 
 	static byte[] Riff (BinaryDataBuilder body) => Riff (body.ToBinaryData ().Span);
 
+	static byte[] WavPrefix (uint dataSize)
+	{
+		using var body = new BinaryDataBuilder ();
+		body.AddStringLatin1 ("WAVE");
+		body.AddStringLatin1 ("fmt ");
+		body.AddUInt32LE (16);
+		body.AddUInt16LE (1);
+		body.AddUInt16LE (1);
+		body.AddUInt32LE (8000);
+		body.AddUInt32LE (8000);
+		body.AddUInt16LE (1);
+		body.AddUInt16LE (8);
+		body.AddStringLatin1 ("data");
+		body.AddUInt32LE (dataSize);
+		var form = body.ToBinaryData ().Span;
+		var file = new byte[8 + form.Length];
+		"RIFF"u8.CopyTo (file);
+		file[4] = 0xFF;
+		file[5] = 0xFF;
+		file[6] = 0xFF;
+		file[7] = 0xFF;
+		form.CopyTo (file.AsSpan (8));
+		return file;
+	}
+
+	static byte[] ListChunk (string title)
+	{
+		var text = System.Text.Encoding.ASCII.GetBytes (title + "\0");
+		using var info = new BinaryDataBuilder ();
+		info.AddStringLatin1 ("INFO");
+		info.AddStringLatin1 ("INAM");
+		info.AddUInt32LE ((uint)text.Length);
+		info.Add (text);
+		var list = info.ToBinaryData ();
+		var chunk = new byte[8 + list.Length];
+		"LIST"u8.CopyTo (chunk);
+		BitConverter.GetBytes ((uint)list.Length).CopyTo (chunk, 4);
+		list.Span.CopyTo (chunk.AsSpan (8));
+		return chunk;
+	}
+
 	static byte[] Riff (ReadOnlySpan<byte> body)
 	{
 		var file = new byte[8 + body.Length];
@@ -477,6 +602,125 @@ public class WindowedReadEdgeTests
 		public override long Seek (long offset, SeekOrigin origin) => Position;
 		public override void SetLength (long value) => throw new NotSupportedException ();
 		public override void Write (byte[] buffer, int offset, int count) => throw new NotSupportedException ();
+	}
+
+	sealed class ShortReloadFileSystem : IFileSystem
+	{
+		readonly MockFileSystem _files = new ();
+		int _opens;
+
+		public void AddFile (string path, byte[] data) => _files.AddFile (path, data);
+
+		public bool FileExists (string path) => _files.FileExists (path);
+
+		public Stream OpenRead (string path)
+		{
+			var data = _files.ReadAllBytes (path);
+			if (_opens++ == 0)
+				return new MemoryStream (data, writable: false);
+			return new ReportedLengthStream (data.Length);
+		}
+
+		public Stream OpenReadWrite (string path) => _files.OpenReadWrite (path);
+		public Stream Create (string path) => _files.Create (path);
+		public byte[] ReadAllBytes (string path) => _files.ReadAllBytes (path);
+		public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default) =>
+			_files.ReadAllBytesAsync (path, cancellationToken);
+		public void WriteAllBytes (string path, ReadOnlySpan<byte> data) => _files.WriteAllBytes (path, data);
+		public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default) =>
+			_files.WriteAllBytesAsync (path, data, cancellationToken);
+		public void Delete (string path) => _files.Delete (path);
+		public void Move (string sourcePath, string destinationPath) => _files.Move (sourcePath, destinationPath);
+		public string? GetDirectoryName (string path) => _files.GetDirectoryName (path);
+		public string GetFileName (string path) => _files.GetFileName (path);
+		public string CombinePath (string path1, string path2) => _files.CombinePath (path1, path2);
+	}
+
+	sealed class SparseFileSystem : IFileSystem
+	{
+		readonly long _length;
+		readonly byte[] _head;
+		public int Writes { get; private set; }
+
+		public SparseFileSystem (long length, byte[] head)
+		{
+			_length = length;
+			_head = head;
+		}
+
+		public bool FileExists (string path) => true;
+		public Stream OpenRead (string path) => new SparseStream (_length, _head, _length, Array.Empty<byte> ());
+		public Stream OpenReadWrite (string path) => throw new NotSupportedException ();
+		public Stream Create (string path)
+		{
+			Writes++;
+			return new MemoryStream ();
+		}
+
+		public byte[] ReadAllBytes (string path) => _head;
+		public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default) =>
+			Task.FromResult (_head);
+		public void WriteAllBytes (string path, ReadOnlySpan<byte> data) => Writes++;
+		public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+		{
+			Writes++;
+			return Task.CompletedTask;
+		}
+
+		public void Delete (string path) { }
+		public void Move (string sourcePath, string destinationPath) => Writes++;
+		public string? GetDirectoryName (string path) => "/";
+		public string GetFileName (string path) => "huge.wav";
+		public string CombinePath (string path1, string path2) => path1 + path2;
+	}
+
+	sealed class SparseStream : Stream
+	{
+		readonly byte[] _head;
+		readonly long _tailAt;
+		readonly byte[] _tail;
+
+		public SparseStream (long length, byte[] head, long tailAt, byte[] tail)
+		{
+			Length = length;
+			_head = head;
+			_tailAt = tailAt;
+			_tail = tail;
+		}
+
+		public override bool CanRead => true;
+		public override bool CanSeek => true;
+		public override bool CanWrite => false;
+		public override long Length { get; }
+		public override long Position { get; set; }
+		public override void Flush () { }
+		public override long Seek (long offset, SeekOrigin origin) => Position = origin switch {
+			SeekOrigin.Current => Position + offset,
+			SeekOrigin.End => Length + offset,
+			_ => offset
+		};
+
+		public override void SetLength (long value) => throw new NotSupportedException ();
+		public override void Write (byte[] buffer, int offset, int count) => throw new NotSupportedException ();
+
+		public override int Read (byte[] buffer, int offset, int count)
+		{
+			var read = 0;
+			while (read < count && Position < Length) {
+				int value;
+				if (Position < _head.Length)
+					value = _head[Position];
+				else if (Position >= _tailAt && Position < _tailAt + _tail.Length)
+					value = _tail[Position - _tailAt];
+				else
+					value = 0;
+				buffer[offset + read] = (byte)value;
+				Position++;
+				read++;
+			}
+
+			return read;
+		}
 	}
 
 	sealed class NonSeekableStream : Stream

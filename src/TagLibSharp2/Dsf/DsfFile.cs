@@ -494,6 +494,7 @@ public sealed class DsfFile : IMediaFile
 		if (rendered.IsEmpty)
 			return FileWriteResult.Failure ("Failed to render DSF file");
 
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
 	}
 
@@ -520,6 +521,7 @@ public sealed class DsfFile : IMediaFile
 		if (rendered.IsEmpty)
 			return Task.FromResult (FileWriteResult.Failure ("Failed to render DSF file"));
 
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken);
 	}
 
