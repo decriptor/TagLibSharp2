@@ -671,6 +671,8 @@ public class MatroskaFileTests
 	[TestMethod]
 	public void Read_KnownCodecIds_UseTheFriendlyName ()
 	{
+		Assert.AreEqual ("MP3", CodecOf ("A_MPEG/L3"));
+		Assert.AreEqual ("Opus", CodecOf ("A_OPUS"));
 		Assert.AreEqual ("AC-3", CodecOf ("A_AC3"));
 		Assert.AreEqual ("DTS", CodecOf ("A_DTS"));
 		Assert.AreEqual ("FLAC", CodecOf ("A_FLAC"));
@@ -679,6 +681,8 @@ public class MatroskaFileTests
 		Assert.AreEqual ("VP9", CodecOf ("V_VP9", video: true));
 		Assert.AreEqual ("AV1", CodecOf ("V_AV1", video: true));
 		Assert.AreEqual ("HEVC", CodecOf ("V_MPEGH/ISO/HEVC", video: true));
+		Assert.AreEqual ("H.264", CodecOf ("V_MPEG4/ISO/AVC", video: true));
+		Assert.AreEqual ("Theora", CodecOf ("V_THEORA", video: true));
 		Assert.AreEqual ("Matroska", CodecOf (null, video: true));
 	}
 
@@ -784,6 +788,78 @@ public class MatroskaFileTests
 		tag.Clear ();
 		Assert.AreEqual (0, tag.Render ().Length);
 		Assert.IsNull (tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_RemainingEdges_AreCovered ()
+	{
+		Assert.IsFalse (EbmlReader.TryRead (new byte[4], 4, 4, out _));
+		Assert.IsFalse (EbmlReader.TryRead (new byte[4], 0, 8, out _));
+		Assert.IsFalse (EbmlReader.TryReadFloat (new byte[2], out _));
+		Assert.IsTrue (EbmlWriter.Unsigned (0x88, 0x1_0000).Length > 2);
+
+		var before = Element (0xEC, Array.Empty<byte> ());
+		var withVoid = Matroska (Concat (before, Master (0x18538067, Tags (Tag (30, Simple ("TITLE", "After"))))));
+		Assert.AreEqual ("After", MatroskaFile.Read (withVoid).File!.Tag.Title);
+
+		var video = Master (0xAE, Concat (
+			Element (0x83, new byte[] { 1 }),
+			Element (0x86, "V_VP8"u8),
+			Element (0x23E383, new byte[] { 0x02, 0x62, 0x5A, 0x00 }),
+			Master (0xE0, Concat (Element (0xB0, new byte[] { 1 }), Element (0xBA, new byte[] { 1 })))));
+		var fps = ((IMediaFile)MatroskaFile.Read (FileWith (Master (0x1654AE6B, video))).File!).VideoProperties!.Value.FrameRate;
+		Assert.AreEqual (25, fps, 0.1);
+
+		var unknownInfo = Concat (new byte[] { 0x15, 0x49, 0xA9, 0x66, 0xFF }, Element (0xEC, Array.Empty<byte> ()));
+		var titled = Matroska (Master (0x18538067, Concat (Tags (Tag (30, Simple ("TITLE", "Kept"))), unknownInfo)));
+		Assert.AreEqual ("Kept", MatroskaFile.Read (titled).File!.Tag.Title);
+
+		var broken = Concat (new byte[] { 0x12, 0x54, 0xC3, 0x67, 0xFF, 0x00 });
+		var lost = Matroska (Master (0x18538067, broken));
+		Assert.IsNull (MatroskaFile.Read (lost).File!.Tag.Title);
+
+		var bare = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("TITLE", "Only"))))).File!.Tag;
+		Assert.AreEqual (TagTypes.Matroska, bare.TagType);
+		Assert.IsNull (bare.Year);
+		Assert.IsNull (bare.Genre);
+		Assert.AreEqual (0, bare.Genres.Length);
+		Assert.AreEqual (0, bare.Composers.Length);
+		Assert.IsNull (bare.Copyright);
+		Assert.IsNull (bare.Lyrics);
+		Assert.IsNull (bare.Conductor);
+		Assert.IsNull (bare.Publisher);
+		Assert.IsNull (bare.EncodedBy);
+		Assert.IsNull (bare.EncoderSettings);
+		Assert.IsNull (bare.Grouping);
+		Assert.IsNull (bare.Remixer);
+		Assert.IsNull (bare.Isrc);
+		Assert.IsNull (bare.CatalogNumber);
+		Assert.IsNull (bare.Barcode);
+		Assert.IsNull (bare.InitialKey);
+		Assert.IsNull (bare.Mood);
+		Assert.IsNull (bare.DateTagged);
+		Assert.IsNull (bare.ReplayGainTrackGain);
+		Assert.IsNull (bare.ReplayGainTrackPeak);
+		Assert.IsNull (bare.ReplayGainAlbumGain);
+		Assert.IsNull (bare.ReplayGainAlbumPeak);
+		Assert.IsNull (bare.MusicBrainzReleaseId);
+		Assert.IsNull (bare.MusicBrainzArtistId);
+		Assert.IsNull (bare.MusicBrainzReleaseGroupId);
+		Assert.IsNull (bare.MusicBrainzAlbumArtistId);
+		Assert.IsNull (bare.MusicBrainzWorkId);
+		Assert.IsNull (bare.MusicBrainzDiscId);
+		Assert.IsNull (bare.Album);
+		Assert.AreEqual (0, bare.AlbumArtists.Length);
+		Assert.IsNull (bare.AlbumSort);
+		Assert.IsNull (bare.BeatsPerMinute);
+		bare.AlbumSort = "up";
+		Assert.AreEqual ("up", bare.AlbumSort);
+		bare.TitleSort = "only";
+		Assert.AreEqual ("only", bare.TitleSort);
+		Assert.IsTrue (bare.Render ().Length > 0);
+
+		var nested = MatroskaFile.Read (FileWith (Tags (Tag (30, SimpleSorted ("TITLE", "Song", "song"))))).File!.Tag;
+		Assert.IsTrue (nested.Render ().Length > 0);
 	}
 
 	static void AssertFailure (byte[] data, string fragment)
