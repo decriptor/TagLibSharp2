@@ -495,6 +495,7 @@ public sealed class OggVorbisFile : IMediaFile
 		if (rendered.IsEmpty)
 			return FileWriteResult.Failure ("Failed to render Ogg Vorbis file");
 
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
 	}
 
@@ -516,6 +517,7 @@ public sealed class OggVorbisFile : IMediaFile
 		if (rendered.IsEmpty)
 			return Task.FromResult (FileWriteResult.Failure ("Failed to render Ogg Vorbis file"));
 
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken);
 	}
 

@@ -622,31 +622,94 @@ public sealed class MatroskaTag : Tag
 
 	void SetAtValues (ulong level, string name, string[]? values)
 	{
-		SimpleTag? previous = null;
-		foreach (var existing in _blocks) {
-			if (!existing.IsFileLevel || existing.Level != level)
+		var matches = new List<SimpleTag> ();
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level != level)
 				continue;
-			foreach (var tag in existing.Tags) {
-				if (tag.Name != name)
-					continue;
-				previous = tag;
-				break;
+			foreach (var tag in block.Tags) {
+				if (tag.Name == name)
+					matches.Add (tag);
 			}
 		}
 
-		RemoveAt (level, name);
-		if (values is null || values.Length == 0)
-			return;
+		var preferDefault = false;
+		foreach (var tag in matches) {
+			if (tag.IsDefault)
+				preferDefault = true;
+		}
 
-		var block = FileBlock (level);
-		foreach (var value in values) {
-			if (string.IsNullOrEmpty (value))
+		var primary = new List<SimpleTag> ();
+		foreach (var tag in matches) {
+			if (!preferDefault || tag.IsDefault)
+				primary.Add (tag);
+		}
+
+		var incoming = new List<string> ();
+		if (values is not null) {
+			foreach (var value in values) {
+				if (!string.IsNullOrEmpty (value))
+					incoming.Add (value);
+			}
+		}
+
+		if (incoming.Count == 0) {
+			RemoveTags (primary);
+			return;
+		}
+
+		if (primary.Count == 0) {
+			var block = FileBlock (level);
+			foreach (var value in incoming)
+				block.Tags.Add (new SimpleTag (name, value));
+			return;
+		}
+
+		var home = BlockContaining (primary[0]);
+		ReplaceTag (primary[0], CopyTag (primary[0], incoming[0]));
+		if (primary.Count > 1)
+			RemoveTags (primary.GetRange (1, primary.Count - 1));
+		for (var i = 1; i < incoming.Count; i++) {
+			var source = i < primary.Count ? primary[i] : primary[0];
+			home.Tags.Add (CopyTag (source, incoming[i]));
+		}
+	}
+
+	static SimpleTag CopyTag (SimpleTag previous, string text)
+	{
+		var tag = new SimpleTag (previous.Name, text, previous.IsDefault) {
+			Language = previous.Language,
+			LanguageBcp47 = previous.LanguageBcp47,
+			Binary = previous.Binary
+		};
+		tag.Children.AddRange (previous.Children);
+		return tag;
+	}
+
+	void ReplaceTag (SimpleTag previous, SimpleTag replacement)
+	{
+		foreach (var block in _blocks) {
+			var index = block.Tags.IndexOf (previous);
+			if (index < 0)
 				continue;
-			block.Tags.Add (new SimpleTag (name, value) {
-				Language = previous?.Language,
-				LanguageBcp47 = previous?.LanguageBcp47,
-				Binary = previous?.Binary
-			});
+			block.Tags[index] = replacement;
+			return;
+		}
+	}
+
+	TagBlock BlockContaining (SimpleTag tag)
+	{
+		foreach (var block in _blocks) {
+			if (block.Tags.Contains (tag))
+				return block;
+		}
+
+		return FileBlock (ItemLevel);
+	}
+
+	void RemoveTags (List<SimpleTag> tags)
+	{
+		foreach (var block in _blocks) {
+			block.Tags.RemoveAll (tag => tags.Contains (tag));
 		}
 	}
 

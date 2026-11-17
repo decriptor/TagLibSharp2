@@ -422,6 +422,7 @@ public sealed class AiffFile : IMediaFile
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
 		var data = Render ();
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.Write (path, data.Span, fileSystem);
 	}
 
@@ -438,6 +439,7 @@ public sealed class AiffFile : IMediaFile
 		CancellationToken cancellationToken = default)
 	{
 		var data = Render ();
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.WriteAsync (path, data.Memory, fileSystem, cancellationToken);
 	}
 

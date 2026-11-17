@@ -586,6 +586,7 @@ public sealed class DffFile : IMediaFile
 
 		try {
 			var rendered = Render ();
+			fileSystem ??= _sourceFileSystem;
 			return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
 		} catch (Exception ex) {
 			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
@@ -623,6 +624,7 @@ public sealed class DffFile : IMediaFile
 
 		try {
 			var rendered = Render ();
+			fileSystem ??= _sourceFileSystem;
 			return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
 		} catch (Exception ex) {
 			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
@@ -687,6 +689,7 @@ public sealed class DffFile : IMediaFile
 	{
 		try {
 			var rendered = Render ();
+			fileSystem ??= _sourceFileSystem;
 			return await AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken)
 				.ConfigureAwait (false);
 		} catch (Exception ex) {

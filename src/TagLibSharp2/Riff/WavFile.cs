@@ -557,6 +557,16 @@ public sealed class WavFile : IMediaFile
 		&& ((_keepUnparsedBext && BextTag is null)
 			|| (ReferenceEquals (BextTag, _parsedBext) && BextTag is { } tag && tag.MatchesSource ()));
 
+	static uint MaxSampleBytes {
+		get {
+#if NET8_0_OR_GREATER
+			return (uint)Array.MaxLength;
+#else
+			return 0x7FFFFFC7;
+#endif
+		}
+	}
+
 	bool TryLoadSkippedSamples (out string? error)
 	{
 		error = null;
@@ -564,7 +574,7 @@ public sealed class WavFile : IMediaFile
 			return true;
 
 		foreach (var chunk in _skippedChunks) {
-			if (chunk.PresentBytes > int.MaxValue) {
+			if (chunk.PresentBytes > MaxSampleBytes) {
 				error = "Cannot save a WAV file whose sample data does not fit in memory.";
 				return false;
 			}
@@ -584,11 +594,22 @@ public sealed class WavFile : IMediaFile
 			}
 		}
 
+		var loaded = new List<byte[]> (_skippedChunks.Count);
 		foreach (var chunk in _skippedChunks) {
 			stream.Position = chunk.Offset;
 			var samples = StreamBytes.ReadAtMost (stream, (int)chunk.PresentBytes);
+			if (samples.Length != chunk.PresentBytes) {
+				error = "Cannot save a WAV file whose sample data is no longer in the source file.";
+				return false;
+			}
+
+			loaded.Add (samples);
+		}
+
+		for (var i = 0; i < _skippedChunks.Count; i++) {
+			var chunk = _skippedChunks[i];
 			var fourCC = _riff.AllChunks[chunk.Index].FourCC;
-			_riff.ReplaceChunkAt (chunk.Index, new RiffChunk (fourCC, new BinaryData (samples)));
+			_riff.ReplaceChunkAt (chunk.Index, new RiffChunk (fourCC, new BinaryData (loaded[i])));
 		}
 
 		_skippedChunks.Clear ();
@@ -620,6 +641,7 @@ public sealed class WavFile : IMediaFile
 			return FileWriteResult.Failure (skipped!);
 
 		var data = Render ();
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.Write (path, data.Span, fileSystem);
 	}
 
@@ -644,6 +666,7 @@ public sealed class WavFile : IMediaFile
 			return Task.FromResult (FileWriteResult.Failure (skipped!));
 
 		var data = Render ();
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.WriteAsync (path, data.Memory, fileSystem, cancellationToken);
 	}
 

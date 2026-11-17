@@ -216,6 +216,7 @@ public sealed class MatroskaFile : IMediaFile
 		if (!MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out var error))
 			return FileWriteResult.Failure (error);
 
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.Write (path, rewritten, fileSystem);
 	}
 
@@ -252,6 +253,7 @@ public sealed class MatroskaFile : IMediaFile
 		if (!MatroskaRewrite.TryRewrite (originalData.Span, Tag, out var rewritten, out var error))
 			return Task.FromResult (FileWriteResult.Failure (error));
 
+		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.WriteAsync (path, rewritten, fileSystem, cancellationToken);
 	}
 

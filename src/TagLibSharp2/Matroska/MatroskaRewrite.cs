@@ -348,6 +348,7 @@ static class MatroskaRewrite
 		if (positionElement.DataLength is > 0 and <= 8
 			&& TryWriteUnsigned (body, positionElement.DataOffset, (int)positionElement.DataLength, desired)) {
 			changed = true;
+			UpdateElementCrc (body, seek.Position, seek.End);
 			if (isTags)
 				referenced = true;
 			return true;
@@ -490,8 +491,14 @@ static class MatroskaRewrite
 						changed = true;
 				}
 			} else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions or MatroskaIds.Cues) {
-				if (!TryPatchCueValues (body, element.DataOffset, element.End, plan, ref changed))
+				var nested = false;
+				if (!TryPatchCueValues (body, element.DataOffset, element.End, plan, ref nested))
 					return false;
+				if (nested) {
+					changed = true;
+					if (element.Id != MatroskaIds.Cues)
+						UpdateElementCrc (body, element.Position, element.End);
+				}
 			}
 
 			offset = element.End;

@@ -214,7 +214,9 @@ public class RiffFile
 		file.FileSize = (uint)header[4] | ((uint)header[5] << 8) | ((uint)header[6] << 16) | ((uint)header[7] << 24);
 		file.FormType = FourCharacters (header, 8);
 
-		var limit = Math.Min (stream.Length, (long)file.FileSize + 8);
+		// 0xFFFFFFFF is a placeholder from streamed writers, same as TryParse.
+		var formEnd = file.FileSize == 0xFFFFFFFF ? stream.Length : (long)file.FileSize + 8;
+		var limit = Math.Min (stream.Length, formEnd);
 		while (stream.Position + RiffChunk.HeaderSize <= limit) {
 			var chunkHeader = StreamBytes.ReadAtMost (stream, RiffChunk.HeaderSize);
 			if (chunkHeader.Length < RiffChunk.HeaderSize)
