@@ -32,20 +32,19 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override string? Title {
 		get {
-			// An empty TITLE is a real value and blocks the segment title.
-			// Any other tag does not.
-			var values = Values ("TITLE");
-			if (values.Count > 0)
-				return First ("TITLE");
+			// TITLE at 30 is the track. An empty one blocks the segment title.
+			// TITLE at 50 is the album and is not this property.
+			if (HasFileLevelName (TrackLevel, "TITLE"))
+				return FirstAt (TrackLevel, "TITLE");
 			return _segmentTitle;
 		}
-		set => SetItem ("TITLE", value);
+		set => SetAt (TrackLevel, "TITLE", value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Artist {
 		get => First ("ARTIST");
-		set => SetItem ("ARTIST", value);
+		set => SetAt (TrackLevel, "ARTIST", value);
 	}
 
 	/// <inheritdoc/>
@@ -54,12 +53,12 @@ public sealed class MatroskaTag : Tag
 			var artists = All ("ARTIST");
 			return artists.Length > 0 ? artists : All ("ACTOR");
 		}
-		set => SetItemValues ("ARTIST", value);
+		set => SetAtValues (TrackLevel, "ARTIST", value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Album {
-		get => ItemLevel >= AlbumLevel ? null : FirstAt (AlbumLevel, "TITLE");
+		get => FirstAt (AlbumLevel, "TITLE");
 		set => SetAt (AlbumLevel, "TITLE", value);
 	}
 
@@ -221,8 +220,8 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override string? TitleSort {
-		get => NestedSort ("TITLE") ?? First ("TITLE_SORT");
-		set => SetSort ("TITLE", "TITLE_SORT", value, null);
+		get => NestedSortAt (TrackLevel, "TITLE") ?? FirstAt (TrackLevel, "TITLE_SORT");
+		set => SetSort ("TITLE", "TITLE_SORT", value, TrackLevel);
 	}
 
 	/// <inheritdoc/>
@@ -233,15 +232,8 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override string? AlbumSort {
-		get => (ItemLevel < AlbumLevel ? NestedSortAt (AlbumLevel, "TITLE") : null) ?? First ("ALBUM_SORT");
-		set {
-			if (ItemLevel < AlbumLevel)
-				SetSort ("TITLE", "ALBUM_SORT", value, AlbumLevel);
-			else if (value is null)
-				RemoveFlatSort ("ALBUM_SORT");
-			else
-				SetItem ("ALBUM_SORT", value);
-		}
+		get => NestedSortAt (AlbumLevel, "TITLE") ?? FirstAt (AlbumLevel, "ALBUM_SORT");
+		set => SetSort ("TITLE", "ALBUM_SORT", value, AlbumLevel);
 	}
 
 	/// <inheritdoc/>
@@ -368,6 +360,16 @@ public sealed class MatroskaTag : Tag
 		}
 	}
 
+	bool HasFileLevelName (ulong level, string name)
+	{
+		foreach (var block in _blocks) {
+			if (block.IsFileLevel && block.Level == level && block.HasName (name))
+				return true;
+		}
+
+		return false;
+	}
+
 	string? First (string name)
 	{
 		var values = Values (name);
@@ -475,10 +477,17 @@ public sealed class MatroskaTag : Tag
 		var replaced = level is ulong fixedLevel
 			? ReplaceNestedSortAt (fixedLevel, name, value)
 			: ReplaceNestedSort (name, value);
-		if (value is null)
-			RemoveFlatSort (flatName);
-		else if (!replaced)
-			SetItem (flatName, value);
+		if (value is null) {
+			if (level is ulong clearLevel)
+				RemoveAt (clearLevel, flatName);
+			else
+				RemoveFlatSort (flatName);
+		} else if (!replaced) {
+			if (level is ulong writeLevel)
+				SetAt (writeLevel, flatName, value);
+			else
+				SetItem (flatName, value);
+		}
 	}
 
 	/// <summary>
