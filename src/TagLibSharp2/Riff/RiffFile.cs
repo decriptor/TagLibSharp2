@@ -178,6 +178,89 @@ public class RiffFile
 	}
 
 	/// <summary>
+	/// A chunk whose bytes were left in the file. <see cref="PresentBytes"/> can be
+	/// shorter than the declared ckSize when the file ends first.
+	/// </summary>
+	internal readonly struct SkippedChunk
+	{
+		public SkippedChunk (int index, long offset, uint presentBytes)
+		{
+			Index = index;
+			Offset = offset;
+			PresentBytes = presentBytes;
+		}
+
+		public int Index { get; }
+
+		public long Offset { get; }
+
+		public uint PresentBytes { get; }
+	}
+
+	/// <summary>
+	/// Reads a RIFF file from a seekable stream. Sample bytes, and any other chunk
+	/// whose ckSize does not fit in an int, stay in the file. Each of those chunks
+	/// is one <see cref="SkippedChunk"/>, in file order. A later chunk is still parsed.
+	/// </summary>
+	internal static bool TryRead (Stream stream, out RiffFile file, out List<SkippedChunk> skipped)
+	{
+		file = new RiffFile ();
+		skipped = [];
+
+		var header = StreamBytes.ReadAtMost (stream, HeaderSize);
+		if (header.Length < HeaderSize || !IsRiff (header))
+			return false;
+
+		file.FileSize = (uint)header[4] | ((uint)header[5] << 8) | ((uint)header[6] << 16) | ((uint)header[7] << 24);
+		file.FormType = FourCharacters (header, 8);
+
+		var limit = Math.Min (stream.Length, (long)file.FileSize + 8);
+		while (stream.Position + RiffChunk.HeaderSize <= limit) {
+			var chunkHeader = StreamBytes.ReadAtMost (stream, RiffChunk.HeaderSize);
+			if (chunkHeader.Length < RiffChunk.HeaderSize)
+				break;
+
+			var fourCC = FourCharacters (chunkHeader, 0);
+			var size = (uint)chunkHeader[4] | ((uint)chunkHeader[5] << 8) | ((uint)chunkHeader[6] << 16) | ((uint)chunkHeader[7] << 24);
+			var remaining = limit - stream.Position;
+			var available = remaining < size ? (uint)Math.Max (0, remaining) : size;
+			// A data chunk is reloaded on save. A ckSize past int.MaxValue cannot be
+			// copied here; skipping it in long arithmetic keeps the chunks after it.
+			if (fourCC == "data" || size > int.MaxValue) {
+				if (available > 0)
+					skipped.Add (new SkippedChunk (file._chunks.Count, stream.Position, available));
+				var pad = (size & 1) == 1 && available == size ? 1L : 0L;
+				var skip = (long)available + pad;
+				if (stream.Position > stream.Length - skip)
+					skip = Math.Max (0, stream.Length - stream.Position);
+				stream.Position += skip;
+				file._chunks.Add (RiffChunk.WithDeclaredSize (fourCC, size, BinaryData.Empty));
+				if (available < size)
+					break;
+				continue;
+			}
+
+			var payload = StreamBytes.ReadAtMost (stream, (int)available);
+			if ((size & 1) == 1 && payload.Length == size && stream.Position < limit)
+				StreamBytes.ReadAtMost (stream, 1);
+			file._chunks.Add (RiffChunk.WithDeclaredSize (fourCC, size, new BinaryData (payload)));
+			if (payload.Length < size)
+				break;
+		}
+
+		file.IsValid = true;
+		return true;
+	}
+
+	internal void ReplaceChunkAt (int index, RiffChunk chunk) => _chunks[index] = chunk;
+
+	static bool IsRiff (byte[] header) =>
+		header[0] == (byte)'R' && header[1] == (byte)'I' && header[2] == (byte)'F' && header[3] == (byte)'F';
+
+	static string FourCharacters (byte[] data, int offset) =>
+		new ([(char)data[offset], (char)data[offset + 1], (char)data[offset + 2], (char)data[offset + 3]]);
+
+	/// <summary>
 	/// Renders the RIFF file to binary data.
 	/// </summary>
 	/// <param name="formType">The form type (defaults to current FormType).</param>

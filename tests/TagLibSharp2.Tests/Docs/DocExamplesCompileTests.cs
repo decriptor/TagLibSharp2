@@ -25,7 +25,9 @@ public class DocExamplesCompileTests
 	public void QuickStart_MediaFileRead_Compiles ()
 	{
 		// This just verifies the API exists - skip actual file access
-		Assert.IsNotNull (typeof (MediaFile).GetMethod ("Read"));
+		Assert.IsNotNull (typeof (MediaFile).GetMethod ("Read", [typeof (string), typeof (IFileSystem)]));
+		Assert.IsNotNull (typeof (MediaFile).GetMethod ("Read", [typeof (Stream), typeof (string)]));
+		Assert.IsNotNull (typeof (MediaFile).GetMethod ("ReadAsync", [typeof (Stream), typeof (string), typeof (CancellationToken)]));
 		Assert.IsNotNull (typeof (MediaFileResult).GetProperty ("IsSuccess"));
 		Assert.IsNotNull (typeof (MediaFileResult).GetProperty ("Tag"));
 		Assert.IsNotNull (typeof (MediaFileResult).GetProperty ("Format"));

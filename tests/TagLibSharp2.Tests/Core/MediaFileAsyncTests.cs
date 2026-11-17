@@ -52,7 +52,7 @@ public class MediaFileAsyncTests
 	{
 		// Act & Assert
 		await Assert.ThrowsExactlyAsync<ArgumentNullException> (
-			() => MediaFile.ReadAsync (null!));
+			() => MediaFile.ReadAsync ((string)null!));
 	}
 
 	[TestMethod]
@@ -87,7 +87,7 @@ public class MediaFileAsyncTests
 	{
 		// Act & Assert
 		Assert.ThrowsExactly<ArgumentNullException> (
-			() => MediaFile.Read (null!));
+			() => MediaFile.Read ((string)null!));
 	}
 
 	[TestMethod]

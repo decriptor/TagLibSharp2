@@ -34,7 +34,7 @@ public sealed class Mp3File : IMediaFile
 	/// </summary>
 	/// <remarks>
 	/// This is set when using <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
-	/// It is null when the file was read from binary data using <see cref="Read"/>.
+	/// It is null when the file was read from binary data using <see cref="Read(ReadOnlySpan{byte})"/>.
 	/// </remarks>
 	public string? SourcePath { get; private set; }
 
@@ -354,6 +354,196 @@ public sealed class Mp3File : IMediaFile
 		// Audio starts after ID3v2 tag
 		if (MpegAudioProperties.TryParse (binaryData, file.Id3v2Size, out var audioProps))
 			file.Properties = audioProps;
+
+		return Mp3FileReadResult.Success (file);
+	}
+
+	/// <summary>
+	/// Reads an MP3 from a stream. A seekable stream supplies the tag, the first
+	/// audio frames, and the ID3v1 footer. The bytes between them stay unread.
+	/// </summary>
+	internal static Mp3FileReadResult Read (Stream stream)
+	{
+		if (!stream.CanSeek)
+			return Read (StreamBytes.ReadToEnd (stream));
+
+		return ReadWindow (stream, static (source, count) => StreamBytes.ReadAtMost (source, count));
+	}
+
+	internal static async Task<Mp3FileReadResult> ReadAsync (Stream stream, CancellationToken cancellationToken)
+	{
+		if (!stream.CanSeek)
+			return Read (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false));
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		var length = stream.Length;
+		if (length < 4)
+			return Mp3FileReadResult.Failure ("Invalid MP3 file: data too short");
+
+		var window = new Mp3Window (length);
+		while (true) {
+			cancellationToken.ThrowIfCancellationRequested ();
+			switch (window.Next (stream.Position, out var count, out var seek)) {
+				case Mp3WindowStep.ReadPrefix:
+					window.AddPrefix (await StreamBytes.ReadAtMostAsync (stream, count, cancellationToken).ConfigureAwait (false));
+					break;
+				case Mp3WindowStep.ReadTail:
+					var asyncTail = await StreamBytes.ReadAtMostAsync (stream, count, cancellationToken).ConfigureAwait (false);
+					if (TryFinishWindow (window, asyncTail, out var asyncParsed))
+						return asyncParsed;
+					stream.Position = 0;
+					return Read (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false));
+				case Mp3WindowStep.Seek:
+					stream.Position = seek;
+					window.NoteSeek ();
+					break;
+				default:
+					return Read (window.Prefix ());
+			}
+		}
+	}
+
+	static Mp3FileReadResult ReadWindow (Stream stream, Func<Stream, int, byte[]> read)
+	{
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		var length = stream.Length;
+		if (length < 4)
+			return Mp3FileReadResult.Failure ("Invalid MP3 file: data too short");
+
+		var window = new Mp3Window (length);
+		while (true) {
+			switch (window.Next (stream.Position, out var count, out var seek)) {
+				case Mp3WindowStep.ReadPrefix:
+					window.AddPrefix (read (stream, count));
+					break;
+				case Mp3WindowStep.ReadTail:
+					if (TryFinishWindow (window, read (stream, count), out var parsed))
+						return parsed;
+					stream.Position = 0;
+					return Read (StreamBytes.ReadToEnd (stream));
+				case Mp3WindowStep.Seek:
+					stream.Position = seek;
+					window.NoteSeek ();
+					break;
+				default:
+					return Read (window.Prefix ());
+			}
+		}
+	}
+
+	static bool TryFinishWindow (Mp3Window window, byte[] tail, out Mp3FileReadResult result)
+	{
+		result = ReadWindows (window.Prefix (), tail, window.Length, out var needsEntireFile);
+		return !needsEntireFile;
+	}
+
+	enum Mp3WindowStep
+	{
+		ReadPrefix,
+		ReadTail,
+		Seek,
+		ParsePrefix
+	}
+
+	/// <summary>
+	/// The seekable MP3 read, shared by the sync and async entry points.
+	/// The audio between the probe and the ID3v1 footer stays unread.
+	/// </summary>
+	sealed class Mp3Window
+	{
+		const int AudioProbeBytes = 32 * 1024;
+
+		readonly List<byte> _prefix = [];
+		readonly long _length;
+		int _stage;
+
+		public Mp3Window (long length) => _length = length;
+
+		public long Length => _length;
+
+		public byte[] Prefix () => _prefix.ToArray ();
+
+		public Mp3WindowStep Next (long position, out int count, out long seek)
+		{
+			count = 0;
+			seek = 0;
+			switch (_stage) {
+				case 0:
+					count = Id3v2Header.HeaderSize;
+					return Mp3WindowStep.ReadPrefix;
+				case 1:
+					count = Id3Remainder ();
+					if (count > 0)
+						return Mp3WindowStep.ReadPrefix;
+					_stage = 2;
+					goto case 2;
+				case 2:
+					count = AudioProbeBytes;
+					return Mp3WindowStep.ReadPrefix;
+				case 3:
+					if (position < _length && _length - position <= Id3v1Size) {
+						count = (int)(_length - position);
+						return Mp3WindowStep.ReadPrefix;
+					}
+
+					_stage = 4;
+					goto case 4;
+				case 4:
+					if (position >= _length)
+						return Mp3WindowStep.ParsePrefix;
+					seek = _length - Id3v1Size;
+					return Mp3WindowStep.Seek;
+				default:
+					count = Id3v1Size;
+					return Mp3WindowStep.ReadTail;
+			}
+		}
+
+		public void AddPrefix (byte[] data)
+		{
+			if (data.Length > 0)
+				_prefix.AddRange (data);
+			_stage++;
+		}
+
+		public void NoteSeek () => _stage++;
+
+		int Id3Remainder ()
+		{
+			var header = Id3v2Header.Read (_prefix.ToArray ());
+			if (!header.IsSuccess)
+				return 0;
+			var total = Math.Min ((long)header.Header.TotalSize, _length);
+			return (int)Math.Max (0, total - _prefix.Count);
+		}
+	}
+
+	static Mp3FileReadResult ReadWindows (byte[] prefix, byte[] tail, long fileLength, out bool needsEntireFile)
+	{
+		needsEntireFile = false;
+		var file = new Mp3File ();
+		var id3v2Result = Id3v2Tag.Read (prefix);
+		if (id3v2Result.IsSuccess) {
+			file.Id3v2Tag = id3v2Result.Tag;
+			file.Id3v2Size = id3v2Result.BytesConsumed;
+		}
+
+		if (tail.Length >= Id3v1Size) {
+			var id3v1Result = Id3v1Tag.Read (tail.AsSpan (tail.Length - Id3v1Size, Id3v1Size));
+			if (id3v1Result.IsSuccess)
+				file.Id3v1Tag = id3v1Result.Tag;
+		}
+
+		if (MpegAudioProperties.TryParse (new BinaryData (prefix), file.Id3v2Size, fileLength, out var audioProps, out needsEntireFile))
+			file.Properties = audioProps;
+		else if (needsEntireFile) {
+			file.Dispose ();
+			return Mp3FileReadResult.Failure ("The MPEG frame count has to be read from the audio");
+		}
 
 		return Mp3FileReadResult.Success (file);
 	}

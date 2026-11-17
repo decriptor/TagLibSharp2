@@ -1067,7 +1067,9 @@ namespace TagLibSharp2.Core
     public static class MediaFile
     {
         public static TagLibSharp2.Core.MediaFormat DetectFormat(System.ReadOnlySpan<byte> data, string? pathHint = null) { }
+        public static TagLibSharp2.Core.MediaFileResult Read(System.IO.Stream stream, string? pathHint = null) { }
         public static TagLibSharp2.Core.MediaFileResult Read(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public static System.Threading.Tasks.Task<TagLibSharp2.Core.MediaFileResult> ReadAsync(System.IO.Stream stream, string? pathHint = null, System.Threading.CancellationToken cancellationToken = default) { }
         public static System.Threading.Tasks.Task<TagLibSharp2.Core.MediaFileResult> ReadAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
         public static TagLibSharp2.Core.MediaFileResult ReadFromData(System.ReadOnlyMemory<byte> data, string? pathHint = null) { }
     }

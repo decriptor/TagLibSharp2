@@ -42,7 +42,7 @@ public sealed class FlacFile : IMediaFile
 	/// </summary>
 	/// <remarks>
 	/// This is set when using <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
-	/// It is null when the file was read from binary data using <see cref="Read"/>.
+	/// It is null when the file was read from binary data using <see cref="Read(ReadOnlySpan{byte})"/>.
 	/// </remarks>
 	public string? SourcePath { get; private set; }
 
@@ -486,6 +486,102 @@ public sealed class FlacFile : IMediaFile
 
 		file.MetadataSize = offset;
 		return FlacFileReadResult.Success (file, offset);
+	}
+
+	/// <summary>
+	/// Reads FLAC metadata from a stream and stops at the last metadata block.
+	/// Audio frames after that block are not read.
+	/// </summary>
+	internal static FlacFileReadResult Read (Stream stream)
+	{
+		if (!stream.CanSeek)
+			return Read (StreamBytes.ReadToEnd (stream));
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		using var metadata = new MemoryStream ();
+		AppendMetadata (metadata, StreamBytes.ReadAtMost (stream, MagicSize));
+		var last = false;
+		while (!last && stream.Position < stream.Length) {
+			var headerBytes = StreamBytes.ReadAtMost (stream, FlacMetadataBlockHeader.HeaderSize);
+			if (!TryBeginBlock (stream, metadata, headerBytes, out var declared, out var count, out var isLast))
+				break;
+			if (!TryFinishBlock (metadata, StreamBytes.ReadAtMost (stream, count), declared, isLast, ref last))
+				break;
+		}
+
+		return Read (metadata.ToArray ());
+	}
+
+	internal static async Task<FlacFileReadResult> ReadAsync (Stream stream, CancellationToken cancellationToken)
+	{
+		if (!stream.CanSeek)
+			return Read (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false));
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		using var metadata = new MemoryStream ();
+		AppendMetadata (metadata, await StreamBytes.ReadAtMostAsync (stream, MagicSize, cancellationToken).ConfigureAwait (false));
+		var last = false;
+		while (!last && stream.Position < stream.Length) {
+			var headerBytes = await StreamBytes.ReadAtMostAsync (stream, FlacMetadataBlockHeader.HeaderSize, cancellationToken)
+				.ConfigureAwait (false);
+			if (!TryBeginBlock (stream, metadata, headerBytes, out var declared, out var count, out var isLast))
+				break;
+			var body = await StreamBytes.ReadAtMostAsync (stream, count, cancellationToken).ConfigureAwait (false);
+			if (!TryFinishBlock (metadata, body, declared, isLast, ref last))
+				break;
+		}
+
+		return Read (metadata.ToArray ());
+	}
+
+	static bool TryBeginBlock (
+		Stream stream,
+		MemoryStream metadata,
+		byte[] headerBytes,
+		out int declared,
+		out int count,
+		out bool isLast)
+	{
+		declared = 0;
+		count = 0;
+		isLast = false;
+		if (headerBytes.Length < FlacMetadataBlockHeader.HeaderSize)
+			return false;
+
+		var header = FlacMetadataBlockHeader.Read (headerBytes);
+		if (!header.IsSuccess)
+			return false;
+
+		AppendMetadata (metadata, headerBytes);
+		declared = header.Header.DataLength;
+		if (declared < 0)
+			return false;
+
+		var remaining = stream.Length - stream.Position;
+		count = declared;
+		if (count > remaining)
+			count = (int)Math.Max (0, remaining);
+		isLast = header.Header.IsLast;
+		return true;
+	}
+
+	static bool TryFinishBlock (MemoryStream metadata, byte[] body, int declared, bool isLast, ref bool last)
+	{
+		AppendMetadata (metadata, body);
+		if (body.Length < declared)
+			return false;
+		last = isLast;
+		return true;
+	}
+
+	static void AppendMetadata (MemoryStream metadata, byte[] data)
+	{
+		if (data.Length > 0)
+			metadata.Write (data, 0, data.Length);
 	}
 
 	/// <summary>
