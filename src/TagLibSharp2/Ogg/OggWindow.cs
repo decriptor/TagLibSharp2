@@ -64,8 +64,8 @@ internal static class OggWindow
 			if (body.Length != header.BodySize)
 				break;
 
-			kept.Write (header.Prefix);
-			kept.Write (body);
+			StreamBytes.Append (kept, header.Prefix);
+			StreamBytes.Append (kept, body);
 			CountPackets (header, ref complete, ref open);
 		}
 

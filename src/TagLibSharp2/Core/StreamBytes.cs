@@ -8,6 +8,13 @@ namespace TagLibSharp2.Core;
 /// </summary>
 internal static class StreamBytes
 {
+	/// <summary>
+	/// Writes <paramref name="data"/> with the <see cref="Stream.Write(byte[], int, int)"/> overload.
+	/// <see cref="MemoryStream"/> has no span write on netstandard2.0.
+	/// </summary>
+	public static void Append (MemoryStream stream, byte[] data) =>
+		stream.Write (data, 0, data.Length);
+
 	public static byte[] ReadAtMost (Stream stream, int count)
 	{
 		if (count <= 0)

@@ -383,7 +383,7 @@ public sealed class DffFile : IMediaFile
 			return DffFileReadResult.Failure ($"Data too short for DFF file: {stream.Length} bytes");
 
 		using var kept = new MemoryStream ();
-		kept.Write (head);
+		StreamBytes.Append (kept, head);
 		using var audioHeaders = new MemoryStream ();
 		long pos = 16;
 		var length = stream.Length;
@@ -398,7 +398,7 @@ public sealed class DffFile : IMediaFile
 			var dataEnd = pos + 12 + (long)size;
 			var pad = (size & 1) == 1 ? 1 : 0;
 			if (id is "DSD " or "DST ") {
-				audioHeaders.Write (chunkHeader);
+				StreamBytes.Append (audioHeaders, chunkHeader);
 				if (dataEnd < pos)
 					break;
 				pos = dataEnd + pad;
@@ -411,7 +411,7 @@ public sealed class DffFile : IMediaFile
 			if (chunkEnd < pos || dataEnd > length) {
 				var rest = (int)Math.Min (length - pos, int.MaxValue);
 				stream.Position = pos;
-				kept.Write (StreamBytes.ReadAtMost (stream, rest));
+				StreamBytes.Append (kept, StreamBytes.ReadAtMost (stream, rest));
 				break;
 			}
 
@@ -419,13 +419,13 @@ public sealed class DffFile : IMediaFile
 			if (chunkLen > int.MaxValue)
 				break;
 			stream.Position = pos;
-			kept.Write (StreamBytes.ReadAtMost (stream, (int)chunkLen));
+			StreamBytes.Append (kept, StreamBytes.ReadAtMost (stream, (int)chunkLen));
 			pos = chunkEnd;
 		}
 
 		var audio = audioHeaders.ToArray ();
 		if (audio.Length > 0)
-			kept.Write (audio);
+			StreamBytes.Append (kept, audio);
 
 		var result = Read (kept.ToArray ());
 		if (result.IsSuccess && result.File is not null)
@@ -720,10 +720,10 @@ public sealed class DffFile : IMediaFile
 			}
 		}
 
-		if (string.IsNullOrEmpty (SourcePath))
+		if (SourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		var read = FileHelper.SafeReadAllBytes (source, fs);
 		if (!read.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
 		return SaveToFile (path, read.Data!.Value.Span, fs);

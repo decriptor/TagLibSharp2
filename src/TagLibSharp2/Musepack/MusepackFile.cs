@@ -292,10 +292,10 @@ public sealed class MusepackFile : IMediaFile
 		stream.Position = 0;
 		var magic = StreamBytes.ReadAtMost (stream, 4);
 		using var kept = new MemoryStream ();
-		kept.Write (magic);
+		StreamBytes.Append (kept, magic);
 		if (magic.Length >= 3 && magic[0] == (byte)'M' && magic[1] == (byte)'P' && magic[2] == (byte)'+') {
 			var rest = StreamBytes.ReadAtMost (stream, 12);
-			kept.Write (rest);
+			StreamBytes.Append (kept, rest);
 		} else {
 			while (stream.Position + 3 <= stream.Length) {
 				var key = StreamBytes.ReadAtMost (stream, 2);
@@ -305,9 +305,9 @@ public sealed class MusepackFile : IMediaFile
 				if (payloadLen < 0 || payloadLen > 1024 * 1024)
 					break;
 				var payload = StreamBytes.ReadAtMost (stream, (int)payloadLen);
-				kept.Write (key);
-				kept.Write (sizeBytes);
-				kept.Write (payload);
+				StreamBytes.Append (kept, key);
+				StreamBytes.Append (kept, sizeBytes);
+				StreamBytes.Append (kept, payload);
 				if (key[0] == (byte)'S' && key[1] == (byte)'H')
 					break;
 			}
@@ -622,10 +622,10 @@ public sealed class MusepackFile : IMediaFile
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
 			return SaveToFile (path, _originalData, fs);
-		if (string.IsNullOrEmpty (SourcePath))
+		if (SourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = FileHelper.SafeReadAllBytes (SourcePath, fs);
+		var read = FileHelper.SafeReadAllBytes (source, fs);
 		if (!read.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
 		return SaveToFile (path, read.Data!.Value.Span, fs);
@@ -672,10 +672,10 @@ public sealed class MusepackFile : IMediaFile
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
 			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
-		if (string.IsNullOrEmpty (SourcePath))
+		if (SourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath, fs, cancellationToken).ConfigureAwait (false);
+		var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
 		if (!read.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
 		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);

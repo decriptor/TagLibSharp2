@@ -752,10 +752,10 @@ public sealed class OggFlacFile : IMediaFile
 		if (_originalData.Length > 0)
 			return SaveToFile (path, _originalData, fs);
 
-		if (string.IsNullOrEmpty (_sourcePath))
+		if (_sourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = FileHelper.SafeReadAllBytes (_sourcePath, fs);
+		var read = FileHelper.SafeReadAllBytes (source, fs);
 		if (!read.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
 
@@ -807,10 +807,10 @@ public sealed class OggFlacFile : IMediaFile
 		if (_originalData.Length > 0)
 			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
 
-		if (string.IsNullOrEmpty (_sourcePath))
+		if (_sourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = await FileHelper.SafeReadAllBytesAsync (_sourcePath, fs, cancellationToken).ConfigureAwait (false);
+		var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
 		if (!read.IsSuccess)
 			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
 
