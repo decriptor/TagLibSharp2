@@ -52,11 +52,12 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 
 /// <summary>
 /// A Matroska or WebM file. Reading maps <c>Tags</c> onto <see cref="Tag"/>.
-/// Rewriting the container is not implemented: a short or shifted element corrupts the file.
+/// Saving splices <see cref="MatroskaTag.Render"/> into the first <c>Segment</c>.
 /// </summary>
 public sealed class MatroskaFile : IMediaFile
 {
 	const ulong DefaultTimestampScale = 1_000_000;
+	IFileSystem? _sourceFileSystem;
 
 	MatroskaFile (MatroskaTag tag, TimeSpan? duration, TrackLayout layout)
 	{
@@ -159,7 +160,7 @@ public sealed class MatroskaFile : IMediaFile
 		var scale = DefaultTimestampScale;
 		double? durationTicks = null;
 		var layout = new TrackLayout ();
-		var segmentEnd = segment.UnknownSize ? data.Length : segment.End;
+		var segmentEnd = PayloadEnd (data, segment);
 		offset = segment.DataOffset;
 		while (offset < segmentEnd) {
 			// Padding and a short illegal ID are skipped. A live segment can put
@@ -202,12 +203,125 @@ public sealed class MatroskaFile : IMediaFile
 		return result.IsSuccess;
 	}
 
+	/// <summary>Writes the rendered <c>Tags</c> element into a copy of <paramref name="originalData"/>.</summary>
+	/// <returns>The rewritten file, or empty when the container cannot be bounded.</returns>
+	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
+		MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out _)
+			? new BinaryData (rewritten)
+			: BinaryData.Empty;
+
+	/// <summary>Saves tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
+	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
+	{
+		if (!MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out var error))
+			return FileWriteResult.Failure (error);
+
+		return AtomicFileWriter.Write (path, rewritten, fileSystem);
+	}
+
+	/// <summary>Saves tags into <paramref name="path"/>, re-reading the container from <see cref="SourcePath"/>.</summary>
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var fs = fileSystem ?? _sourceFileSystem;
+		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
+		if (!readResult.IsSuccess)
+			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
+
+		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+	}
+
+	/// <summary>Saves tags back to <see cref="SourcePath"/>.</summary>
+	public FileWriteResult SaveToFile (IFileSystem? fileSystem = null)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		return SaveToFile (SourcePath!, fileSystem);
+	}
+
+	/// <summary>Saves tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
+	public Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		ReadOnlyMemory<byte> originalData,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (!MatroskaRewrite.TryRewrite (originalData.Span, Tag, out var rewritten, out var error))
+			return Task.FromResult (FileWriteResult.Failure (error));
+
+		return AtomicFileWriter.WriteAsync (path, rewritten, fileSystem, cancellationToken);
+	}
+
+	/// <summary>Saves tags into <paramref name="path"/>, re-reading the container from <see cref="SourcePath"/>.</summary>
+	public async Task<FileWriteResult> SaveToFileAsync (
+		string path,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		var fs = fileSystem ?? _sourceFileSystem;
+		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken).ConfigureAwait (false);
+		if (!readResult.IsSuccess)
+			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
+
+		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken).ConfigureAwait (false);
+	}
+
+	/// <summary>Saves tags back to <see cref="SourcePath"/>.</summary>
+	public Task<FileWriteResult> SaveToFileAsync (
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
+
+		return SaveToFileAsync (SourcePath!, fileSystem, cancellationToken);
+	}
+
+	/// <summary>Reads a Matroska or WebM file from disk.</summary>
+	public static MatroskaFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
+	{
+		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
+		if (!readResult.IsSuccess)
+			return MatroskaFileReadResult.Failure (readResult.Error!);
+
+		var result = Read (readResult.Data!.Value.Span);
+		if (result.IsSuccess)
+			result.File!.SetSourcePath (path, fileSystem);
+		return result;
+	}
+
+	/// <summary>Reads a Matroska or WebM file from disk.</summary>
+	public static async Task<MatroskaFileReadResult> ReadFromFileAsync (
+		string path,
+		IFileSystem? fileSystem = null,
+		CancellationToken cancellationToken = default)
+	{
+		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fileSystem, cancellationToken).ConfigureAwait (false);
+		if (!readResult.IsSuccess)
+			return MatroskaFileReadResult.Failure (readResult.Error!);
+
+		var result = Read (readResult.Data!.Value.Span);
+		if (result.IsSuccess)
+			result.File!.SetSourcePath (path, fileSystem);
+		return result;
+	}
+
 	/// <inheritdoc/>
 	public void Dispose ()
 	{
 	}
 
-	internal void SetSourcePath (string? path) => SourcePath = path;
+	internal void SetSourcePath (string? path, IFileSystem? fileSystem = null)
+	{
+		SourcePath = path;
+		_sourceFileSystem = fileSystem;
+	}
 
 	static string? ReadDocType (ReadOnlySpan<byte> data, EbmlElement header)
 	{
@@ -501,8 +615,13 @@ public sealed class MatroskaFile : IMediaFile
 		while (offset < body.Length) {
 			if (!EbmlReader.TryRead (body, offset, body.Length, out var element))
 				break;
-			if (element.Id == MatroskaIds.Tag && !element.UnknownSize)
-				tag.AddBlock (ReadTag (body.Slice (element.DataOffset, (int)element.DataLength)));
+			if (element.Id == MatroskaIds.Tag && !element.UnknownSize) {
+				var raw = body.Slice (element.Position, element.End - element.Position).ToArray ();
+				var block = ReadTag (body.Slice (element.DataOffset, (int)element.DataLength));
+				if (!block.IsFileLevel)
+					block.KeepOriginal (raw);
+				tag.AddBlock (block);
+			}
 			if (element.UnknownSize)
 				break;
 			offset = element.End;
@@ -544,14 +663,18 @@ public sealed class MatroskaFile : IMediaFile
 			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
 			if (element.Id == MatroskaIds.TargetTypeValue && payload.Length > 0)
 				block.Level = EbmlReader.ReadUInt (payload);
-			else if (element.Id == MatroskaIds.TagChapterUid)
-				NoteTargetUid (payload, ref chapterAll, ref chapterSpecific);
-			else if (element.Id == MatroskaIds.TagAttachmentUid)
-				NoteTargetUid (payload, ref attachmentAll, ref attachmentSpecific);
-			else if (element.Id == MatroskaIds.TagTrackUid)
-				NoteTargetUid (payload, ref trackAll, ref trackSpecific);
-			else if (element.Id == MatroskaIds.TagEditionUid)
-				NoteTargetUid (payload, ref editionAll, ref editionSpecific);
+			else {
+				block.KeepTarget (body.Slice (element.Position, element.End - element.Position).ToArray ());
+				if (element.Id == MatroskaIds.TagChapterUid)
+					NoteTargetUid (payload, ref chapterAll, ref chapterSpecific);
+				else if (element.Id == MatroskaIds.TagAttachmentUid)
+					NoteTargetUid (payload, ref attachmentAll, ref attachmentSpecific);
+				else if (element.Id == MatroskaIds.TagTrackUid)
+					NoteTargetUid (payload, ref trackAll, ref trackSpecific);
+				else if (element.Id == MatroskaIds.TagEditionUid)
+					NoteTargetUid (payload, ref editionAll, ref editionSpecific);
+			}
+
 			offset = element.End;
 		}
 
@@ -575,6 +698,9 @@ public sealed class MatroskaFile : IMediaFile
 	{
 		var name = string.Empty;
 		string? text = null;
+		string? language = null;
+		string? languageBcp47 = null;
+		byte[]? binary = null;
 		var isDefault = true;
 		var children = new List<SimpleTag> ();
 		var offset = 0;
@@ -586,6 +712,12 @@ public sealed class MatroskaFile : IMediaFile
 				name = EbmlReader.ReadString (payload);
 			else if (element.Id == MatroskaIds.TagString)
 				text = EbmlReader.ReadString (payload);
+			else if (element.Id == MatroskaIds.TagLanguage)
+				language = EbmlReader.ReadString (payload);
+			else if (element.Id == MatroskaIds.TagLanguageBcp47)
+				languageBcp47 = EbmlReader.ReadString (payload);
+			else if (element.Id == MatroskaIds.TagBinary)
+				binary = payload.ToArray ();
 			else if (element.Id == MatroskaIds.TagDefault || element.Id == MatroskaIds.TagDefaultBogus)
 				isDefault = payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
 			else if (element.Id == MatroskaIds.SimpleTag)
@@ -593,10 +725,63 @@ public sealed class MatroskaFile : IMediaFile
 			offset = element.End;
 		}
 
-		var tag = new SimpleTag (name, text, isDefault);
+		var tag = new SimpleTag (name, text, isDefault) {
+			Language = language,
+			LanguageBcp47 = languageBcp47,
+			Binary = binary
+		};
 		foreach (var child in children)
 			tag.Children.Add (child);
 		return tag;
+	}
+
+	/// <summary>
+	/// An unknown-size Segment ends at the next EBML header or Segment.
+	/// A known-size Segment ends at the size it declares. RFC 8794.
+	/// </summary>
+	internal static int PayloadEnd (ReadOnlySpan<byte> data, EbmlElement segment) =>
+		segment.UnknownSize ? EndAtNextTopLevel (data, segment.DataOffset) : segment.End;
+
+	static int EndAtNextTopLevel (ReadOnlySpan<byte> data, int offset)
+	{
+		while (offset < data.Length) {
+			if (!EbmlReader.TryRead (data, offset, data.Length, out var element))
+				return data.Length;
+			if (element.Id == MatroskaIds.Ebml || element.Id == MatroskaIds.Segment)
+				return element.Position;
+			if (element.UnknownSize) {
+				if (!TrySkipUnknown (data, element.DataOffset, out var next))
+					return data.Length;
+				offset = next;
+				continue;
+			}
+
+			offset = element.End;
+		}
+
+		return data.Length;
+	}
+
+	static bool TrySkipUnknown (ReadOnlySpan<byte> data, int offset, out int next)
+	{
+		next = offset;
+		while (offset < data.Length) {
+			if (!EbmlReader.TryRead (data, offset, data.Length, out var element))
+				return false;
+			if (MatroskaIds.IsSegmentChild (element.Id)
+				|| element.Id == MatroskaIds.Ebml
+				|| element.Id == MatroskaIds.Segment) {
+				next = element.Position;
+				return true;
+			}
+
+			if (element.UnknownSize)
+				return false;
+			offset = element.End;
+		}
+
+		next = data.Length;
+		return true;
 	}
 
 	static ReadOnlySpan<byte> Range (ReadOnlySpan<byte> data, EbmlElement element, int parentEnd)

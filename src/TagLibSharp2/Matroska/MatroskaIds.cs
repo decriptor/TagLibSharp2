@@ -42,6 +42,12 @@ static class MatroskaIds
 	public const ulong FileData = 0x465C;
 	public const ulong Cluster = 0x1F43B675;
 	public const ulong Cues = 0x1C53BB6B;
+	public const ulong Seek = 0x4DBB;
+	public const ulong SeekId = 0x53AB;
+	public const ulong SeekPosition = 0x53AC;
+	public const ulong CuePoint = 0xBB;
+	public const ulong CueTrackPositions = 0xB7;
+	public const ulong CueClusterPosition = 0xF1;
 	public const ulong Attachments = 0x1941A469;
 	public const ulong Chapters = 0x1043A770;
 	public const ulong Tags = 0x1254C367;
@@ -54,8 +60,11 @@ static class MatroskaIds
 	public const ulong TagAttachmentUid = 0x63C6;
 	public const ulong SimpleTag = 0x67C8;
 	public const ulong TagName = 0x45A3;
+	public const ulong TagLanguage = 0x447A;
+	public const ulong TagLanguageBcp47 = 0x447B;
 	public const ulong TagDefault = 0x4484;
 	public const ulong TagDefaultBogus = 0x44B4;
+	public const ulong TagBinary = 0x4485;
 	public const ulong TagString = 0x4487;
 
 	public static bool IsSegmentChild (ulong id) =>
