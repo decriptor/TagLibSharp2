@@ -116,8 +116,10 @@ public sealed class MpegAudioProperties : IMediaProperties
 	/// <summary>
 	/// Parses audio properties when <paramref name="fileLength"/> is the real file
 	/// and <paramref name="data"/> is only the tag plus the first audio frames.
-	/// <paramref name="needsEntireFile"/> is set when a Xing or VBRI byte count does
-	/// not fit that file, so the frame count has to be walked from the audio itself.
+	/// <paramref name="needsEntireFile"/> is set when a Xing or VBRI byte count runs
+	/// past the end of the file, so the frame count has to be walked from the audio
+	/// that is actually present. The Xing byte count is the stream size. LAME writes
+	/// the file size, which includes bytes before the first audio frame.
 	/// </summary>
 	internal static bool TryParse (
 		BinaryData data,
@@ -164,11 +166,10 @@ public sealed class MpegAudioProperties : IMediaProperties
 		uint? frameCount = null;
 
 		var audioDataSize = fileLength - audioOffset;
-		var bytesFromFrame = fileLength - frameOffset;
 		var trustVbri = xingHeader is null && vbriHeader is not null
-			&& DeclaredSizeFits (vbriHeader.ByteCount > 0 ? vbriHeader.ByteCount : null, bytesFromFrame);
+			&& DeclaredSizeFits (vbriHeader.ByteCount > 0 ? vbriHeader.ByteCount : null, fileLength);
 
-		if (xingHeader is { FrameCount: uint xingFrames } && DeclaredSizeFits (xingHeader.ByteCount, bytesFromFrame)) {
+		if (xingHeader is { FrameCount: uint xingFrames } && DeclaredSizeFits (xingHeader.ByteCount, fileLength)) {
 			// VBR with Xing header - accurate duration
 			frameCount = xingFrames;
 			var totalSamples = (double)xingFrames * frame.SamplesPerFrame;
@@ -282,11 +283,11 @@ public sealed class MpegAudioProperties : IMediaProperties
 	/// A missing byte count makes no size claim. A count past the bytes after the
 	/// first frame belongs to a longer file than the one in hand.
 	/// </summary>
-	static bool DeclaredSizeFits (uint? byteCount, long bytesFromFrame)
+	static bool DeclaredSizeFits (uint? byteCount, long fileLength)
 	{
 		if (byteCount is null)
 			return true;
-		return bytesFromFrame >= 0 && byteCount.Value <= bytesFromFrame;
+		return fileLength >= 0 && byteCount.Value <= fileLength;
 	}
 
 	static int CountFrames (BinaryData data, int firstOffset)

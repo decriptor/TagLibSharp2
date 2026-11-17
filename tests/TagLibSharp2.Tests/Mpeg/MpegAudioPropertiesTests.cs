@@ -408,6 +408,40 @@ public class MpegAudioPropertiesTests
 	}
 
 	[TestMethod]
+	public void Duration_XingByteCountCoversTheTag_UsesFrameCount ()
+	{
+		// LAME stores the Xing byte count as the whole stream size, so it includes
+		// the bytes before the first audio frame. That count is past the audio that
+		// follows the frame and within the file. 100 * 1152 / 44100 = 2.612 s.
+		// Three frames are physically present; the header's frame count stands.
+		const int tagBytes = 200;
+		const int frameSize = 417;
+		const int framesPresent = 3;
+		const int xingFrames = 100;
+		var fileLength = tagBytes + frameSize * framesPresent;
+		var builder = new BinaryDataBuilder ();
+		builder.Add (new byte[tagBytes]);
+		builder.Add (0xFF, 0xFB, 0x90, 0x00);
+		builder.Add (new byte[32]);
+		builder.Add (0x58, 0x69, 0x6E, 0x67); // "Xing"
+		builder.AddUInt32BE (0x03);
+		builder.AddUInt32BE (xingFrames);
+		builder.AddUInt32BE ((uint)fileLength);
+		while (builder.Length < fileLength)
+			builder.Add (0);
+		StampFrameHeader (builder, tagBytes + frameSize);
+		StampFrameHeader (builder, tagBytes + frameSize * 2);
+
+		var parsed = MpegAudioProperties.TryParse (
+			builder.ToBinaryData (), tagBytes, fileLength, out var props, out var needsEntireFile);
+
+		Assert.IsTrue (parsed);
+		Assert.IsFalse (needsEntireFile);
+		Assert.AreEqual (100 * 1152.0 / 44100, props!.Duration.TotalSeconds, 0.001);
+		Assert.AreEqual ((uint)xingFrames, props.FrameCount);
+	}
+
+	[TestMethod]
 	public void Duration_LongTruncatedXing_CountsTheFramesThatArePresent ()
 	{
 		// A byte count past the buffer counts frames in one forward scan.
