@@ -529,9 +529,19 @@ public sealed class Mp3File : IMediaFile
 					count = Id3v2Header.HeaderSize;
 					return Mp3WindowStep.ReadPrefix;
 				case 1:
-					count = Id3Remainder ();
-					if (count > 0)
+					var remainder = Id3Remainder ();
+					var afterTag = (long)_count + remainder;
+					var room = _length - afterTag;
+					var probe = room > AudioProbeBytes ? AudioProbeBytes : (int)Math.Max (0, room);
+					if (remainder > 0) {
+						count = remainder + probe;
+						// The probe is contiguous with the tag, so one read fills both.
+						// Commit then lands on the footer instead of reading the probe again.
+						if (probe > 0)
+							_stage = 2;
 						return Mp3WindowStep.ReadPrefix;
+					}
+
 					_stage = 2;
 					goto case 2;
 				case 2:
