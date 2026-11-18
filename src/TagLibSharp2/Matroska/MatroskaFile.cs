@@ -197,7 +197,8 @@ public sealed class MatroskaFile : IMediaFile
 
 	/// <summary>
 	/// Reads tags and duration from a stream. Cluster payloads stay on disk.
-	/// An unknown-size cluster stops the walk; it is not scanned to resync.
+	/// An unknown-size element ends at the next segment child, the same way a byte read does.
+	/// The bytes in between are not copied.
 	/// </summary>
 	internal static MatroskaFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
 	{
@@ -264,18 +265,26 @@ public sealed class MatroskaFile : IMediaFile
 			if (!TryPeek (stream, pos, out var id, out var headerLength, out var dataLength))
 				break;
 			if (id == MatroskaIds.Cluster) {
-				// Unknown-size clusters are not scanned. Known clusters are seeked past.
-				if (dataLength < 0)
-					break;
-				var clusterEnd = pos + headerLength + dataLength;
-				if (clusterEnd > end || clusterEnd < pos)
+				// Known clusters are seeked past. An unknown-size cluster ends at the next
+				// segment child, matching the byte reader, and its payload is not copied.
+				var clusterEnd = dataLength < 0
+					? NextSegmentChild (stream, pos + headerLength, end)
+					: pos + headerLength + dataLength;
+				if (clusterEnd > end || clusterEnd <= pos)
 					break;
 				pos = clusterEnd;
 				continue;
 			}
 
-			if (dataLength < 0)
-				break;
+			if (dataLength < 0) {
+				var bounded = NextSegmentChild (stream, pos + headerLength, end);
+				if (bounded > end || bounded <= pos)
+					break;
+				if (!Copy (stream, pos, bounded, kept))
+					break;
+				pos = bounded;
+				continue;
+			}
 
 			var childEnd = pos + headerLength + dataLength;
 			if (childEnd > end || childEnd < pos)
@@ -297,6 +306,29 @@ public sealed class MatroskaFile : IMediaFile
 		stream.Position = pos;
 		var probe = StreamBytes.ReadAtMost (stream, 12);
 		return EbmlReader.TryPeekHeader (probe, out id, out headerLength, out dataLength);
+	}
+
+	/// <summary>
+	/// The next segment-level element at or after <paramref name="start"/>.
+	/// Matches <see cref="NextSibling"/>: a payload that is not an element ends the walk.
+	/// </summary>
+	static long NextSegmentChild (Stream stream, long start, long end)
+	{
+		var cursor = start;
+		while (cursor + 2 <= end) {
+			if (!TryPeek (stream, cursor, out var id, out var headerLength, out var dataLength))
+				return end;
+			if (MatroskaIds.IsSegmentChild (id))
+				return cursor;
+			if (dataLength < 0)
+				return end;
+			var childEnd = cursor + headerLength + dataLength;
+			if (childEnd > end || childEnd <= cursor)
+				return end;
+			cursor = childEnd;
+		}
+
+		return end;
 	}
 
 	static bool Copy (Stream stream, long start, long end, MemoryStream kept)
