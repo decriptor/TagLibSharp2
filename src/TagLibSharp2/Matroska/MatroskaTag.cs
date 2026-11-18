@@ -16,6 +16,7 @@ namespace TagLibSharp2.Matroska;
 /// </remarks>
 public sealed class MatroskaTag : Tag
 {
+	const ulong CollectionLevel = 70;
 	const ulong AlbumLevel = 50;
 	const ulong TrackLevel = 30;
 
@@ -35,11 +36,13 @@ public sealed class MatroskaTag : Tag
 			// TITLE at 30 is the track. An empty one blocks every broader title.
 			if (HasFileLevelName (TrackLevel, "TITLE"))
 				return FirstAt (TrackLevel, "TITLE");
-			// The segment title is the file title. A lone album or movie TITLE at 50
-			// is what a caller still displays when the file has no track title.
+			// The segment title is the file title. Otherwise the most specific
+			// file-level TITLE below a collection still displays, so a part,
+			// edition, or lone album title is not a blank name.
 			if (!string.IsNullOrEmpty (_segmentTitle))
 				return _segmentTitle;
-			return FirstAt (AlbumLevel, "TITLE");
+			var level = MostSpecificFileTitleBelowCollection ();
+			return level is ulong found ? FirstAt (found, "TITLE") : null;
 		}
 		set => SetAt (TrackLevel, "TITLE", value);
 	}
@@ -361,6 +364,19 @@ public sealed class MatroskaTag : Tag
 
 			return level ?? AlbumLevel;
 		}
+	}
+
+	ulong? MostSpecificFileTitleBelowCollection ()
+	{
+		ulong? best = null;
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level >= CollectionLevel || !block.HasName ("TITLE"))
+				continue;
+			if (best is null || block.Level < best)
+				best = block.Level;
+		}
+
+		return best;
 	}
 
 	bool HasFileLevelName (ulong level, string name)
