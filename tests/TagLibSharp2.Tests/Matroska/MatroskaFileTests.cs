@@ -619,6 +619,42 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_Stream_UnknownSizeCluster_KeepsTheFollowingTitle ()
+	{
+		var cluster = Concat (Id (0x1F43B675), new byte[] { 0xFF }, Element (0xEC, new byte[4]));
+		var file = Matroska (Master (0x18538067, Concat (cluster, Tags (Tag (30, Simple ("TITLE", "After"))))));
+
+		var opened = MatroskaFile.Read (new MemoryStream (file), null, null);
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.AreEqual ("After", opened.File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_Stream_UnknownSizeSeekHead_KeepsTheFollowingTitle ()
+	{
+		var seek = Concat (Id (MatroskaIds.SeekHead), new byte[] { 0xFF });
+		var file = Matroska (Master (0x18538067, Concat (seek, Tags (Tag (30, Simple ("TITLE", "After"))))));
+
+		var opened = MatroskaFile.Read (new MemoryStream (file), null, null);
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.AreEqual ("After", opened.File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Read_Stream_KnownCluster_KeepsTheFollowingTitle ()
+	{
+		var cluster = Master (0x1F43B675, Element (0xEC, new byte[4]));
+		var file = Matroska (Master (0x18538067, Concat (cluster, Tags (Tag (30, Simple ("TITLE", "After"))))));
+
+		var opened = MatroskaFile.Read (new MemoryStream (file), null, null);
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.AreEqual ("After", opened.File!.Tag.Title);
+	}
+
+	[TestMethod]
 	public void Read_WebM_ReadsTags ()
 	{
 		var file = Matroska (Master (0x18538067, Tags (Tag (50, Simple ("TITLE", "Web")))), "webm");

@@ -1,9 +1,11 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Aiff;
 using TagLibSharp2.Core;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Riff;
+using TagLibSharp2.Tests;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Core;
@@ -315,6 +317,23 @@ public class WindowedReadEdgeTests
 	}
 
 	[TestMethod]
+	public void Render_AiffSkippedSoundWithoutAPath_Throws ()
+	{
+		var parsed = AiffFile.Read (new MemoryStream (AiffWithSound ()), null, null);
+		var error = Assert.ThrowsExactly<InvalidOperationException> (() => parsed.File!.Render ());
+		Assert.AreEqual ("Cannot save an AIFF file whose sound data was not loaded.", error.Message);
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_AiffSkippedSoundWithoutAPath_Fails ()
+	{
+		var parsed = AiffFile.Read (new MemoryStream (AiffWithSound ()), null, null);
+		var saved = await parsed.File!.SaveToFileAsync ("/song.aiff");
+		Assert.IsFalse (saved.IsSuccess);
+		Assert.AreEqual ("Cannot save an AIFF file whose sound data was not loaded.", saved.Error);
+	}
+
+	[TestMethod]
 	public void Save_SourceShorterThanTheSkippedSamples_DoesNotWrite ()
 	{
 		var wav = WavWithTitle ("Window", new byte[32]);
@@ -579,6 +598,17 @@ public class WindowedReadEdgeTests
 		}
 
 		return -1;
+	}
+
+	static byte[] AiffWithSound ()
+	{
+		var data = TestBuilders.Aiff.CreateMinimal ();
+		var size = (uint)(data.Length - 8);
+		data[4] = (byte)(size >> 24);
+		data[5] = (byte)(size >> 16);
+		data[6] = (byte)(size >> 8);
+		data[7] = (byte)size;
+		return data;
 	}
 
 	sealed class ThrowingFileSystem : IFileSystem
