@@ -427,6 +427,17 @@ public class WindowedReadEdgeTests
 	}
 
 	[TestMethod]
+	public async Task ReadAsync_StreamLongerThanAnArray_ReturnsFailure ()
+	{
+		using var stream = new ReportedLengthStream ((long)int.MaxValue + 8);
+
+		var opened = await MediaFile.ReadAsync (stream, "clip.mkv");
+
+		Assert.IsFalse (opened.IsSuccess);
+		StringAssert.Contains (opened.Error, "too large");
+	}
+
+	[TestMethod]
 	public void Save_Mp3Parameterless_WritesTheFileSystemFromRead ()
 	{
 		var original = TinyMp3 (800);
