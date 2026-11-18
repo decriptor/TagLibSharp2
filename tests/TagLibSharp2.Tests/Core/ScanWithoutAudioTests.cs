@@ -40,6 +40,58 @@ public class ScanWithoutAudioTests
 	public void Read_Matroska_SkipsClusters () => AssertScan (MatroskaWithCluster (), "song.mkv");
 
 	[TestMethod]
+	public async Task CountingFileSystem_ForwardsTheMembersAScanDoesNotUse ()
+	{
+		var files = new CountingFileSystem ();
+		files.AddFile ("/song.bin", new byte[] { 1, 2, 3, 4 });
+		Assert.AreEqual ("song.bin", files.GetFileName ("/song.bin"));
+
+		await using (var created = files.Create ("/fresh.bin"))
+			Assert.AreEqual (0, created.Length);
+		Assert.IsTrue (files.FileExists ("/fresh.bin"));
+		files.Delete ("/fresh.bin");
+		Assert.IsFalse (files.FileExists ("/fresh.bin"));
+
+		await using var writable = files.OpenReadWrite ("/song.bin");
+		writable.WriteByte (9);
+		using var stream = files.OpenRead ("/song.bin");
+		Assert.IsTrue (stream.CanRead);
+		Assert.IsFalse (stream.CanWrite);
+		stream.Flush ();
+		var span = new byte[4];
+		Assert.AreEqual (4, stream.Read (span));
+		Assert.AreEqual (9, span[0]);
+		stream.Position = 1;
+		Assert.AreEqual (1, stream.Position);
+		Assert.AreEqual (0, stream.Seek (0, SeekOrigin.Begin));
+		Assert.AreEqual (1, await stream.ReadAsync (span.AsMemory (0, 1)));
+		var denied = Assert.ThrowsExactly<NotSupportedException> (() => stream.Write (span, 0, 1));
+		Assert.IsNotNull (denied);
+		var resize = Assert.ThrowsExactly<NotSupportedException> (() => stream.SetLength (1));
+		Assert.IsNotNull (resize);
+
+		var saved = Save ("not a media file", "/x", files);
+		Assert.IsFalse (saved.IsSuccess);
+		StringAssert.Contains (saved.Error, "Unsupported");
+		var asyncSaved = await SaveAsync (42, "/x", files);
+		Assert.IsFalse (asyncSaved.IsSuccess);
+		StringAssert.Contains (asyncSaved.Error, "Unsupported");
+	}
+
+	[TestMethod]
+	public void Element_PastOneSizeByte_UsesAWiderLength ()
+	{
+		var two = Element (0xEC, new byte[200]);
+		Assert.AreEqual (0x40, two[1] & 0xC0);
+		var three = Element (0xEC, new byte[20_000]);
+		Assert.AreEqual (0x20, three[1] & 0xE0);
+		Assert.AreEqual (-1, IndexOf (new byte[] { 1 }, ReadOnlySpan<byte>.Empty));
+		Assert.AreEqual (-1, IndexOf (new byte[] { 1, 2 }, new byte[] { 9 }));
+		Assert.AreEqual (-1, LastIndexOf (new byte[] { 1 }, ReadOnlySpan<byte>.Empty));
+		Assert.AreEqual (-1, LastIndexOf (new byte[] { 1, 2 }, new byte[] { 9, 9 }));
+	}
+
+	[TestMethod]
 	public async Task ReadAsync_Matroska_SkipsClusters () => await AssertScanAsync (MatroskaWithCluster (), "song.mkv");
 
 	[TestMethod]
