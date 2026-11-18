@@ -69,6 +69,62 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Performers_ReplacingTwoArtists_DropsTheExtraName ()
+	{
+		var file = FileWith (Tags (
+			Tag (50, Simple ("TITLE", "Album")),
+			Tag (30, Simple ("ARTIST", "Ada"), Simple ("ARTIST", "Bea"))));
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		tag.Performers = new[] { "Cara" };
+
+		Assert.AreEqual ("Cara", tag.Artist);
+		Assert.AreEqual (1, tag.Performers.Length);
+		Assert.AreEqual ("Cara", tag.Performers[0]);
+		Assert.AreEqual ("Album", tag.Album);
+	}
+
+	[TestMethod]
+	public void Performers_TwoNewNames_KeepBothWhenOneArtistWasStored ()
+	{
+		var file = FileWith (Tags (Tag (30, Simple ("ARTIST", "Ada"))));
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		tag.Performers = new[] { "Cara", "Dee" };
+
+		Assert.AreEqual (2, tag.Performers.Length);
+		Assert.AreEqual ("Cara", tag.Performers[0]);
+		Assert.AreEqual ("Dee", tag.Performers[1]);
+	}
+
+	[TestMethod]
+	public void Performers_Blank_RemovesTheStoredArtists ()
+	{
+		var file = FileWith (Tags (Tag (30, Simple ("ARTIST", "Ada"), Simple ("ARTIST", "Bea"))));
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		tag.Performers = new[] { "", null! };
+
+		Assert.AreEqual (0, tag.Performers.Length);
+		Assert.IsNull (tag.Artist);
+	}
+
+	[TestMethod]
+	public void AlbumArtists_Empty_RemovesTheAlbumArtist ()
+	{
+		var file = FileWith (Tags (
+			Tag (50, Simple ("ARTIST", "Album Artist"), Simple ("TITLE", "Album")),
+			Tag (30, Simple ("TITLE", "Track"))));
+		var tag = MatroskaFile.Read (file).File!.Tag;
+
+		tag.AlbumArtists = Array.Empty<string> ();
+
+		Assert.AreEqual (0, tag.AlbumArtists.Length);
+		Assert.AreEqual ("Album", tag.Album);
+		Assert.AreEqual ("Track", tag.Title);
+	}
+
+	[TestMethod]
 	public void Read_ChapterTitle_IsNotTheFileTitle ()
 	{
 		var file = FileWith (Tags (

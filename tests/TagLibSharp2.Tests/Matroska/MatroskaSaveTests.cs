@@ -408,6 +408,35 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void CrcCheck_RejectsAChecksumThatDoesNotMatch ()
+	{
+		var wrapped = WithCrc (0x1549A966, Element (0x7BA9, "Title"u8));
+		wrapped[^1] ^= 0xFF;
+
+		Assert.IsFalse (EveryCrcMatches (FileWith (wrapped)));
+		Assert.IsFalse (EveryCrcMatches (new byte[] { 1, 2, 3, 4 }));
+	}
+
+	[TestMethod]
+	public void CrcCheck_RejectsABrokenChecksumInsideAValidOne ()
+	{
+		var inner = WithCrc (0x1549A966, Element (0x7BA9, "Title"u8));
+		inner[^1] ^= 0xFF;
+		var outer = WithCrc (0x7373, inner);
+
+		Assert.IsFalse (EveryCrcMatches (FileWith (outer)));
+	}
+
+	[TestMethod]
+	public void CrcCheck_RejectsABrokenChecksumUnderAnElementWithoutOne ()
+	{
+		var inner = WithCrc (0x1549A966, Element (0x7BA9, "Title"u8));
+		inner[^1] ^= 0xFF;
+
+		Assert.IsFalse (EveryCrcMatches (FileWith (Master (0x7373, inner))));
+	}
+
+	[TestMethod]
 	public void Save_SettingTitle_KeepsSortAndOtherLanguages ()
 	{
 		var french = Master (0x67C8, Concat (
