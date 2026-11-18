@@ -870,6 +870,28 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Title_BelowACollection_DisplaysWithoutBecomingTheAlbum ()
+	{
+		foreach (var level in new ulong[] { 10, 20, 40, 60 }) {
+			var tag = MatroskaFile.Read (FileWith (Tags (Tag (level, Simple ("TITLE", "Part"))))).File!.Tag;
+
+			Assert.AreEqual ("Part", tag.Title, $"level {level}");
+			Assert.IsNull (tag.Album, $"level {level}");
+		}
+	}
+
+	[TestMethod]
+	public void Title_OnAPartTarget_StaysOffTheAlbumTitle ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Tags (
+			Tag (40, Simple ("TITLE", "Part")),
+			Tag (50, Simple ("TITLE", "Album"))))).File!.Tag;
+
+		Assert.AreEqual ("Part", tag.Title);
+		Assert.AreEqual ("Album", tag.Album);
+	}
+
+	[TestMethod]
 	public void TitleAndAlbum_OnAnAlbumTarget_StayIndependent ()
 	{
 		var tag = MatroskaFile.Read (FileWith (Tags (Tag (50, Simple ("TITLE", "Album"))))).File!.Tag;
