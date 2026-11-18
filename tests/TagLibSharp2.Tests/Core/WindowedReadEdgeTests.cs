@@ -435,25 +435,25 @@ public class WindowedReadEdgeTests
 	}
 
 	[TestMethod]
-	public void Read_StreamLongerThanAnArray_ReturnsFailure ()
+	public void Read_SeekableMatroskaLongerThanAnArray_DoesNotLoadTheFile ()
 	{
 		using var stream = new ReportedLengthStream ((long)int.MaxValue + 8);
 
 		var opened = MediaFile.Read (stream, "clip.mkv");
 
 		Assert.IsFalse (opened.IsSuccess);
-		StringAssert.Contains (opened.Error, "too large");
+		StringAssert.Contains (opened.Error, "no Segment");
 	}
 
 	[TestMethod]
-	public async Task ReadAsync_StreamLongerThanAnArray_ReturnsFailure ()
+	public async Task ReadAsync_SeekableMatroskaLongerThanAnArray_DoesNotLoadTheFile ()
 	{
 		using var stream = new ReportedLengthStream ((long)int.MaxValue + 8);
 
 		var opened = await MediaFile.ReadAsync (stream, "clip.mkv");
 
 		Assert.IsFalse (opened.IsSuccess);
-		StringAssert.Contains (opened.Error, "too large");
+		StringAssert.Contains (opened.Error, "no Segment");
 	}
 
 	[TestMethod]
