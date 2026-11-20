@@ -647,6 +647,105 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_ShiftedCluster_UpdatesInClusterPositionAndRecomputesItsCrc ()
+	{
+		var marker = new byte[] { 0xCA, 0xFE, 0xBA, 0xBE };
+		var earlyMarker = new byte[] { 0x11, 0x22, 0x33, 0x44 };
+		var info = Master (0x1549A966, Element (0x7BA9, "Live"u8));
+		// 256 is past the insertion point, so a value-only shift would move these.
+		// PrevSize is a length. CueRelativePosition is relative to the cluster.
+		var prevSize = Element (0xAB, new byte[] { 0x01, 0x00 });
+		var relative = Element (0xF0, new byte[] { 0x01, 0x00 });
+		var live = Element (MatroskaIds.Position, new byte[] { 0 });
+		var cues = CueElement (0);
+		byte[] early = [];
+		byte[] earlyPosition = [];
+		byte[] cluster = [];
+		ulong earlyPos = 0;
+		ulong clusterPos = 0;
+		for (var i = 0; i < 6; i++) {
+			earlyPos = (ulong)(info.Length + cues.Length);
+			earlyPosition = Element (MatroskaIds.Position, UIntBytes (earlyPos));
+			early = Master (0x1F43B675, Concat (earlyPosition, Element (0xEC, earlyMarker)));
+			clusterPos = earlyPos + (ulong)early.Length;
+			var positionElement = Element (MatroskaIds.Position, UIntBytes (clusterPos));
+			cluster = UnknownWithCrc (0x1F43B675, Concat (positionElement, live, prevSize, Element (0xEC, marker)));
+			cues = CueElement (clusterPos, relative);
+		}
+
+		Assert.AreEqual (clusterPos, (ulong)(info.Length + cues.Length + early.Length));
+		Assert.IsTrue (clusterPos < 0x80, "fixture Position must stay one octet wide");
+		var original = FileWith (info, cues, early, cluster);
+		Assert.IsTrue (IsElementAt (original, clusterPos, MatroskaIds.Cluster));
+		Assert.IsTrue (IsElementAt (original, earlyPos, MatroskaIds.Cluster));
+		Assert.IsTrue (TryReadUnknownClusterPosition (original, out var originalPosition, out var originalCrc, out var originalLive));
+		Assert.IsTrue (originalCrc);
+		Assert.IsTrue (originalLive);
+		Assert.AreEqual (clusterPos, originalPosition);
+
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Shifted";
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/position.mkv", original);
+		var saved = parsed.SaveToFile ("/position.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/position.mkv");
+		Assert.AreEqual ("Shifted", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		Assert.AreEqual (1, CountOf (bytes, earlyMarker));
+		Assert.IsTrue (TryReadCueClusterPosition (bytes, out var cuePosition, out var cueCrcOk));
+		Assert.IsTrue (cueCrcOk);
+		Assert.IsTrue (IsElementAt (bytes, cuePosition, MatroskaIds.Cluster));
+		Assert.IsTrue (cuePosition > clusterPos);
+
+		Assert.IsTrue (TryReadUnknownClusterPosition (bytes, out var position, out var crcOk, out var sawLive));
+		Assert.IsTrue (crcOk);
+		Assert.IsTrue (sawLive);
+		Assert.AreEqual (clusterPos + (cuePosition - clusterPos), position);
+		Assert.AreEqual (cuePosition, position);
+		Assert.IsTrue (position <= 0xFF);
+		Assert.IsTrue (IsElementAt (bytes, position, MatroskaIds.Cluster));
+		Assert.AreEqual (1, CountOf (bytes, Element (MatroskaIds.Position, UIntBytes (position))));
+
+		// The known-size cluster is before the insert, so its Position bytes stay.
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (early) >= 0);
+		Assert.AreEqual (1, CountOf (original, earlyPosition));
+		Assert.AreEqual (1, CountOf (bytes, earlyPosition));
+		Assert.AreEqual (1, CountOf (original, prevSize));
+		Assert.AreEqual (1, CountOf (bytes, prevSize));
+		Assert.AreEqual (1, CountOf (original, relative));
+		Assert.AreEqual (1, CountOf (bytes, relative));
+		Assert.AreEqual (1, CountOf (original, live));
+		Assert.AreEqual (1, CountOf (bytes, live));
+	}
+
+	[TestMethod]
+	public void Save_AppendedTags_DoNotChangeClusterPosition ()
+	{
+		var marker = new byte[] { 0x0D, 0x1C };
+		var info = Master (0x1549A966, Element (0x7BA9, "Kept"u8));
+		var position = Element (MatroskaIds.Position, UIntBytes ((ulong)info.Length));
+		var cluster = WithCrc (0x1F43B675, Concat (position, Element (0xEC, marker)));
+		Assert.IsTrue (info.Length < 0x80);
+		var original = FileWith (info, cluster);
+		Assert.IsTrue (IsElementAt (original, (ulong)info.Length, MatroskaIds.Cluster));
+
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Appended";
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/still.mkv", original);
+		var saved = parsed.SaveToFile ("/still.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/still.mkv");
+		Assert.AreEqual ("Appended", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, cluster));
+		Assert.AreEqual (1, CountOf (bytes, position));
+		Assert.IsTrue (IsElementAt (bytes, (ulong)info.Length, MatroskaIds.Cluster));
+	}
+
+	[TestMethod]
 	public void Save_SeekHeadCrc32_ReadsAndKeepsAValidCrc ()
 	{
 		var marker = new byte[] { 0xC0, 0x1A, 0x42 };
@@ -1009,14 +1108,25 @@ public partial class MatroskaFileTests
 		return new[] { (byte)(value >> 16), (byte)(value >> 8), (byte)value };
 	}
 
-	static byte[] CueElement (ulong clusterPos)
+	static byte[] CueElement (ulong clusterPos, params byte[][] extra)
 	{
+		var positions = new List<byte[]> {
+			Element (0xF7, new byte[] { 1 }),
+			Element (0xF1, UIntBytes (clusterPos))
+		};
+		positions.AddRange (extra);
 		var inner = Master (0xBB, Concat (
 			Element (0xB3, new byte[] { 0 }),
-			Master (0xB7, Concat (
-				Element (0xF7, new byte[] { 1 }),
-				Element (0xF1, UIntBytes (clusterPos))))));
+			Master (0xB7, Concat (positions.ToArray ()))));
 		return WithCrc (MatroskaIds.Cues, inner);
+	}
+
+	static byte[] UnknownWithCrc (ulong id, byte[] payload)
+	{
+		var crc = new BinaryData (payload).ComputeCrc32 ();
+		var crcBytes = new byte[4];
+		System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian (crcBytes, crc);
+		return Unknown (id, Concat (Element (0xBF, crcBytes), payload));
 	}
 
 	static byte[] SeekHeadWithNestedCrc (ulong clusterPos) =>
@@ -1159,6 +1269,60 @@ public partial class MatroskaFileTests
 		var at = bodyAt + (int)segmentPosition;
 		var idBytes = Id (id);
 		return at >= 0 && at + idBytes.Length <= file.Length && file.AsSpan (at, idBytes.Length).SequenceEqual (idBytes);
+	}
+
+	static bool TryReadUnknownClusterPosition (byte[] file, out ulong position, out bool crcOk, out bool sawLiveZero)
+	{
+		position = 0;
+		crcOk = false;
+		sawLiveZero = false;
+		if (!TrySegmentBody (file, out var body, out _))
+			return false;
+
+		var offset = 0;
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out var element))
+				return false;
+			if (element.Id == MatroskaIds.Cluster && element.UnknownSize)
+				return ReadClusterPositions (body, element.DataOffset, body.Length, out position, out crcOk, out sawLiveZero);
+			if (element.UnknownSize)
+				return false;
+			offset = element.End;
+		}
+
+		return false;
+	}
+
+	static bool ReadClusterPositions (byte[] body, int offset, int end, out ulong position, out bool crcOk, out bool sawLiveZero)
+	{
+		position = 0;
+		crcOk = false;
+		sawLiveZero = false;
+		if (!EbmlReader.TryRead (body, offset, end, out var crc) || crc.Id != MatroskaIds.Crc32 || crc.DataLength != 4)
+			return false;
+
+		var stored = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian (body.AsSpan (crc.DataOffset, 4));
+		var computed = new BinaryData (body.AsSpan (crc.End, end - crc.End).ToArray ()).ComputeCrc32 ();
+		crcOk = stored == computed;
+		var found = false;
+		var cursor = crc.End;
+		while (cursor < end) {
+			if (!EbmlReader.TryRead (body, cursor, end, out var child) || child.UnknownSize)
+				return false;
+			if (child.Id == MatroskaIds.Position && child.DataLength > 0) {
+				var value = EbmlReader.ReadUInt (body.AsSpan (child.DataOffset, (int)child.DataLength));
+				if (value == 0)
+					sawLiveZero = true;
+				else {
+					position = value;
+					found = true;
+				}
+			}
+
+			cursor = child.End;
+		}
+
+		return found && cursor == end;
 	}
 
 	static bool TryReadCueClusterPosition (byte[] file, out ulong position, out bool crcOk)
