@@ -887,7 +887,7 @@ public static class TestBuilders
 			// Comment data
 			builder.Add (commentData);
 
-			// Framing bit (1 = valid, 0 = invalid)
+			// Framing bit. The spec requires 1; some files store 0.
 			builder.Add ((byte)(validFramingBit ? 0x01 : 0x00));
 
 			return builder.ToArray ();
@@ -937,11 +937,12 @@ public static class TestBuilders
 		}
 
 		/// <summary>
-		/// Creates an Ogg Vorbis file with an invalid framing bit for error testing.
+		/// Creates an Ogg Vorbis file whose comment-packet framing bit is 0 and whose title is Loom.
 		/// </summary>
 		public static byte[] CreateFileWithInvalidFramingBit (bool calculateCrc = false)
 		{
 			var comment = new TagLibSharp2.Xiph.VorbisComment (TestConstants.Vendors.TagLibSharp2);
+			comment.Title = "Loom";
 			return CreateFile (comment, validFramingBit: false, calculateCrc: calculateCrc);
 		}
 

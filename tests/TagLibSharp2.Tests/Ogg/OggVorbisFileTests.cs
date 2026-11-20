@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Core;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Tests.Core;
 using TagLibSharp2.Xiph;
@@ -92,14 +93,80 @@ public class OggVorbisFileTests
 	}
 
 	[TestMethod]
-	public void Read_InvalidFramingBit_ReturnsFailure ()
+	public void Read_UnsetFramingBit_KeepsCommentsAndAudioProperties ()
 	{
 		var data = TestBuilders.Ogg.CreateFileWithInvalidFramingBit ();
+		var packets = OggPageHelper.ExtractHeaderPackets (data, maxPackets: 2);
+		Assert.IsTrue (packets.IsSuccess, packets.Error);
+		Assert.AreEqual ((byte)0, packets.Packets[1][^1]);
 
 		var result = OggVorbisFile.Read (data);
 
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Loom", result.File!.Title);
+		Assert.AreEqual (44100, result.File.Properties.SampleRate);
+		Assert.AreEqual (2, result.File.Properties.Channels);
+		Assert.AreEqual (128, result.File.Properties.Bitrate);
+		Assert.AreEqual ("Vorbis", result.File.Properties.Codec);
+		Assert.AreEqual (TimeSpan.Zero, result.File.Properties.Duration);
+	}
+
+	[TestMethod]
+	public void Save_UnsetFramingBit_WritesFramingBitOneAndKeepsTitle ()
+	{
+		var data = TestBuilders.Ogg.CreateFileWithInvalidFramingBit ();
+		var mockFs = new MockFileSystem ();
+		mockFs.AddFile ("/test.ogg", data);
+
+		var readResult = OggVorbisFile.ReadFromFile ("/test.ogg", mockFs);
+		Assert.IsTrue (readResult.IsSuccess, readResult.Error);
+		Assert.AreEqual ("Loom", readResult.File!.Title);
+
+		var saveResult = readResult.File.SaveToFile ("/output.ogg", mockFs);
+		Assert.IsTrue (saveResult.IsSuccess, saveResult.Error);
+
+		var written = mockFs.ReadAllBytes ("/output.ogg");
+		var packets = OggPageHelper.ExtractHeaderPackets (written, maxPackets: 2);
+		Assert.IsTrue (packets.IsSuccess, packets.Error);
+		Assert.AreEqual (TestConstants.Ogg.PacketTypeComment, packets.Packets[1][0]);
+		Assert.AreEqual ((byte)1, packets.Packets[1][^1]);
+
+		var verify = OggVorbisFile.Read (written);
+		Assert.IsTrue (verify.IsSuccess, verify.Error);
+		Assert.AreEqual ("Loom", verify.File!.Title);
+	}
+
+	[TestMethod]
+	public void Read_CommentLengthPastFramingByte_ReturnsFailure ()
+	{
+		// Field length claims the framing byte. That byte is not comment data.
+		using var comment = new BinaryDataBuilder ();
+		comment.Add (TestConstants.Ogg.PacketTypeComment);
+		comment.Add (TestConstants.Magic.Vorbis);
+		comment.AddUInt32LE (1);
+		comment.Add ((byte)'X');
+		comment.AddUInt32LE (1);
+		comment.AddUInt32LE (8);
+		comment.Add ("TITLE=Z"u8);
+		comment.Add ((byte)0);
+
+		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (comment.ToArray ()));
+
 		Assert.IsFalse (result.IsSuccess);
-		Assert.Contains ("framing", result.Error!.ToLowerInvariant ());
+		Assert.Contains ("length", result.Error!, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public void Read_CommentPacketTooShortForFramingByte_ReturnsFailure ()
+	{
+		var packet = new byte[TestConstants.Magic.Vorbis.Length + 1];
+		packet[0] = TestConstants.Ogg.PacketTypeComment;
+		TestConstants.Magic.Vorbis.CopyTo (packet, 1);
+
+		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.Contains ("framing", result.Error!, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[TestMethod]
@@ -522,5 +589,22 @@ public class OggVorbisFileTests
 
 		result.File!.Dispose ();
 		result.File.Dispose (); // Should not throw
+	}
+
+	static byte[] CreateFileWithCommentPacket (byte[] commentPacket)
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add (TestBuilders.Ogg.CreatePage (
+			TestBuilders.Ogg.CreateIdentificationPacket (),
+			0,
+			OggPageFlags.BeginOfStream,
+			calculateCrc: false));
+		builder.Add (TestBuilders.Ogg.CreatePage (commentPacket, 1, OggPageFlags.None, calculateCrc: false));
+		builder.Add (TestBuilders.Ogg.CreatePage (
+			TestBuilders.Ogg.CreateSetupPacket (),
+			2,
+			OggPageFlags.EndOfStream,
+			calculateCrc: false));
+		return builder.ToArray ();
 	}
 }
