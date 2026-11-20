@@ -489,7 +489,11 @@ static partial class MatroskaRewrite
 		while (offset < end) {
 			if (!EbmlReader.TryRead (body, offset, end, out var element) || element.UnknownSize)
 				return false;
-			if (element.Id == MatroskaIds.CueClusterPosition) {
+			// CueCodecState 0 is the initial TrackEntry, not segment offset 0.
+			var codecStateSentinel = element.Id == MatroskaIds.CueCodecState
+				&& element.DataLength is >= 1 and <= 8
+				&& EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength)) == 0;
+			if (!codecStateSentinel && element.Id is MatroskaIds.CueClusterPosition or MatroskaIds.CueCodecState) {
 				if (!TryAddDelta (body, element, plan, ref changed))
 					return false;
 			} else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions or MatroskaIds.Cues) {
