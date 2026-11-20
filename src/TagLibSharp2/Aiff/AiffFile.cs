@@ -18,7 +18,11 @@ namespace TagLibSharp2.Aiff;
 /// - Bytes 12+:   Chunks
 ///
 /// Required chunks: COMM (audio properties), SSND (sound data)
-/// Optional chunks: ID3 (metadata), MARK, INST, COMT, etc.
+/// Optional chunks: ID3, ANNO, COMT, NAME, AUTH, "(c) ", MARK, INST.
+/// After every chunk is read, an empty ID3 field is filled from the native
+/// text chunk: ANNO (else COMT) becomes Comment, NAME becomes Title, AUTH
+/// becomes Artist, and the copyright chunk becomes Copyright. ID3 wins when
+/// that field is already non-empty.
 ///
 /// Unlike RIFF/WAV, AIFF uses big-endian byte order throughout.
 /// </remarks>
@@ -125,8 +129,16 @@ public sealed class AiffFile : IMediaFile
 	/// <inheritdoc />
 	public MediaFormat Format => MediaFormat.Aiff;
 
+	// '(', 'c', ')', ' ' — the trailing space is part of the FourCC.
+	const string CopyrightChunkId = "(c) ";
+
 	readonly List<AiffChunk> _chunks = [];
 	readonly List<SkippedChunk> _skipped = [];
+	string? _annotation;
+	string? _comments;
+	string? _name;
+	string? _author;
+	string? _copyright;
 
 	readonly struct SkippedChunk
 	{
@@ -315,6 +327,7 @@ public sealed class AiffFile : IMediaFile
 				break;
 		}
 
+		file.ApplyNativeText ();
 		file.SourcePath = sourcePath;
 		file._sourceFileSystem = fileSystem;
 		var parsed = file;
@@ -420,6 +433,7 @@ public sealed class AiffFile : IMediaFile
 			ProcessChunk (chunk);
 		}
 
+		ApplyNativeText ();
 		return true;
 	}
 
@@ -433,7 +447,102 @@ public sealed class AiffFile : IMediaFile
 			case "ID3":
 				ParseId3Chunk (chunk);
 				break;
+			case "ANNO":
+				_annotation ??= ReadText (chunk.Data);
+				break;
+			case "COMT":
+				_comments ??= ReadComments (chunk.Data);
+				break;
+			case "NAME":
+				_name ??= ReadText (chunk.Data);
+				break;
+			case "AUTH":
+				_author ??= ReadText (chunk.Data);
+				break;
+			case CopyrightChunkId:
+				_copyright ??= ReadText (chunk.Data);
+				break;
 		}
+	}
+
+	// ID3 wins when that field is already set. ANNO wins over COMT. Chunk order does not matter.
+	void ApplyNativeText ()
+	{
+		if (_annotation is null && _comments is null && _name is null && _author is null && _copyright is null)
+			return;
+
+		var tag = Tag ?? new Id3v2Tag ();
+		var wrote = false;
+
+		var comment = _annotation ?? _comments;
+		if (!string.IsNullOrEmpty (comment) && string.IsNullOrEmpty (tag.Comment)) {
+			tag.Comment = comment;
+			wrote = true;
+		}
+
+		if (_name is not null && string.IsNullOrEmpty (tag.Title)) {
+			tag.Title = _name;
+			wrote = true;
+		}
+
+		if (_author is not null && string.IsNullOrEmpty (tag.Artist)) {
+			tag.Artist = _author;
+			wrote = true;
+		}
+
+		if (_copyright is not null && string.IsNullOrEmpty (tag.Copyright)) {
+			tag.Copyright = _copyright;
+			wrote = true;
+		}
+
+		if (wrote && Tag is null)
+			Tag = tag;
+	}
+
+	static string? ReadText (BinaryData data)
+	{
+		if (data.Length == 0)
+			return null;
+
+		var text = data.TrimEnd (0).ToStringLatin1 ();
+		return text.Length == 0 ? null : text;
+	}
+
+	static string? ReadComments (BinaryData data)
+	{
+		if (data.Length < 2)
+			return null;
+
+		var count = data.ToUInt16BE ();
+		var offset = 2;
+		List<string>? texts = null;
+		for (var i = 0; i < count; i++) {
+			if (data.Length - offset < 8)
+				break;
+
+			var textLength = data.ToUInt16BE (offset + 6);
+			offset += 8;
+			if (data.Length - offset < textLength)
+				break;
+
+			if (textLength > 0) {
+				var text = data.Slice (offset, textLength).ToStringLatin1 ();
+				if (text.Length > 0) {
+					texts ??= new List<string> ();
+					texts.Add (text);
+				}
+			}
+
+			offset += textLength;
+			// Odd-length text is padded inside ckSize. The pad is not part of the text.
+			if ((textLength & 1) == 1 && offset < data.Length)
+				offset++;
+		}
+
+		if (texts is null)
+			return null;
+
+		return texts.Count == 1 ? texts[0] : string.Join ("\n", texts);
 	}
 
 	void ParseCommChunk (AiffChunk chunk)
