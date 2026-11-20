@@ -89,6 +89,22 @@ public class AiffAnnotationTests
 	}
 
 	[TestMethod]
+	public void Read_TwoAnnoChunks_KeepsBoth ()
+	{
+		var file = ReadAiff (Form (Text ("ANNO", "Creator: Logic"), Text ("ANNO", "Take 2"), Comm ()));
+
+		Assert.AreEqual ("Creator: Logic\nTake 2", file.Tag!.Comment);
+	}
+
+	[TestMethod]
+	public void Read_TwoComtChunks_KeepsBoth ()
+	{
+		var file = ReadAiff (Form (Comt ("Take 1"), Comt ("Take 2"), Comm ()));
+
+		Assert.AreEqual ("Take 1\nTake 2", file.Tag!.Comment);
+	}
+
+	[TestMethod]
 	public void Read_AnnoAndComt_PrefersAnno ()
 	{
 		var annoFirst = ReadAiff (Form (Text ("ANNO", "Creator: Logic"), Comt ("Take 2"), Comm ()));
