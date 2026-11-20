@@ -657,10 +657,12 @@ public partial class MatroskaFileTests
 		var prevSize = Element (0xAB, new byte[] { 0x01, 0x00 });
 		var relative = Element (0xF0, new byte[] { 0x01, 0x00 });
 		var live = Element (MatroskaIds.Position, new byte[] { 0 });
+		var initialState = Element (MatroskaIds.CueCodecState, new byte[] { 0 });
 		var cues = CueElement (0);
 		byte[] early = [];
 		byte[] earlyPosition = [];
 		byte[] cluster = [];
+		byte[] codecState = [];
 		ulong earlyPos = 0;
 		ulong clusterPos = 0;
 		for (var i = 0; i < 6; i++) {
@@ -670,7 +672,8 @@ public partial class MatroskaFileTests
 			clusterPos = earlyPos + (ulong)early.Length;
 			var positionElement = Element (MatroskaIds.Position, UIntBytes (clusterPos));
 			cluster = UnknownWithCrc (0x1F43B675, Concat (positionElement, live, prevSize, Element (0xEC, marker)));
-			cues = CueElement (clusterPos, relative);
+			codecState = Element (MatroskaIds.CueCodecState, UIntBytes (clusterPos));
+			cues = CuesWithCodecState (clusterPos, relative, codecState, initialState);
 		}
 
 		Assert.AreEqual (clusterPos, (ulong)(info.Length + cues.Length + early.Length));
@@ -718,6 +721,11 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (1, CountOf (bytes, relative));
 		Assert.AreEqual (1, CountOf (original, live));
 		Assert.AreEqual (1, CountOf (bytes, live));
+		Assert.AreEqual (1, CountOf (original, codecState));
+		Assert.AreEqual (0, CountOf (bytes, codecState));
+		Assert.AreEqual (1, CountOf (bytes, Element (MatroskaIds.CueCodecState, UIntBytes (position))));
+		Assert.AreEqual (1, CountOf (original, initialState));
+		Assert.AreEqual (1, CountOf (bytes, initialState));
 	}
 
 	[TestMethod]
@@ -1119,6 +1127,24 @@ public partial class MatroskaFileTests
 			Element (0xB3, new byte[] { 0 }),
 			Master (0xB7, Concat (positions.ToArray ()))));
 		return WithCrc (MatroskaIds.Cues, inner);
+	}
+
+	static byte[] CuesWithCodecState (ulong clusterPos, byte[] relative, byte[] codecState, byte[] initialState)
+	{
+		var moved = Master (0xBB, Concat (
+			Element (0xB3, new byte[] { 0 }),
+			Master (0xB7, Concat (
+				Element (0xF7, new byte[] { 1 }),
+				Element (0xF1, UIntBytes (clusterPos)),
+				relative,
+				codecState))));
+		var sentinel = Master (0xBB, Concat (
+			Element (0xB3, new byte[] { 1 }),
+			Master (0xB7, Concat (
+				Element (0xF7, new byte[] { 1 }),
+				Element (0xF1, UIntBytes (clusterPos)),
+				initialState))));
+		return WithCrc (MatroskaIds.Cues, Concat (moved, sentinel));
 	}
 
 	static byte[] UnknownWithCrc (ulong id, byte[] payload)
