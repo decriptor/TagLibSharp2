@@ -448,10 +448,11 @@ public sealed class AiffFile : IMediaFile
 				ParseId3Chunk (chunk);
 				break;
 			case "ANNO":
-				_annotation ??= ReadText (chunk.Data);
+				// A file may carry more than one annotation. Keep each of them.
+				_annotation = JoinText (_annotation, ReadText (chunk.Data));
 				break;
 			case "COMT":
-				_comments ??= ReadComments (chunk.Data);
+				_comments = JoinText (_comments, ReadComments (chunk.Data));
 				break;
 			case "NAME":
 				_name ??= ReadText (chunk.Data);
@@ -499,6 +500,15 @@ public sealed class AiffFile : IMediaFile
 			Tag = tag;
 	}
 
+	static string? JoinText (string? current, string? next)
+	{
+		if (string.IsNullOrEmpty (next))
+			return current;
+		if (string.IsNullOrEmpty (current))
+			return next;
+		return current + "\n" + next;
+	}
+
 	static string? ReadText (BinaryData data)
 	{
 		if (data.Length == 0)
@@ -526,7 +536,7 @@ public sealed class AiffFile : IMediaFile
 				break;
 
 			if (textLength > 0) {
-				var text = data.Slice (offset, textLength).ToStringLatin1 ();
+				var text = data.Slice (offset, textLength).ToStringLatin1 ().TrimEnd ('\0');
 				if (text.Length > 0) {
 					texts ??= new List<string> ();
 					texts.Add (text);
