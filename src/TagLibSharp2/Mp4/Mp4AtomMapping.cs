@@ -22,6 +22,7 @@ internal static class Mp4AtomMapping
 	public const string Artist = "©ART";
 	public const string Album = "©alb";
 	public const string Genre = "©gen";
+	public const string GenreId3 = "gnre";
 	public const string Year = "©day";
 	public const string Comment = "©cmt";
 	public const string Composer = "©wrt";

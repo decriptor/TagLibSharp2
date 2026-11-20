@@ -3,6 +3,7 @@
 
 using System.Globalization;
 using TagLibSharp2.Core;
+using TagLibSharp2.Id3;
 
 namespace TagLibSharp2.Mp4;
 
@@ -85,8 +86,19 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Genre {
-		get => GetText (Mp4AtomMapping.Genre);
-		set => SetText (Mp4AtomMapping.Genre, value);
+		get {
+			var text = GetText (Mp4AtomMapping.Genre);
+			if (!string.IsNullOrEmpty (text))
+				return text;
+
+			// gnre is a 1-based ID3v1 code. A non-empty ©gen wins over it.
+			return GetGnreName ();
+		}
+		set {
+			SetText (Mp4AtomMapping.Genre, value);
+			// A leftover gnre would still be returned after ©gen is cleared.
+			RemoveAtom (Mp4AtomMapping.GenreId3);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -592,6 +604,19 @@ public sealed class Mp4Tag : Tag
 		}
 	}
 #pragma warning restore CA1819
+
+	string? GetGnreName ()
+	{
+		var code = GetInteger (Mp4AtomMapping.GenreId3);
+		if (code is not uint value || value == 0)
+			return null;
+
+		var index = value - 1;
+		if (index > byte.MaxValue)
+			return null;
+
+		return Id3v1Genre.GetName ((byte)index);
+	}
 
 	string? GetText (string atomId)
 	{
