@@ -514,7 +514,7 @@ public sealed class AiffFile : IMediaFile
 		if (data.Length == 0)
 			return null;
 
-		var text = data.TrimEnd (0).ToStringLatin1 ();
+		var text = data.TrimEnd (0).ToStringLatin1 ().TrimStart ();
 		return text.Length == 0 ? null : text;
 	}
 
@@ -536,7 +536,7 @@ public sealed class AiffFile : IMediaFile
 				break;
 
 			if (textLength > 0) {
-				var text = data.Slice (offset, textLength).ToStringLatin1 ().TrimEnd ('\0');
+				var text = data.Slice (offset, textLength).ToStringLatin1 ().TrimEnd ('\0').TrimStart ();
 				if (text.Length > 0) {
 					texts ??= new List<string> ();
 					texts.Add (text);

@@ -105,6 +105,14 @@ public class AiffAnnotationTests
 	}
 
 	[TestMethod]
+	public void Read_Comt_TrimsSurroundingSpace ()
+	{
+		var file = ReadAiff (Form (Comt (" Creator: Logic"), Comm ()));
+
+		Assert.AreEqual ("Creator: Logic", file.Tag!.Comment);
+	}
+
+	[TestMethod]
 	public void Read_AnnoAndComt_PrefersAnno ()
 	{
 		var annoFirst = ReadAiff (Form (Text ("ANNO", "Creator: Logic"), Comt ("Take 2"), Comm ()));
