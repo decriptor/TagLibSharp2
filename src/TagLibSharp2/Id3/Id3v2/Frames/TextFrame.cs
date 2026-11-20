@@ -105,19 +105,13 @@ public sealed class TextFrame
 
 	static string DecodeTextLatin1 (ReadOnlySpan<byte> data)
 	{
-		// Strip trailing null bytes only (preserve internal nulls for multi-value support)
-		while (data.Length > 0 && data[data.Length - 1] == 0)
-			data = data.Slice (0, data.Length - 1);
-
+		data = Id3Text.TrimTrailingTerminator (data, TextEncodingType.Latin1);
 		return Polyfills.Latin1.GetString (data);
 	}
 
 	static string DecodeTextUtf8 (ReadOnlySpan<byte> data)
 	{
-		// Strip trailing null bytes only (preserve internal nulls for multi-value support)
-		while (data.Length > 0 && data[data.Length - 1] == 0)
-			data = data.Slice (0, data.Length - 1);
-
+		data = Id3Text.TrimTrailingTerminator (data, TextEncodingType.Utf8);
 		return System.Text.Encoding.UTF8.GetString (data);
 	}
 
@@ -149,9 +143,8 @@ public sealed class TextFrame
 
 	static string DecodeTextUtf16 (ReadOnlySpan<byte> data, bool isLittleEndian)
 	{
-		// Strip trailing double-null bytes only (preserve internal nulls for multi-value support)
-		while (data.Length >= 2 && data[data.Length - 2] == 0 && data[data.Length - 1] == 0)
-			data = data.Slice (0, data.Length - 2);
+		// Width only: both UTF-16 encodings use a 2-byte terminator.
+		data = Id3Text.TrimTrailingTerminator (data, TextEncodingType.Utf16WithBom);
 
 		var encoding = isLittleEndian
 			? System.Text.Encoding.Unicode
