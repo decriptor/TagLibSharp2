@@ -332,17 +332,11 @@ public sealed class OggVorbisFile : IMediaFile
 		if (!IsVorbisCommentHeader (packet))
 			return VorbisCommentReadResult.Failure ("Not a Vorbis comment header");
 
-		// Validate framing bit (last byte must be 1)
+		// The spec requires 1; we accept 0 so the comments are kept.
 		if (packet.Length < MinVorbisHeaderSize + 1)
 			return VorbisCommentReadResult.Failure ("Comment header too short for framing bit");
 
-		var framingBit = packet[packet.Length - 1];
-		if (framingBit != 1)
-			return VorbisCommentReadResult.Failure ($"Invalid framing bit (expected 1, got {framingBit})");
-
-		// Parse the Vorbis comment
-		// Skip packet type (1) + "vorbis" (6) = 7 bytes
-		// Also skip framing bit at the end (1 byte)
+		// Skip packet type (1) + "vorbis" (6) and the framing byte.
 		var commentSpan = packet.Slice (MinVorbisHeaderSize, packet.Length - MinVorbisHeaderSize - 1);
 		return VorbisComment.Read (commentSpan);
 	}
