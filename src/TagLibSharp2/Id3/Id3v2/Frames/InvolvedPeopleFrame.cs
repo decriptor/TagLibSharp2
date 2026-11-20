@@ -346,6 +346,9 @@ public sealed class InvolvedPeopleFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
+		// Each role or person is already split. Drop only that piece's trailing terminator.
+		data = Id3Text.TrimTrailingTerminator (data, encoding);
+
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),

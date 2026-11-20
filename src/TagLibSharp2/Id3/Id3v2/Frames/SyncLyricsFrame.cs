@@ -374,6 +374,9 @@ public sealed class SyncLyricsFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
+		// A lyric line is one string, not a NUL-separated list. Drop only a trailing terminator.
+		data = Id3Text.TrimTrailingTerminator (data, encoding);
+
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),

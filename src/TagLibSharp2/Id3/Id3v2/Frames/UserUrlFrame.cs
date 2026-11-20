@@ -125,11 +125,14 @@ public sealed class UserUrlFrame
 
 		if (terminatorIndex < 0) {
 			// No terminator found - treat entire content as URL
-			return (string.Empty, Polyfills.Latin1.GetString (data));
+			var whole = Id3Text.TrimTrailingTerminator (data, TextEncodingType.Latin1);
+			return (string.Empty, Polyfills.Latin1.GetString (whole));
 		}
 
 		var descriptionData = data.Slice (0, terminatorIndex);
-		var urlData = data.Slice (terminatorIndex + terminatorSize);
+		var urlData = Id3Text.TrimTrailingTerminator (
+			data.Slice (terminatorIndex + terminatorSize),
+			TextEncodingType.Latin1);
 
 		var description = DecodeText (descriptionData, encoding);
 		var url = Polyfills.Latin1.GetString (urlData);
@@ -155,6 +158,9 @@ public sealed class UserUrlFrame
 	{
 		if (data.IsEmpty)
 			return string.Empty;
+
+		// Descriptions follow the text rule: a trailing terminator is not part of the string.
+		data = Id3Text.TrimTrailingTerminator (data, encoding);
 
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
