@@ -388,6 +388,35 @@ public class MonkeysAudioFileTests
 		Assert.AreEqual (16, result.File!.BitsPerSample);
 	}
 
+	[TestMethod]
+	[DataRow (3800, 2000, 9216)]
+	[DataRow (3800, 4000, 73728)]
+	[DataRow (3880, 2000, 9216)]
+	[DataRow (3880, 4000, 73728)]
+	[DataRow (3910, 2000, 73728)]
+	[DataRow (3950, 2000, 73728 * 4)]
+	[DataRow (3790, 2000, 9216)]
+	public void Parse_OldFormat_DurationUsesBlocksPerFrameTable (int version, int compression, int blocksPerFrame)
+	{
+		const int sampleRate = 44100;
+		const uint totalFrames = 2;
+		const uint finalFrameBlocks = 44100;
+		var data = CreateMinimalApeFileOldFormat (
+			version: version,
+			sampleRate: sampleRate,
+			compressionLevel: compression,
+			totalFrames: totalFrames,
+			finalFrameBlocks: finalFrameBlocks);
+
+		var result = MonkeysAudioFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		var samples = (ulong)(totalFrames - 1) * (uint)blocksPerFrame + finalFrameBlocks;
+		var expectedSeconds = (double)samples / sampleRate;
+		Assert.AreEqual (expectedSeconds, result.File!.Properties.Duration.TotalSeconds, 0.005);
+		Assert.AreEqual ((uint)blocksPerFrame, result.File.BlocksPerFrame);
+	}
+
 	#endregion
 
 	#region Edge Cases
@@ -513,7 +542,10 @@ public class MonkeysAudioFileTests
 		int version = 3970,
 		int sampleRate = 44100,
 		int channels = 2,
-		int bitsPerSample = 16)
+		int bitsPerSample = 16,
+		int compressionLevel = 2000,
+		uint totalFrames = 100,
+		uint finalFrameBlocks = 4410)
 	{
 		using var ms = new MemoryStream ();
 
@@ -525,7 +557,7 @@ public class MonkeysAudioFileTests
 
 		// APE_HEADER_OLD format
 		// Compression type (uint16 LE)
-		WriteUInt16LE (ms, 2000);
+		WriteUInt16LE (ms, (ushort)compressionLevel);
 
 		// Format flags (uint16 LE)
 		WriteUInt16LE (ms, 0);
@@ -543,10 +575,10 @@ public class MonkeysAudioFileTests
 		WriteUInt32LE (ms, 0);
 
 		// Total frames (uint32 LE)
-		WriteUInt32LE (ms, 100);
+		WriteUInt32LE (ms, totalFrames);
 
 		// Final frame blocks (uint32 LE)
-		WriteUInt32LE (ms, 4410);
+		WriteUInt32LE (ms, finalFrameBlocks);
 
 		// Bits per sample (uint16 LE) - in old format, at specific offset
 		WriteUInt16LE (ms, (ushort)bitsPerSample);
