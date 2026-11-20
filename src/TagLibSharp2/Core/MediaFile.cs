@@ -300,8 +300,16 @@ public static class MediaFile
 		return await StreamBytes.ReadAtMostAsync (stream, LongPeekBytes, cancellationToken).ConfigureAwait (false);
 	}
 
+	// RIFF/WAVE is identified at 12 bytes, before a legacy WavPack "wvpk" at the data chunk.
 	static bool NeedsLongerPeek (ReadOnlySpan<byte> peek, string? pathHint) =>
-		IsOgg (peek) || DetectFormat (peek, pathHint) == MediaFormat.Unknown;
+		IsOgg (peek) || IsRiffWave (peek) || DetectFormat (peek, pathHint) == MediaFormat.Unknown;
+
+	static bool IsRiffWave (ReadOnlySpan<byte> data) =>
+		data.Length >= 12
+		&& data[0] == RiffMagic[0] && data[1] == RiffMagic[1]
+		&& data[2] == RiffMagic[2] && data[3] == RiffMagic[3]
+		&& data[8] == WaveId[0] && data[9] == WaveId[1]
+		&& data[10] == WaveId[2] && data[11] == WaveId[3];
 
 	static bool IsOgg (ReadOnlySpan<byte> peek) =>
 		peek.Length >= OggMagic.Length
@@ -531,13 +539,9 @@ public static class MediaFile
 				data[2] == OggMagic[2] && data[3] == OggMagic[3])
 				return DetectOggCodec (data);
 
-			// RIFF: starts with "RIFF" + 4 bytes size + "WAVE"
-			if (data.Length >= 12 &&
-				data[0] == RiffMagic[0] && data[1] == RiffMagic[1] &&
-				data[2] == RiffMagic[2] && data[3] == RiffMagic[3] &&
-				data[8] == WaveId[0] && data[9] == WaveId[1] &&
-				data[10] == WaveId[2] && data[11] == WaveId[3])
-				return MediaFormat.Wav;
+			// RIFF/WAVE. Legacy WavPack keeps "wvpk" at the start of the data chunk.
+			if (IsRiffWave (data))
+				return WavPackFile.IsValidFormat (data) ? MediaFormat.WavPack : MediaFormat.Wav;
 
 			// AIFF/AIFC: starts with "FORM" + 4 bytes size + "AIFF" or "AIFC"
 			if (data.Length >= 12 &&

@@ -808,6 +808,89 @@ public class WavPackFileTests
 
 	#endregion
 
+	#region Legacy RIFF wrapper
+
+	[TestMethod]
+	public async Task Read_LegacyRiffVersion3_DurationUsesSamplesAtOffset16 ()
+	{
+		var data = CreateLegacyRiffWavPack (version: 3, samplesAtOffset16: 1255050, payloadBytes: 4);
+
+		AssertLegacyDuration (MediaFile.ReadFromData (data, "song.wav"));
+		AssertLegacyDuration (MediaFile.Read (new MemoryStream (data), "song.wav"));
+		AssertLegacyDuration (await MediaFile.ReadAsync (new MemoryStream (data), "song.wav"));
+		Assert.AreEqual (MediaFormat.WavPack, MediaFile.DetectFormat (data, "song.wav"));
+		Assert.IsTrue (WavPackFile.IsValidFormat (data));
+	}
+
+	[TestMethod]
+	public void Read_LegacyRiffVersion1_DoesNotInventSamples ()
+	{
+		var data = CreateLegacyRiffWavPack (version: 1, samplesAtOffset16: 0, payloadBytes: 4);
+		var result = MediaFile.ReadFromData (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.WavPack, result.Format);
+		var file = result.GetFileAs<WavPackFile> ()!;
+		Assert.AreEqual (0u, file.TotalSamples);
+		Assert.AreEqual (44100, file.SampleRate);
+		Assert.AreEqual (2, file.Channels);
+		Assert.AreEqual (16, file.BitsPerSample);
+		Assert.IsFalse (file.Properties.IsValid);
+		Assert.AreNotEqual (28.459, file.Properties.Duration.TotalSeconds, 0.05);
+	}
+
+	[TestMethod]
+	public void Read_PlainWav_StaysWavWhenExtensionIsWv ()
+	{
+		var data = TestBuilders.Wav.CreateMinimal ();
+
+		Assert.IsFalse (WavPackFile.IsValidFormat (data));
+		Assert.AreEqual (MediaFormat.Wav, MediaFile.DetectFormat (data, "song.wv"));
+		var result = MediaFile.ReadFromData (data, "song.wv");
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.Wav, result.Format);
+	}
+
+	[TestMethod]
+	public void Read_LegacyRiffStream_SkipsCompressedPayload ()
+	{
+		var data = CreateLegacyRiffWavPack (version: 3, samplesAtOffset16: 1255050, payloadBytes: 1024 * 1024);
+		var counted = new CountingStream (new MemoryStream (data));
+
+		var result = MediaFile.Read (counted, "vers-30.wv");
+
+		AssertLegacyDuration (result);
+		Assert.IsTrue (counted.BytesRead < data.Length - 500_000, $"read {counted.BytesRead} of {data.Length}");
+	}
+
+	[TestMethod]
+	public void Parse_Version4_UsesSampleCountAtOffset12 ()
+	{
+		var data = CreateMinimalWavPackFile (sampleRateIndex: 9, totalSamples: 441000);
+		WriteUInt32LE (data, 16, 1255050);
+
+		var result = WavPackFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (441000u, result.File!.TotalSamples);
+		Assert.AreEqual (10.0, result.File.Properties.Duration.TotalSeconds, 0.005);
+	}
+
+	static void AssertLegacyDuration (MediaFileResult result)
+	{
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.WavPack, result.Format);
+		var file = result.GetFileAs<WavPackFile> ()!;
+		Assert.AreEqual (3, file.Version);
+		Assert.AreEqual (1255050u, file.TotalSamples);
+		Assert.AreEqual (44100, file.SampleRate);
+		Assert.AreEqual (2, file.Channels);
+		Assert.AreEqual (16, file.BitsPerSample);
+		Assert.AreEqual (1255050 / 44100.0, file.Properties.Duration.TotalSeconds, 0.005);
+	}
+
+	#endregion
+
 	#region Helper Methods
 
 	/// <summary>
@@ -935,6 +1018,99 @@ public class WavPackFileTests
 		s.WriteByte ((byte)(v >> 8));
 		s.WriteByte ((byte)(v >> 16));
 		s.WriteByte ((byte)(v >> 24));
+	}
+
+	private static void WriteUInt32LE (byte[] data, int offset, uint v)
+	{
+		data[offset] = (byte)v;
+		data[offset + 1] = (byte)(v >> 8);
+		data[offset + 2] = (byte)(v >> 16);
+		data[offset + 3] = (byte)(v >> 24);
+	}
+
+	/// <summary>
+	/// RIFF/WAVE whose fmt is 44100 Hz stereo 16-bit and whose data chunk starts with a 32-byte wvpk header.
+	/// Sample count for legacy files is the uint32 at wvpk+16. Offset 12 is left at 0.
+	/// </summary>
+	private static byte[] CreateLegacyRiffWavPack (ushort version, uint samplesAtOffset16, int payloadBytes)
+	{
+		using var block = new MemoryStream ();
+		block.Write ("wvpk"u8);
+		WriteUInt32LE (block, 24);
+		WriteUInt16LE (block, version);
+		block.WriteByte (0);
+		block.WriteByte (0);
+		WriteUInt32LE (block, 0);
+		WriteUInt32LE (block, samplesAtOffset16);
+		WriteUInt32LE (block, 0);
+		WriteUInt32LE (block, 0);
+		WriteUInt32LE (block, 0);
+		if (payloadBytes > 0)
+			block.Write (new byte[payloadBytes]);
+		var samples = block.ToArray ();
+
+		using var ms = new MemoryStream ();
+		const int fmtBody = 16;
+		var riffSize = 4 + (8 + fmtBody) + (8 + samples.Length);
+		ms.Write ("RIFF"u8);
+		WriteUInt32LE (ms, (uint)riffSize);
+		ms.Write ("WAVE"u8);
+		ms.Write ("fmt "u8);
+		WriteUInt32LE (ms, fmtBody);
+		WriteUInt16LE (ms, 1);
+		WriteUInt16LE (ms, 2);
+		WriteUInt32LE (ms, 44100);
+		WriteUInt32LE (ms, 44100 * 2 * 2);
+		WriteUInt16LE (ms, 4);
+		WriteUInt16LE (ms, 16);
+		ms.Write ("data"u8);
+		WriteUInt32LE (ms, (uint)samples.Length);
+		ms.Write (samples);
+		return ms.ToArray ();
+	}
+
+	sealed class CountingStream : Stream
+	{
+		readonly Stream _inner;
+
+		public CountingStream (Stream inner) => _inner = inner;
+
+		public long BytesRead { get; private set; }
+
+		public override bool CanRead => _inner.CanRead;
+
+		public override bool CanSeek => _inner.CanSeek;
+
+		public override bool CanWrite => false;
+
+		public override long Length => _inner.Length;
+
+		public override long Position {
+			get => _inner.Position;
+			set => _inner.Position = value;
+		}
+
+		public override void Flush () => _inner.Flush ();
+
+		public override int Read (byte[] buffer, int offset, int count)
+		{
+			var read = _inner.Read (buffer, offset, count);
+			BytesRead += read;
+			return read;
+		}
+
+		public override int Read (Span<byte> buffer)
+		{
+			var read = _inner.Read (buffer);
+			BytesRead += read;
+			return read;
+		}
+
+		public override long Seek (long offset, SeekOrigin origin) => _inner.Seek (offset, origin);
+
+		public override void SetLength (long value) => throw new NotSupportedException ();
+
+		public override void Write (byte[] buffer, int offset, int count) => throw new NotSupportedException ();
 	}
 
 	private static void WriteUInt16LE (Stream s, ushort v)
