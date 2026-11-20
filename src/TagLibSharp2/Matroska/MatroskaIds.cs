@@ -41,6 +41,7 @@ static class MatroskaIds
 	public const ulong FileMimeType = 0x4660;
 	public const ulong FileData = 0x465C;
 	public const ulong Cluster = 0x1F43B675;
+	public const ulong Position = 0xA7;
 	public const ulong Cues = 0x1C53BB6B;
 	public const ulong Seek = 0x4DBB;
 	public const ulong SeekId = 0x53AB;

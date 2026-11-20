@@ -20,14 +20,14 @@ static class MatroskaRewrite
 
 		var tags = tag.Render ().ToArray ();
 		var plan = PlanEdit (layout.Pieces, tags);
-		if (!TryBuild (data, layout, plan, out var body, out var seekHeads, out var cues, out var tagsOffset, out error))
+		if (!TryBuild (data, layout, plan, out var body, out var seekHeads, out var cues, out var clusters, out var tagsOffset, out error))
 			return false;
 		if (tags.Length > 0 && tagsOffset != plan.TagsOffset) {
 			error = "Matroska tags could not be placed";
 			return false;
 		}
 
-		if (!TryPatch (body, seekHeads, cues, plan, out error))
+		if (!TryPatch (body, seekHeads, cues, clusters, plan, out error))
 			return false;
 
 		var originalLength = layout.SegmentEnd - layout.DataOffset;
@@ -181,12 +181,14 @@ static class MatroskaRewrite
 		out byte[] body,
 		out List<(int Start, int End)> seekHeads,
 		out List<(int Start, int End)> cues,
+		out List<(int Start, int End, int SegmentOffset)> clusters,
 		out int tagsOffset,
 		out string error)
 	{
 		body = [];
 		seekHeads = new List<(int, int)> ();
 		cues = new List<(int, int)> ();
+		clusters = new List<(int, int, int)> ();
 		tagsOffset = -1;
 		error = "";
 		var pieces = layout.Pieces;
@@ -233,6 +235,8 @@ static class MatroskaRewrite
 				seekHeads.Add ((at, at + piece.Length));
 			else if (piece.Id == MatroskaIds.Cues)
 				cues.Add ((at, at + piece.Length));
+			else if (piece.Id == MatroskaIds.Cluster)
+				clusters.Add ((at, at + piece.Length, OffsetOf (pieces, i)));
 			i++;
 		}
 
@@ -249,6 +253,7 @@ static class MatroskaRewrite
 		byte[] body,
 		List<(int Start, int End)> seekHeads,
 		List<(int Start, int End)> cues,
+		List<(int Start, int End, int SegmentOffset)> clusters,
 		Plan plan,
 		out string error)
 	{
@@ -266,6 +271,11 @@ static class MatroskaRewrite
 
 		foreach (var cue in cues) {
 			if (!TryPatchCues (body, cue.Start, cue.End, plan, out error))
+				return false;
+		}
+
+		foreach (var cluster in clusters) {
+			if (!TryPatchClusterPosition (body, cluster.Start, cluster.End, cluster.SegmentOffset, plan, out error))
 				return false;
 		}
 
@@ -480,16 +490,8 @@ static class MatroskaRewrite
 			if (!EbmlReader.TryRead (body, offset, end, out var element) || element.UnknownSize)
 				return false;
 			if (element.Id == MatroskaIds.CueClusterPosition) {
-				if (element.DataLength is < 1 or > 8)
+				if (!TryAddDelta (body, element, plan, ref changed))
 					return false;
-				var value = EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength));
-				if (value >= (ulong)plan.ShiftFrom) {
-					var updated = value + (ulong)plan.Delta;
-					if (updated < value || !TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, updated))
-						return false;
-					if (updated != value)
-						changed = true;
-				}
 			} else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions or MatroskaIds.Cues) {
 				var nested = false;
 				if (!TryPatchCueValues (body, element.DataOffset, element.End, plan, ref nested))
@@ -505,6 +507,81 @@ static class MatroskaRewrite
 		}
 
 		return true;
+	}
+
+	/// <summary>
+	/// A cluster at or after the insertion point moved by <see cref="Plan.Delta"/>.
+	/// <see cref="MatroskaIds.Position"/> is that cluster's segment offset.
+	/// A stored 0 is a live stream and stays 0 when the shift starts later.
+	/// </summary>
+	static bool TryPatchClusterPosition (byte[] body, int start, int end, int segmentOffset, Plan plan, out string error)
+	{
+		error = "";
+		if (segmentOffset < plan.ShiftFrom)
+			return true;
+
+		if (!EbmlReader.TryRead (body, start, end, out var cluster) || cluster.Position != start || cluster.Id != MatroskaIds.Cluster) {
+			error = "Matroska Cluster cannot be bounded";
+			return false;
+		}
+
+		var changed = false;
+		var offset = cluster.DataOffset;
+		while (offset < end) {
+			if (!EbmlReader.TryRead (body, offset, end, out var child) || child.UnknownSize) {
+				error = "Matroska Cluster cannot be bounded";
+				return false;
+			}
+
+			// PrevSize is the previous cluster's length, not a segment offset.
+			if (child.Id == MatroskaIds.Position && !TryAddDelta (body, child, plan, ref changed)) {
+				error = "Matroska Cluster Position cannot be updated";
+				return false;
+			}
+
+			offset = child.End;
+		}
+
+		if (offset != end) {
+			error = "Matroska Cluster cannot be bounded";
+			return false;
+		}
+
+		if (changed)
+			UpdatePieceCrc (body, cluster.DataOffset, end);
+		return true;
+	}
+
+	/// <summary>
+	/// Adds <see cref="Plan.Delta"/> when the stored segment offset is at or past the insertion point.
+	/// </summary>
+	static bool TryAddDelta (byte[] body, EbmlElement element, Plan plan, ref bool changed)
+	{
+		if (element.DataLength is < 1 or > 8)
+			return false;
+		var value = EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength));
+		if (value < (ulong)plan.ShiftFrom)
+			return true;
+
+		var updated = value + (ulong)plan.Delta;
+		if (updated < value || !TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, updated))
+			return false;
+		if (updated != value)
+			changed = true;
+		return true;
+	}
+
+	/// <summary>
+	/// Unknown-size parents have no element end, so <see cref="UpdateElementCrc"/> cannot see them.
+	/// The CRC-32 covers the bytes after itself through the piece end.
+	/// </summary>
+	static void UpdatePieceCrc (byte[] body, int dataOffset, int pieceEnd)
+	{
+		if (!EbmlReader.TryRead (body, dataOffset, pieceEnd, out var first))
+			return;
+		if (first.Id != MatroskaIds.Crc32 || first.UnknownSize || first.DataLength != 4)
+			return;
+		WriteCrc (body, first.DataOffset, first.End, pieceEnd);
 	}
 
 	static bool TryParse (ReadOnlySpan<byte> data, out Layout? layout, out string error)
