@@ -17,6 +17,7 @@ namespace TagLibSharp2.Matroska;
 public sealed class MatroskaTag : Tag
 {
 	const ulong CollectionLevel = 70;
+	const ulong VolumeLevel = 60;
 	const ulong AlbumLevel = 50;
 	const ulong TrackLevel = 30;
 
@@ -114,6 +115,19 @@ public sealed class MatroskaTag : Tag
 	public override uint? TotalTracks {
 		get => ParseNumber (FirstAt (AlbumLevel, "TOTAL_PARTS"));
 		set => SetAt (AlbumLevel, "TOTAL_PARTS", value?.ToString (CultureInfo.InvariantCulture));
+	}
+
+	/// <inheritdoc/>
+	public override uint? DiscNumber {
+		// PART_NUMBER at 60 is the disc. Level 30 is the track. PART_OFFSET is neither.
+		get => ParseNumber (FirstAt (VolumeLevel, "PART_NUMBER"));
+		set => SetAt (VolumeLevel, "PART_NUMBER", value?.ToString (CultureInfo.InvariantCulture));
+	}
+
+	/// <inheritdoc/>
+	public override uint? TotalDiscs {
+		get => ParseNumber (FirstAt (VolumeLevel, "TOTAL_PARTS"));
+		set => SetAt (VolumeLevel, "TOTAL_PARTS", value?.ToString (CultureInfo.InvariantCulture));
 	}
 
 	/// <inheritdoc/>
