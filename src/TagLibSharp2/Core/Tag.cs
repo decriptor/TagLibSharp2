@@ -1224,9 +1224,11 @@ public abstract class Tag
 				target.Genres = Genres;
 
 			// Extended single values
-			if (AlbumArtist is not null)
+			// The singular value is the first entry. Writing it after the array
+			// replaces the whole list with that one name.
+			if (AlbumArtist is not null && AlbumArtists is not { Length: > 0 })
 				target.AlbumArtist = AlbumArtist;
-			if (Composer is not null)
+			if (Composer is not null && Composers is not { Length: > 0 })
 				target.Composer = Composer;
 			if (Conductor is not null)
 				target.Conductor = Conductor;

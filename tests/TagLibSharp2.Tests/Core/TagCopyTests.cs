@@ -266,6 +266,7 @@ public class TagCopyTests
 	{
 		var source = new Id3v2Tag ();
 		source.Performers = ["Artist 1", "Artist 2"];
+		source.AlbumArtists = ["Album Artist 1", "Album Artist 2"];
 		source.Genres = ["Rock", "Pop"];
 		source.Composers = ["Composer 1", "Composer 2"];
 
@@ -276,8 +277,11 @@ public class TagCopyTests
 		Assert.HasCount (2, target.Performers);
 		Assert.AreEqual ("Artist 1", target.Performers[0]);
 		Assert.AreEqual ("Artist 2", target.Performers[1]);
+		Assert.HasCount (2, target.AlbumArtists);
+		Assert.AreEqual ("Album Artist 1", target.AlbumArtist);
 		Assert.HasCount (2, target.Genres);
 		Assert.HasCount (2, target.Composers);
+		Assert.AreEqual ("Composer 1", target.Composer);
 	}
 
 	[TestMethod]
