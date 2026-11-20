@@ -93,6 +93,35 @@ public class OggVorbisFileTests
 	}
 
 	[TestMethod]
+	public void Read_MultiSegmentCommentWithUnsetFramingBit_KeepsTitle ()
+	{
+		var comment = new VorbisComment (TestConstants.Vendors.TagLibSharp2);
+		comment.Title = "Loom";
+		comment.SetValue ("PADDING", new string ('x', 300));
+		var packet = TestBuilders.Ogg.CreateCommentPacket (comment, validFramingBit: false);
+		Assert.IsGreaterThan (255, packet.Length);
+		Assert.AreEqual ((byte)0, packet[^1]);
+
+		using var builder = new BinaryDataBuilder ();
+		builder.Add (TestBuilders.Ogg.CreatePage (
+			TestBuilders.Ogg.CreateIdentificationPacket (),
+			0,
+			OggPageFlags.BeginOfStream,
+			calculateCrc: false));
+		builder.Add (TestBuilders.Ogg.CreatePage (packet, 1, OggPageFlags.None, calculateCrc: false));
+		builder.Add (TestBuilders.Ogg.CreatePage (
+			TestBuilders.Ogg.CreateSetupPacket (),
+			2,
+			OggPageFlags.EndOfStream,
+			calculateCrc: false));
+
+		var result = OggVorbisFile.Read (builder.ToArray ());
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Loom", result.File!.Title);
+	}
+
+	[TestMethod]
 	public void Read_UnsetFramingBit_KeepsCommentsAndAudioProperties ()
 	{
 		var data = TestBuilders.Ogg.CreateFileWithInvalidFramingBit ();
