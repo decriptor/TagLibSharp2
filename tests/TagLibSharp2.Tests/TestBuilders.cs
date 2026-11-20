@@ -2609,6 +2609,59 @@ public static class TestBuilders
 		}
 
 		/// <summary>
+		/// Creates an MP4 file with an optional text genre and an optional gnre code.
+		/// </summary>
+		/// <param name="textGenre">UTF-8 genre stored in ©gen, or null to omit that atom.</param>
+		/// <param name="gnre">1-based ID3v1 code stored as a 16-bit big-endian gnre value, or null to omit that atom.</param>
+		public static byte[] CreateWithGenres (string? textGenre = null, int? gnre = null)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var udtaContent = new BinaryDataBuilder ();
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateMetaHdlr ());
+
+			var ilstContent = new BinaryDataBuilder ();
+			if (textGenre is not null)
+				ilstContent.Add (CreateTextAtom ("©gen", textGenre));
+			if (gnre is not null)
+				ilstContent.Add (CreateGnreAtom ((ushort)gnre.Value));
+
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
+			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates a gnre atom whose data payload is a 16-bit big-endian genre code.
+		/// </summary>
+		static byte[] CreateGnreAtom (ushort code)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			var dataContent = new BinaryDataBuilder ();
+			dataContent.AddUInt32BE (0); // version 0, flags 0 (implicit)
+			dataContent.AddUInt32BE (0); // reserved locale
+			dataContent.AddUInt16BE (code);
+
+			builder.Add (CreateBox ("data", dataContent.ToArray ()));
+
+			return CreateBox ("gnre", builder.ToArray ());
+		}
+
+		/// <summary>
 		/// Creates an MP4 file with track number.
 		/// </summary>
 		public static byte[] CreateWithTrackNumber (uint track, uint total)
