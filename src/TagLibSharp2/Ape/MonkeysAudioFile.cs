@@ -433,16 +433,12 @@ public sealed class MonkeysAudioFile : IMediaFile
 
 	private static uint CalculateOldFormatBlocksPerFrame (int version, int compressionLevel)
 	{
-		// Per APE format specification:
-		// - version < 3830: 73728
-		// - version 3830-3899 with compression >= 4000 (Extra High+): 73728 * 4
-		// - version 3830-3899 with compression < 4000: 73728
-		// - version 3900-3979: 73728 * 4
-		if (version < 3830)
+		// Not stored before 3.98. 3.95+ is 73728*4; 3.90+ and Extra High from 3.80 are 73728; else 9216.
+		if (version >= 3950)
+			return 73728 * 4;
+		if (version >= 3900 || (version >= 3800 && compressionLevel >= 4000))
 			return 73728;
-		if (version < 3900)
-			return (uint)(compressionLevel >= 4000 ? 73728 * 4 : 73728);
-		return 73728 * 4; // 3900-3979
+		return 9216;
 	}
 
 	private void CalculateProperties ()
