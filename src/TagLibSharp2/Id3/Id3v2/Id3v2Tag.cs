@@ -1447,11 +1447,26 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <summary>
-	/// Gets the value of a text frame by ID.
+	/// Gets the first value of a text frame by ID.
 	/// </summary>
 	/// <param name="frameId">The frame ID (e.g., TIT2, TPE1).</param>
-	/// <returns>The text value, or null if not found.</returns>
+	/// <returns>
+	/// The first non-empty value, or null if the frame is absent.
+	/// A NUL separates further values and is not included. A slash is not a separator here.
+	/// </returns>
 	public string? GetTextFrame (string frameId)
+	{
+		var text = GetRawTextFrame (frameId);
+		if (text is null)
+			return null;
+
+		return FirstTextValue (text);
+	}
+
+	/// <summary>
+	/// Gets the stored frame text, including NUL separators between values.
+	/// </summary>
+	string? GetRawTextFrame (string frameId)
 	{
 		// Use for loop instead of LINQ for better performance
 		for (var i = 0; i < _frames.Count; i++) {
@@ -1459,6 +1474,28 @@ public sealed class Id3v2Tag : Tag
 				return _frames[i].Text;
 		}
 		return null;
+	}
+
+	/// <summary>
+	/// Returns the first non-empty NUL-separated piece. No slash split.
+	/// </summary>
+	static string FirstTextValue (string text)
+	{
+		var start = 0;
+		for (var i = 0; i < text.Length; i++) {
+			if (text[i] != '\0')
+				continue;
+
+			if (i > start)
+				return text.Substring (start, i - start);
+			start = i + 1;
+		}
+
+		if (start == 0)
+			return text;
+		if (start < text.Length)
+			return text.Substring (start);
+		return string.Empty;
 	}
 
 	/// <summary>
@@ -1472,7 +1509,8 @@ public sealed class Id3v2Tag : Tag
 	/// </remarks>
 	public IReadOnlyList<string> GetTextFrameValues (string frameId)
 	{
-		var text = GetTextFrame (frameId);
+		// Raw text. GetTextFrame returns only the first value, which would drop the rest.
+		var text = GetRawTextFrame (frameId);
 		if (string.IsNullOrEmpty (text))
 			return Array.Empty<string> ();
 

@@ -201,6 +201,9 @@ public sealed class LyricsFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
+		// Lyrics are one string. Drop only a trailing terminator.
+		data = Id3Text.TrimTrailingTerminator (data, encoding);
+
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),
