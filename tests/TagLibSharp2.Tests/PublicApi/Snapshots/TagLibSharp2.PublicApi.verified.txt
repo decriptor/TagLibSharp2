@@ -2281,6 +2281,7 @@ namespace TagLibSharp2.Matroska
         public override string? Copyright { get; set; }
         public override string? DateTagged { get; set; }
         public override string? Description { get; set; }
+        public override uint? DiscNumber { get; set; }
         public override string? EncodedBy { get; set; }
         public override string? EncoderSettings { get; set; }
         public override string? Genre { get; set; }
@@ -2310,6 +2311,7 @@ namespace TagLibSharp2.Matroska
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override string? TitleSort { get; set; }
+        public override uint? TotalDiscs { get; set; }
         public override uint? TotalTracks { get; set; }
         public override uint? Track { get; set; }
         public override string? Year { get; set; }
