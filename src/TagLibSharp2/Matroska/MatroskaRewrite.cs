@@ -235,8 +235,10 @@ static partial class MatroskaRewrite
 				seekHeads.Add ((at, at + piece.Length));
 			else if (piece.Id == MatroskaIds.Cues)
 				cues.Add ((at, at + piece.Length));
-			else if (piece.Id == MatroskaIds.Cluster)
-				clusters.Add ((at, at + piece.Length, OffsetOf (pieces, i)));
+			else if (piece.Id == MatroskaIds.Cluster) {
+				// Piece.Offset is the file offset. Position is relative to the segment payload.
+				clusters.Add ((at, at + piece.Length, piece.Offset - layout.DataOffset));
+			}
 			i++;
 		}
 
