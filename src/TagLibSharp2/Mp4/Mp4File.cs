@@ -725,6 +725,75 @@ public sealed class Mp4File : IMediaFile
 		return Tag;
 	}
 
+	IReadOnlyList<Mp4Chapter> _chapters = [];
+	bool _chaptersChanged;
+
+	/// <summary>
+	/// Gets or sets the chapter list, ordered by start time.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// Reading takes the QuickTime chapter track (the text track a <c>tref</c>/<c>chap</c> reference names),
+	/// then the Nero <c>chpl</c> box when there is no readable chapter track. When both hold the same titles,
+	/// the start times come from <c>chpl</c>, which keeps 100 ns precision and a first chapter that starts
+	/// after zero. Each chapter's <see cref="Mp4Chapter.EndTime"/> is the next start, or the end of the
+	/// chapter track or file for the last one.
+	/// </para>
+	/// <para>
+	/// Setting the list copies it, sorts it by start time, and derives end times. On save, both forms are
+	/// written: <c>chpl</c> gets the first 255 chapters with titles cut to 255 UTF-8 bytes, and the chapter
+	/// track gets every chapter. An existing chapter track is replaced under its track_ID; otherwise a new
+	/// disabled text track is added and every sound and video track references it (except a track that is
+	/// itself chapter media, such as Apple chapter images). The track's first sample
+	/// starts at zero, as a QuickTime chapter list covers the whole timeline. The new samples go in their own
+	/// <c>mdat</c> right after <c>moov</c>, and every chunk offset after it moves in the same update that a tag
+	/// edit makes. The old chapter samples stay in the file unreferenced. No track is added to a fragmented
+	/// movie or to a file with no track; <c>chpl</c> carries the list alone there.
+	/// </para>
+	/// <para>
+	/// An empty list removes <c>chpl</c>, the chapter track, and its references. A save that leaves the list
+	/// as read, or sets it to the list the file already holds, keeps the chapter bytes unchanged.
+	/// </para>
+	/// </remarks>
+	/// <exception cref="ArgumentException">The list contains a null chapter.</exception>
+	public IReadOnlyList<Mp4Chapter> Chapters {
+		get => _chapters;
+		set {
+			var list = new List<Mp4Chapter> ();
+			foreach (var chapter in value ?? []) {
+				if (chapter is null)
+					throw new ArgumentException ("A chapter list cannot contain null.", nameof (value));
+				list.Add (chapter);
+			}
+
+			// A stable sort: chapters that start together keep their order.
+			var sorted = list
+				.Select ((chapter, index) => (chapter, index))
+				.OrderBy (item => item.chapter.StartTime)
+				.ThenBy (item => item.index)
+				.Select (item => item.chapter)
+				.ToList ();
+			if (SameChapters (sorted, _chapters))
+				return;
+
+			_chapters = Mp4ChapterCodec.WithEndTimes (sorted, Duration);
+			_chaptersChanged = true;
+		}
+	}
+
+	static bool SameChapters (List<Mp4Chapter> left, IReadOnlyList<Mp4Chapter> right)
+	{
+		if (left.Count != right.Count)
+			return false;
+
+		for (var i = 0; i < left.Count; i++) {
+			if (!left[i].Equals (right[i]))
+				return false;
+		}
+
+		return true;
+	}
+
 	/// <summary>
 	/// Releases resources used by this instance.
 	/// </summary>
@@ -734,6 +803,7 @@ public sealed class Mp4File : IMediaFile
 			return;
 
 		Tag = null;
+		_chapters = [];
 		_sourceFileSystem = null;
 		SourcePath = null;
 		_disposed = true;
@@ -744,7 +814,14 @@ public sealed class Mp4File : IMediaFile
 	/// </summary>
 	/// <param name="data">The file data.</param>
 	/// <returns>A result indicating success or failure.</returns>
-	public static Mp4FileReadResult Read (ReadOnlySpan<byte> data)
+	public static Mp4FileReadResult Read (ReadOnlySpan<byte> data) => Read (data, null);
+
+	/// <summary>
+	/// Reads from <paramref name="data"/>. Chapter samples are read from <paramref name="sampleSource"/>
+	/// when it is set, because <paramref name="data"/> then holds the boxes without <c>mdat</c>;
+	/// otherwise <paramref name="data"/> is the whole file.
+	/// </summary>
+	static Mp4FileReadResult Read (ReadOnlySpan<byte> data, Stream? sampleSource)
 	{
 		if (data.Length < Mp4Box.HeaderSize)
 			return Mp4FileReadResult.Failure ("Invalid MP4 file: data too short");
@@ -798,6 +875,9 @@ public sealed class Mp4File : IMediaFile
 			FileType = fileType,
 			MetaPlacement = placement
 		};
+		file._chapters = sampleSource is null
+			? Mp4ChapterCodec.Read (moov, data, properties.Duration)
+			: Mp4ChapterCodec.Read (moov, sampleSource, properties.Duration);
 
 		return Mp4FileReadResult.Success (file, offset);
 	}
@@ -1361,7 +1441,7 @@ public sealed class Mp4File : IMediaFile
 				break;
 		}
 
-		return WithSource (Read (kept.ToArray ()), sourcePath, fileSystem);
+		return WithSource (Read (kept.ToArray (), stream), sourcePath, fileSystem);
 	}
 
 	static Mp4FileReadResult WithSource (Mp4FileReadResult result, string? sourcePath, IFileSystem? fileSystem)
@@ -1530,13 +1610,25 @@ public sealed class Mp4File : IMediaFile
 
 		var oldMoovStart = boxes[moovIndex].Start;
 		var oldMoovLength = boxes[moovIndex].Length;
-		var newMoov = RebuildMoovWithMetadata (boxes[moovIndex].Box);
-		var delta = newMoov.Length - oldMoovLength;
+		var chapterPlan = PlanChapters (boxes[moovIndex].Box, originalData, boxes.Find (b => b.Box.Type == "ftyp").Box);
+		var newMoov = RebuildMoovWithMetadata (boxes[moovIndex].Box, chapterPlan);
+		// New chapter samples get their own mdat right after moov, so they move the rest of the file too.
+		var chapterData = chapterPlan is null || chapterPlan.TrackId == 0
+			? BinaryData.Empty
+			: WrapBox ("mdat", new BinaryData (chapterPlan.SampleData));
+		var delta = newMoov.Length + chapterData.Length - oldMoovLength;
 		var oldMoovEnd = oldMoovStart + oldMoovLength;
 		// Offsets are absolute file positions. Anything at or after the old moov moves with it,
 		// including media that is not stored in a box named mdat. Entries inside moov stay put.
 		if (delta != 0)
 			newMoov = AdjustChunkOffsets (newMoov, oldMoovEnd, delta);
+		if (!chapterData.IsEmpty) {
+			// The chapter track was built with offset 0, which no shift moves. Point it at the new mdat now.
+			var moovBytes = newMoov.ToArray ();
+			var samplesAt = (uint)(oldMoovStart + moovBytes.Length + Mp4Box.HeaderSize);
+			Mp4ChapterCodec.WriteChunkOffset (moovBytes, chapterPlan!.TrackId, samplesAt);
+			newMoov = new BinaryData (moovBytes);
+		}
 
 		// Reassemble the file
 		using var builder = new BinaryDataBuilder ();
@@ -1544,6 +1636,7 @@ public sealed class Mp4File : IMediaFile
 		for (int i = 0; i < boxes.Count; i++) {
 			if (i == moovIndex) {
 				builder.Add (newMoov);
+				builder.Add (chapterData);
 			} else {
 				var (box, start, length) = boxes[i];
 				var slice = originalData.Slice (start, length);
@@ -2249,9 +2342,25 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
-	/// Rebuilds the moov box with updated metadata in udta/meta/ilst.
+	/// The chapter rewrite for this save, or null when the list was not set or matches the file's.
 	/// </summary>
-	BinaryData RebuildMoovWithMetadata (Mp4Box originalMoov)
+	Mp4ChapterCodec.ChapterPlan? PlanChapters (Mp4Box moov, ReadOnlySpan<byte> originalData, Mp4Box? ftyp)
+	{
+		if (!_chaptersChanged)
+			return null;
+
+		var duration = Mp4ChapterCodec.MovieDuration (moov);
+		if (SameChapters (Mp4ChapterCodec.Read (moov, originalData, duration), _chapters))
+			return null;
+
+		var quickTime = ftyp is not null && ExtractFileType (ftyp) == "qt";
+		return Mp4ChapterCodec.Plan (moov, _chapters, duration, quickTime);
+	}
+
+	/// <summary>
+	/// Rebuilds the moov box with updated metadata in udta/meta/ilst, and the chapter plan when there is one.
+	/// </summary>
+	BinaryData RebuildMoovWithMetadata (Mp4Box originalMoov, Mp4ChapterCodec.ChapterPlan? chapterPlan)
 	{
 		using var moovContent = new BinaryDataBuilder ();
 
@@ -2259,13 +2368,17 @@ public sealed class Mp4File : IMediaFile
 		var inMovieMeta = MetaPlacement == Mp4MetaPlacement.Movie;
 		var tag = TagToSave (originalMoov);
 		var movieSource = !inMovieMeta && tag?.HasMovieMeta == true ? tag : null;
-		var newUdta = inMovieMeta ? BinaryData.Empty : BuildUdtaBox (originalMoov, tag);
+		// chpl lives in udta, so a chapter save rewrites udta even when the tag is in moov/meta;
+		// then udta's own meta is copied as it was.
+		var chpl = chapterPlan?.Chpl;
+		var copyUdta = inMovieMeta && chpl is null;
+		var newUdta = copyUdta ? BinaryData.Empty : BuildUdtaBox (originalMoov, inMovieMeta ? null : tag, chpl, keepMeta: inMovieMeta);
 		var replacedMeta = false;
 		var emittedChild = false;
 		var placedUdta = false;
-		foreach (var child in originalMoov.Children) {
+		foreach (var child in chapterPlan?.Children ?? originalMoov.Children) {
 			if (child.Type == "udta") {
-				if (inMovieMeta) {
+				if (copyUdta) {
 					moovContent.Add (WrapBox ("udta", child.Data));
 					emittedChild = true;
 				} else if (!placedUdta && newUdta.Length > 0) {
@@ -2380,18 +2493,26 @@ public sealed class Mp4File : IMediaFile
 	/// <summary>
 	/// Builds moov/udta. An existing udta keeps every child except meta, and meta keeps
 	/// every child except ilst. Chapters and the meta version/flags survive a tag edit.
+	/// A non-null <paramref name="chpl"/> replaces the first chpl and drops the rest; empty removes it.
+	/// With <paramref name="keepMeta"/> (the tag is saved to moov/meta), udta's meta is copied as it was.
 	/// </summary>
-	static BinaryData BuildUdtaBox (Mp4Box originalMoov, Mp4Tag? tag)
+	static BinaryData BuildUdtaBox (Mp4Box originalMoov, Mp4Tag? tag, BinaryData? chpl, bool keepMeta = false)
 	{
 		var original = originalMoov.FindChild ("udta");
 		var (ilstContent, keysContent) = RenderTag (original?.FindChild ("meta"), tag);
 		if (original is null) {
-			if (ilstContent.IsEmpty)
+			var newChpl = chpl ?? BinaryData.Empty;
+			if (ilstContent.IsEmpty && newChpl.IsEmpty)
 				return BinaryData.Empty;
-			return WrapBox ("udta", FreshMeta (ilstContent));
+
+			using var body = new BinaryDataBuilder ();
+			if (!ilstContent.IsEmpty)
+				body.Add (FreshMeta (ilstContent));
+			body.Add (newChpl);
+			return WrapBox ("udta", body.ToBinaryData ());
 		}
 
-		return RebuildUdta (original, ilstContent, keysContent, tag?.DropsUnreadKeys == true);
+		return RebuildUdta (original, ilstContent, keysContent, tag?.DropsUnreadKeys == true, chpl, keepMeta);
 	}
 
 	/// <summary>
@@ -2410,12 +2531,13 @@ public sealed class Mp4File : IMediaFile
 		return (ilst, tag.QuickTimeKeys?.Render ());
 	}
 
-	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent, bool dropUnreadKeys)
+	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent, bool dropUnreadKeys, BinaryData? chpl, bool keepMeta)
 	{
 		using var content = new BinaryDataBuilder ();
 		var payload = udta.Data.Span;
 		var offset = 0;
 		var replacedMeta = false;
+		var placedChpl = false;
 		while (offset + 8 <= payload.Length) {
 			if (!TryMeasureBox (payload.Slice (offset), out var size, out _))
 				break;
@@ -2434,8 +2556,19 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
+			if (chpl is not null && payload.Slice (offset + 4, 4).SequenceEqual ("chpl"u8)) {
+				if (!placedChpl)
+					content.Add (chpl.Value);
+				placedChpl = true;
+				offset += size;
+				continue;
+			}
+
 			var isMeta = payload.Slice (offset + 4, 4).SequenceEqual ("meta"u8);
-			if (isMeta && !replacedMeta) {
+			if (isMeta && keepMeta) {
+				// The tag lives in moov/meta; only chpl changes here.
+				content.Add (payload.Slice (offset, size));
+			} else if (isMeta && !replacedMeta) {
 				var meta = udta.FindChild ("meta");
 				if (meta is not null) {
 					var rebuilt = RebuildMeta (meta, ilstContent, keysContent, dropUnreadKeys);
@@ -2460,6 +2593,8 @@ public sealed class Mp4File : IMediaFile
 			content.Add (payload.Slice (offset));
 		if (!replacedMeta && !ilstContent.IsEmpty)
 			content.Add (FreshMeta (ilstContent));
+		if (chpl is not null && !placedChpl)
+			content.Add (chpl.Value);
 		if (content.Length == 0)
 			return BinaryData.Empty;
 
