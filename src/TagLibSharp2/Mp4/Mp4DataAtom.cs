@@ -259,15 +259,26 @@ internal readonly struct Mp4DataAtom
 	/// <returns>The binary representation of the data atom.</returns>
 	public static BinaryData CreateImage (BinaryData imageData, bool isJpeg)
 	{
+		return CreateImage (imageData, isJpeg ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng);
+	}
+
+	/// <summary>
+	/// Creates a data atom for image data with an explicit type code.
+	/// </summary>
+	/// <param name="imageData">The image binary data.</param>
+	/// <param name="typeIndicator">The data type indicator (13 = JPEG, 14 = PNG, or the code from the file).</param>
+	/// <returns>The binary representation of the data atom.</returns>
+	public static BinaryData CreateImage (BinaryData imageData, int typeIndicator)
+	{
 		var data = new byte[8 + imageData.Length];
 
 		// Version: 0
 		data[0] = 0;
 
-		// Flags: type indicator (13 = JPEG, 14 = PNG)
-		data[1] = 0;
-		data[2] = 0;
-		data[3] = (byte)(isJpeg ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng);
+		// Flags: type indicator
+		data[1] = (byte)((typeIndicator >> 16) & 0xFF);
+		data[2] = (byte)((typeIndicator >> 8) & 0xFF);
+		data[3] = (byte)(typeIndicator & 0xFF);
 
 		// Reserved (locale): 0
 		data[4] = 0;
