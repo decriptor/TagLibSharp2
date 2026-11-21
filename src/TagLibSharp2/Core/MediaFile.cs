@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
@@ -280,29 +281,93 @@ public static class MediaFile
 	const int ShortPeekBytes = 32;
 	const int LongPeekBytes = 4095;
 
+	// A normal fmt fits in this. WAVE is not given the 4095-byte peek.
+	const int RiffProbeCap = 512;
+
 	static byte[] ReadPeek (Stream stream, string? pathHint)
 	{
 		var peek = StreamBytes.ReadAtMost (stream, ShortPeekBytes);
-		if (!NeedsLongerPeek (peek, pathHint))
+		var want = PeekLength (peek, pathHint);
+		if (want <= peek.Length)
 			return peek;
 
 		stream.Position = 0;
-		return StreamBytes.ReadAtMost (stream, LongPeekBytes);
+		return StreamBytes.ReadAtMost (stream, want);
 	}
 
 	static async Task<byte[]> ReadPeekAsync (Stream stream, string? pathHint, CancellationToken cancellationToken)
 	{
 		var peek = await StreamBytes.ReadAtMostAsync (stream, ShortPeekBytes, cancellationToken).ConfigureAwait (false);
-		if (!NeedsLongerPeek (peek, pathHint))
+		var want = PeekLength (peek, pathHint);
+		if (want <= peek.Length)
 			return peek;
 
 		stream.Position = 0;
-		return await StreamBytes.ReadAtMostAsync (stream, LongPeekBytes, cancellationToken).ConfigureAwait (false);
+		return await StreamBytes.ReadAtMostAsync (stream, want, cancellationToken).ConfigureAwait (false);
 	}
 
-	// RIFF/WAVE is identified at 12 bytes, before a legacy WavPack "wvpk" at the data chunk.
-	static bool NeedsLongerPeek (ReadOnlySpan<byte> peek, string? pathHint) =>
-		IsOgg (peek) || IsRiffWave (peek) || DetectFormat (peek, pathHint) == MediaFormat.Unknown;
+	// RIFF/WAVE can be told from legacy WavPack once the data-chunk magic is visible.
+	static int PeekLength (ReadOnlySpan<byte> peek, string? pathHint)
+	{
+		if (IsOgg (peek) || (!IsRiffWave (peek) && DetectFormat (peek, pathHint) == MediaFormat.Unknown))
+			return LongPeekBytes;
+
+		if (!IsRiffWave (peek))
+			return peek.Length;
+
+		return RiffProbeLength (peek);
+	}
+
+	// When fmt's size is in the prefix, the next chunk is the data chunk on a normal WAVE file.
+	// Read through its first four payload bytes, and no further than RiffProbeCap.
+	static int RiffProbeLength (ReadOnlySpan<byte> peek)
+	{
+		var need = RiffDataMagicEnd (peek);
+		if (need < peek.Length)
+			need = peek.Length;
+		if (need > RiffProbeCap)
+			need = RiffProbeCap;
+		return need;
+	}
+
+	static int RiffDataMagicEnd (ReadOnlySpan<byte> peek)
+	{
+		if (peek.Length < 20)
+			return RiffProbeCap;
+
+		var offset = 12;
+		while (offset + 8 <= peek.Length) {
+			var size = BinaryPrimitives.ReadUInt32LittleEndian (peek.Slice (offset + 4, 4));
+			var payload = offset + 8;
+			if (IsChunkId (peek, offset, (byte)'d', (byte)'a', (byte)'t', (byte)'a')) {
+				var end = (long)payload + 4;
+				return end > int.MaxValue ? RiffProbeCap : (int)end;
+			}
+
+			if (IsChunkId (peek, offset, (byte)'f', (byte)'m', (byte)'t', (byte)' ')) {
+				var pad = (size & 1) == 1 ? 1L : 0L;
+				var end = (long)payload + size + pad + 12;
+				if (end < 0 || end > int.MaxValue)
+					return RiffProbeCap;
+				return (int)end;
+			}
+
+			var step = 8L + size + ((size & 1) == 1 ? 1L : 0L);
+			if (step < 8 || offset + step > peek.Length || offset + step > int.MaxValue)
+				break;
+
+			offset += (int)step;
+		}
+
+		return RiffProbeCap;
+	}
+
+	static bool IsChunkId (ReadOnlySpan<byte> data, int offset, byte a, byte b, byte c, byte d) =>
+		offset + 4 <= data.Length
+		&& data[offset] == a
+		&& data[offset + 1] == b
+		&& data[offset + 2] == c
+		&& data[offset + 3] == d;
 
 	static bool IsRiffWave (ReadOnlySpan<byte> data) =>
 		data.Length >= 12

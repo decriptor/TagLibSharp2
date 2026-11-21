@@ -79,6 +79,33 @@ public class MediaFileStreamTests
 	}
 
 	[TestMethod]
+	public void Read_MinimalWav_DoesNotRequireTheLongPeek ()
+	{
+		var file = WavWithALargeDataChunk ();
+		var counted = new CountingStream (new MemoryStream (file));
+
+		var result = MediaFile.Read (counted, "song.wav");
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.Wav, result.Format);
+		Assert.IsTrue (counted.MaxRequest <= 64, $"requested {counted.MaxRequest}");
+	}
+
+	[TestMethod]
+	public void Read_RiffWavPackAtOffset44_IsWavPack ()
+	{
+		var file = RiffWavPackAt44 ();
+		var counted = new CountingStream (new MemoryStream (file));
+
+		var result = MediaFile.Read (counted, "luckynight.wv");
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.WavPack, result.Format);
+		Assert.AreEqual (1.0, Duration (result).TotalSeconds, 0.01);
+		Assert.IsTrue (counted.MaxRequest <= 64, $"requested {counted.MaxRequest}");
+	}
+
+	[TestMethod]
 	public void Read_NonSeekableStream_StillReadsTheTitle ()
 	{
 		var file = Mp3WithALargeGap ();
@@ -159,6 +186,32 @@ public class MediaFileStreamTests
 		return file.ToBinaryData ().ToArray ();
 	}
 
+	// fmt then wvpk at the data payload, the layout of a legacy RIFF WavPack file.
+	static byte[] RiffWavPackAt44 ()
+	{
+		var block = TestBuilders.WavPack.CreateMinimal ();
+		using var body = new BinaryDataBuilder ();
+		body.AddStringLatin1 ("WAVE");
+		body.AddStringLatin1 ("fmt ");
+		body.AddUInt32LE (16);
+		body.AddUInt16LE (1);
+		body.AddUInt16LE (2);
+		body.AddUInt32LE (44100);
+		body.AddUInt32LE (44100 * 4);
+		body.AddUInt16LE (4);
+		body.AddUInt16LE (16);
+		body.AddStringLatin1 ("data");
+		body.AddUInt32LE ((uint)block.Length);
+		body.Add (block);
+
+		var payload = body.ToBinaryData ();
+		using var file = new BinaryDataBuilder ();
+		file.AddStringLatin1 ("RIFF");
+		file.AddUInt32LE ((uint)payload.Length);
+		file.Add (payload);
+		return file.ToBinaryData ().ToArray ();
+	}
+
 	static byte[] InfoList (string title)
 	{
 		var text = System.Text.Encoding.ASCII.GetBytes (title + "\0");
@@ -178,6 +231,8 @@ public class MediaFileStreamTests
 
 		public long BytesRead { get; private set; }
 
+		public int MaxRequest { get; private set; }
+
 		public override bool CanRead => _inner.CanRead;
 
 		public override bool CanSeek => _inner.CanSeek;
@@ -195,6 +250,7 @@ public class MediaFileStreamTests
 
 		public override int Read (byte[] buffer, int offset, int count)
 		{
+			Note (count);
 			var read = _inner.Read (buffer, offset, count);
 			BytesRead += read;
 			return read;
@@ -202,6 +258,7 @@ public class MediaFileStreamTests
 
 		public override int Read (Span<byte> buffer)
 		{
+			Note (buffer.Length);
 			var read = _inner.Read (buffer);
 			BytesRead += read;
 			return read;
@@ -209,9 +266,16 @@ public class MediaFileStreamTests
 
 		public override ValueTask<int> ReadAsync (Memory<byte> buffer, CancellationToken cancellationToken = default)
 		{
+			Note (buffer.Length);
 			var read = _inner.Read (buffer.Span);
 			BytesRead += read;
 			return new ValueTask<int> (read);
+		}
+
+		void Note (int count)
+		{
+			if (count > MaxRequest)
+				MaxRequest = count;
 		}
 
 		public override long Seek (long offset, SeekOrigin origin) => _inner.Seek (offset, origin);
