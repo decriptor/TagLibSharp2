@@ -55,6 +55,7 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 /// onto <see cref="MatroskaTag.Pictures"/>.
 /// Saving splices <see cref="MatroskaTag.Render()"/> into the first <c>Segment</c>, and the
 /// <c>Attachments</c> element too when the pictures were set.
+/// Any <see cref="MatroskaTrack.IsEnabled"/> the caller set is written first.
 /// </summary>
 public sealed class MatroskaFile : IMediaFile
 {
@@ -362,17 +363,45 @@ public sealed class MatroskaFile : IMediaFile
 		return result.IsSuccess;
 	}
 
-	/// <summary>Writes the rendered <c>Tags</c> element into a copy of <paramref name="originalData"/>.</summary>
+	/// <summary>
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set and the rendered <c>Tags</c> element
+	/// into a copy of <paramref name="originalData"/>.
+	/// </summary>
 	/// <returns>The rewritten file, or empty when the container cannot be bounded.</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
-		MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out _)
+		TryRender (originalData, out var rewritten, out _)
 			? new BinaryData (rewritten)
 			: BinaryData.Empty;
+
+	/// <summary>
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the tags.
+	/// With no track set, the container goes straight to the tag rewrite.
+	/// </summary>
+	bool TryRender (ReadOnlySpan<byte> originalData, out byte[] rewritten, out string error)
+	{
+		List<TrackFlagEdit>? edits = null;
+		foreach (var track in Tracks) {
+			if (track.IsEnabledAssigned)
+				(edits ??= new List<TrackFlagEdit> ()).Add (new TrackFlagEdit (track.Ordinal, track.TrackNumber, track.TrackUid, track.IsEnabled));
+		}
+
+		if (edits is null)
+			return MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error);
+
+		if (!MatroskaRewrite.TryWriteTrackFlags (originalData, edits, out var flagged, out error)) {
+			rewritten = [];
+			return false;
+		}
+
+		return flagged is null
+			? MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error)
+			: MatroskaRewrite.TryRewrite (flagged, Tag, out rewritten, out error);
+	}
 
 	/// <summary>Saves tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
 	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out var error))
+		if (!TryRender (originalData, out var rewritten, out var error))
 			return FileWriteResult.Failure (error);
 
 		fileSystem ??= _sourceFileSystem;
@@ -409,7 +438,7 @@ public sealed class MatroskaFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData.Span, Tag, out var rewritten, out var error))
+		if (!TryRender (originalData.Span, out var rewritten, out var error))
 			return Task.FromResult (FileWriteResult.Failure (error));
 
 		fileSystem ??= _sourceFileSystem;
@@ -749,7 +778,7 @@ public sealed class MatroskaFile : IMediaFile
 	}
 
 	/// <summary>
-	/// A 0/1 flag. An empty element is the default 1 (RFC 8794 §7.1, RFC 9559 §5.1.4.1.4).
+	/// A 0/1 flag. An empty element is the default 1 (RFC 8794 §6.1, RFC 9559 §5.1.4.1.4).
 	/// </summary>
 	internal static bool IsFlagSet (ReadOnlySpan<byte> payload) =>
 		payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
