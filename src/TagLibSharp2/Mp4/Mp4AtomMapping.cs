@@ -31,6 +31,9 @@ internal static class Mp4AtomMapping
 	public const string Encoder = "©too";
 	public const string Copyright = "cprt";
 
+	// Older files store the same text in ©cpy. cprt wins when both are present.
+	public const string CopyrightAlias = "©cpy";
+
 	// Album artist (not © prefixed)
 	public const string AlbumArtist = "aART";
 
@@ -138,7 +141,9 @@ internal static class Mp4AtomMapping
 	public const int TypeBinary = 0;
 	public const int TypeUtf8 = 1;
 	public const int TypeUtf16 = 2;
+	public const int TypeGif = 12;
 	public const int TypeJpeg = 13;
 	public const int TypePng = 14;
+	public const int TypeBmp = 27;
 	public const int TypeInteger = 21;
 }
