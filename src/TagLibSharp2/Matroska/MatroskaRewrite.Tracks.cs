@@ -42,8 +42,11 @@ static partial class MatroskaRewrite
 	/// octet width when the new size fits (RFC 8794 §6.1).
 	/// </para>
 	/// <para>
-	/// The growth comes out of the <c>Void</c> (RFC 8794 §11.3.2) right after <c>Tracks</c>, so no element moves
-	/// and no segment position changes (RFC 9559 §6.1, §16). Without such a Void the save fails and nothing is written.
+	/// The growth comes out of the <c>Void</c> (RFC 8794 §11.3.2) right after <c>Tracks</c> when it has room,
+	/// so no element moves and no segment position changes (RFC 9559 §6.1, §16). Otherwise the first
+	/// known-size Tracks grows through <see cref="TryGrow"/>: everything after it moves once, and the
+	/// SeekHead, Cues, Cluster <c>Position</c>, and CRC-32 values follow. Another Tracks without room fails
+	/// the save, since only one is allowed (RFC 9559 §5.1.4, maxOccurs 1).
 	/// </para>
 	/// <para>
 	/// FlagEnabled has minver 2. A stored <c>DocTypeVersion</c> of 1 is raised to 2 when an element is added
@@ -89,17 +92,29 @@ static partial class MatroskaRewrite
 		if (!any)
 			return true;
 
-		if (!TryBuildInPlace (data, layout, replacements, out var body, out error))
+		var growable = pieces.FindIndex (piece => piece.Id == MatroskaIds.Tracks && !piece.UnknownSize);
+		if (!TryBuildInPlace (data, layout, replacements, growable, out var body, out var grow, out var inPlace, out error))
 			return false;
-		UpdateLeadingCrc (body);
 
-		updated = Assemble (data, layout, body, out error);
-		if (updated.Length == 0 || error.Length > 0) {
-			updated = null;
-			return false;
+		if (inPlace) {
+			UpdateLeadingCrc (body);
+			updated = Assemble (data, layout, body, out error);
+			if (updated.Length == 0 || error.Length > 0) {
+				updated = null;
+				return false;
+			}
 		}
 
-		if (inserted)
+		if (grow is not null) {
+			if (!TryGrow (updated ?? data, grow, out var grown, out error)) {
+				updated = null;
+				return false;
+			}
+
+			updated = grown;
+		}
+
+		if (inserted && updated is not null)
 			RaiseDocTypeVersion (updated, 2);
 		return true;
 	}
@@ -293,10 +308,23 @@ static partial class MatroskaRewrite
 	/// Lays out the segment with the edited <c>Tracks</c> where they were. A Tracks that grew takes the room
 	/// from the Void right after it, so no element changes its segment position (RFC 9559 §16) and the
 	/// SeekHead, Cues, and clusters stay as they are. A Void can shrink to nothing or to at least 2 octets.
+	/// The Tracks at <paramref name="growable"/> that has no such room keeps its old bytes here and comes back
+	/// as <paramref name="grow"/>, for <see cref="TryGrow"/> to move the later elements.
+	/// <paramref name="inPlace"/> is false when that Tracks is the only change.
 	/// </summary>
-	static bool TryBuildInPlace (ReadOnlySpan<byte> data, Layout layout, byte[]?[] replacements, out byte[] body, out string error)
+	static bool TryBuildInPlace (
+		ReadOnlySpan<byte> data,
+		Layout layout,
+		byte[]?[] replacements,
+		int growable,
+		out byte[] body,
+		out byte[]? grow,
+		out bool inPlace,
+		out string error)
 	{
 		body = [];
+		grow = null;
+		inPlace = false;
 		error = "";
 		var pieces = layout.Pieces;
 		using var builder = new BinaryDataBuilder (layout.SegmentEnd - layout.DataOffset);
@@ -307,19 +335,26 @@ static partial class MatroskaRewrite
 				continue;
 			}
 
-			builder.Add (tracks);
 			var extra = tracks.Length - piece.Length;
-			if (extra == 0)
-				continue;
-
 			var room = i + 1 < pieces.Count && pieces[i + 1].Id == MatroskaIds.Void && !pieces[i + 1].UnknownSize
 				? pieces[i + 1].Length
 				: 0;
-			if (room != extra && room - extra < 2) {
-				error = "Matroska FlagEnabled needs " + extra.ToString (System.Globalization.CultureInfo.InvariantCulture)
-					+ " more octets in Tracks and no Void right after Tracks can give them";
-				return false;
+			if (extra > 0 && room != extra && room - extra < 2) {
+				if (i != growable) {
+					error = "Matroska FlagEnabled needs " + extra.ToString (System.Globalization.CultureInfo.InvariantCulture)
+						+ " more octets in a second Tracks and no Void right after Tracks can give them";
+					return false;
+				}
+
+				builder.Add (data.Slice (piece.Offset, piece.Length));
+				grow = tracks;
+				continue;
 			}
+
+			builder.Add (tracks);
+			inPlace = true;
+			if (extra == 0)
+				continue;
 
 			if (room > extra && TryMakeVoid (room - extra, out var shrunk))
 				builder.Add (shrunk);

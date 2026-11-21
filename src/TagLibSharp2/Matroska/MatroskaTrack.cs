@@ -92,8 +92,9 @@ public sealed class MatroskaTrack
 	/// </summary>
 	/// <remarks>
 	/// Setting this marks the track for writing. On save a stored element is rewritten in place.
-	/// A missing or empty element is written only when the stored value differs, and it takes its room
-	/// from the <c>Void</c> right after <c>Tracks</c> so nothing else moves. Without that room the save fails.
+	/// A missing or empty element is written only when the stored value differs. It takes its room from the
+	/// <c>Void</c> right after <c>Tracks</c> when there is one, so nothing else moves. Otherwise every later
+	/// element moves once and the SeekHead, Cues, and Cluster <c>Position</c> values follow.
 	/// </remarks>
 	public bool IsEnabled {
 		get => _isEnabled;
