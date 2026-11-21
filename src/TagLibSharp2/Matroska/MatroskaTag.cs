@@ -17,7 +17,11 @@ namespace TagLibSharp2.Matroska;
 /// <see cref="Track"/> is <c>PART_NUMBER</c> at 30 and <see cref="DiscNumber"/> is <c>PART_NUMBER</c> at 50.
 /// <c>TOTAL_PARTS</c> counts the parts of the first lower level, so <see cref="TotalTracks"/> is
 /// <c>TOTAL_PARTS</c> at 50 and <see cref="TotalDiscs"/> is <c>TOTAL_PARTS</c> at 60, as in
-/// https://www.matroska.org/technical/tagging-audio-example.html. TagLib writes these totals at 30 and 50.
+/// https://www.matroska.org/technical/tagging-audio-example.html. TagLib writes these totals at 30 and 50,
+/// so a TagLib-written file with both totals reads its disc total as <see cref="TotalTracks"/>. A 30
+/// <c>TOTAL_PARTS</c> is read as <see cref="TotalTracks"/> only when no other source exists, and an untargeted
+/// <c>PART_NUMBER</c>, which ffmpeg writes, is read as the track. A <see cref="TotalDiscs"/> set on a file with
+/// no 40 or 50 tag and no disc number is still written at 60, where the spec reads it as a count of the 30 tags.
 /// </para>
 /// </remarks>
 public sealed class MatroskaTag : Tag
