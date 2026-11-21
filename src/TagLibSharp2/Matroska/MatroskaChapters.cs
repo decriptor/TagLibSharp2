@@ -68,8 +68,8 @@ public sealed class MatroskaChapters
 
 	readonly List<MatroskaEdition> _editions = new ();
 	readonly List<KeptElement> _kept = new ();
-	// A SHA-256 of the element as read: a large Chapters element is not held twice.
-	byte[] _baseline = Fingerprint (null);
+	// The editions as read, to tell an edit (including a removal through the list) from a no-op.
+	MatroskaEdition?[] _readEditions = [];
 	bool _hadElement;
 	bool _cleared;
 
@@ -123,6 +123,7 @@ public sealed class MatroskaChapters
 
 	/// <summary>Removes an edition and its chapters.</summary>
 	/// <returns>True when the edition was found.</returns>
+	/// <remarks>The next save removes the <c>Chapters</c> element when no edition with a chapter is left.</remarks>
 	public bool RemoveEdition (MatroskaEdition edition) => _editions.Remove (edition);
 
 	/// <summary>
@@ -148,28 +149,63 @@ public sealed class MatroskaChapters
 	}
 
 	/// <summary>
-	/// Gets a value indicating whether a save has to write <c>Chapters</c>: the editions render differently
-	/// from the ones read, or <see cref="Clear"/> emptied a file that had the element.
+	/// Gets a value indicating whether a save has to write <c>Chapters</c>: an edition was added, removed,
+	/// or reordered, or an edition or chapter holds a value other than the one read. Setting a value back
+	/// to what was read is not an edit. A removed edition without chapters is an edit too, so
+	/// <see cref="Clear"/> and <see cref="RemoveEdition"/> always drop it from the file.
 	/// </summary>
-	internal bool IsModified => DiffersFromRead || (_cleared && _hadElement && !HasContent);
+	internal bool IsModified {
+		get {
+			// A Chapters element with only a Void or other unmodelled children has nothing to compare, so Clear says it.
+			var modified = !SameItems (_editions, _readEditions) || _kept.Count != _readKept || (_cleared && _hadElement);
+			foreach (var edition in _editions) {
+				if (edition is not null && !edition.Prepare ())
+					modified = true;
+			}
+
+			return modified;
+		}
+	}
+
+	int _readKept;
 
 	/// <summary>
-	/// Checks the RFC 9559 rules on chapter times: an end is not before its start (section 20.2.2),
-	/// a nested chapter starts inside its parent (section 20.2.3), and every lowest-level chapter of an
-	/// ordered edition has an end (section 20.2.4 and Table 29).
+	/// Checks the RFC 9559 rules on chapter times for every chapter this save adds or changes: an end is
+	/// not before its start (section 20.2.2), a nested chapter starts inside its parent (section 20.2.3),
+	/// and every lowest-level chapter of an ordered edition has an end (section 20.2.4 and Table 29).
+	/// A chapter that was not changed is not checked, so a bad chapter written by another tool does not
+	/// block other edits; in a Matroska file it is written back as it was. An edition that is new or whose
+	/// own values changed has all its chapters checked. The error names the chapter by position and UID.
 	/// </summary>
 	internal bool TryValidate (out string error)
 	{
-		foreach (var edition in _editions) {
+		for (var e = 0; e < _editions.Count; e++) {
+			var edition = _editions[e];
 			if (edition is null)
 				continue;
-			foreach (var chapter in edition.Chapters) {
-				if (chapter is not null && !chapter.TryValidate (edition.IsOrdered, null, 1, out error))
+			var all = edition.ValuesChanged;
+			var chapters = edition.Chapters;
+			for (var c = 0; c < chapters.Count; c++) {
+				var path = "edition " + (e + 1).ToString (System.Globalization.CultureInfo.InvariantCulture)
+					+ ", chapter " + (c + 1).ToString (System.Globalization.CultureInfo.InvariantCulture);
+				if (chapters[c] is { } chapter && !chapter.TryValidate (edition.IsOrdered, all, null, false, path, 1, out error))
 					return false;
 			}
 		}
 
 		error = "";
+		return true;
+	}
+
+	internal static bool SameItems<T> (IList<T> current, T?[] read) where T : class
+	{
+		if (current.Count != read.Length)
+			return false;
+		for (var i = 0; i < read.Length; i++) {
+			if (!ReferenceEquals (current[i], read[i]))
+				return false;
+		}
+
 		return true;
 	}
 
@@ -200,6 +236,9 @@ public sealed class MatroskaChapters
 
 	void Write (ChapterWriter writer)
 	{
+		foreach (var edition in _editions)
+			edition?.Prepare ();
+
 		writer.Begin (MatroskaIds.Chapters);
 		var anchor = LastRead (_editions);
 		if (anchor < 0)
@@ -217,46 +256,27 @@ public sealed class MatroskaChapters
 		writer.End ();
 	}
 
-	/// <summary>Gets a value indicating whether the editions differ from the ones read from the file.</summary>
-	bool DiffersFromRead {
-		get {
-			if (!HasContent)
-				return !Fingerprint (null).AsSpan ().SequenceEqual (_baseline);
-			return !Fingerprint (this).AsSpan ().SequenceEqual (_baseline);
-		}
-	}
-
 	/// <summary>Starts an empty set whose baseline is no <c>Chapters</c> element.</summary>
 	internal static MatroskaChapters Empty (bool isWebM) => new (isWebM);
 
 	/// <summary>Parses a <c>Chapters</c> payload. Malformed children end their parent and do not throw.</summary>
 	internal static MatroskaChapters Read (ReadOnlySpan<byte> body, bool isWebM)
 	{
+		// One copy of the element, so an untouched edition or chapter is written back byte for byte.
+		var source = body.ToArray ();
 		var chapters = new MatroskaChapters (isWebM) { _hadElement = true };
 		var budget = MaxEntries;
 		var offset = 0;
-		while (TryNext (body, ref offset, ref budget, chapters._kept, out var element)) {
+		while (TryNext (source, ref offset, ref budget, chapters._kept, out var element)) {
 			if (element.Id == MatroskaIds.EditionEntry)
-				chapters._editions.Add (MatroskaEdition.Read (Payload (body, element), ref budget));
+				chapters._editions.Add (MatroskaEdition.Read (source, element, ref budget));
 			else
-				KeepUnknown (chapters._kept, body, element);
+				KeepUnknown (chapters._kept, source, element);
 		}
 
-		chapters._baseline = Fingerprint (chapters.HasContent ? chapters : null);
+		chapters._readEditions = chapters._editions.ToArray ();
+		chapters._readKept = chapters._kept.Count;
 		return chapters;
-	}
-
-	/// <summary>A SHA-256 of the rendered element, streamed, so a large element is not rendered into memory to compare it.</summary>
-	static byte[] Fingerprint (MatroskaChapters? chapters)
-	{
-		using var hash = IncrementalHash.CreateHash (HashAlgorithmName.SHA256);
-		if (chapters is not null) {
-			var measure = ChapterWriter.Measure ();
-			chapters.Write (measure);
-			chapters.Write (ChapterWriter.ToHash (measure, hash));
-		}
-
-		return hash.GetHashAndReset ();
 	}
 
 	static readonly RandomNumberGenerator Random = RandomNumberGenerator.Create ();
@@ -416,6 +436,33 @@ public sealed class MatroskaEdition : IReadFromFile
 	bool IReadFromFile.IsFromFile => _fromFile;
 
 	bool _fromFile;
+	byte[]? _source;
+	int _sourceAt;
+	int _sourceLength;
+	string? _readState;
+	MatroskaChapter?[] _readChapters = [];
+	bool _unchanged;
+
+	string OwnState => string.Join ("|", Uid, IsDefault, IsOrdered, IsHidden);
+
+	/// <summary>Gets a value indicating whether the edition is new or its own values (UID, flags) changed.</summary>
+	internal bool ValuesChanged => !_fromFile || OwnState != _readState;
+
+	/// <summary>Gets a value indicating whether the edition is new, or its own values or chapter list changed.</summary>
+	internal bool OwnChanged => ValuesChanged || !MatroskaChapters.SameItems (_chapters, _readChapters);
+
+	/// <summary>Works out, for this save, which parts are unchanged. Returns true when the whole edition is.</summary>
+	internal bool Prepare ()
+	{
+		var unchanged = !OwnChanged;
+		foreach (var chapter in _chapters) {
+			if (chapter is not null && !chapter.Prepare (1))
+				unchanged = false;
+		}
+
+		_unchanged = unchanged && _source is not null;
+		return _unchanged;
+	}
 
 	/// <summary>Creates an edition with a new random <see cref="Uid"/> and no chapters.</summary>
 	public MatroskaEdition () : this (MatroskaChapters.NewUid ())
@@ -467,6 +514,12 @@ public sealed class MatroskaEdition : IReadFromFile
 
 	internal void Write (ChapterWriter writer, bool isWebM)
 	{
+		// An unchanged edition in a Matroska file goes back byte for byte. WebM keeps to its subset instead.
+		if (!isWebM && _unchanged) {
+			writer.Add (_source.AsSpan (_sourceAt, _sourceLength));
+			return;
+		}
+
 		writer.Begin (MatroskaIds.EditionEntry);
 		if (!isWebM) {
 			if (Uid != 0)
@@ -484,10 +537,17 @@ public sealed class MatroskaEdition : IReadFromFile
 		writer.End ();
 	}
 
-	internal static MatroskaEdition Read (ReadOnlySpan<byte> body, ref int budget)
+	internal static MatroskaEdition Read (byte[] source, EbmlElement entry, ref int budget)
 	{
 		// EditionUID is optional, so an edition read without one keeps 0.
-		var edition = new MatroskaEdition (0) { _fromFile = true };
+		var edition = new MatroskaEdition (0) {
+			_fromFile = true,
+			_source = source,
+			_sourceAt = entry.Position,
+			_sourceLength = entry.End - entry.Position
+		};
+		var body = MatroskaChapters.Payload (source, entry);
+		var bodyAt = entry.DataOffset;
 		var offset = 0;
 		while (MatroskaChapters.TryNext (body, ref offset, ref budget, edition._kept, out var element)) {
 			var payload = MatroskaChapters.Payload (body, element);
@@ -505,7 +565,7 @@ public sealed class MatroskaEdition : IReadFromFile
 					edition.IsOrdered = MatroskaChapters.ReadFlag (payload, false);
 					break;
 				case MatroskaIds.ChapterAtom:
-					edition._chapters.Add (MatroskaChapter.Read (payload, 1, ref budget));
+					edition._chapters.Add (MatroskaChapter.Read (source, bodyAt, element, 1, ref budget));
 					break;
 				default:
 					MatroskaChapters.KeepUnknown (edition._kept, body, element);
@@ -513,6 +573,8 @@ public sealed class MatroskaEdition : IReadFromFile
 			}
 		}
 
+		edition._readState = edition.OwnState;
+		edition._readChapters = edition._chapters.ToArray ();
 		return edition;
 	}
 }
@@ -530,6 +592,74 @@ public sealed class MatroskaChapter : IReadFromFile
 	bool IReadFromFile.IsFromFile => _fromFile;
 
 	bool _fromFile;
+	byte[]? _source;
+	int _sourceAt;
+	int _sourceLength;
+	ulong _readUid;
+	string? _readStringUid;
+	ulong _readStart;
+	ulong? _readEnd;
+	bool _readHidden;
+	bool _readEnabled;
+	string?[] _readDisplays = [];
+	MatroskaChapter?[] _readChapters = [];
+	bool _unchanged;
+
+	void MarkRead ()
+	{
+		_readUid = _uid;
+		_readStringUid = StringUid;
+		_readStart = StartNanoseconds;
+		_readEnd = EndNanoseconds;
+		_readHidden = IsHidden;
+		_readEnabled = IsEnabled;
+		_readDisplays = _displays.Count == 0 ? [] : _displays.ConvertAll (display => display?.State).ToArray ();
+		_readChapters = _chapters.Count == 0 ? [] : _chapters.ToArray ();
+	}
+
+	bool DisplaysAsRead {
+		get {
+			if (_displays.Count != _readDisplays.Length)
+				return false;
+			for (var i = 0; i < _readDisplays.Length; i++) {
+				if (_displays[i]?.State != _readDisplays[i])
+					return false;
+			}
+
+			return true;
+		}
+	}
+
+	/// <summary>Gets a value indicating whether the chapter is new, or its own values or nested list changed.</summary>
+	internal bool OwnChanged =>
+		!_fromFile
+		|| _uid != _readUid
+		|| StringUid != _readStringUid
+		|| StartNanoseconds != _readStart
+		|| EndNanoseconds != _readEnd
+		|| IsHidden != _readHidden
+		|| IsEnabled != _readEnabled
+		|| !DisplaysAsRead
+		|| !MatroskaChapters.SameItems (_chapters, _readChapters);
+
+	/// <summary>Works out, for this save, which parts are unchanged. Returns true when the whole chapter is.</summary>
+	internal bool Prepare (int depth)
+	{
+		// Bounded like Write, which also stops a chapter that was added inside itself.
+		if (depth > MatroskaChapters.MaxDepth) {
+			_unchanged = false;
+			return false;
+		}
+
+		var unchanged = !OwnChanged;
+		foreach (var chapter in _chapters) {
+			if (chapter is not null && !chapter.Prepare (depth + 1))
+				unchanged = false;
+		}
+
+		_unchanged = unchanged && _source is not null;
+		return _unchanged;
+	}
 
 	/// <summary>Creates a chapter with a new random <see cref="Uid"/> that starts at 0 and has no display.</summary>
 	public MatroskaChapter () : this (MatroskaChapters.NewUid ())
@@ -642,6 +772,12 @@ public sealed class MatroskaChapter : IReadFromFile
 
 	internal void Write (ChapterWriter writer, bool isWebM, int depth)
 	{
+		// An unchanged chapter in a Matroska file goes back byte for byte. WebM keeps to its subset instead.
+		if (!isWebM && _unchanged) {
+			writer.Add (_source.AsSpan (_sourceAt, _sourceLength));
+			return;
+		}
+
 		writer.Begin (MatroskaIds.ChapterAtom);
 		writer.Unsigned (MatroskaIds.ChapterUid, _uid);
 		if (StringUid is not null)
@@ -667,10 +803,17 @@ public sealed class MatroskaChapter : IReadFromFile
 		writer.End ();
 	}
 
-	internal static MatroskaChapter Read (ReadOnlySpan<byte> body, int depth, ref int budget)
+	internal static MatroskaChapter Read (byte[] source, int parentAt, EbmlElement atom, int depth, ref int budget)
 	{
 		ulong uid = 0;
-		var chapter = new MatroskaChapter (0) { _fromFile = true };
+		var chapter = new MatroskaChapter (0) {
+			_fromFile = true,
+			_source = source,
+			_sourceAt = parentAt + atom.Position,
+			_sourceLength = atom.End - atom.Position
+		};
+		var bodyAt = parentAt + atom.DataOffset;
+		var body = source.AsSpan (bodyAt, (int)atom.DataLength);
 		var offset = 0;
 		while (MatroskaChapters.TryNext (body, ref offset, ref budget, chapter._kept, out var element)) {
 			var payload = MatroskaChapters.Payload (body, element);
@@ -697,7 +840,7 @@ public sealed class MatroskaChapter : IReadFromFile
 					chapter._displays.Add (MatroskaChapterDisplay.Read (payload, ref budget));
 					break;
 				case MatroskaIds.ChapterAtom when depth < MatroskaChapters.MaxDepth:
-					chapter._chapters.Add (Read (payload, depth + 1, ref budget));
+					chapter._chapters.Add (Read (source, bodyAt, element, depth + 1, ref budget));
 					break;
 				default:
 					// Too deep or not modelled: the bytes go back as they were.
@@ -706,8 +849,10 @@ public sealed class MatroskaChapter : IReadFromFile
 			}
 		}
 
-		// ChapterUID is mandatory and nonzero. A missing or 0 UID gets a new one, used only when chapters are edited.
+		// ChapterUID is mandatory and nonzero. A missing or 0 UID gets a new one, written only when the
+		// chapter itself is rewritten; until then the chapter keeps its bytes.
 		chapter._uid = uid != 0 ? uid : MatroskaChapters.NewUid ();
+		chapter.MarkRead ();
 		return chapter;
 	}
 
@@ -721,33 +866,44 @@ public sealed class MatroskaChapter : IReadFromFile
 		return (ulong)value.Ticks * 100;
 	}
 
-	internal bool TryValidate (bool ordered, MatroskaChapter? parent, int depth, out string error)
+	/// <param name="ordered">Whether the edition is ordered.</param>
+	/// <param name="all">Whether to check this chapter even if it did not change (its edition is new or changed).</param>
+	/// <param name="parent">The parent chapter, or null at the top.</param>
+	/// <param name="parentChanged">Whether the parent's own values changed, which puts the nesting rule back in play.</param>
+	/// <param name="path">The chapter's position, such as "edition 1, chapter 2.1".</param>
+	/// <param name="depth">The nesting depth.</param>
+	/// <param name="error">The rule that failed, naming the chapter.</param>
+	internal bool TryValidate (bool ordered, bool all, MatroskaChapter? parent, bool parentChanged, string path, int depth, out string error)
 	{
 		error = "";
-		if (EndNanoseconds is ulong end && end < StartNanoseconds) {
-			error = "A Matroska chapter ends before it starts (RFC 9559 section 20.2.2)";
+		var changed = all || OwnChanged;
+		var name = "Matroska chapter (" + path + ", UID " + _uid.ToString (System.Globalization.CultureInfo.InvariantCulture) + ")";
+		if (changed && EndNanoseconds is ulong end && end < StartNanoseconds) {
+			error = name + " ends before it starts (RFC 9559 section 20.2.2)";
 			return false;
 		}
 
-		if (parent is not null && (StartNanoseconds < parent.StartNanoseconds
+		if ((changed || parentChanged) && parent is not null && (StartNanoseconds < parent.StartNanoseconds
 			|| (parent.EndNanoseconds is ulong parentEnd && StartNanoseconds > parentEnd))) {
-			error = "A nested Matroska chapter starts outside its parent (RFC 9559 section 20.2.3)";
+			error = name + " starts outside its parent (RFC 9559 section 20.2.3)";
 			return false;
 		}
 
+		// Nested atoms kept as bytes past the depth limit still make this a parent.
 		var nested = MatroskaChapters.KeptHas (_kept, MatroskaIds.ChapterAtom);
 		if (depth < MatroskaChapters.MaxDepth) {
-			foreach (var chapter in _chapters) {
-				if (chapter is null)
+			for (var i = 0; i < _chapters.Count; i++) {
+				if (_chapters[i] is not { } chapter)
 					continue;
 				nested = true;
-				if (!chapter.TryValidate (ordered, this, depth + 1, out error))
+				var childPath = path + "." + (i + 1).ToString (System.Globalization.CultureInfo.InvariantCulture);
+				if (!chapter.TryValidate (ordered, all, this, changed, childPath, depth + 1, out error))
 					return false;
 			}
 		}
 
-		if (ordered && !nested && EndNanoseconds is null) {
-			error = "A chapter in an ordered Matroska edition needs an end (RFC 9559 section 20.2.4)";
+		if (changed && ordered && !nested && EndNanoseconds is null) {
+			error = name + " is in an ordered edition and needs an end (RFC 9559 section 20.2.4)";
 			return false;
 		}
 
@@ -787,6 +943,11 @@ public sealed class MatroskaChapterDisplay
 
 	/// <summary>Gets the <c>ChapCountry</c> values.</summary>
 	public IList<string> Countries => _countries;
+
+	/// <summary>Gets the display's values as one string, to tell an edit from a no-op.</summary>
+	internal string State =>
+		Text + "\u0002" + string.Join ("\u0003", _languages) + "\u0002" + string.Join ("\u0003", _languagesBcp47)
+		+ "\u0002" + string.Join ("\u0003", _countries);
 
 	internal void Write (ChapterWriter writer, bool isWebM)
 	{
@@ -848,24 +1009,22 @@ public sealed class MatroskaChapterDisplay
 
 /// <summary>
 /// Writes chapter elements in two passes over the same model: one that only measures each master's
-/// payload, then one that writes into an exactly sized buffer or a hash. No level is copied into its
+/// payload, then one that writes into an exactly sized buffer. No level is copied into its
 /// parent. Sizes use the same minimal widths as <see cref="EbmlWriter"/>.
 /// </summary>
 internal sealed class ChapterWriter
 {
 	readonly List<long> _sizes;
 	readonly Stack<(int Index, long Start)> _open = new ();
-	readonly IncrementalHash? _hash;
 	readonly byte[] _scratch = new byte[16];
 	readonly bool _measuring;
 	int _next;
 
-	ChapterWriter (List<long> sizes, bool measuring, byte[]? buffer, IncrementalHash? hash)
+	ChapterWriter (List<long> sizes, bool measuring, byte[]? buffer)
 	{
 		_sizes = sizes;
 		_measuring = measuring;
 		Buffer = buffer;
-		_hash = hash;
 	}
 
 	/// <summary>Gets the written bytes after a buffer pass.</summary>
@@ -874,13 +1033,10 @@ internal sealed class ChapterWriter
 	/// <summary>Gets the bytes written or measured so far.</summary>
 	public long Position { get; private set; }
 
-	public static ChapterWriter Measure () => new (new List<long> (), true, null, null);
+	public static ChapterWriter Measure () => new (new List<long> (), true, null);
 
 	public static ChapterWriter ToBuffer (ChapterWriter measured) =>
-		new (measured._sizes, false, new byte[measured.Position], null);
-
-	public static ChapterWriter ToHash (ChapterWriter measured, IncrementalHash hash) =>
-		new (measured._sizes, false, null, hash);
+		new (measured._sizes, false, new byte[measured.Position]);
 
 	public void Begin (ulong id)
 	{
@@ -926,25 +1082,9 @@ internal sealed class ChapterWriter
 
 	public void Add (ReadOnlySpan<byte> bytes)
 	{
-		if (!_measuring) {
-			if (Buffer is not null)
-				bytes.CopyTo (Buffer.AsSpan ((int)Position));
-			else if (_hash is not null)
-				Hash (bytes);
-		}
-
+		if (!_measuring && Buffer is not null)
+			bytes.CopyTo (Buffer.AsSpan ((int)Position));
 		Position += bytes.Length;
-	}
-
-	void Hash (ReadOnlySpan<byte> bytes)
-	{
-		// IncrementalHash on netstandard2.0 takes arrays, so large spans go through in chunks.
-		var chunk = bytes.Length <= _scratch.Length ? _scratch : new byte[Math.Min (bytes.Length, 81_920)];
-		for (var offset = 0; offset < bytes.Length; offset += chunk.Length) {
-			var length = Math.Min (chunk.Length, bytes.Length - offset);
-			bytes.Slice (offset, length).CopyTo (chunk);
-			_hash!.AppendData (chunk, 0, length);
-		}
 	}
 
 	void WriteId (ulong id)
