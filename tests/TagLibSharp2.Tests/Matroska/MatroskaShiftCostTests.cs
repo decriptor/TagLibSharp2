@@ -104,6 +104,43 @@ public partial class MatroskaFileTests
 		Assert.AreEqual ("Wrap", MatroskaFile.Read (bytes).File!.Tag.Title);
 	}
 
+	[TestMethod]
+	public void TryGrow_CascadingSeekPositions_GoWideAndEverySeekLands ()
+	{
+		// Twelve SeekHeads, each with five Seeks for one empty Chapters element. Target k sits at
+		// 0xFFFF - 5k with its SeekPositions in two octets. The Tracks octet pushes target 0 past two
+		// octets; its five Seeks grow by five, which pushes target 1 past, and so on. After the
+		// minimal-width rounds every moved SeekPosition is written at eight octets.
+		const int heads = 12;
+		const int targetLength = 5;
+		var target = new byte[] { 0x10, 0x43, 0xA7, 0x70, 0x80 };
+		var tracks = Master (0x1654AE6B, new byte[] { 0xEC, 0x80 });
+		var grown = Master (0x1654AE6B, new byte[] { 0xEC, 0x81, 0x00 });
+		var children = new List<byte[]> { tracks };
+		for (var k = 0; k < heads; k++) {
+			var at = (ulong)(0xFFFF - (targetLength * k));
+			children.Add (Master (MatroskaIds.SeekHead, Concat (Enumerable.Repeat (Seek2 (MatroskaIds.Chapters, at), 5).ToArray ())));
+		}
+
+		var lead = children.Sum (child => child.Length);
+		var firstTarget = 0xFFFF - (targetLength * (heads - 1));
+		children.Add (WideVoid (firstTarget - lead));
+		for (var k = 0; k < heads; k++)
+			children.Add (target);
+		children.Add (Master (MatroskaIds.Cluster, Concat (Element (0xE7, new byte[] { 0 }), Element (0xA3, new byte[] { 0x81, 0, 0, 0x80, 0x55 }))));
+		var original = WideFile (children.ToArray ());
+		Assert.IsTrue (ReadSeeks (original).TrueForAll (seek => IsElementAt (original, seek.Position, MatroskaIds.Chapters)));
+
+		Assert.IsTrue (MatroskaRewrite.TryGrow (original, grown, out var bytes, out var error), error);
+
+		var seeks = ReadSeeks (bytes);
+		Assert.AreEqual (heads * 5, seeks.Count);
+		foreach (var seek in seeks)
+			Assert.IsTrue (IsElementAt (bytes, seek.Position, MatroskaIds.Chapters), FormattableString.Invariant ($"a Seek names {seek.Position}, which is not a Chapters element"));
+		CollectionAssert.AreEqual (Enumerable.Repeat (8, heads * 5).ToList (), SeekPositionWidths (bytes), "the cascade outlasts the minimal-width rounds, so every SeekPosition is eight octets");
+		Assert.IsTrue (EveryCrcMatches (bytes));
+	}
+
 	/// <summary>
 	/// The bytes allocated, values placed and growth entries searched by one TryGrow over
 	/// <paramref name="count"/> cascading Cues.
@@ -165,5 +202,32 @@ public partial class MatroskaFileTests
 		bytes[3] = (byte)(payload >> 8);
 		bytes[4] = (byte)payload;
 		return bytes;
+	}
+
+	/// <summary>The width in octets of every SeekPosition in the Segment's SeekHeads, in file order.</summary>
+	static List<int> SeekPositionWidths (byte[] file)
+	{
+		Assert.IsTrue (TrySegmentBody (file, out var body, out _));
+		var widths = new List<int> ();
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
+			if (element.Id == MatroskaIds.SeekHead) {
+				var seekAt = element.DataOffset;
+				while (seekAt < element.End && EbmlReader.TryRead (body, seekAt, element.End, out var seek)) {
+					var child = seek.DataOffset;
+					while (child < seek.End && EbmlReader.TryRead (body, child, seek.End, out var field)) {
+						if (field.Id == MatroskaIds.SeekPosition)
+							widths.Add ((int)field.DataLength);
+						child = field.End;
+					}
+
+					seekAt = seek.End;
+				}
+			}
+
+			offset = element.End;
+		}
+
+		return widths;
 	}
 }

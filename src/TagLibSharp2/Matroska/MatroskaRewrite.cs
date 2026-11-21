@@ -226,8 +226,10 @@ static class MatroskaRewrite
 	/// never shrinks below its last length (a Void takes the slack), and positions only grow, so the
 	/// lengths only grow. A file can make each widening cause the next; after
 	/// <see cref="WideAfterRounds"/> rounds every moved value is written at eight octets, which no shift
-	/// can outgrow, so the lengths settle in at most two more rounds. Each round costs one pass over the
-	/// rendered pieces, so the work is linear in their size.
+	/// can outgrow. A value that first moves in a later round still grows once, so a crafted file can
+	/// keep the lengths growing: the rounds are capped at <see cref="WideAfterRounds"/> + 3, and a file
+	/// that reaches the cap fails here (a move then falls back to its first placement). Each round
+	/// costs one pass over the rendered pieces, so the work is linear in their size.
 	/// </summary>
 	static bool TrySettle (ReadOnlySpan<byte> data, Layout layout, Plan plan, out string error)
 	{
