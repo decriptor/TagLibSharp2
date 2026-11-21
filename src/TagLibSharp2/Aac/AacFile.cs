@@ -311,7 +311,7 @@ public sealed class AacFile : IMediaFile
 		var start = StreamStart (data);
 		if (start >= data.Length)
 			return false;
-		return AacStream.FindStart (data[start..], data.Length - start, SearchBytes (start)) >= 0;
+		return AacStream.FindStart (data[start..], SearchBytes (start)) >= 0;
 	}
 
 	/// <summary>

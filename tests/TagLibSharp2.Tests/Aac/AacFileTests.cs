@@ -252,19 +252,25 @@ public class AacFileTests
 		Assert.IsTrue (stream.BytesRead < 4L * data.Length, $"{stream.BytesRead} bytes read for {data.Length}");
 	}
 
-	sealed class CountingStream (byte[] data) : MemoryStream (data, writable: false)
+	[TestMethod]
+	public void Read_CleanStream_ReadsHeadersAndAllocatesLittle ()
 	{
-		public int Reads { get; private set; }
+		// A clean file decides its start at the first byte and walks 7 bytes a frame. The resync buffer
+		// is never needed, so it is never allocated.
+		var data = Concat (Id3v2Bytes ("Front"), Adts (200, length: 400), Id3v1Bytes ("Back"));
+		using var stream = new CountingStream (data);
+		_ = AacFile.Read (stream, null, null); // JIT warm-up
+		stream.Reset ();
 
-		public long BytesRead { get; private set; }
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		var result = AacFile.Read (stream, null, null);
+		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
 
-		public override int Read (byte[] buffer, int offset, int count)
-		{
-			Reads++;
-			var n = base.Read (buffer, offset, count);
-			BytesRead += n;
-			return n;
-		}
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (200, result.File!.Properties!.FrameCount);
+		var budget = Id3v2Bytes ("Front").Length + 200 * 7 + 128 + 512;
+		Assert.IsTrue (stream.BytesRead < budget, $"read {stream.BytesRead} bytes, budget {budget}");
+		Assert.IsTrue (allocated < 12 * 1024, $"allocated {allocated} bytes");
 	}
 
 	[TestMethod]
