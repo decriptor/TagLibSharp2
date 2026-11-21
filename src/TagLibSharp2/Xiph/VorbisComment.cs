@@ -127,10 +127,14 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Uses ORIGINALDATE field. Falls back to ORIGINALYEAR if ORIGINALDATE is not found.
+	/// Writing back the value already read changes nothing. A new value is written to ORIGINALDATE,
+	/// and an existing ORIGINALYEAR is rewritten to its four-digit year (MusicBrainz Picard keeps
+	/// both: https://picard-docs.musicbrainz.org/en/v3.0/appendices/tag_mapping.html).
+	/// Clearing removes both.
 	/// </remarks>
 	public override string? OriginalReleaseDate {
 		get => GetValue ("ORIGINALDATE") ?? GetValue ("ORIGINALYEAR");
-		set => SetValueRemoving ("ORIGINALDATE", value, "ORIGINALYEAR");
+		set => SetValueWithFallback ("ORIGINALDATE", value, "ORIGINALYEAR", LeadingYear);
 	}
 
 	/// <inheritdoc/>
@@ -269,10 +273,13 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Uses the MOVEMENT field. Falls back to MOVEMENTNAME for compatibility.
+	/// Writing back the value already read changes nothing, so a MOVEMENTNAME that Picard or Mp3tag
+	/// wrote beside a MOVEMENT number is kept. A new value is written to MOVEMENT and to an existing
+	/// MOVEMENTNAME. Clearing removes both.
 	/// </remarks>
 	public override string? Movement {
 		get => GetValue ("MOVEMENT") ?? GetValue ("MOVEMENTNAME");
-		set => SetValueRemoving ("MOVEMENT", value, "MOVEMENTNAME");
+		set => SetValueWithFallback ("MOVEMENT", value, "MOVEMENTNAME", static v => v);
 	}
 
 	/// <inheritdoc/>
@@ -913,13 +920,45 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <summary>
-	/// Writes <paramref name="name"/> and removes <paramref name="alsoRemove"/>,
-	/// so a getter that falls back to the second field cannot revive a stale value.
+	/// Sets a field whose getter falls back to <paramref name="fallback"/>.
+	/// A null or empty value clears the fallback too, so it cannot come back.
+	/// The value the getter already returns is a no-op, so neither field is lost.
+	/// Any other value goes to <paramref name="name"/>, and to <paramref name="fallback"/>
+	/// when that field exists and <paramref name="toFallback"/> gives a value for it.
 	/// </summary>
-	void SetValueRemoving (string name, string? value, string alsoRemove)
+	void SetValueWithFallback (string name, string? value, string fallback, Func<string, string?> toFallback)
 	{
-		RemoveAll (alsoRemove);
+		if (string.IsNullOrEmpty (value)) {
+			RemoveAll (fallback);
+			SetValue (name, value);
+			return;
+		}
+
+		var current = GetValue (name) ?? GetValue (fallback);
+		if (string.Equals (current, value, StringComparison.Ordinal))
+			return;
+
 		SetValue (name, value);
+		if (GetValue (fallback) is null)
+			return;
+
+		var fallbackValue = toFallback (value!);
+		if (fallbackValue is not null)
+			SetValue (fallback, fallbackValue);
+	}
+
+	/// <summary>
+	/// The leading four-digit year of a date such as "1969-09-26", or null when it has none.
+	/// </summary>
+	static string? LeadingYear (string date)
+	{
+		if (date.Length < 4)
+			return null;
+		for (var i = 0; i < 4; i++) {
+			if (date[i] < '0' || date[i] > '9')
+				return null;
+		}
+		return date.Length == 4 || date[4] is < '0' or > '9' ? date.Substring (0, 4) : null;
 	}
 
 	/// <summary>

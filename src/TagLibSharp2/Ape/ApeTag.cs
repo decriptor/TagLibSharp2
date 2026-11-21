@@ -232,9 +232,26 @@ public sealed class ApeTag : Tag
 #pragma warning restore CA1819
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads "Year", then "Date". Writing back the value already read changes nothing.
+	/// A new value is written to "Year" and to an existing "Date". Clearing removes both.
+	/// </remarks>
 	public override string? Year {
 		get => GetValue (Keys.Year) ?? GetValue (Keys.Date);
-		set => SetOrRemove (Keys.Year, value, Keys.Date);
+		set {
+			if (string.IsNullOrEmpty (value)) {
+				_items.Remove (Keys.Year);
+				_items.Remove (Keys.Date);
+				return;
+			}
+
+			if (string.Equals (Year, value, StringComparison.Ordinal))
+				return;
+
+			SetValue (Keys.Year, value!);
+			if (_items.ContainsKey (Keys.Date))
+				SetValue (Keys.Date, value!);
+		}
 	}
 
 	/// <inheritdoc/>
