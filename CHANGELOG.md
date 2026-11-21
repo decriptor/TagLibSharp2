@@ -5,6 +5,13 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Ogg Vorbis comment packets that run across pages without the continuation flag, or that end on a cut-off last page, keep their comments and duration (#126). `missing_flag.ogg` from that issue now opens with its title, artist, album, genre, cover and 10.189 s duration. Its framing byte is 0x01: the comments were lost in page reassembly, not at the framing bit.
+- The Vorbis comment framing bit is read as the spec defines it: the low bit of the first byte after the declared comment list ([v-comment.html](https://xiph.org/vorbis/doc/v-comment.html) steps 7-8, Vorbis I spec 5.2.1, bit order per 2.1.4). 0x01, 0x03, 0x81 and 0xFF are accepted, and padding after that byte is ignored. A framing byte of 0x00, any other byte with the low bit clear, or a packet that ends at the comment list is rejected, as in libvorbis and mutagen. All 60 Ogg Vorbis files in the test corpora use 0x01.
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes
