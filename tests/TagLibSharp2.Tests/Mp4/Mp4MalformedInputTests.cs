@@ -333,4 +333,45 @@ public class Mp4MalformedInputTests
 			throw new NotImplementedException ("Mp4File.Parse not yet implemented");
 		});
 	}
+	/// <summary>
+	/// A version 1 mvhd holds a 64-bit duration. With timescale 1 it is past TimeSpan.MaxValue (ISO 14496-12 §8.2.2).
+	/// </summary>
+	static byte[] FileWithHugeMovieDuration ()
+	{
+		var mvhd = new BinaryDataBuilder ();
+		mvhd.AddUInt32BE (0x01000000);
+		mvhd.AddUInt64BE (0);
+		mvhd.AddUInt64BE (0);
+		mvhd.AddUInt32BE (1);
+		mvhd.AddUInt64BE (ulong.MaxValue);
+		mvhd.AddUInt32BE (0x00010000);
+		mvhd.AddUInt16BE (0x0100);
+		mvhd.AddZeros (10 + 36 + 24);
+		mvhd.AddUInt32BE (2);
+
+		var data = Mp4ChapterTestBuilder.Build (new ());
+		var moov = Mp4ChapterTestBuilder.Moov (data);
+		var children = moov.Children
+			.Select (c => c.Type == "mvhd" ? Mp4TestBuilder.CreateBox ("mvhd", mvhd.ToArray ()) : c.Render ().ToArray ())
+			.ToArray ();
+		return [.. Mp4TestBuilder.CreateFtypBox (), .. Mp4TestBuilder.CreateMoovBox (children)];
+	}
+
+	[TestMethod]
+	public void Read_MovieDurationPastTimeSpan_SaturatesInsteadOfThrowing ()
+	{
+		var result = Mp4File.Read (FileWithHugeMovieDuration ());
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (TimeSpan.MaxValue, result.File!.Duration);
+	}
+
+	[TestMethod]
+	public void AudioPropertiesParser_MovieDurationPastTimeSpan_SaturatesInsteadOfThrowing ()
+	{
+		// The mvhd duration no longer throws; the audio track's mdhd duration (10 s) wins as before.
+		var properties = Mp4AudioPropertiesParser.Parse (FileWithHugeMovieDuration ());
+
+		Assert.AreEqual (TimeSpan.FromSeconds (10), properties.Duration);
+	}
 }
