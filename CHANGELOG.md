@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **Changed**: `AiffFile.Tag` is now a get-only `Tag?` view over the ID3 chunk and the native AIFF text chunks (it was a settable `Id3v2Tag?`). Assign or read the ID3 tag through the new `AiffFile.Id3v2Tag` property; code that assigned `AiffFile.Tag` or used ID3-only members on it no longer compiles. `AiffFile.Tag.Render()` throws `NotSupportedException`, as the other combined views do; render the `AiffFile` instead
+- **Changed**: `Id3v2Tag.IsEmpty` is false when the tag holds any frame, including lyrics, ratings, pictures, comments, user text, URLs and private frames. It used to check only the basic fields, so WAV and AIFF saves dropped an ID3 chunk that held only, for example, a composer, a publisher or a BPM
+
 ### Added
 
 - `MatroskaFile.Tracks` lists the first 4096 known-size `TrackEntry` elements as `MatroskaTrack` objects, and `MatroskaFile.IsTrackListTruncated` tells when a file had more. Each track has `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
 - `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry` when the `Void` right after `Tracks` has room, so no element moves; otherwise the save fails and nothing is written. Adding a FlagEnabled (minver 2) also makes the EBML header's `DocTypeVersion` at least 2: a stored lower value is raised, and an empty or missing one is written (RFC 9559 section 7); no Segment Position moves. A track the caller did not set keeps its bytes.
+- `AiffFile.Id3v2Tag`, and `AiffFile.Title`, `Artist`, `Comment` and `Copyright`
 
 ### Fixed
 
@@ -18,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Vorbis comment framing bit is read as the spec defines it: the low bit of the first byte after the declared comment list ([v-comment.html](https://xiph.org/vorbis/doc/v-comment.html) steps 7-8, Vorbis I spec 5.2.1, bit order per 2.1.4). 0x01, 0x03, 0x81 and 0xFF are accepted, and padding after that byte is ignored. A framing byte of 0x00, any other byte with the low bit clear, or a packet that ends at the comment list is rejected, as in libvorbis and mutagen. All 60 Ogg Vorbis files in the test corpora use 0x01.
 - Ogg Opus: OpusTags split across pages without the continuation flag keeps its tags (they were empty). When the last audio page is cut off, `MediaFile.Read` on a stream reports the duration instead of 0, for example `psycho4.opus` (244 s).
 - Matroska: a track with `FlagEnabled` 0 is no longer chosen as the main audio or video track while an enabled track of that type exists (#117).
+- AIFF and AIFF-C files return their native `ANNO`, `COMT` (marker id 0), `NAME`, `AUTH` and `(c) ` text through `Tag` when the ID3 tag has no value for that field (#127). Text is read as Mac OS Roman, or as UTF-8 when the whole value is valid UTF-8 with a multibyte sequence
+- Editing Title, Artist, Comment, Copyright or Performers on an AIFF file writes the value to the ID3 chunk and removes that field's native chunk on save, even when the new value equals the old one. `COMT` notes attached to other markers are kept byte for byte. An unchanged save leaves the native chunks as they are
 
 ## [0.6.0] - 2026-01-05
 
