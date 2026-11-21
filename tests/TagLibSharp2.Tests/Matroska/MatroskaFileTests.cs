@@ -592,6 +592,9 @@ public partial class MatroskaFileTests
 		var emptyTargets = Master (0x63C0, Array.Empty<byte> ());
 		yield return ("ffmpeg mp3 (empty Targets, slash forms)", Tags (Master (0x7373, Concat (emptyTargets,
 			Simple ("PART_NUMBER", "4/12"), Simple ("DISC", "2/3")))), "4/12", "2/3", 4, 12, 2, 3);
+		yield return ("ffmpeg flac (empty Targets, total names)", Tags (Master (0x7373, Concat (emptyTargets,
+			Simple ("PART_NUMBER", "4"), Simple ("TRACKTOTAL", "12"), Simple ("DISC", "2"), Simple ("DISCTOTAL", "3")))),
+			"4", "2", 4, 12, 2, 3);
 		yield return ("no Targets, slash forms", Tags (BareTag (Simple ("PART_NUMBER", "4/12"), Simple ("DISC", "2/3"))),
 			"4/12", "2/3", 4, 12, 2, 3);
 		yield return ("T30 slash + T50 slash", Tags (Tag (30, Simple ("PART_NUMBER", "4/12")), Tag (50, Simple ("PART_NUMBER", "2/3"))),
@@ -696,6 +699,56 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_TrackTotalAndDiscTotalNames_AreTheTotals ()
+	{
+		// ffmpeg copies Vorbis TRACKTOTAL and DISCTOTAL from FLAC into an untargeted Matroska tag.
+		var ffmpeg = MatroskaFile.Read (FileWith (Tags (BareTag (
+			Simple ("PART_NUMBER", "4"), Simple ("TRACKTOTAL", "12"),
+			Simple ("DISC", "2"), Simple ("DISCTOTAL", "3"))))).File!.Tag;
+		Assert.AreEqual (4u, ffmpeg.Track);
+		Assert.AreEqual (12u, ffmpeg.TotalTracks);
+		Assert.AreEqual (2u, ffmpeg.DiscNumber);
+		Assert.AreEqual (3u, ffmpeg.TotalDiscs);
+
+		var aliases = MatroskaFile.Read (FileWith (Tags (Tag (30,
+			Simple ("TOTALTRACKS", "13"), Simple ("TOTALDISCS", "4"))))).File!.Tag;
+		Assert.AreEqual (13u, aliases.TotalTracks);
+		Assert.AreEqual (4u, aliases.TotalDiscs);
+
+		// The spec's TOTAL_PARTS wins over the Vorbis names.
+		var both = MatroskaFile.Read (FileWith (Tags (
+			Tag (30, Simple ("TOTAL_PARTS", "10"), Simple ("TRACKTOTAL", "99")),
+			Tag (50, Simple ("TOTAL_PARTS", "2"), Simple ("DISCTOTAL", "98"))))).File!.Tag;
+		Assert.AreEqual (10u, both.TotalTracks);
+		Assert.AreEqual (2u, both.TotalDiscs);
+	}
+
+	[TestMethod]
+	public void Total_SetOrClear_ReplacesTheTotalNames ()
+	{
+		var original = FileWith (Tags (BareTag (
+			Simple ("PART_NUMBER", "4"), Simple ("TRACKTOTAL", "12"), Simple ("TOTALTRACKS", "12"),
+			Simple ("DISC", "2"), Simple ("DISCTOTAL", "3"), Simple ("TOTALDISCS", "3"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+
+		var set = MatroskaFile.Read (original).File!;
+		set.Tag.TotalTracks = 20;
+		set.Tag.TotalDiscs = 5;
+		var setAgain = SaveAndReread (set, original, out var setBytes);
+		AssertNumbers (setAgain, 4, 20, 2, 5, "set");
+		foreach (var stale in new[] { "TRACKTOTAL", "TOTALTRACKS", "DISCTOTAL", "TOTALDISCS" })
+			Assert.IsFalse (HasTagName (setBytes, stale), "set left " + stale);
+
+		var clearTracks = MatroskaFile.Read (original).File!;
+		clearTracks.Tag.TotalTracks = null;
+		AssertNumbers (SaveAndReread (clearTracks, original, out _), 4, null, 2, 3, "clear tracks");
+
+		var clearDiscs = MatroskaFile.Read (original).File!;
+		clearDiscs.Tag.TotalDiscs = null;
+		AssertNumbers (SaveAndReread (clearDiscs, original, out _), 4, 12, 2, null, "clear discs");
+	}
+
+	[TestMethod]
 	public void DiscNumber_Set_LeavesOneExplicitAlbumPart ()
 	{
 		var original = FileWith (
@@ -733,6 +786,9 @@ public partial class MatroskaFileTests
 	// A TagString element holding exactly this text.
 	static bool HasTagString (byte[] file, string text) =>
 		file.AsSpan ().IndexOf (Element (0x4487, Encoding.UTF8.GetBytes (text))) >= 0;
+
+	static bool HasTagName (byte[] file, string name) =>
+		file.AsSpan ().IndexOf (Element (0x45A3, Encoding.UTF8.GetBytes (name))) >= 0;
 
 	[TestMethod]
 	public void Save_EmptyTargets_StaysEmptyAndOmitsTargetType50 ()
