@@ -34,6 +34,19 @@ internal static class Mp4AtomMapping
 	// Older files store the same text in ©cpy. cprt wins when both are present.
 	public const string CopyrightAlias = "©cpy";
 
+	// QuickTime metadata keys (meta handler "mdta"), without the "com.apple.quicktime." prefix.
+	// https://developer.apple.com/documentation/quicktime-file-format/quicktime_metadata_keys
+	public const string QuickTimeKeyPrefix = "com.apple.quicktime.";
+	public const string QuickTimeTitle = "title";
+	public const string QuickTimeArtist = "artist";
+	public const string QuickTimeAlbum = "album";
+	public const string QuickTimeComment = "comment";
+	public const string QuickTimeYear = "year";
+	public const string QuickTimeDescription = "description";
+	public const string QuickTimePublisher = "publisher";
+	public const string QuickTimeGenre = "genre";
+	public const string QuickTimeCopyright = "copyright";
+
 	// Album artist (not © prefixed)
 	public const string AlbumArtist = "aART";
 

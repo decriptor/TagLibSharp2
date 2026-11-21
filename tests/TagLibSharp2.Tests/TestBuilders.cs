@@ -2661,6 +2661,69 @@ public static class TestBuilders
 		}
 
 		/// <summary>
+		/// Creates an MP4 file whose udta/meta uses the QuickTime "mdta" handler: a keys atom
+		/// names each item, and each ilst child's type is a 1-based index into those keys.
+		/// </summary>
+		/// <param name="keys">Key values, all in the "mdta" namespace.</param>
+		/// <param name="items">ilst children (see <see cref="CreateMdtaItem"/>).</param>
+		public static byte[] CreateWithMdtaIlst (string[] keys, params byte[][] items) =>
+			CreateWithKeyedIlst ("mdta", keys, items);
+
+		/// <summary>
+		/// Creates an MP4 file whose udta/meta has a keys atom and the given handler type.
+		/// </summary>
+		public static byte[] CreateWithKeyedIlst (string handler, string[] keys, params byte[][] items)
+		{
+			var builder = new BinaryDataBuilder ();
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var hdlr = new BinaryDataBuilder ();
+			hdlr.AddUInt32BE (0);
+			hdlr.AddUInt32BE (0);
+			hdlr.AddStringLatin1 (handler);
+			hdlr.AddZeros (12);
+			hdlr.Add ((byte)0);
+
+			var keysContent = new BinaryDataBuilder ();
+			keysContent.AddUInt32BE (0);
+			keysContent.AddUInt32BE ((uint)keys.Length);
+			foreach (var key in keys) {
+				var value = Encoding.UTF8.GetBytes (key);
+				keysContent.AddUInt32BE ((uint)(8 + value.Length));
+				keysContent.AddStringLatin1 ("mdta");
+				keysContent.Add (value);
+			}
+
+			var ilstContent = new BinaryDataBuilder ();
+			foreach (var item in items)
+				ilstContent.Add (item);
+
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateBox ("hdlr", hdlr.ToArray ()));
+			metaContent.Add (CreateBox ("keys", keysContent.ToArray ()));
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+
+			moovContent.Add (CreateBox ("udta", CreateBox ("meta", metaContent.ToArray ())));
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an mdta ilst item: its type is the 1-based key index, and it holds one UTF-8 data atom.
+		/// </summary>
+		public static byte[] CreateMdtaItem (uint keyIndex, string value)
+		{
+			var type = new string ([(char)(keyIndex >> 24), (char)((keyIndex >> 16) & 0xFF), (char)((keyIndex >> 8) & 0xFF), (char)(keyIndex & 0xFF)]);
+			return CreateIlstChild (type, 1, Encoding.UTF8.GetBytes (value));
+		}
+
+		/// <summary>
 		/// Creates an ilst child that holds one data atom.
 		/// </summary>
 		/// <param name="name">4-character atom name.</param>
