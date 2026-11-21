@@ -2,11 +2,11 @@
 
 > Generated: January 2026
 > Last Updated: January 2026 (v0.5.0 release)
-> Status: Production ready - 16 formats read and write tags, polish phase
+> Status: Production ready - 17 formats read and write tags, polish phase
 
 ## Executive Summary
 
-TagLibSharp2 currently supports **16 formats** with read and write. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). Matroska/WebM saves tag values; it does not rewrite attachments or chapters.
+TagLibSharp2 currently supports **17 formats** with read and write. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). Matroska/WebM saves tag values; it does not rewrite attachments or chapters.
 
 ---
 
@@ -242,7 +242,7 @@ These items from the requirements are explicitly not planned:
 |--------|------------------|--------|
 | Format coverage | 15/20 (75%) | 20/20 (100%) |
 | Test coverage | 90.1% ✅ | >90% |
-| Round-trip tests | All 15 formats ✅ | All formats |
+| Round-trip tests | All 17 formats ✅ | All formats |
 | Cross-tagger compat | Unit tests ✅ | 7 major taggers |
 | Edge case handling | Complete ✅ | All documented cases |
 
