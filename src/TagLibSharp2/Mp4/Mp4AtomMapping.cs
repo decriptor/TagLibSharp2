@@ -34,18 +34,38 @@ internal static class Mp4AtomMapping
 	// Older files store the same text in ©cpy. cprt wins when both are present.
 	public const string CopyrightAlias = "©cpy";
 
-	// QuickTime metadata keys (meta handler "mdta"), without the "com.apple.quicktime." prefix.
-	// https://developer.apple.com/documentation/quicktime-file-format/quicktime_metadata_keys
-	public const string QuickTimeKeyPrefix = "com.apple.quicktime.";
-	public const string QuickTimeTitle = "title";
-	public const string QuickTimeArtist = "artist";
-	public const string QuickTimeAlbum = "album";
-	public const string QuickTimeComment = "comment";
-	public const string QuickTimeYear = "year";
-	public const string QuickTimeDescription = "description";
-	public const string QuickTimePublisher = "publisher";
-	public const string QuickTimeGenre = "genre";
-	public const string QuickTimeCopyright = "copyright";
+	// Other names that readers fold into a mapped field. A getter falls back to the alias and a
+	// setter removes it. QuickTime user data atoms:
+	// https://developer.apple.com/documentation/quicktime-file-format/user_data_atoms
+	// 3GPP asset atoms: 3GPP TS 26.244, section 8 (titl, albm, dscp).
+	public const string ComposerAlias = "©com"; // QuickTime "Name of composer"
+	public const string EncoderAlias = "©swr"; // QuickTime "Name and version number of the software"
+	public const string SubtitleAlias = "©st3"; // read as subtitle by ffprobe and ExifTool
+	public const string TitleAlias = "titl"; // 3GPP title
+	public const string AlbumAlias = "albm"; // 3GPP album title
+	public const string DescriptionAlias = "dscp"; // 3GPP description
+
+	static readonly HashSet<string> TagAtoms = new (StringComparer.Ordinal) {
+		Title, Artist, Album, Genre, GenreId3, Year, Comment, Composer, Grouping, Lyrics, Encoder,
+		Copyright, CopyrightAlias, ComposerAlias, EncoderAlias, SubtitleAlias, TitleAlias, AlbumAlias,
+		DescriptionAlias, "aART", "trkn", "disk", "tmpo", "cpil", "pgap", "rtng", "covr",
+		"soal", "soaa", "soar", "soco", "sonm", "©mvn", "©mvi", "©mvc", "©wrk", "shwm",
+		"purl", "egid", "catg", "keyw", "pcst", "©pub", "©enc", "desc", "ldes",
+	};
+
+	static readonly HashSet<string> AliasAtoms = new (StringComparer.Ordinal) {
+		ComposerAlias, EncoderAlias, SubtitleAlias, TitleAlias, AlbumAlias, DescriptionAlias,
+	};
+
+	/// <summary>
+	/// True for an ilst atom type the tag reads into a property (not freeform ----).
+	/// </summary>
+	public static bool IsTagAtom (string atomId) => TagAtoms.Contains (atomId);
+
+	/// <summary>
+	/// True for an alias atom that is read like a text atom although the box parser leaves it unparsed.
+	/// </summary>
+	public static bool IsAliasAtom (string atomId) => AliasAtoms.Contains (atomId);
 
 	// Album artist (not © prefixed)
 	public const string AlbumArtist = "aART";

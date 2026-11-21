@@ -76,6 +76,9 @@ public sealed class Mp4File : IMediaFile
 	/// </summary>
 	public string FileType { get; private set; } = string.Empty;
 
+	// Where the tag was read from. A save writes it back there.
+	Mp4MetaPlacement MetaPlacement { get; init; }
+
 	/// <summary>
 	/// Gets the audio duration from audio properties.
 	/// </summary>
@@ -707,11 +710,12 @@ public sealed class Mp4File : IMediaFile
 		// Extract audio properties from moov/trak/mdia
 		var (properties, audioCodec) = ExtractAudioProperties (moov);
 
-		// Extract iTunes metadata from moov/udta/meta/ilst
-		var tag = ExtractMetadata (moov);
+		// Extract metadata from moov/udta/meta/ilst or moov/meta/ilst
+		var (tag, placement) = ExtractMetadata (moov);
 
 		var file = new Mp4File (tag, properties, audioCodec) {
-			FileType = fileType
+			FileType = fileType,
+			MetaPlacement = placement
 		};
 
 		return Mp4FileReadResult.Success (file, offset);
@@ -980,118 +984,36 @@ public sealed class Mp4File : IMediaFile
 		return length;
 	}
 
-	static Mp4Tag? ExtractMetadata (Mp4Box moov)
+	static (Mp4Tag? Tag, Mp4MetaPlacement Placement) ExtractMetadata (Mp4Box moov)
 	{
-		// Navigate: moov -> udta -> meta -> ilst
-		var udta = moov.FindChild ("udta");
-		if (udta is null)
-			return null;
+		// iTunes and ffmpeg write moov/udta/meta. QuickTime and Apple devices write moov/meta
+		// (https://developer.apple.com/documentation/quicktime-file-format/metadata_atom).
+		// The first one that holds an ilst is the tag; the other is left as it is.
+		var userDataMeta = moov.FindChild ("udta")?.FindChild ("meta");
+		if (userDataMeta is not null && userDataMeta.FindChild ("ilst") is { } userDataList)
+			return (ParseIlst (userDataList, userDataMeta), Mp4MetaPlacement.UserData);
 
-		var meta = udta.FindChild ("meta");
-		if (meta is null)
-			return null;
+		var movieMeta = moov.FindChild ("meta");
+		if (movieMeta is not null && movieMeta.FindChild ("ilst") is { } movieList)
+			return (ParseIlst (movieList, movieMeta), Mp4MetaPlacement.Movie);
 
-		// meta is a FullBox, so children start after version(1) + flags(3) = 4 bytes
-		// We need to re-parse meta's data as children, skipping the first 4 bytes
-		if (meta.Data.Length < 4)
-			return null;
-
-		// Find ilst within meta's children (already parsed by Mp4BoxParser)
-		var ilst = meta.FindChild ("ilst");
-		if (ilst is null)
-			return null;
-
-		return ParseIlst (ilst, ReadQuickTimeKeys (meta));
+		return (null, Mp4MetaPlacement.UserData);
 	}
 
-	/// <summary>
-	/// Reads the keys of a meta whose handler is "mdta". Each ilst item's type is then a 1-based
-	/// index into this list (https://developer.apple.com/documentation/quicktime-file-format/metadata_item_keys_atom).
-	/// Entry i holds the key without the com.apple.quicktime. prefix, or null when it is not an
-	/// "mdta" namespace key. Returns null for any other handler.
-	/// </summary>
-	static string?[]? ReadQuickTimeKeys (Mp4Box meta)
-	{
-		var hdlr = meta.FindChild ("hdlr");
-		var keys = meta.FindChild ("keys");
-		if (hdlr is null || keys is null || hdlr.Data.Length < 12 || !hdlr.Data.Span.Slice (8, 4).SequenceEqual ("mdta"u8))
-			return null;
-
-		// keys: version and flags (4), entry_count (4), then key_size (4) + key_namespace (4) + key_value.
-		var span = keys.Data.Span;
-		if (span.Length < 8)
-			return null;
-
-		var count = BinaryPrimitives.ReadUInt32BigEndian (span.Slice (4, 4));
-		var names = new List<string?> ();
-		var offset = 8;
-		while (names.Count < count && offset + 8 <= span.Length) {
-			var size = BinaryPrimitives.ReadUInt32BigEndian (span.Slice (offset, 4));
-			if (size < 8 || size > span.Length - offset)
-				break;
-
-			var value = span.Slice (offset + 8, (int)size - 8);
-			names.Add (span.Slice (offset + 4, 4).SequenceEqual ("mdta"u8) ? QuickTimeKeyName (value) : null);
-			offset += (int)size;
-		}
-
-		return [.. names];
-	}
-
-	static string QuickTimeKeyName (ReadOnlySpan<byte> value)
-	{
-		var key = System.Text.Encoding.UTF8.GetString (value.ToArray ());
-		return key.StartsWith (Mp4AtomMapping.QuickTimeKeyPrefix, StringComparison.Ordinal)
-			? key.Substring (Mp4AtomMapping.QuickTimeKeyPrefix.Length)
-			: key;
-	}
-
-	static bool IsMappedQuickTimeKey (string key) => key is
-		Mp4AtomMapping.QuickTimeTitle or Mp4AtomMapping.QuickTimeArtist or Mp4AtomMapping.QuickTimeAlbum or
-		Mp4AtomMapping.QuickTimeComment or Mp4AtomMapping.QuickTimeYear or Mp4AtomMapping.QuickTimeDescription or
-		Mp4AtomMapping.QuickTimePublisher or Mp4AtomMapping.QuickTimeGenre or Mp4AtomMapping.QuickTimeCopyright;
-
-	static string? QuickTimeKeyOf (Mp4Box item, string?[]? keys)
-	{
-		if (keys is null || item.Type.Length != 4)
-			return null;
-
-		var index = ((uint)item.Type[0] << 24) | ((uint)item.Type[1] << 16) | ((uint)item.Type[2] << 8) | item.Type[3];
-		if (index == 0 || index > keys.Length)
-			return null;
-
-		var key = keys[index - 1];
-		return key is not null && IsMappedQuickTimeKey (key) ? key : null;
-	}
-
-	static string? FirstText (Mp4Box item)
-	{
-		foreach (var child in Mp4BoxParser.ParseChildren (item.Data.Span)) {
-			if (child.Type != "data" || child.Data.Length < 8)
-				continue;
-
-			var atom = Mp4DataAtom.Parse (child.Data.Span);
-			if (atom.TypeIndicator == Mp4AtomMapping.TypeUtf8)
-				return atom.ToUtf8String ();
-		}
-
-		return null;
-	}
-
-	static Mp4Tag ParseIlst (Mp4Box ilst, string?[]? quickTimeKeys)
+	static Mp4Tag ParseIlst (Mp4Box ilst, Mp4Box meta)
 	{
 		var tag = new Mp4Tag ();
+		var keys = Mp4QuickTimeKeys.Read (meta);
+		if (keys is not null)
+			tag.UseQuickTimeKeys (keys);
 
 		// Each child of ilst is a metadata atom (©nam, ©ART, etc.)
 		foreach (var atomBox in ilst.Children) {
 			var atomId = atomBox.Type;
 
-			// In an "mdta" meta, a numeric type names a key; keep the item and let its property read it.
-			var quickTimeKey = QuickTimeKeyOf (atomBox, quickTimeKeys);
-			if (quickTimeKey is not null) {
-				tag.AddQuickTimeItem (quickTimeKey, atomBox.Render (), FirstText (atomBox));
+			// In an "mdta" meta, an item's type is the index of its key.
+			if (keys is not null && ParseKeyedItem (atomBox, keys, tag))
 				continue;
-			}
 
 			// Handle cover art specially
 			if (atomId == Mp4AtomMapping.CoverArt) {
@@ -1106,16 +1028,9 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
-			// Standard atoms contain data sub-atoms.
-			// Names outside ContainerBoxes have no children, so the original box is kept.
-			var dataAtoms = new List<Mp4DataAtom> ();
-			foreach (var child in atomBox.Children) {
-				if (child.Type == "data" && child.Data.Length >= 8) {
-					var dataAtom = Mp4DataAtom.Parse (child.Data.Span);
-					dataAtoms.Add (dataAtom);
-				}
-			}
-
+			// Standard atoms contain data sub-atoms. Names outside ContainerBoxes have no parsed
+			// children: an alias atom is read from its payload, and anything else is kept as it is.
+			var dataAtoms = Mp4AtomMapping.IsAliasAtom (atomId) ? DataAtomsIn (atomBox.Data.Span) : DataAtomsOf (atomBox);
 			if (dataAtoms.Count > 0)
 				tag.SetAtoms (atomId, dataAtoms);
 			else
@@ -1123,6 +1038,65 @@ public sealed class Mp4File : IMediaFile
 		}
 
 		return tag;
+	}
+
+	// Returns false when the item's type is not a key index the tag maps, so the caller treats it
+	// as an iTunes atom or keeps it. An item that maps but holds no value is kept as it is.
+	static bool ParseKeyedItem (Mp4Box item, Mp4QuickTimeKeys keys, Mp4Tag tag)
+	{
+		if (item.Type.Length != 4)
+			return false;
+
+		var type = ((uint)item.Type[0] << 24) | ((uint)item.Type[1] << 16) | ((uint)item.Type[2] << 8) | item.Type[3];
+		if (!keys.TryResolve (type, out var field))
+			return false;
+
+		var dataAtoms = DataAtomsIn (item.Data.Span);
+		if (dataAtoms.Count == 0) {
+			tag.PreserveIlstAtom (item.Render ());
+			return true;
+		}
+
+		switch (field.Kind) {
+			case Mp4KeyedKind.Artwork: {
+					var pictures = new Mp4Picture[dataAtoms.Count];
+					for (var i = 0; i < pictures.Length; i++)
+						pictures[i] = Mp4Picture.FromDataAtom (dataAtoms[i]);
+					tag.SetKeyedPictures (pictures, type);
+					break;
+				}
+			case Mp4KeyedKind.Freeform:
+				tag.SetKeyedFreeform (field.Mean!, field.Name!, dataAtoms, type);
+				break;
+			default:
+				if (!tag.SetKeyedAtoms (field.AtomId, dataAtoms, type, keys.IsTextKey (type)))
+					tag.PreserveIlstAtom (item.Render ());
+				break;
+		}
+
+		return true;
+	}
+
+	static List<Mp4DataAtom> DataAtomsOf (Mp4Box box)
+	{
+		var dataAtoms = new List<Mp4DataAtom> ();
+		foreach (var child in box.Children) {
+			if (child.Type == "data" && child.Data.Length >= 8)
+				dataAtoms.Add (Mp4DataAtom.Parse (child.Data.Span));
+		}
+
+		return dataAtoms;
+	}
+
+	static List<Mp4DataAtom> DataAtomsIn (ReadOnlySpan<byte> payload)
+	{
+		var dataAtoms = new List<Mp4DataAtom> ();
+		foreach (var child in Mp4BoxParser.ParseChildren (payload)) {
+			if (child.Type == "data" && child.Data.Length >= 8)
+				dataAtoms.Add (Mp4DataAtom.Parse (child.Data.Span));
+		}
+
+		return dataAtoms;
 	}
 
 	static bool ParseCoverArt (Mp4Box covrBox, Mp4Tag tag)
@@ -2083,11 +2057,30 @@ public sealed class Mp4File : IMediaFile
 	{
 		using var moovContent = new BinaryDataBuilder ();
 
-		var newUdta = BuildUdtaBox (originalMoov);
+		// A tag read from moov/meta is written back there, and udta is copied as it was.
+		var inMovieMeta = MetaPlacement == Mp4MetaPlacement.Movie;
+		var newUdta = inMovieMeta ? BinaryData.Empty : BuildUdtaBox (originalMoov);
+		var replacedMeta = false;
 		var emittedChild = false;
 		foreach (var child in originalMoov.Children) {
-			if (child.Type == "udta")
+			if (child.Type == "udta") {
+				if (inMovieMeta) {
+					moovContent.Add (WrapBox ("udta", child.Data));
+					emittedChild = true;
+				}
 				continue;
+			}
+
+			if (inMovieMeta && !replacedMeta && child.Type == "meta") {
+				replacedMeta = true;
+				var (ilst, keys) = RenderTag (child);
+				var rebuilt = RebuildMeta (child, ilst, keys);
+				if (!rebuilt.IsEmpty)
+					moovContent.Add (rebuilt);
+				emittedChild = true;
+				continue;
+			}
+
 			moovContent.Add (child.Render ());
 			emittedChild = true;
 		}
@@ -2183,18 +2176,34 @@ public sealed class Mp4File : IMediaFile
 	/// </summary>
 	BinaryData BuildUdtaBox (Mp4Box originalMoov)
 	{
-		var ilstContent = Tag is null ? BinaryData.Empty : Tag.Render ();
 		var original = originalMoov.FindChild ("udta");
+		var (ilstContent, keysContent) = RenderTag (original?.FindChild ("meta"));
 		if (original is null) {
 			if (ilstContent.IsEmpty)
 				return BinaryData.Empty;
 			return WrapBox ("udta", FreshMeta (ilstContent));
 		}
 
-		return RebuildUdta (original, ilstContent);
+		return RebuildUdta (original, ilstContent, keysContent);
 	}
 
-	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent)
+	/// <summary>
+	/// Renders the ilst, and the keys when the target meta's handler is "mdta". A tag that was not
+	/// read from such a meta takes its keys, so no iTunes atom is written into it.
+	/// </summary>
+	(BinaryData Ilst, BinaryData? Keys) RenderTag (Mp4Box? targetMeta)
+	{
+		if (Tag is null)
+			return (BinaryData.Empty, null);
+
+		if (Tag.QuickTimeKeys is null && targetMeta is not null && Mp4QuickTimeKeys.Read (targetMeta) is { } keys)
+			Tag.UseQuickTimeKeys (keys);
+
+		var ilst = Tag.Render ();
+		return (ilst, Tag.QuickTimeKeys?.Render ());
+	}
+
+	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent)
 	{
 		using var content = new BinaryDataBuilder ();
 		var payload = udta.Data.Span;
@@ -2222,7 +2231,7 @@ public sealed class Mp4File : IMediaFile
 			if (isMeta && !replacedMeta) {
 				var meta = udta.FindChild ("meta");
 				if (meta is not null) {
-					var rebuilt = RebuildMeta (meta, ilstContent);
+					var rebuilt = RebuildMeta (meta, ilstContent, keysContent);
 					if (!rebuilt.IsEmpty)
 						content.Add (rebuilt);
 				} else if (!ilstContent.IsEmpty) {
@@ -2250,14 +2259,28 @@ public sealed class Mp4File : IMediaFile
 		return WrapBox ("udta", content.ToBinaryData ());
 	}
 
-	static BinaryData RebuildMeta (Mp4Box meta, BinaryData ilstContent)
+	static BinaryData RebuildMeta (Mp4Box meta, BinaryData ilstContent, BinaryData? keysContent)
 	{
 		var children = new List<Mp4Box> ();
 		var sawHandler = false;
 		var placedList = false;
+		var placedKeys = keysContent is null;
 		foreach (var child in meta.Children) {
 			if (child.Type == "hdlr")
 				sawHandler = true;
+			if (child.Type == "keys" && keysContent is not null) {
+				if (!placedKeys) {
+					children.Add (new Mp4Box ("keys", keysContent.Value));
+					placedKeys = true;
+				}
+				continue;
+			}
+
+			// The keys come before the item list.
+			if (child.Type == "ilst" && !placedKeys) {
+				children.Add (new Mp4Box ("keys", keysContent!.Value));
+				placedKeys = true;
+			}
 			if (child.Type == "ilst") {
 				if (!placedList && !ilstContent.IsEmpty) {
 					children.Add (new Mp4Box ("ilst", ilstContent));
@@ -2271,6 +2294,8 @@ public sealed class Mp4File : IMediaFile
 
 		if (!sawHandler && !ilstContent.IsEmpty)
 			children.Insert (0, HandlerBox ());
+		if (!placedKeys)
+			children.Add (new Mp4Box ("keys", keysContent!.Value));
 		if (!placedList && !ilstContent.IsEmpty)
 			children.Add (new Mp4Box ("ilst", ilstContent));
 		if (children.Count == 0 && meta.UnparsedTail.Length == 0)

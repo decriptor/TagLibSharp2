@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using TagLibSharp2.Core;
 using TagLibSharp2.Mp4;
@@ -31,6 +32,7 @@ public class Mp4PreservationTests
 	[DataRow ("distinct-freeforms")]
 	[DataRow ("invalid-then-valid-freeforms")]
 	[DataRow ("quicktime-items-one-key")]
+	[DataRow ("quicktime-distinct-unmapped-keys")]
 	public void Read_ManyIlstChildren_ScalesLinearly (string shape)
 	{
 		const int small = 2000;
@@ -480,14 +482,14 @@ public class Mp4PreservationTests
 
 	static byte[] ShapeFile (string shape, int count)
 	{
-		if (shape != "quicktime-items-one-key")
+		if (!shape.StartsWith ("quicktime-", StringComparison.Ordinal))
 			return TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, count));
 
-		// Every key is "title", so every item belongs to one property.
+		// One key "title" for every item (one property), or a distinct unmapped key per item.
 		var keys = new string[count];
 		var items = new byte[count][];
 		for (var i = 0; i < count; i++) {
-			keys[i] = "title";
+			keys[i] = shape == "quicktime-items-one-key" ? "title" : "k" + i.ToString (CultureInfo.InvariantCulture);
 			items[i] = TestBuilders.Mp4.CreateMdtaItem ((uint)i + 1, "T");
 		}
 
