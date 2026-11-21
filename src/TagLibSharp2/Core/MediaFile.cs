@@ -311,10 +311,11 @@ public static class MediaFile
 	}
 
 	// WAVE stays on the short peek. Legacy WavPack is decided by seeking chunk headers,
-	// not by assuming the data chunk follows fmt.
+	// not by assuming the data chunk follows fmt. The extension is not consulted here: a file
+	// whose magic the short peek misses gets the long peek, whatever its name says.
 	static int PeekLength (ReadOnlySpan<byte> peek, string? pathHint)
 	{
-		if (IsOgg (peek) || (!IsRiffWave (peek) && DetectFormat (peek, pathHint) == MediaFormat.Unknown))
+		if (IsOgg (peek) || (!IsRiffWave (peek) && DetectFormat (peek) == MediaFormat.Unknown))
 			return LongPeekBytes;
 
 		return peek.Length;
