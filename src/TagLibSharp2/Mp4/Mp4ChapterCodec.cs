@@ -42,6 +42,12 @@ internal static class Mp4ChapterCodec
 	internal const int MaxTrackChapters = 65_535;
 
 	const int SampleReadLimit = 2 + MaxSampleTextBytes;
+
+	/// <summary>The save failure for a chapter change on a fragmented movie that has a chapter track.</summary>
+	internal const string FragmentedChapterTrackError =
+		"Cannot write MP4 chapters: the file is a fragmented movie whose chapter track has samples in movie "
+		+ "fragments (moof/traf). Rewriting that track in moov would leave the fragment samples as a second "
+		+ "chapter list. Write the file unfragmented first.";
 	const long TicksPerSecond = TimeSpan.TicksPerSecond;
 	const uint DefaultTimescale = 1000;
 
@@ -138,7 +144,11 @@ internal static class Mp4ChapterCodec
 	/// Every text track a <c>tref</c>/<c>chap</c> reference names, in reference order. A track_ID names the first
 	/// trak that has it. Apple files can name a second text track (chapter URLs) next to the titles.
 	/// </summary>
-	public static List<ChapterTrack> FindChapterTracks (Mp4Box moov)
+	/// <param name="moov">The movie box.</param>
+	/// <param name="textOnly">False to also return non-text chapter media (Apple chapter image tracks). A track
+	/// that holds a chap reference of its own, or a sound track, is a presentation track and is never returned
+	/// in that case.</param>
+	public static List<ChapterTrack> FindChapterTracks (Mp4Box moov, bool textOnly = true)
 	{
 		var traks = new List<(Mp4Box Trak, uint Id)> ();
 		var byId = new Dictionary<uint, Mp4Box> ();
@@ -151,6 +161,13 @@ internal static class Mp4ChapterCodec
 				byId[id] = child;
 		}
 
+		var holders = new HashSet<uint> ();
+		foreach (var (trak, id) in traks) {
+			var tref = trak.FindChild ("tref");
+			if (tref is not null && ReadChapterReferences (tref.Data.Span).Count > 0)
+				holders.Add (id);
+		}
+
 		var found = new List<ChapterTrack> ();
 		var seen = new HashSet<uint> ();
 		foreach (var (trak, id) in traks) {
@@ -159,7 +176,13 @@ internal static class Mp4ChapterCodec
 				continue;
 
 			foreach (var reference in ReadChapterReferences (tref.Data.Span)) {
-				if (reference != id && byId.TryGetValue (reference, out var target) && IsTextHandler (target) && seen.Add (reference))
+				if (reference == id || !byId.TryGetValue (reference, out var target))
+					continue;
+
+				var media = textOnly
+					? IsTextHandler (target)
+					: !holders.Contains (reference) && HandlerType (target) != "soun";
+				if (media && seen.Add (reference))
 					found.Add (new ChapterTrack (target, reference));
 			}
 		}
@@ -168,38 +191,62 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// Locates the chapter track's samples. Null when its sample table cannot be read.
+	/// Locates the chapter track's samples: those in its moov sample table, then those in movie fragments
+	/// (ISO 14496-12 §8.8.1: fragments add samples to a track that moov declares). Null when there are none.
 	/// Each sample's read length stops after the 16-bit length and 65,535 text bytes.
 	/// Total read length stops at <paramref name="readBudget"/>, so overlapping samples cannot read more than the file.
 	/// </summary>
-	public static TrackLayout? ReadLayout (ChapterTrack track, uint movieTimescale, long readBudget)
+	/// <param name="track">The chapter track.</param>
+	/// <param name="movieTimescale">The mvhd timescale, for the edit list.</param>
+	/// <param name="readBudget">The most sample bytes to read in total.</param>
+	/// <param name="fragments">Top-level moof boxes in file order, with their file offsets.</param>
+	/// <param name="moov">The moov that holds mvex/trex defaults for fragments.</param>
+	public static TrackLayout? ReadLayout (
+		ChapterTrack track,
+		uint movieTimescale,
+		long readBudget,
+		IReadOnlyList<(Mp4Box Moof, long Start)>? fragments = null,
+		Mp4Box? moov = null)
 	{
 		var mdia = track.Trak.FindChild ("mdia");
 		var timescale = ReadMediaTimescale (mdia);
-		var stbl = mdia?.FindChild ("minf")?.FindChild ("stbl");
-		if (timescale == 0 || stbl is null)
+		if (timescale == 0)
 			return null;
 
+		var samples = new List<TextSample> ();
+		ulong time = 0;
+		var budget = readBudget;
+		var stbl = mdia?.FindChild ("minf")?.FindChild ("stbl");
+		var complete = stbl is not null && AppendTableSamples (stbl, samples, ref time, ref budget);
+		if ((complete || stbl is null) && fragments is not null && fragments.Count > 0 && moov is not null)
+			AppendFragmentSamples (track.Id, fragments, moov, samples, ref time, ref budget, null);
+
+		return samples.Count == 0 ? null : new TrackLayout (timescale, samples, ReadEdit (track.Trak, movieTimescale));
+	}
+
+	/// <summary>
+	/// Adds the samples of a moov sample table (§8.7.3 to §8.7.5, §8.6.1.2). False when the read budget or the
+	/// sample cap stopped it.
+	/// </summary>
+	static bool AppendTableSamples (Mp4Box stbl, List<TextSample> samples, ref ulong time, ref long budget)
+	{
 		var stsz = stbl.FindChild ("stsz");
 		var stsc = stbl.FindChild ("stsc");
 		var stts = stbl.FindChild ("stts");
 		var stco = stbl.FindChild ("stco");
 		var co64 = stbl.FindChild ("co64");
 		if (stsz is null || stsc is null || (stco is null && co64 is null))
-			return null;
+			return true;
 
 		var sizes = ReadSampleSizes (stsz.Data.Span);
 		var chunks = co64 is not null ? ReadChunkOffsets (co64.Data.Span, 8) : ReadChunkOffsets (stco!.Data.Span, 4);
 		var rows = ReadStscRows (stsc.Data.Span);
 		var deltas = stts is null ? new List<SttsEntry> () : ReadTimeToSample (stts.Data.Span);
 
-		var samples = new List<TextSample> (Math.Min (sizes.Count, 64));
 		var row = 0;
 		var sampleIndex = 0;
 		var deltaIndex = 0;
 		var deltaLeft = deltas.Count > 0 ? deltas[0].Count : 0u;
-		ulong time = 0;
-		long budget = readBudget;
 		for (var chunk = 0; chunk < chunks.Count && sampleIndex < sizes.Count; chunk++) {
 			var chunkNumber = (uint)chunk + 1;
 			while (row + 1 < rows.Count && rows[row + 1].FirstChunk <= chunkNumber)
@@ -208,12 +255,6 @@ internal static class Mp4ChapterCodec
 
 			var offset = chunks[chunk];
 			for (var k = 0u; k < perChunk && sampleIndex < sizes.Count; k++) {
-				var size = sizes[sampleIndex];
-				var readLength = (int)Math.Min (size, (uint)SampleReadLimit);
-				if (readLength > budget)
-					return samples.Count == 0 ? null : new TrackLayout (timescale, samples, ReadEdit (track.Trak, movieTimescale));
-				budget -= readLength;
-
 				while (deltaLeft == 0 && deltaIndex + 1 < deltas.Count) {
 					deltaIndex++;
 					deltaLeft = deltas[deltaIndex].Count;
@@ -223,17 +264,245 @@ internal static class Mp4ChapterCodec
 				if (deltaLeft > 0)
 					deltaLeft--;
 
-				samples.Add (new TextSample (offset, size, readLength, time, delta));
+				var size = sizes[sampleIndex];
+				if (!TryAdd (samples, offset, size, time, delta, ref budget))
+					return false;
 				time += delta;
 				offset += size;
 				sampleIndex++;
 			}
 		}
 
-		if (samples.Count == 0)
-			return null;
+		return true;
+	}
 
-		return new TrackLayout (timescale, samples, ReadEdit (track.Trak, movieTimescale));
+	static bool TryAdd (List<TextSample> samples, long offset, uint size, ulong start, ulong duration, ref long budget)
+	{
+		var readLength = (int)Math.Min (size, (uint)SampleReadLimit);
+		if (readLength > budget || samples.Count >= MaxTrackChapters)
+			return false;
+
+		budget -= readLength;
+		samples.Add (new TextSample (offset, size, readLength, start, duration));
+		return true;
+	}
+
+	/// <summary>
+	/// trex defaults for <paramref name="trackId"/> (§8.8.3): sample duration, size, in that order after
+	/// track_ID and sample_description_index.
+	/// </summary>
+	static (uint Duration, uint Size) ReadTrex (Mp4Box moov, uint trackId)
+	{
+		var mvex = moov.FindChild ("mvex");
+		if (mvex is null)
+			return (0, 0);
+
+		foreach (var child in mvex.Children) {
+			var body = child.Data.Span;
+			if (child.Type != "trex" || body.Length < 20 || BinaryPrimitives.ReadUInt32BigEndian (body.Slice (4)) != trackId)
+				continue;
+
+			return (BinaryPrimitives.ReadUInt32BigEndian (body.Slice (12)), BinaryPrimitives.ReadUInt32BigEndian (body.Slice (16)));
+		}
+
+		return (0, 0);
+	}
+
+	/// <summary>
+	/// Adds the track's samples from every traf in <paramref name="fragments"/>.
+	/// </summary>
+	/// <remarks>
+	/// tfhd (§8.8.7): flag 0x1 gives base_data_offset, 0x8 and 0x10 default duration and size, 0x020000 makes the
+	/// moof the base. Without either base flag, the first traf of a moof starts at the moof and each later traf at
+	/// the end of the previous traf's data, so every traf's data length is measured. tfdt (§8.8.12) sets the
+	/// decode time. trun (§8.8.8): flag 0x1 data_offset from the base, 0x4 first_sample_flags, then per sample
+	/// 0x100 duration, 0x200 size, 0x400 flags, 0x800 composition offset. A run without data_offset continues
+	/// where the previous run of the traf ended. A run's sample count is bounded by its bytes when it has
+	/// per-sample fields; otherwise its length is count times the default size, with no loop.
+	/// </remarks>
+	static void AppendFragmentSamples (
+		uint trackId,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		Mp4Box moov,
+		List<TextSample> samples,
+		ref ulong time,
+		ref long budget,
+		List<(long Start, long End)>? runs)
+	{
+		var defaults = new Dictionary<uint, (uint Duration, uint Size)> ();
+		foreach (var (moof, moofStart) in fragments) {
+			var previousEnd = moofStart;
+			var firstTraf = true;
+			foreach (var traf in moof.Children) {
+				if (traf.Type != "traf")
+					continue;
+
+				var tfhd = Payload (traf.FindChild ("tfhd"));
+				if (tfhd.Length < 8)
+					return;
+
+				var flags = BinaryPrimitives.ReadUInt32BigEndian (tfhd) & 0xFFFFFF;
+				var id = BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4));
+				var pos = 8;
+				long baseOffset = firstTraf || (flags & 0x020000) != 0 ? moofStart : previousEnd;
+				if ((flags & 0x1) != 0) {
+					if (!TryRead64 (tfhd, ref pos, out var explicitBase))
+						return;
+					baseOffset = explicitBase > long.MaxValue / 2 ? long.MaxValue / 2 : (long)explicitBase;
+				}
+
+				if ((flags & 0x2) != 0)
+					pos += 4;
+				if (!defaults.TryGetValue (id, out var trex)) {
+					trex = ReadTrex (moov, id);
+					defaults[id] = trex;
+				}
+
+				var defaultDuration = trex.Duration;
+				var defaultSize = trex.Size;
+				if ((flags & 0x8) != 0 && !TryRead32 (tfhd, ref pos, out defaultDuration))
+					return;
+				if ((flags & 0x10) != 0 && !TryRead32 (tfhd, ref pos, out defaultSize))
+					return;
+
+				var mine = id == trackId;
+				if (mine) {
+					var tfdt = Payload (traf.FindChild ("tfdt"));
+					if (tfdt.Length >= 8)
+						time = tfdt[0] == 1 && tfdt.Length >= 12 ? BinaryPrimitives.ReadUInt64BigEndian (tfdt.Slice (4)) : BinaryPrimitives.ReadUInt32BigEndian (tfdt.Slice (4));
+				}
+
+				var runEnd = baseOffset;
+				foreach (var trun in traf.Children) {
+					if (trun.Type != "trun")
+						continue;
+					var runStart = runEnd;
+					var ok = ReadRun (trun.Data.Span, baseOffset, ref runStart, ref runEnd, defaultDuration, defaultSize, mine, samples, ref time, ref budget);
+					runs?.Add ((runStart, runEnd));
+					if (!ok)
+						return;
+				}
+
+				previousEnd = runEnd;
+				firstTraf = false;
+			}
+		}
+	}
+
+	static bool ReadRun (
+		ReadOnlySpan<byte> trun,
+		long baseOffset,
+		ref long start,
+		ref long position,
+		uint defaultDuration,
+		uint defaultSize,
+		bool mine,
+		List<TextSample> samples,
+		ref ulong time,
+		ref long budget)
+	{
+		if (trun.Length < 8)
+			return false;
+
+		var flags = BinaryPrimitives.ReadUInt32BigEndian (trun) & 0xFFFFFF;
+		var count = BinaryPrimitives.ReadUInt32BigEndian (trun.Slice (4));
+		var pos = 8;
+		if ((flags & 0x1) != 0) {
+			if (trun.Length - pos < 4)
+				return false;
+			position = baseOffset + BinaryPrimitives.ReadInt32BigEndian (trun.Slice (pos));
+			pos += 4;
+		}
+
+		start = position;
+
+		if ((flags & 0x4) != 0)
+			pos += 4;
+
+		var hasDuration = (flags & 0x100) != 0;
+		var hasSize = (flags & 0x200) != 0;
+		var entry = (hasDuration ? 4 : 0) + (hasSize ? 4 : 0) + ((flags & 0x400) != 0 ? 4 : 0) + ((flags & 0x800) != 0 ? 4 : 0);
+		if (entry == 0) {
+			// Every sample takes the defaults: the run's length needs no loop, and only this track's samples
+			// are listed (capped).
+			if (!mine) {
+				var length = (ulong)count * defaultSize;
+				position = length > (ulong)(long.MaxValue / 4) || position > long.MaxValue / 4
+					? long.MaxValue / 2
+					: position + (long)length;
+				return true;
+			}
+		} else if (pos > trun.Length || count > (uint)((trun.Length - pos) / entry)) {
+			return false;
+		}
+
+		for (var i = 0u; i < count; i++) {
+			var duration = defaultDuration;
+			var size = defaultSize;
+			if (entry > 0) {
+				if (hasDuration)
+					duration = BinaryPrimitives.ReadUInt32BigEndian (trun.Slice (pos));
+				if (hasSize)
+					size = BinaryPrimitives.ReadUInt32BigEndian (trun.Slice (pos + (hasDuration ? 4 : 0)));
+				pos += entry;
+			}
+
+			if (mine && !TryAdd (samples, position, size, time, duration, ref budget))
+				return false;
+			if (mine)
+				time += duration;
+			position += size;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// The file ranges every traf run of every track covers (the data offsets of §8.8.7 and §8.8.8).
+	/// </summary>
+	static List<(long Start, long End)> FragmentRuns (IReadOnlyList<(Mp4Box Moof, long Start)> fragments, Mp4Box moov)
+	{
+		var runs = new List<(long Start, long End)> ();
+		ulong time = 0;
+		var budget = 0L;
+		AppendFragmentSamples (0, fragments, moov, [], ref time, ref budget, runs);
+		return runs;
+	}
+
+	/// <summary>
+	/// True when a traf in <paramref name="fragments"/> belongs to one of <paramref name="trackIds"/>.
+	/// </summary>
+	static bool HasFragments (IReadOnlyList<(Mp4Box Moof, long Start)> fragments, HashSet<uint> trackIds)
+	{
+		foreach (var (moof, _) in fragments) {
+			foreach (var traf in moof.Children) {
+				var tfhd = Payload (traf.Type == "traf" ? traf.FindChild ("tfhd") : null);
+				if (tfhd.Length >= 8 && trackIds.Contains (BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4))))
+					return true;
+			}
+		}
+
+		return false;
+	}
+
+	static bool TryRead32 (ReadOnlySpan<byte> data, ref int pos, out uint value)
+	{
+		value = 0;
+		if (data.Length - pos < 4)
+			return false;
+		value = BinaryPrimitives.ReadUInt32BigEndian (data.Slice (pos));
+		pos += 4;
+		return true;
+	}
+
+	static bool TryRead64 (ReadOnlySpan<byte> data, ref int pos, out ulong value)
+	{
+		value = 0;
+		if (data.Length - pos < 8)
+			return false;
+		value = BinaryPrimitives.ReadUInt64BigEndian (data.Slice (pos));
+		pos += 8;
+		return true;
 	}
 
 	/// <summary>
@@ -323,13 +592,17 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// Reads the chapter list from <paramref name="moov"/> and the whole file that contains it.
+	/// Reads the chapter list from <paramref name="moov"/>, its movie fragments, and the whole file that contains them.
 	/// </summary>
-	public static List<Mp4Chapter> Read (Mp4Box moov, ReadOnlySpan<byte> file, TimeSpan duration)
+	public static List<Mp4Chapter> Read (
+		Mp4Box moov,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		ReadOnlySpan<byte> file,
+		TimeSpan duration)
 	{
 		var chpl = ReadChpl (moov);
 		var track = FindChapterTrack (moov);
-		var layout = track is null ? null : ReadLayout (track, ReadMovieTimescale (moov), file.Length);
+		var layout = track is null ? null : ReadLayout (track, ReadMovieTimescale (moov), file.Length, fragments, moov);
 		List<string?>? titles = null;
 		if (layout is not null) {
 			titles = new List<string?> (layout.Samples.Count);
@@ -345,12 +618,16 @@ internal static class Mp4ChapterCodec
 	/// <summary>
 	/// Reads the chapter list from <paramref name="moov"/>, fetching chapter samples from <paramref name="stream"/>.
 	/// </summary>
-	public static List<Mp4Chapter> Read (Mp4Box moov, Stream stream, TimeSpan duration)
+	public static List<Mp4Chapter> Read (
+		Mp4Box moov,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		Stream stream,
+		TimeSpan duration)
 	{
 		var chpl = ReadChpl (moov);
 		var track = FindChapterTrack (moov);
 		var length = stream.Length;
-		var layout = track is null ? null : ReadLayout (track, ReadMovieTimescale (moov), length);
+		var layout = track is null ? null : ReadLayout (track, ReadMovieTimescale (moov), length, fragments, moov);
 		List<string?>? titles = null;
 		if (layout is not null) {
 			titles = new List<string?> (layout.Samples.Count);
@@ -380,35 +657,51 @@ internal static class Mp4ChapterCodec
 	/// <para>
 	/// An existing chapter track is replaced in place with the same track_ID. Without one, a new text track is
 	/// added after the last trak, and every sound and video track gets a <c>chap</c> reference to it.
-	/// An empty list removes chpl, every text track a <c>chap</c> reference names (Apple files can have a
-	/// second one for chapter URLs), and the references to them. Chapter image tracks stay.
+	/// An empty list removes chpl, every track a <c>chap</c> reference names (titles, and Apple chapter URL and
+	/// image tracks), and the references to them.
 	/// </para>
 	/// <para>
 	/// No track is added to a fragmented movie (<c>mvex</c>, §8.8.1, needs a trex per track) or to a moov with
-	/// no trak; chpl alone carries the list there.
+	/// no trak; chpl alone carries the list there. A chapter track with samples in movie fragments is refused
+	/// (<see cref="ChapterPlan.Error"/>): fragments add samples to tracks that moov declares (§8.8.1), so a
+	/// track rebuilt in moov would leave the fragment samples as a second, stale list. Clearing drops the
+	/// removed tracks' trex boxes too (§8.8.3).
 	/// </para>
 	/// <para>
 	/// The new track's single chunk offset is written as 0. <see cref="WriteChunkOffset"/> sets it once the
 	/// position of the sample data is known.
 	/// </para>
 	/// </remarks>
-	public static ChapterPlan Plan (Mp4Box moov, IReadOnlyList<Mp4Chapter> chapters, TimeSpan duration, bool quickTime)
+	public static ChapterPlan Plan (
+		Mp4Box moov,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		IReadOnlyList<Mp4Chapter> chapters,
+		TimeSpan duration,
+		bool quickTime)
 	{
 		var chapterTracks = FindChapterTracks (moov);
 		var existing = chapterTracks.Count > 0 ? chapterTracks[0] : null;
 		var children = new List<Mp4Box> (moov.Children);
 		if (chapters.Count == 0) {
-			// Every chap text track reads as a chapter list, so all of them go. Chapter image tracks stay.
+			// Every track a chap reference names is chapter media: titles, Apple chapter URLs (text), and Apple
+			// chapter images (video). Apple players show chapters from any of them, so all of them go.
 			var removed = new HashSet<uint> ();
-			foreach (var track in chapterTracks) {
-				children.Remove (track.Trak);
+			foreach (var track in FindChapterTracks (moov, textOnly: false))
 				removed.Add (track.Id);
+			if (HasFragments (fragments, removed))
+				return ChapterPlan.Refused (FragmentedChapterTrackError);
+
+			children.RemoveAll (b => b.Type == "trak" && TryReadTrackId (b, out var id) && removed.Contains (id));
+			if (removed.Count > 0) {
+				ReplaceReferences (children, removed, add: false);
+				WithoutTrex (children, removed);
 			}
 
-			if (removed.Count > 0)
-				ReplaceReferences (children, removed, add: false);
 			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed);
 		}
+
+		if (existing is not null && HasFragments (fragments, [existing.Id]))
+			return ChapterPlan.Refused (FragmentedChapterTrackError);
 
 		var chpl = RenderChpl (chapters);
 		var lastTrak = children.FindLastIndex (b => b.Type == "trak");
@@ -432,7 +725,8 @@ internal static class Mp4ChapterCodec
 
 		var deltas = SampleDeltas (chapters, duration, ref timescale);
 		var samples = RenderSamples (chapters, out var sizes);
-		var trak = BuildTrak (trackId, timescale, movieTimescale, deltas, sizes, quickTime);
+		var style = existing is null ? TrackStyle.Default (quickTime) : TrackStyle.From (existing.Trak, quickTime);
+		var trak = BuildTrak (trackId, timescale, movieTimescale, deltas, sizes, quickTime, style);
 
 		if (existing is not null) {
 			children[children.IndexOf (existing.Trak)] = trak;
@@ -443,10 +737,27 @@ internal static class Mp4ChapterCodec
 				children[mvhdIndex] = WithNextTrackId (children[mvhdIndex], trackId);
 		}
 
-		// A replaced track keeps its id, so the references that found it still do.
+		// A replaced track keeps its id, so the references that found it still do, and its trex stays valid.
 		if (existing is null)
 			ReplaceReferences (children, new HashSet<uint> { trackId }, add: true);
 		return new ChapterPlan (chpl, children, trackId, samples, existing is null ? null : [existing.Id]);
+	}
+
+	/// <summary>
+	/// Drops the trex (§8.8.3) of each removed track from mvex: a trex names a track that moov declares.
+	/// </summary>
+	static void WithoutTrex (List<Mp4Box> children, HashSet<uint> removed)
+	{
+		var index = children.FindIndex (b => b.Type == "mvex");
+		if (index < 0)
+			return;
+
+		var mvex = children[index];
+		var kept = mvex.Children
+			.Where (c => c.Type != "trex" || c.Data.Length < 8 || !removed.Contains (BinaryPrimitives.ReadUInt32BigEndian (c.Data.Span.Slice (4))))
+			.ToList ();
+		if (kept.Count != mvex.Children.Count)
+			children[index] = new Mp4Box ("mvex", mvex.Data, kept, mvex.UsesExtendedSize, mvex.UnparsedTail, mvex.HeaderPrefix);
 	}
 
 	/// <summary>
@@ -454,12 +765,23 @@ internal static class Mp4ChapterCodec
 	/// samples of the tracks <paramref name="plan"/> replaces: those samples tile its payload exactly, with no gap
 	/// and no overlap, and no other track has a chunk offset inside the box. Such an mdat is the one a previous
 	/// chapter save wrote; once its tracks are rebuilt nothing references it, so it can be dropped.
-	/// A fragmented movie never qualifies: movie fragments locate their data in other ways (§8.8).
+	/// In a fragmented movie, no traf run of any track may reach into the box either (§8.8.7, §8.8.8).
 	/// </summary>
-	public static bool HoldsOnlyReplacedSamples (Mp4Box moov, ChapterPlan plan, long boxStart, long payloadStart, long boxEnd)
+	public static bool HoldsOnlyReplacedSamples (
+		Mp4Box moov,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		ChapterPlan plan,
+		long boxStart,
+		long payloadStart,
+		long boxEnd)
 	{
-		if (plan.ReplacedTrackIds.Count == 0 || moov.FindChild ("mvex") is not null)
+		if (plan.ReplacedTrackIds.Count == 0)
 			return false;
+
+		foreach (var (start, end) in FragmentRuns (fragments, moov)) {
+			if (start < boxEnd && end > boxStart)
+				return false;
+		}
 
 		var ranges = new List<(long Start, long End)> ();
 		var movieTimescale = ReadMovieTimescale (moov);
@@ -591,7 +913,14 @@ internal static class Mp4ChapterCodec
 		return data.ToArray ();
 	}
 
-	static Mp4Box BuildTrak (uint trackId, uint timescale, uint movieTimescale, ulong[] deltas, uint[] sizes, bool quickTime)
+	static Mp4Box BuildTrak (
+		uint trackId,
+		uint timescale,
+		uint movieTimescale,
+		ulong[] deltas,
+		uint[] sizes,
+		bool quickTime,
+		TrackStyle style)
 	{
 		ulong mediaDuration = 0;
 		foreach (var delta in deltas)
@@ -599,11 +928,11 @@ internal static class Mp4ChapterCodec
 		var movieDuration = movieTimescale == 0 ? 0 : ToMedia (ToTime (mediaDuration, timescale), movieTimescale);
 
 		using var trak = new BinaryDataBuilder ();
-		trak.Add (Tkhd (trackId, movieDuration));
+		trak.Add (Tkhd (trackId, movieDuration, style.TkhdFlags));
 		using (var mdia = new BinaryDataBuilder ()) {
-			mdia.Add (Mdhd (timescale, mediaDuration));
-			mdia.Add (Hdlr (quickTime));
-			mdia.Add (Minf (deltas, sizes));
+			mdia.Add (Mdhd (timescale, mediaDuration, style.Language));
+			mdia.Add (style.Hdlr);
+			mdia.Add (Minf (deltas, sizes, quickTime));
 			trak.Add (WrapBox ("mdia", mdia.Span));
 		}
 
@@ -612,15 +941,42 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// tkhd (§8.3.2). Flags 2: in the movie, not enabled, so players do not show the titles as subtitles.
-	/// No volume, identity matrix, no size.
+	/// What a rebuilt chapter track keeps from the track it replaces: the tkhd flags (§8.3.2), the mdhd
+	/// language (§8.4.2; Apple players look chapters up by language), and the hdlr box with its name (§8.4.3).
+	/// A new track is disabled (flags 2: in the movie, not enabled; TN2174 "Chapter Marker Track", QTFF
+	/// "Chapter lists"), has language <c>und</c>, and a <c>text</c> handler.
 	/// </summary>
-	static BinaryData Tkhd (uint trackId, ulong duration)
+	internal readonly record struct TrackStyle (uint TkhdFlags, ushort Language, BinaryData Hdlr)
+	{
+		const ushort Undetermined = 0x55C4;
+
+		public static TrackStyle Default (bool quickTime) => new (2, Undetermined, Mp4ChapterCodec.Hdlr (quickTime));
+
+		public static TrackStyle From (Mp4Box trak, bool quickTime)
+		{
+			var fallback = Default (quickTime);
+			var tkhd = Payload (trak.FindChild ("tkhd"));
+			var flags = tkhd.Length >= 4 ? BinaryPrimitives.ReadUInt32BigEndian (tkhd) & 0xFFFFFF : fallback.TkhdFlags;
+
+			var mdia = trak.FindChild ("mdia");
+			var mdhd = Payload (mdia?.FindChild ("mdhd"));
+			var at = mdhd.Length > 0 && mdhd[0] == 1 ? 32 : 20;
+			var language = mdhd.Length >= at + 2 ? BinaryPrimitives.ReadUInt16BigEndian (mdhd.Slice (at)) : fallback.Language;
+
+			var hdlr = mdia?.FindChild ("hdlr");
+			return new TrackStyle (flags, language, hdlr is null ? fallback.Hdlr : hdlr.Render ());
+		}
+	}
+
+	/// <summary>
+	/// tkhd (§8.3.2) with <paramref name="flags"/>. No volume, identity matrix, no size.
+	/// </summary>
+	static BinaryData Tkhd (uint trackId, ulong duration, uint flags)
 	{
 		var wide = duration > uint.MaxValue;
 		using var body = new BinaryDataBuilder ();
 		body.Add ((byte)(wide ? 1 : 0));
-		body.AddUInt24BE (2);
+		body.AddUInt24BE (flags);
 		if (wide) {
 			body.AddUInt64BE (0);
 			body.AddUInt64BE (0);
@@ -647,9 +1003,9 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// mdhd (§8.4.2), language "und" packed as three 5-bit letters.
+	/// mdhd (§8.4.2) with the packed ISO 639-2/T <paramref name="language"/>.
 	/// </summary>
-	static BinaryData Mdhd (uint timescale, ulong duration)
+	static BinaryData Mdhd (uint timescale, ulong duration, ushort language)
 	{
 		var wide = duration > uint.MaxValue;
 		using var body = new BinaryDataBuilder ();
@@ -667,7 +1023,7 @@ internal static class Mp4ChapterCodec
 			body.AddUInt32BE ((uint)duration);
 		}
 
-		body.AddUInt16BE (0x55C4);
+		body.AddUInt16BE (language);
 		body.AddUInt16BE (0);
 		return WrapBox ("mdhd", body.Span);
 	}
@@ -698,15 +1054,20 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// minf with a QuickTime base media header (<c>gmhd</c> holding <c>gmin</c> and the text media
-	/// <c>text</c> matrix; QuickTime File Format, "Base Media Information Header Atoms"), a self-contained
-	/// data reference (§8.7.2), and the sample table. All samples sit in one chunk.
+	/// minf: the media header, a self-contained data reference (§8.7.2), and the sample table, all samples in
+	/// one chunk. An MP4 chapter track uses the null media header <c>nmhd</c> (§8.4.5.2; Apple TN2174, "Chapter
+	/// Marker Track": "the Null Media Header box (nmhd) is used as the media information header. This is in
+	/// contrast to the Generic Media Header box (gmhd) box used in the QuickTime Text Track"). A QuickTime file
+	/// uses the base media information header <c>gmhd</c> with <c>gmin</c> (version, flags, graphics mode,
+	/// opcolor, balance, reserved) and the text media information atom <c>text</c>, a matrix (QTFF, "Base media
+	/// information header atom", "Base media info atom", "Text media information atom").
 	/// </summary>
-	static BinaryData Minf (ulong[] deltas, uint[] sizes)
+	static BinaryData Minf (ulong[] deltas, uint[] sizes, bool quickTime)
 	{
 		using var minf = new BinaryDataBuilder ();
 
-		using (var gmhd = new BinaryDataBuilder ()) {
+		if (quickTime) {
+			using var gmhd = new BinaryDataBuilder ();
 			using var gmin = new BinaryDataBuilder ();
 			gmin.AddUInt32BE (0);
 			gmin.AddUInt16BE (0x40);
@@ -721,6 +1082,8 @@ internal static class Mp4ChapterCodec
 			AddIdentityMatrix (text);
 			gmhd.Add (WrapBox ("text", text.Span));
 			minf.Add (WrapBox ("gmhd", gmhd.Span));
+		} else {
+			minf.Add (WrapBox ("nmhd", [0, 0, 0, 0]));
 		}
 
 		using (var dref = new BinaryDataBuilder ()) {
@@ -733,7 +1096,7 @@ internal static class Mp4ChapterCodec
 		}
 
 		using (var stbl = new BinaryDataBuilder ()) {
-			stbl.Add (Stsd ());
+			stbl.Add (quickTime ? QuickTimeStsd () : Mp4Stsd ());
 			stbl.Add (Stts (deltas));
 
 			using (var stsc = new BinaryDataBuilder ()) {
@@ -768,11 +1131,12 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// One <c>text</c> sample entry with data_reference_index 1 (§8.5.2). The body is the 3GPP
-	/// TextSampleEntry (TS 26.245 §5.16): display flags, justification, background colour, default text box,
-	/// default style record, and a font table with one font. Files written by ffmpeg use the same body.
+	/// One <c>tx3g</c> sample entry with data_reference_index 1 (§8.5.2), the 3GPP TextSampleEntry
+	/// (TS 26.245 §5.16) that TN2174 names for an MP4 chapter track: display flags, horizontal and vertical
+	/// justification, background colour (RGBA), default text box, default style record (start and end char, font
+	/// ID 1, face, size 18, white), and a font table with font 1. TN2174: chapter readers ignore the formatting.
 	/// </summary>
-	static BinaryData Stsd ()
+	static BinaryData Mp4Stsd ()
 	{
 		using var entry = new BinaryDataBuilder ();
 		entry.AddZeros (6);
@@ -797,10 +1161,42 @@ internal static class Mp4ChapterCodec
 		ftab.AddStringLatin1 (font);
 		entry.Add (WrapBox ("ftab", ftab.Span));
 
+		return SampleDescription ("tx3g", entry.Span);
+	}
+
+	/// <summary>
+	/// One <c>text</c> sample entry with data_reference_index 1, laid out as the QTFF "Text sample description":
+	/// display flags (32), text justification (32, 0 = left), background color (48), default text box (64),
+	/// reserved (64), font number (16), font face (16), reserved (8), reserved (16), foreground color (48), and
+	/// the text name as a Pascal string. Every field is zero and the name is empty: chapter text is not drawn.
+	/// AVFoundation and MediaInfo stop listing the chapters when the foreground colour is non-zero (white was
+	/// tried), so it stays black.
+	/// </summary>
+	static BinaryData QuickTimeStsd ()
+	{
+		using var entry = new BinaryDataBuilder ();
+		entry.AddZeros (6);
+		entry.AddUInt16BE (1);
+		entry.AddUInt32BE (0);
+		entry.AddUInt32BE (0);
+		entry.AddZeros (6);
+		entry.AddZeros (8);
+		entry.AddZeros (8);
+		entry.AddUInt16BE (0);
+		entry.AddUInt16BE (0);
+		entry.Add ((byte)0);
+		entry.AddUInt16BE (0);
+		entry.AddZeros (6);
+		entry.Add ((byte)0);
+		return SampleDescription ("text", entry.Span);
+	}
+
+	static BinaryData SampleDescription (string format, ReadOnlySpan<byte> entry)
+	{
 		using var stsd = new BinaryDataBuilder ();
 		stsd.AddUInt32BE (0);
 		stsd.AddUInt32BE (1);
-		stsd.Add (WrapBox ("text", entry.Span));
+		stsd.Add (WrapBox (format, entry));
 		return WrapBox ("stsd", stsd.Span);
 	}
 
@@ -1387,8 +1783,14 @@ internal static class Mp4ChapterCodec
 		List<Mp4Box> children,
 		uint trackId,
 		byte[] sampleData,
-		HashSet<uint>? replaced = null)
+		HashSet<uint>? replaced = null,
+		string? error = null)
 	{
+		/// <summary>Why the chapters cannot be written, or null.</summary>
+		public string? Error { get; } = error;
+
+		public static ChapterPlan Refused (string error) => new (BinaryData.Empty, [], 0, [], null, error);
+
 		/// <summary>The chapter tracks this plan rebuilds or removes. Their old samples are no longer referenced.</summary>
 		public HashSet<uint> ReplacedTrackIds { get; } = replaced ?? [];
 
