@@ -714,9 +714,10 @@ public sealed class Mp4Tag : Tag
 	string? GetGnreName ()
 	{
 		var code = GetInteger (Mp4AtomMapping.GenreId3);
-		if (code is not uint value || value == 0)
+		if (code is not uint value)
 			return null;
 
+		// gnre 0 wraps to uint.MaxValue here, so this one bound rejects it too.
 		var index = value - 1;
 		if (index > byte.MaxValue)
 			return null;

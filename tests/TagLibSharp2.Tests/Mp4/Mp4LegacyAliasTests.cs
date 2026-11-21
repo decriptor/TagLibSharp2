@@ -41,9 +41,10 @@ public class Mp4LegacyAliasTests
 	[TestMethod]
 	[DataRow (0, DisplayName = "gnre 0 is no genre")]
 	[DataRow (200, DisplayName = "gnre past the list")]
+	[DataRow (257, DisplayName = "gnre past a byte, which would wrap to Blues")]
 	public void Genre_GnreWithoutAName_IsNull (int code)
 	{
-		var data = WithItems (Item ("gnre", 0, [0, (byte)code]));
+		var data = WithItems (Item ("gnre", 0, [(byte)(code >> 8), (byte)code]));
 
 		Assert.IsNull (Mp4File.Read (data).File!.Tag!.Genre);
 	}
@@ -175,6 +176,42 @@ public class Mp4LegacyAliasTests
 			Assert.AreEqual (-1, IndexOf (saved, "old"u8.ToArray ()), key);
 			CollectionAssert.AreEqual (new[] { Code (1) }, ItemCodes (saved), key);
 		}
+	}
+
+	[TestMethod]
+	public void QuickTimeKeys_SeveralItemsForOneField_LeaveOne ()
+	{
+		// Two keys name the title, and an iTunes-coded title sits beside them. One value must remain.
+		var data = WithKeyedItems (("title", "A"), ("com.apple.quicktime.displayname", "B"));
+		var ilst = TestBuilders.Mp4.CreateBox ("\u00A9nam", TestBuilders.Mp4.CreateBox ("data", [0, 0, 0, 1, 0, 0, 0, 0, (byte)'C']));
+		data = WithMeta ("mdta", KeysFrom (data), [.. ItemBoxes (data), ilst]);
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("C", file.Tag!.Title);
+
+		file.Tag.Title = "One";
+		var saved = file.Render (data).ToArray ();
+
+		CollectionAssert.AreEqual (new[] { Code (1) }, ItemCodes (saved));
+		Assert.AreEqual ("One", Mp4File.Read (saved).File!.Tag!.Title);
+	}
+
+	static byte[] KeysFrom (byte[] file)
+	{
+		var at = IndexOf (file, "keys"u8.ToArray ()) - 4;
+		return file.AsSpan (at, (int)BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (at))).ToArray ();
+	}
+
+	static byte[][] ItemBoxes (byte[] file)
+	{
+		var ilst = IndexOf (file, "ilst"u8.ToArray ()) - 4;
+		var end = ilst + (int)BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (ilst));
+		var boxes = new List<byte[]> ();
+		for (var at = ilst + 8; at + 8 <= end;) {
+			var size = (int)BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (at));
+			boxes.Add (file.AsSpan (at, size).ToArray ());
+			at += size;
+		}
+		return [.. boxes];
 	}
 
 	[TestMethod]
