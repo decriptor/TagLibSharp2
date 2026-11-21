@@ -30,14 +30,15 @@ public class Mp4PreservationTests
 	[DataRow ("distinct-unknown-types")]
 	[DataRow ("distinct-freeforms")]
 	[DataRow ("invalid-then-valid-freeforms")]
+	[DataRow ("quicktime-items-one-key")]
 	public void Read_ManyIlstChildren_ScalesLinearly (string shape)
 	{
 		const int small = 2000;
 		const int factor = 16;
 		const double limit = factor / 2.0;
 		const int reps = 4;
-		var smallFile = TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, small));
-		var largeFile = TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, small * factor));
+		var smallFile = ShapeFile (shape, small);
+		var largeFile = ShapeFile (shape, small * factor);
 
 		// Warm up so JIT time is not charged to the first measurement.
 		CpuTimeOfReads (smallFile, 2);
@@ -475,6 +476,22 @@ public class Mp4PreservationTests
 
 		process.Refresh ();
 		return process.TotalProcessorTime - start;
+	}
+
+	static byte[] ShapeFile (string shape, int count)
+	{
+		if (shape != "quicktime-items-one-key")
+			return TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, count));
+
+		// Every key is "title", so every item belongs to one property.
+		var keys = new string[count];
+		var items = new byte[count][];
+		for (var i = 0; i < count; i++) {
+			keys[i] = "title";
+			items[i] = TestBuilders.Mp4.CreateMdtaItem ((uint)i + 1, "T");
+		}
+
+		return TestBuilders.Mp4.CreateWithMdtaIlst (keys, items);
 	}
 
 	static byte[][] IlstShape (string shape, int count)
