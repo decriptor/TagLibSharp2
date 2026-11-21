@@ -415,6 +415,9 @@ public partial class AiffAnnotationTests
 		cleared.Tag!.Performers = [];
 		Assert.IsNull (cleared.Tag.Artist);
 		Assert.AreEqual (0, cleared.Tag.Performers.Length);
+		var nulled = ReadAiff (Form (Text ("AUTH", "A Person"), Comm (), Ssnd ()));
+		nulled.Tag!.Performers = null!;
+		Assert.IsNull (nulled.Tag.Artist);
 		var gone = ReadAiff (cleared.Render ().ToArray ());
 		Assert.IsNull (gone.GetChunk ("AUTH"));
 		Assert.IsNull (gone.Tag?.Artist);
@@ -561,6 +564,7 @@ public partial class AiffAnnotationTests
 	[DataRow (new byte[] { 0xF0, 0x80, 0x80, 0x80 }, "\uF8FF\u00C4\u00C4\u00C4", DisplayName = "F0 overlong")]
 	[DataRow (new byte[] { 0xF4, 0x90, 0x80, 0x80 }, "\u00D9\u00EA\u00C4\u00C4", DisplayName = "F4 above U+10FFFF")]
 	[DataRow (new byte[] { 0xC3, 0x28 }, "\u221A(", DisplayName = "bad continuation")]
+	[DataRow (new byte[] { 0xE1, 0x80, 0x28 }, "\u00B7\u00C4(", DisplayName = "bad third byte")]
 	[DataRow (new byte[] { 0xE0, 0xA0, 0x80 }, "\u0800", DisplayName = "E0 valid")]
 	[DataRow (new byte[] { 0xE1, 0x80, 0x80 }, "\u1000", DisplayName = "E1 valid")]
 	[DataRow (new byte[] { 0xED, 0x9F, 0xBF }, "\uD7FF", DisplayName = "ED valid")]
