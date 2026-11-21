@@ -239,6 +239,59 @@ public class AudibleRoundTripTests
 	}
 
 	[TestMethod]
+	public async Task SaveToFile_SourceUnderAnotherSpelling_CanSaveAgain ()
+	{
+		// The source is rewritten through "dir/./book.aa", then saved again through SourcePath.
+		var dir = Path.Combine (Path.GetTempPath (), "tls-aa-" + Guid.NewGuid ().ToString ("N"));
+		Directory.CreateDirectory (dir);
+		try {
+			var path = Path.Combine (dir, "book.aa");
+			File.WriteAllBytes (path, AudibleTestBuilder.Create (cover: AudibleTestBuilder.Jpeg ()));
+			var alias = dir + Path.DirectorySeparatorChar + "." + Path.DirectorySeparatorChar + "book.aa";
+
+			var file = AudibleFile.ReadFromFile (path).File!;
+			file.Tag.Title = "Saved through an alias with a longer title";
+			Assert.IsTrue (file.SaveToFile (alias).IsSuccess);
+			file.Tag.Title = "Second";
+			var second = file.SaveToFile ();
+			Assert.IsTrue (second.IsSuccess, second.Error);
+
+			file.Tag.Title = "Async through the alias, longer again";
+			Assert.IsTrue ((await file.SaveToFileAsync (alias)).IsSuccess);
+			file.Tag.Title = "Third";
+			var third = await file.SaveToFileAsync ();
+			Assert.IsTrue (third.IsSuccess, third.Error);
+
+			Assert.AreEqual ("Third", AudibleFile.ReadFromFile (path).File!.Tag.Title);
+		} finally {
+			Directory.Delete (dir, recursive: true);
+		}
+	}
+
+	[TestMethod]
+	public async Task SaveToFile_SourceUnderAnotherCase_CanSaveAgain ()
+	{
+		// MockFileSystem compares paths case-insensitively, like the default macOS and Windows file systems.
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/Books/book.aa", AudibleTestBuilder.Create ());
+		var file = AudibleFile.ReadFromFile ("/Books/book.aa", fs).File!;
+
+		file.Tag.Title = "Saved under another case with a longer title";
+		Assert.IsTrue (file.SaveToFile ("/BOOKS/BOOK.AA", fs).IsSuccess);
+		file.Tag.Narrator = "Second";
+		var second = file.SaveToFile (fs);
+		Assert.IsTrue (second.IsSuccess, second.Error);
+
+		file.Tag.Title = "Async under another case, longer";
+		Assert.IsTrue ((await file.SaveToFileAsync ("/books/Book.aa", fs)).IsSuccess);
+		file.Tag.Narrator = "Third";
+		var third = await file.SaveToFileAsync (fs);
+		Assert.IsTrue (third.IsSuccess, third.Error);
+
+		Assert.AreEqual ("Third", AudibleFile.Read (fs.ReadAllBytes ("/Books/book.aa")).File!.Tag.Narrator);
+	}
+
+	[TestMethod]
 	public async Task SaveToFile_ToAnotherPath_LeavesTheSourceAndCanSaveAgain ()
 	{
 		var data = AudibleTestBuilder.Create ();

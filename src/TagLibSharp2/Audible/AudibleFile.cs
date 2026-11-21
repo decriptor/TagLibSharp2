@@ -624,18 +624,61 @@ public sealed class AudibleFile : IMediaFile
 		if (rendered.IsEmpty)
 			return FileWriteResult.Failure ("Failed to render Audible file: the original data does not match the file that was read");
 
-		return Saved (path, rendered, AtomicFileWriter.Write (path, rendered.Span, fileSystem ?? _sourceFileSystem));
+		var fs = fileSystem ?? _sourceFileSystem;
+		var result = AtomicFileWriter.Write (path, rendered.Span, fs);
+		if (result.IsSuccess && Rendered (rendered) is { } layout && SourcePath is not null)
+			RefreshLayout (layout, ReadSourceHeader (fs));
+		return result;
 	}
 
-	// After the source file itself is rewritten, the next save re-reads it, so it must match the new layout.
-	FileWriteResult Saved (string path, BinaryData rendered, FileWriteResult result)
+	// The next save re-reads the source and checks it against _layout. When this save rewrote the
+	// source, under any spelling of its path (".", "..", case, a link), the source's header and TOC are
+	// now the rendered ones, so the check is made against what is on disk, not against the path string.
+	static Layout? Rendered (BinaryData rendered) => ParseLayout (rendered.Span, rendered.Length, out _);
+
+	void RefreshLayout (Layout rendered, (byte[] Header, long Length)? source)
 	{
-		if (result.IsSuccess && SourcePath is not null && string.Equals (path, SourcePath, StringComparison.Ordinal)) {
-			var layout = ParseLayout (rendered.Span, rendered.Length, out _);
-			if (layout is not null)
-				_layout = layout;
+		if (source is not { } read)
+			return;
+		var onDisk = ParseLayout (read.Header, read.Length, out _);
+		if (onDisk is not null && onDisk.SameAs (rendered))
+			_layout = onDisk;
+	}
+
+	(byte[] Header, long Length)? ReadSourceHeader (IFileSystem? fileSystem)
+	{
+		try {
+			using var stream = (fileSystem ?? DefaultFileSystem.Instance).OpenRead (SourcePath!);
+			var header = StreamBytes.ReadAtMost (stream, HeaderSize);
+			var tocBytes = TocBytes (header);
+			if (tocBytes > header.Length) {
+				stream.Position = 0;
+				header = StreamBytes.ReadAtMost (stream, tocBytes);
+			}
+			return (header, stream.Length);
+		} catch (IOException) {
+			return null;
+		} catch (UnauthorizedAccessException) {
+			return null;
 		}
-		return result;
+	}
+
+	async Task<(byte[] Header, long Length)?> ReadSourceHeaderAsync (IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
+		try {
+			using var stream = (fileSystem ?? DefaultFileSystem.Instance).OpenRead (SourcePath!);
+			var header = await StreamBytes.ReadAtMostAsync (stream, HeaderSize, cancellationToken).ConfigureAwait (false);
+			var tocBytes = TocBytes (header);
+			if (tocBytes > header.Length) {
+				stream.Position = 0;
+				header = await StreamBytes.ReadAtMostAsync (stream, tocBytes, cancellationToken).ConfigureAwait (false);
+			}
+			return (header, stream.Length);
+		} catch (IOException) {
+			return null;
+		} catch (UnauthorizedAccessException) {
+			return null;
+		}
 	}
 
 	/// <summary>
@@ -660,8 +703,11 @@ public sealed class AudibleFile : IMediaFile
 		if (rendered.IsEmpty)
 			return FileWriteResult.Failure ("Failed to render Audible file: the original data does not match the file that was read");
 
-		var written = await AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem ?? _sourceFileSystem, cancellationToken).ConfigureAwait (false);
-		return Saved (path, rendered, written);
+		var fs = fileSystem ?? _sourceFileSystem;
+		var result = await AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken).ConfigureAwait (false);
+		if (result.IsSuccess && Rendered (rendered) is { } layout && SourcePath is not null)
+			RefreshLayout (layout, await ReadSourceHeaderAsync (fs, cancellationToken).ConfigureAwait (false));
+		return result;
 	}
 
 	/// <summary>
