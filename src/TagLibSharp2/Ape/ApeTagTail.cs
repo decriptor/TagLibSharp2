@@ -6,8 +6,9 @@ using TagLibSharp2.Core;
 namespace TagLibSharp2.Ape;
 
 /// <summary>
-/// Reads an APEv2 tag from the end of a seekable stream without the bytes in front of it.
-/// A footer at the very end is used. When the file ends with ID3v1, the footer 128 bytes earlier is used.
+/// Reads an APEv2 tag from the end of a seekable stream without the audio in front of it.
+/// Placement matches <see cref="ApeTagLocation.Locate"/>: a footer at EOF, a footer before
+/// Lyrics3 v1 or v2, or the 32 bytes at EOF-160 when no Lyrics3 block is present.
 /// </summary>
 internal static class ApeTagTail
 {
@@ -21,10 +22,10 @@ internal static class ApeTagTail
 		if (TryReadEndingAt (stream, stream.Length, out tag, out offset))
 			return true;
 
-		if (stream.Length < ApeTagLocation.Id3v1Size + ApeTagFooter.Size || !EndsWithId3v1 (stream))
+		if (!ApeTagLocation.TryTagEnd (stream, out var tagEnd))
 			return false;
 
-		return TryReadEndingAt (stream, stream.Length - ApeTagLocation.Id3v1Size, out tag, out offset);
+		return TryReadEndingAt (stream, tagEnd, out tag, out offset);
 	}
 
 	static bool TryReadEndingAt (Stream stream, long end, out byte[] tag, out long offset)
@@ -49,18 +50,5 @@ internal static class ApeTagTail
 		stream.Position = offset;
 		tag = StreamBytes.ReadAtMost (stream, (int)total);
 		return tag.Length == total;
-	}
-
-	static bool EndsWithId3v1 (Stream stream)
-	{
-		if (stream.Length < ApeTagLocation.Id3v1Size)
-			return false;
-
-		stream.Position = stream.Length - ApeTagLocation.Id3v1Size;
-		var marker = StreamBytes.ReadAtMost (stream, 3);
-		return marker.Length == 3
-			&& marker[0] == (byte)'T'
-			&& marker[1] == (byte)'A'
-			&& marker[2] == (byte)'G';
 	}
 }
