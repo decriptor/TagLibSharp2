@@ -536,8 +536,8 @@ public sealed class MpegPsFile : IMediaFile
 	/// <summary>
 	/// The length of an APEv2 tag whose footer is <paramref name="footer"/>, the 32 bytes before
 	/// the end of that tag, or 0. The tag size counts the footer; a header adds 32 bytes when the
-	/// footer's bit 31 says there is one. A length that reaches past the stream start finds no
-	/// ID3v2 footer before it, so it needs no check here.
+	/// footer's bit 31 says there is one. The caller bounds the length by the prepended tag: an
+	/// APEv2 tag may not start before the stream does.
 	/// </summary>
 	static long ApeLength (ReadOnlySpan<byte> footer)
 	{
@@ -585,8 +585,9 @@ public sealed class MpegPsFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Builds the file from the tag bytes, the head of the stream, the last 128 bytes, and the
-	/// tail of the stream. <paramref name="again"/> asks for larger windows.
+	/// Builds the file from the prepended tag bytes, the head of the stream, the tags the
+	/// <see cref="TrailerLocator"/> found after it, and the tail of the stream.
+	/// <paramref name="again"/> asks for larger windows.
 	/// </summary>
 	static MpegPsFileReadResult Build (
 		ReadOnlySpan<byte> tag,
@@ -1074,7 +1075,9 @@ public sealed class MpegPsFile : IMediaFile
 
 					break;
 				case Step.Id3v1:
-					if (bytes.Length == Id3v1Size && Id3v1Tag.Read (bytes).IsSuccess) {
+					// ID3v1 is the last 128 bytes after the stream; 128 bytes that start inside the
+					// prepended tag are part of that tag, as every other trailing tag's floor says.
+					if (bytes.Length == Id3v1Size && _length - Id3v1Size >= _floor && Id3v1Tag.Read (bytes).IsSuccess) {
 						FooterStart = _length - Id3v1Size;
 						Footer = bytes.ToArray ();
 						Probe (FooterStart, Step.Id3v1Ape);

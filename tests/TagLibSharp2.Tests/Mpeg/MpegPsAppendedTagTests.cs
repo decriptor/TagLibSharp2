@@ -402,11 +402,21 @@ public sealed class MpegPsAppendedTagTests
 
 	// A v2.4 tag with a footer and an extended header whose "tag is an update" flag is set
 	// (ID3v2.4 structure 3.2: size 7 including itself, one flag byte %0b000000, flag data length $00).
-	internal static byte[] UpdateTag (string title, int flagBytes = 1)
+	internal static byte[] UpdateTag (string title, int flagBytes = 1, byte flags = 0x40)
 	{
 		var plain = Appended (title);
 		var body = plain.AsSpan (10, plain.Length - 20).ToArray ();
-		byte[] extended = [0x00, 0x00, 0x00, 0x07, (byte)flagBytes, 0x40, 0x00];
+		// 3.2: each set flag carries a length byte and its data, in flag order: b (update) none,
+		// c (CRC) 5 bytes, d (restrictions) 1 byte. The size counts the whole extended header.
+		var flagData = new List<byte> ();
+		if ((flags & 0x40) != 0)
+			flagData.Add (0x00);
+		if ((flags & 0x20) != 0)
+			flagData.AddRange (new byte[] { 0x05, 0x00, 0x00, 0x00, 0x00, 0x00 });
+		if ((flags & 0x10) != 0)
+			flagData.AddRange (new byte[] { 0x01, 0x00 });
+		var extendedSize = 6 + flagData.Count;
+		var extended = Concat ([0x00, 0x00, 0x00, (byte)extendedSize, (byte)flagBytes, flags], flagData.ToArray ());
 		var size = extended.Length + body.Length;
 		byte[] header = [0x49, 0x44, 0x33, 0x04, 0x00, 0x50, (byte)(size >> 21), (byte)((size >> 14) & 0x7F), (byte)((size >> 7) & 0x7F), (byte)(size & 0x7F)];
 		var footer = (byte[])header.Clone ();
