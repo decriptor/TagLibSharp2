@@ -16,32 +16,38 @@ namespace TagLibSharp2.Tests.Mp4;
 [TestCategory ("Mp4")]
 public class Mp4PreservationTests
 {
+	// Reads must stay linear in the number of ilst children, whatever their kind, because the
+	// file is untrusted. Each shape is read at n and 8n children: a linear read takes 8 to 14 times
+	// as long (cache and GC), a quadratic one about 64 times. The ratio cancels out machine and
+	// build speed, and the best of several runs filters out scheduler noise.
 	[TestMethod]
 	[DoNotParallelize]
-	public void Read_ThousandsOfUnknownIlstChildren_FinishesQuickly ()
+	[DataRow ("unknown-then-title")]
+	[DataRow ("malformed-title-alternating")]
+	[DataRow ("malformed-cover-alternating")]
+	[DataRow ("distinct-unknown-types")]
+	[DataRow ("distinct-freeforms")]
+	[DataRow ("invalid-then-valid-freeforms")]
+	public void Read_ManyIlstChildren_ScalesLinearly (string shape)
 	{
-		// Unknown children are preserved. Each later ©nam used to scan that whole list.
-		const int unknownCount = 8000;
-		const int knownCount = 30000;
-		var payload = new byte[120];
-		var unknown = TestBuilders.Mp4.CreateBox ("orch", payload);
-		var title = TestBuilders.Mp4.CreateIlstChild ("©nam", typeIndicator: 1, Encoding.UTF8.GetBytes ("T"));
-		var atoms = new byte[unknownCount + knownCount][];
-		for (var i = 0; i < unknownCount; i++)
-			atoms[i] = unknown;
-		for (var i = 0; i < knownCount; i++)
-			atoms[unknownCount + i] = title;
+		const int small = 4000;
+		const int factor = 8;
+		var smallFile = TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, small));
+		var largeFile = TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, small * factor));
 
-		var data = TestBuilders.Mp4.CreateWithIlstAtoms (atoms);
-		Assert.IsGreaterThan (1_000_000, data.Length);
+		// Warm up so JIT time is not charged to the small read.
+		Assert.IsTrue (Mp4File.Read (smallFile).IsSuccess);
 
-		var watch = Stopwatch.StartNew ();
-		var result = Mp4File.Read (data);
-		watch.Stop ();
+		var smallTicks = long.MaxValue;
+		var largeTicks = long.MaxValue;
+		for (var run = 0; run < 7; run++) {
+			smallTicks = Math.Min (smallTicks, TimeRead (smallFile));
+			largeTicks = Math.Min (largeTicks, TimeRead (largeFile));
+		}
 
-		Assert.IsTrue (result.IsSuccess, result.Error);
-		Assert.AreEqual ("T", result.File!.Title);
-		Assert.IsLessThan (2000L, watch.ElapsedMilliseconds, $"read took {watch.ElapsedMilliseconds} ms");
+		var ratio = (double)largeTicks / Math.Max (1, smallTicks);
+		Assert.IsLessThan (factor * 4.0, ratio,
+			$"{shape}: {small} children took {smallTicks} ticks, {small * factor} took {largeTicks} ticks (ratio {ratio:F1})");
 	}
 
 	[TestMethod]
@@ -242,6 +248,49 @@ public class Mp4PreservationTests
 		Assert.AreEqual ("image/bmp", reread.File!.Pictures[0].MimeType);
 		Assert.AreEqual ("Retitled", reread.File.Title);
 	}
+
+	static long TimeRead (byte[] file)
+	{
+		GC.Collect ();
+		GC.WaitForPendingFinalizers ();
+		var watch = Stopwatch.StartNew ();
+		var result = Mp4File.Read (file);
+		watch.Stop ();
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		return watch.ElapsedTicks;
+	}
+
+	static byte[][] IlstShape (string shape, int count)
+	{
+		var atoms = new byte[count][];
+		var half = count / 2;
+		var title = TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("T"));
+		var malformedTitle = TestBuilders.Mp4.CreateBox ("©nam", [0x01, 0x02, 0x03, 0x04]);
+		var cover = TestBuilders.Mp4.CreateCovrAtom ([0xFF, 0xD8, 0xFF], Mp4AtomMapping.TypeJpeg);
+		var malformedCover = TestBuilders.Mp4.CreateBox ("covr", [0x01, 0x02, 0x03, 0x04]);
+		for (var i = 0; i < count; i++) {
+			atoms[i] = shape switch {
+				"unknown-then-title" => i < half ? TestBuilders.Mp4.CreateBox ("orch", new byte[16]) : title,
+				"malformed-title-alternating" => i % 2 == 0 ? malformedTitle : title,
+				"malformed-cover-alternating" => i % 2 == 0 ? malformedCover : cover,
+				"distinct-unknown-types" => TestBuilders.Mp4.CreateBox (DistinctType (i), new byte[16]),
+				"distinct-freeforms" => TestBuilders.Mp4.CreateFreeformAtom ("com.example", $"N{i}", "v"),
+				"invalid-then-valid-freeforms" => i < half
+					? FreeformWithoutData ("com.example", $"E{i}")
+					: TestBuilders.Mp4.CreateFreeformAtom ("com.example", $"N{i}", "v"),
+				_ => throw new ArgumentOutOfRangeException (nameof (shape), shape, null)
+			};
+		}
+
+		return atoms;
+	}
+
+	// Four Latin-1 characters, none of them a type the parser knows.
+	static string DistinctType (int i) => new ([
+		(char)('z' - (i / 17576 % 26)),
+		(char)('a' + (i / 676 % 26)),
+		(char)('a' + (i / 26 % 26)),
+		(char)('a' + (i % 26))]);
 
 	static byte[] FreeformWithoutData (string mean, string name)
 	{
