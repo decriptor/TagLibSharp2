@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `MatroskaFile.Tracks` lists every `TrackEntry` as a `MatroskaTrack` with `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
-- `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry`, taking the room from a nearby `Void` when there is one. SeekHead and Cues positions follow any element that moves. A track the caller did not set keeps its bytes.
+- `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry` when the `Void` right after `Tracks` has room, so no element moves; otherwise the save fails and nothing is written. A track the caller did not set keeps its bytes.
 
 ### Fixed
 

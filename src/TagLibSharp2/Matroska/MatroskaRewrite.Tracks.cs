@@ -27,53 +27,6 @@ internal readonly struct TrackFlagEdit
 	public bool Enabled { get; }
 }
 
-/// <summary>
-/// Where each top-level piece of the source segment landed in the rewritten one.
-/// A segment position (RFC 9559 §16) that names a piece moves with that piece.
-/// </summary>
-internal sealed class PieceMap
-{
-	readonly int[] _oldStarts;
-	readonly int[] _newStarts;
-	readonly int _oldEnd;
-	readonly int _newEnd;
-
-	public PieceMap (int[] oldStarts, int[] newStarts, int oldEnd, int newEnd)
-	{
-		_oldStarts = oldStarts;
-		_newStarts = newStarts;
-		_oldEnd = oldEnd;
-		_newEnd = newEnd;
-	}
-
-	public bool TryMove (ulong position, out ulong moved)
-	{
-		moved = position;
-		long delta;
-		if (position >= (ulong)_oldEnd)
-			delta = _newEnd - _oldEnd;
-		else {
-			var index = Array.BinarySearch (_oldStarts, (int)position);
-			if (index < 0)
-				index = ~index - 1;
-			if (index < 0)
-				return true;
-			delta = _newStarts[index] - _oldStarts[index];
-		}
-
-		if (delta >= 0) {
-			moved = position + (ulong)delta;
-			return moved >= position;
-		}
-
-		var back = (ulong)(-delta);
-		if (position < back)
-			return false;
-		moved = position - back;
-		return true;
-	}
-}
-
 static partial class MatroskaRewrite
 {
 	/// <summary>A <c>FlagEnabled</c> element with a 1-octet size and a 1-octet value.</summary>
@@ -89,11 +42,8 @@ static partial class MatroskaRewrite
 	/// octet width when the new size fits (RFC 8794 §6.1).
 	/// </para>
 	/// <para>
-	/// The growth comes out of the nearest <c>Void</c> (RFC 8794 §11.3.2) that is not past a <c>Cluster</c>,
-	/// looking after <c>Tracks</c> first, so the clusters stay where they are (RFC 9559 §6.1).
-	/// A Void that would be left with one octet is skipped, since no Void is that short.
-	/// Without a usable Void, every later element moves.
-	/// <c>SeekPosition</c> and <c>CueClusterPosition</c> follow the element they name.
+	/// The growth comes out of the <c>Void</c> (RFC 8794 §11.3.2) right after <c>Tracks</c>, so no element moves
+	/// and no segment position changes (RFC 9559 §6.1, §16). Without such a Void the save fails and nothing is written.
 	/// </para>
 	/// <para>
 	/// FlagEnabled has minver 2. A stored <c>DocTypeVersion</c> of 1 is raised to 2 when an element is added
@@ -139,10 +89,7 @@ static partial class MatroskaRewrite
 		if (!any)
 			return true;
 
-		var body = BuildWithTracks (data, layout, replacements, out var seekHeads, out var cues, out var map);
-		// An in-place edit moves nothing, so the SeekHead and Cues are left exactly as they were.
-		var plan = new Plan { RetargetTags = false, Moves = map };
-		if (!TryPatch (body, seekHeads, cues, plan, out error))
+		if (!TryBuildInPlace (data, layout, replacements, out var body, out error))
 			return false;
 		UpdateLeadingCrc (body);
 
@@ -343,93 +290,45 @@ static partial class MatroskaRewrite
 	}
 
 	/// <summary>
-	/// Lays out the segment with the edited <c>Tracks</c>, taking each one's growth from a Void when one is close.
-	/// <paramref name="map"/> is null when every piece kept its segment position.
+	/// Lays out the segment with the edited <c>Tracks</c> where they were. A Tracks that grew takes the room
+	/// from the Void right after it, so no element changes its segment position (RFC 9559 §16) and the
+	/// SeekHead, Cues, and clusters stay as they are. A Void can shrink to nothing or to at least 2 octets.
 	/// </summary>
-	static byte[] BuildWithTracks (
-		ReadOnlySpan<byte> data,
-		Layout layout,
-		byte[]?[] replacements,
-		out List<(int Start, int End)> seekHeads,
-		out List<(int Start, int End)> cues,
-		out PieceMap? map)
+	static bool TryBuildInPlace (ReadOnlySpan<byte> data, Layout layout, byte[]?[] replacements, out byte[] body, out string error)
 	{
+		body = [];
+		error = "";
 		var pieces = layout.Pieces;
-		var room = new int[pieces.Count];
-		for (var i = 0; i < pieces.Count; i++)
-			room[i] = pieces[i].Id == MatroskaIds.Void && !pieces[i].UnknownSize ? pieces[i].Length : 0;
-
-		var growth = 0;
-		for (var i = 0; i < pieces.Count; i++) {
-			if (replacements[i] is not { } tracks)
-				continue;
-			var extra = tracks.Length - pieces[i].Length;
-			var hole = FindRoom (pieces, room, i, extra);
-			if (hole >= 0)
-				room[hole] -= extra;
-			else
-				growth += extra;
-		}
-
-		seekHeads = new List<(int, int)> ();
-		cues = new List<(int, int)> ();
-		var oldStarts = new int[pieces.Count];
-		var newStarts = new int[pieces.Count];
-		var source = 0;
-		using var builder = new BinaryDataBuilder (layout.SegmentEnd - layout.DataOffset + growth);
+		using var builder = new BinaryDataBuilder (layout.SegmentEnd - layout.DataOffset);
 		for (var i = 0; i < pieces.Count; i++) {
 			var piece = pieces[i];
-			var at = builder.Length;
-			oldStarts[i] = source;
-			newStarts[i] = at;
-			source += piece.Length;
-			if (replacements[i] is { } tracks)
-				builder.Add (tracks);
-			else if (room[i] != piece.Length && piece.Id == MatroskaIds.Void && !piece.UnknownSize) {
-				if (room[i] > 0 && TryMakeVoid (room[i], out var shrunk))
-					builder.Add (shrunk);
-			} else
+			if (replacements[i] is not { } tracks) {
 				builder.Add (data.Slice (piece.Offset, piece.Length));
+				continue;
+			}
 
-			var length = builder.Length - at;
-			if (piece.Id == MatroskaIds.SeekHead)
-				seekHeads.Add ((at, at + length));
-			else if (piece.Id == MatroskaIds.Cues)
-				cues.Add ((at, at + length));
+			builder.Add (tracks);
+			var extra = tracks.Length - piece.Length;
+			if (extra == 0)
+				continue;
+
+			var room = i + 1 < pieces.Count && pieces[i + 1].Id == MatroskaIds.Void && !pieces[i + 1].UnknownSize
+				? pieces[i + 1].Length
+				: 0;
+			if (room != extra && room - extra < 2) {
+				error = "Matroska FlagEnabled needs " + extra.ToString (System.Globalization.CultureInfo.InvariantCulture)
+					+ " more octets in Tracks and no Void right after Tracks can give them";
+				return false;
+			}
+
+			if (room > extra && TryMakeVoid (room - extra, out var shrunk))
+				builder.Add (shrunk);
+			i++;
 		}
 
-		var moved = source != builder.Length;
-		for (var i = 0; i < pieces.Count && !moved; i++)
-			moved = oldStarts[i] != newStarts[i];
-		map = moved ? new PieceMap (oldStarts, newStarts, source, builder.Length) : null;
-		return builder.ToArray ();
+		body = builder.ToArray ();
+		return true;
 	}
-
-	/// <summary>
-	/// The nearest Void that can give up <paramref name="extra"/> octets without passing a Cluster.
-	/// A Void can shrink to nothing or to at least 2 octets.
-	/// The search also stops at another Tracks, so a file with many of them is scanned once, not once per Tracks.
-	/// </summary>
-	static int FindRoom (List<Piece> pieces, int[] room, int tracks, int extra)
-	{
-		if (extra <= 0)
-			return -1;
-		for (var i = tracks + 1; i < pieces.Count && !StopsSearch (pieces[i].Id); i++) {
-			if (Fits (room[i], extra))
-				return i;
-		}
-
-		for (var i = tracks - 1; i >= 0 && !StopsSearch (pieces[i].Id); i--) {
-			if (Fits (room[i], extra))
-				return i;
-		}
-
-		return -1;
-	}
-
-	static bool StopsSearch (ulong id) => id == MatroskaIds.Cluster || id == MatroskaIds.Tracks;
-
-	static bool Fits (int room, int extra) => room == extra || room - extra >= 2;
 
 	/// <summary>Raises a stored <c>DocTypeVersion</c> in the first EBML header, in place.</summary>
 	static void RaiseDocTypeVersion (byte[] file, ulong version)
