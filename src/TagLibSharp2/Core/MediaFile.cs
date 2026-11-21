@@ -43,6 +43,7 @@ namespace TagLibSharp2.Core;
 /// <item>MPEG program streams and MPEG video elementary streams (ID3v2, ID3v1)</item>
 /// <item>AAC (raw ADTS or ADIF - ID3v2, APEv2, ID3v1)</item>
 /// <item>Audible .aa (text dictionary). Audible .aax is MPEG-4 and opens as MP4.</item>
+/// <item>AVI (RIFF INFO, ID3v2; OpenDML)</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -438,6 +439,7 @@ public static class MediaFile
 			MediaFormat.MpegPs => FromMpegPs (MpegPsFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Aac => FromAac (AacFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Audible => FromAudible (AudibleFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Avi => FromAvi (AviFile.Read (stream, sourcePath, fileSystem)),
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
@@ -568,6 +570,13 @@ public static class MediaFile
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Audible);
 	}
 
+	static MediaFileResult FromAvi (AviFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse AVI file");
+		return MediaFileResult.Success (result.File, result.File.UnifiedTag, MediaFormat.Avi);
+	}
+
 	static MediaFileResult FromWav (WavFileReadResult result)
 	{
 		if (!result.IsSuccess || result.File is null)
@@ -611,6 +620,7 @@ public static class MediaFile
 			MediaFormat.MpegPs => FromMpegPs (MpegPsFile.Read (data.Span)),
 			MediaFormat.Aac => FromAac (AacFile.Read (data)),
 			MediaFormat.Audible => FromAudible (AudibleFile.Read (data.Span)),
+			MediaFormat.Avi => FromAvi (AviFile.Read (data.Span)),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 
@@ -645,6 +655,10 @@ public static class MediaFile
 			// RIFF/WAVE. Legacy WavPack keeps "wvpk" at the start of the data chunk.
 			if (IsRiffWave (data))
 				return WavPackFile.IsValidFormat (data) ? MediaFormat.WavPack : MediaFormat.Wav;
+
+			// RIFF/AVI. The form type, not the extension, tells AVI from WAVE.
+			if (AviFile.IsValidFormat (data))
+				return MediaFormat.Avi;
 
 			// AIFF/AIFC: starts with "FORM" + 4 bytes size + "AIFF" or "AIFC"
 			if (data.Length >= 12 &&
@@ -753,6 +767,7 @@ public static class MediaFile
 				".MKV" or ".MKA" or ".MKS" or ".MK3D" or ".WEBM" => MediaFormat.Matroska,
 				".MPG" or ".MPEG" or ".MPE" or ".VOB" or ".MPV" or ".M1V" or ".M2V" => MediaFormat.MpegPs,
 				".AAC" => MediaFormat.Aac,
+				".AVI" => MediaFormat.Avi,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -1115,5 +1130,10 @@ public enum MediaFormat
 	/// <summary>
 	/// Audible audiobook (.aa). Audible .aax files are MPEG-4 and report <see cref="Mp4"/>.
 	/// </summary>
-	Audible
+	Audible,
+
+	/// <summary>
+	/// AVI (RIFF <c>AVI </c> form, including OpenDML).
+	/// </summary>
+	Avi
 }

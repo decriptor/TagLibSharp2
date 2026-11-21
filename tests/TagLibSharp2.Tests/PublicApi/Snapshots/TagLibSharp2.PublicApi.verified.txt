@@ -1274,6 +1274,7 @@ namespace TagLibSharp2.Core
         MpegPs = 16,
         Aac = 17,
         Audible = 18,
+        Avi = 19,
     }
     [System.Flags]
     public enum MediaTypes
@@ -3246,6 +3247,43 @@ namespace TagLibSharp2.Ogg
 }
 namespace TagLibSharp2.Riff
 {
+    public sealed class AviFile : System.IDisposable, TagLibSharp2.Core.IMediaFile
+    {
+        public TagLibSharp2.Core.AudioProperties? AudioProperties { get; }
+        public System.TimeSpan Duration { get; }
+        public TagLibSharp2.Core.MediaFormat Format { get; }
+        public TagLibSharp2.Id3.Id3v2.Id3v2Tag? Id3v2Tag { get; set; }
+        public TagLibSharp2.Riff.RiffInfoTag InfoTag { get; }
+        public TagLibSharp2.Core.MediaTypes MediaTypes { get; }
+        public string? SourcePath { get; }
+        public TagLibSharp2.Core.VideoProperties? VideoProperties { get; }
+        public void Dispose() { }
+        public TagLibSharp2.Core.BinaryData Render(System.ReadOnlySpan<byte> originalData) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, System.ReadOnlySpan<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, System.ReadOnlyMemory<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool IsValidFormat(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Riff.AviFileReadResult Read(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Riff.AviFileReadResult ReadFromFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public static System.Threading.Tasks.Task<TagLibSharp2.Riff.AviFileReadResult> ReadFromFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool TryRead(System.ReadOnlySpan<byte> data, out TagLibSharp2.Riff.AviFile? file) { }
+    }
+    public readonly struct AviFileReadResult : System.IEquatable<TagLibSharp2.Riff.AviFileReadResult>
+    {
+        public string? Error { get; }
+        public TagLibSharp2.Riff.AviFile? File { get; }
+        public bool IsSuccess { get; }
+        public bool Equals(TagLibSharp2.Riff.AviFileReadResult other) { }
+        public override bool Equals(object? obj) { }
+        public override int GetHashCode() { }
+        public static TagLibSharp2.Riff.AviFileReadResult Failure(string error) { }
+        public static TagLibSharp2.Riff.AviFileReadResult Success(TagLibSharp2.Riff.AviFile file) { }
+        public static bool operator !=(TagLibSharp2.Riff.AviFileReadResult left, TagLibSharp2.Riff.AviFileReadResult right) { }
+        public static bool operator ==(TagLibSharp2.Riff.AviFileReadResult left, TagLibSharp2.Riff.AviFileReadResult right) { }
+    }
     public class BextTag
     {
         public const string ChunkId = "bext";
