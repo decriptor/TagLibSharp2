@@ -34,7 +34,7 @@ internal static class AacStream
 	// A program_config_element is at most 2465 bits (see AdifHeader.MaxSize), plus the 3-bit element id.
 	const int MaxProgramConfigBytes = 320;
 
-	// ISO/IEC 13818-7 Table 23 / ISO/IEC 14496-3 Table 4.85: id_syn_ele ID_PCE.
+	// ISO/IEC 13818-7 §6.3 raw_data_block: id_syn_ele ID_PCE.
 	const int ProgramConfigElementId = 5;
 
 	/// <summary>
@@ -190,7 +190,7 @@ internal static class AacStream
 	}
 
 	// channel_configuration 0: the first raw data block opens with the program config element
-	// (ISO/IEC 13818-7 §8.5, ISO/IEC 14496-3 §1.A.2.2.1). Anything else leaves the count unknown.
+	// (ISO/IEC 14496-3 §1.A.2.2.1). Anything else leaves the count unknown.
 	static int ProgramConfigChannels (Stream stream, long frame, AdtsHeader header, long end)
 	{
 		var at = frame + header.PayloadOffset;
