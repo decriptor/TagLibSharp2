@@ -61,7 +61,7 @@ public class AiffFilePictureTests
 		aiff.Tag = new Id3v2Tag ();
 		var pictureData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }; // JPEG magic
 		var picture = new PictureFrame ("image/jpeg", PictureType.FrontCover, "", new BinaryData (pictureData));
-		aiff.Tag.AddPicture (picture);
+		aiff.Id3v2Tag!.AddPicture (picture);
 
 		var pictures = aiff.Pictures;
 
@@ -79,8 +79,8 @@ public class AiffFilePictureTests
 		aiff.Tag = new Id3v2Tag ();
 		var jpegData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
 
-		aiff.Tag.AddPicture (new PictureFrame ("image/jpeg", PictureType.FrontCover, "", new BinaryData (jpegData)));
-		aiff.Tag.AddPicture (new PictureFrame ("image/jpeg", PictureType.BackCover, "", new BinaryData (jpegData)));
+		aiff.Id3v2Tag!.AddPicture (new PictureFrame ("image/jpeg", PictureType.FrontCover, "", new BinaryData (jpegData)));
+		aiff.Id3v2Tag!.AddPicture (new PictureFrame ("image/jpeg", PictureType.BackCover, "", new BinaryData (jpegData)));
 
 		var pictures = aiff.Pictures;
 
@@ -95,7 +95,7 @@ public class AiffFilePictureTests
 		Assert.IsNotNull (aiff);
 
 		aiff.Tag = new Id3v2Tag ();
-		aiff.Tag.AddPicture (new PictureFrame ("image/jpeg", PictureType.FrontCover, "", new BinaryData ([0xFF, 0xD8])));
+		aiff.Id3v2Tag!.AddPicture (new PictureFrame ("image/jpeg", PictureType.FrontCover, "", new BinaryData ([0xFF, 0xD8])));
 
 		Assert.IsTrue (aiff.HasPictures);
 	}
@@ -117,8 +117,8 @@ public class AiffFilePictureTests
 
 		aiff.Tag = new Id3v2Tag ();
 		var jpegData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
-		aiff.Tag.AddPicture (new PictureFrame ("image/jpeg", PictureType.BackCover, "back", new BinaryData (jpegData)));
-		aiff.Tag.AddPicture (new PictureFrame ("image/jpeg", PictureType.FrontCover, "front", new BinaryData (jpegData)));
+		aiff.Id3v2Tag!.AddPicture (new PictureFrame ("image/jpeg", PictureType.BackCover, "back", new BinaryData (jpegData)));
+		aiff.Id3v2Tag!.AddPicture (new PictureFrame ("image/jpeg", PictureType.FrontCover, "front", new BinaryData (jpegData)));
 
 		var coverArt = aiff.CoverArt;
 
@@ -133,7 +133,7 @@ public class AiffFilePictureTests
 		Assert.IsNotNull (aiff);
 
 		aiff.Tag = new Id3v2Tag ();
-		aiff.Tag.AddPicture (new PictureFrame ("image/jpeg", PictureType.BackCover, "", new BinaryData ([0xFF, 0xD8])));
+		aiff.Id3v2Tag!.AddPicture (new PictureFrame ("image/jpeg", PictureType.BackCover, "", new BinaryData ([0xFF, 0xD8])));
 
 		Assert.IsNull (aiff.CoverArt);
 	}
