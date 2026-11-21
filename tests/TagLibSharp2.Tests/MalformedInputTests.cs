@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
@@ -623,6 +624,86 @@ public class MalformedInputTests
 	}
 
 
+
+	// ═══════════════════════════════════════════════════════════════
+	// AVI Format Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void AviFile_EmptyInput_ReturnsFailure ()
+	{
+		Assert.IsFalse (AviFile.Read ([]).IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void AviFile_TruncatedHeader_ReturnsFailure ()
+	{
+		var data = new byte[] { 0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00, 0x41, 0x56, 0x49 };
+		Assert.IsFalse (AviFile.Read (data).IsSuccess, "A header cut inside the form type should fail");
+	}
+
+	[TestMethod]
+	public void AviFile_WaveFormType_ReturnsFailure ()
+	{
+		Assert.IsFalse (AviFile.Read (TestBuilders.Wav.CreateMinimal ()).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AviFile_AllZeros_ReturnsFailure ()
+	{
+		Assert.IsFalse (AviFile.Read (new byte[1000]).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AviFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+		"RIFF"u8.CopyTo (data);
+		"AVI "u8.CopyTo (data.AsSpan (8));
+
+		AviFile.Read (data);
+		MediaFile.Read (new MemoryStream (data));
+	}
+
+	[TestMethod]
+	public void AviFile_OversizedClaims_DoNotAllocate ()
+	{
+		// RIFF and LIST sizes near 4 GiB on a 64-byte file. Reads are clamped to the bytes present.
+		var data = new byte[64];
+		"RIFF"u8.CopyTo (data);
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (4), 0xFFFFFFF0);
+		"AVI "u8.CopyTo (data.AsSpan (8));
+		"LIST"u8.CopyTo (data.AsSpan (12));
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (16), 0x0FFFFFF0);
+		"hdrl"u8.CopyTo (data.AsSpan (20));
+		"strh"u8.CopyTo (data.AsSpan (24));
+		BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (28), 0xFFFFFFF0);
+
+		var result = AviFile.Read (data);
+		var streamed = MediaFile.Read (new MemoryStream (data));
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsTrue (streamed.IsSuccess, streamed.Error);
+	}
+
+	[TestMethod]
+	public void AviFile_CorruptedIndexes_DoNotCrashASave ()
+	{
+		var random = new Random (7);
+		var original = new TagLibSharp2.Tests.Riff.AviTestBuilder { OpenDml = true, AvixFrames = 2 }.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = new string ('c', 3000);
+		for (var round = 0; round < 200; round++) {
+			var data = (byte[])original.Clone ();
+			for (var flips = 0; flips < 8; flips++)
+				data[random.Next (12, data.Length)] = (byte)random.Next (256);
+			var saved = file.Render (data);
+			if (saved.Length > 0)
+				Assert.AreEqual (AviFile.Read (data).IsSuccess, AviFile.Read (saved.Span).IsSuccess, $"round {round}");
+		}
+	}
 
 	// ═══════════════════════════════════════════════════════════════
 	// WavPack Format Malformed Input Tests

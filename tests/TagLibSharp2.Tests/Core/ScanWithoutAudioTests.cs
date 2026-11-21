@@ -154,6 +154,12 @@ public class ScanWithoutAudioTests
 	public async Task ReadAsync_Dff_SkipsSampleData () => await AssertScanAsync (DffWithSamples (), "song.dff");
 
 	[TestMethod]
+	public void Read_Avi_SkipsMovi () => AssertScan (AviWithMovi (), "clip.avi");
+
+	[TestMethod]
+	public async Task ReadAsync_Avi_SkipsMovi () => await AssertScanAsync (AviWithMovi (), "clip.avi");
+
+	[TestMethod]
 	public void Read_Asf_SkipsDataObject () => AssertScan (AsfWithPackets (), "song.wma");
 
 	[TestMethod]
@@ -237,6 +243,30 @@ public class ScanWithoutAudioTests
 		Assert.IsFalse (files.FileExists ("/orphan-" + name));
 	}
 
+	// A 1 MiB video frame inside movi, and an INFO title the scan must find.
+	static byte[] AviWithMovi ()
+	{
+		var builder = new TagLibSharp2.Tests.Riff.AviTestBuilder { Frames = 1, Video = false };
+		builder.Info.Add (("INAM", "Window"));
+		var small = builder.Build ();
+		var movi = small.AsSpan ().IndexOf ("movi"u8) - 8;
+		var head = small.AsSpan (0, movi).ToArray ();
+		var list = Concat ("LIST"u8.ToArray (), new byte[4], "movi"u8.ToArray (), RiffChunk ("01wb", Payload ()));
+		BinaryPrimitives.WriteUInt32LittleEndian (list.AsSpan (4), (uint)(list.Length - 8));
+		var file = Concat (head, list);
+		BinaryPrimitives.WriteUInt32LittleEndian (file.AsSpan (4), (uint)(file.Length - 8));
+		return file;
+	}
+
+	static byte[] RiffChunk (string id, byte[] data)
+	{
+		var chunk = new byte[8 + data.Length + (data.Length & 1)];
+		Encoding.ASCII.GetBytes (id).CopyTo (chunk, 0);
+		BinaryPrimitives.WriteUInt32LittleEndian (chunk.AsSpan (4), (uint)data.Length);
+		data.CopyTo (chunk, 8);
+		return chunk;
+	}
+
 	static IMediaProperties? Properties (MediaFileResult result) =>
 		((IMediaFile)result.File!).AudioProperties;
 
@@ -253,6 +283,7 @@ public class ScanWithoutAudioTests
 		DsfFile dsf => dsf.SaveToFile (path, fileSystem),
 		DffFile dff => dff.SaveToFile (path, fileSystem),
 		AsfFile asf => asf.SaveToFile (path, fileSystem),
+		TagLibSharp2.Riff.AviFile avi => avi.SaveToFile (path, fileSystem),
 		_ => FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name)
 	};
 
@@ -269,6 +300,7 @@ public class ScanWithoutAudioTests
 		DsfFile dsf => dsf.SaveToFileAsync (path, fileSystem),
 		DffFile dff => dff.SaveToFileAsync (path, fileSystem),
 		AsfFile asf => asf.SaveToFileAsync (path, fileSystem),
+		TagLibSharp2.Riff.AviFile avi => avi.SaveToFileAsync (path, fileSystem),
 		_ => Task.FromResult (FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name))
 	};
 
