@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Security.Cryptography;
+using System.Text;
 
 using TagLibSharp2.Core;
 
@@ -58,7 +59,9 @@ internal readonly struct AttachedFileInfo
 /// </summary>
 /// <remarks>
 /// <para>
-/// A front cover is written as <c>cover.jpg</c> or <c>cover.png</c> and goes first in storage order.
+/// A front cover is written as <c>cover.jpg</c> or <c>cover.png</c> (another image type keeps its
+/// extension, such as <c>cover.gif</c>) and goes first in storage order, unless a kept front cover
+/// is already there.
 /// The guidance names only cover variants, so every other picture type gets the name in
 /// <see cref="StemOf"/>, such as <c>back.jpg</c> or <c>artist.png</c>. None of them contain
 /// "cover", so a reader that looks for cover names does not pick them. A repeated name gets
@@ -280,7 +283,19 @@ internal static class MatroskaAttachments
 		var added = new List<(IPicture Picture, string MediaType)> ();
 		for (var p = 0; p < pictures.Count; p++) {
 			var picture = pictures[p];
-			var mediaType = MediaTypeOf (picture);
+
+			// A picture read from this file matches its own attachment with the media type as stored.
+			// The reader surfaces any image/ type, so only a picture that will be written is validated.
+			var stored = picture.MimeType ?? string.Empty;
+			var index = FindMatch (data, existing, matched, picture, stored);
+			var mediaType = index >= 0 ? stored : MediaTypeOf (picture);
+			if (index < 0 && mediaType is not null && !string.Equals (mediaType, stored, StringComparison.OrdinalIgnoreCase))
+				index = FindMatch (data, existing, matched, picture, mediaType);
+			if (index >= 0) {
+				matched[index] = true;
+				continue;
+			}
+
 			if (mediaType is null) {
 				error = "Matroska picture " + p + " is not an image/ media type; only images can be written as pictures";
 				return false;
@@ -291,15 +306,13 @@ internal static class MatroskaAttachments
 				return false;
 			}
 
-			var index = FindMatch (data, existing, matched, picture, mediaType);
-			if (index >= 0)
-				matched[index] = true;
-			else
-				added.Add ((picture, mediaType));
+			added.Add ((picture, mediaType));
 		}
 
 		var usedUids = new HashSet<ulong> ();
 		var usedNames = new HashSet<string> (StringComparer.Ordinal);
+		var keptFront = false;
+		long capacity = 16;
 		for (var i = 0; i < existing.Count; i++) {
 			var entry = existing[i];
 			if (entry.Info.Uid is ulong uid)
@@ -308,9 +321,18 @@ internal static class MatroskaAttachments
 				changed = true;
 				if (entry.Info.Uid is ulong gone)
 					removed.Add (gone);
-			} else if (entry.Info.Name is not null)
+				continue;
+			}
+
+			if (entry.Info.Name is not null)
 				usedNames.Add (entry.Info.Name);
+			if (entry.IsPicture && entry.Info.PictureType == PictureType.FrontCover)
+				keptFront = true;
+			capacity += entry.Length;
 		}
+
+		foreach (var (picture, mediaType) in added)
+			capacity += picture.PictureData.Length + Encoding.UTF8.GetByteCount (picture.Description ?? string.Empty) + mediaType.Length + 96;
 
 		if (added.Count > 0)
 			changed = true;
@@ -323,13 +345,15 @@ internal static class MatroskaAttachments
 			return false;
 		}
 
-		using var body = new BinaryDataBuilder (Math.Max (16, data.Length / 4));
+		// Sized from what is written, not from the file: the Clusters are not copied here.
+		using var body = new BinaryDataBuilder ((int)Math.Min (int.MaxValue, capacity));
 		var attachedFiles = 0;
 
 		// The normal cover SHOULD be the first attachment in storage order (RFC 9559 section 21.1).
+		// A kept front cover is already that cover, so a new one goes after the kept attachments.
 		foreach (var (picture, mediaType) in added) {
-			if (picture.PictureType == PictureType.FrontCover) {
-				body.Add (Render (picture, mediaType, usedNames, usedUids));
+			if (picture.PictureType == PictureType.FrontCover && !keptFront) {
+				AddAttachedFile (body, picture, mediaType, usedNames, usedUids);
 				attachedFiles++;
 			}
 		}
@@ -344,8 +368,8 @@ internal static class MatroskaAttachments
 		}
 
 		foreach (var (picture, mediaType) in added) {
-			if (picture.PictureType != PictureType.FrontCover) {
-				body.Add (Render (picture, mediaType, usedNames, usedUids));
+			if (picture.PictureType != PictureType.FrontCover || keptFront) {
+				AddAttachedFile (body, picture, mediaType, usedNames, usedUids);
 				attachedFiles++;
 			}
 		}
@@ -354,7 +378,7 @@ internal static class MatroskaAttachments
 		if (attachedFiles == 0)
 			return true;
 
-		element = WithCrc (body.ToBinaryData ().Span, hadCrc);
+		element = AttachmentsElement (body.Span, hadCrc);
 		return true;
 	}
 
@@ -382,7 +406,8 @@ internal static class MatroskaAttachments
 		return -1;
 	}
 
-	static byte[] Render (IPicture picture, string mediaType, HashSet<string> usedNames, HashSet<ulong> usedUids)
+	/// <summary>Writes one <c>AttachedFile</c>; the picture bytes are copied once.</summary>
+	static void AddAttachedFile (BinaryDataBuilder output, IPicture picture, string mediaType, HashSet<string> usedNames, HashSet<ulong> usedUids)
 	{
 		var stem = StemOf (picture.PictureType);
 		var extension = ExtensionOf (mediaType);
@@ -392,18 +417,31 @@ internal static class MatroskaAttachments
 		usedNames.Add (name);
 
 		var uid = NewUid (usedUids);
-		using var body = new BinaryDataBuilder (picture.PictureData.Length + 128);
+		var bytes = picture.PictureData.Span;
+		using var head = new BinaryDataBuilder (256);
 		var description = picture.Description ?? string.Empty;
 		if (description.Length > 0 && description != name)
-			body.Add (EbmlWriter.String (MatroskaIds.FileDescription, description));
-		body.Add (EbmlWriter.String (MatroskaIds.FileName, name));
-		body.Add (EbmlWriter.String (MatroskaIds.FileMimeType, mediaType));
-		body.Add (EbmlWriter.Unsigned (MatroskaIds.FileUid, uid));
-		body.Add (EbmlWriter.Master (MatroskaIds.FileData, picture.PictureData.Span));
-		return EbmlWriter.Master (MatroskaIds.AttachedFile, body.ToBinaryData ().Span).ToArray ();
+			head.Add (EbmlWriter.String (MatroskaIds.FileDescription, description));
+		head.Add (EbmlWriter.String (MatroskaIds.FileName, name));
+		head.Add (EbmlWriter.String (MatroskaIds.FileMimeType, mediaType));
+		head.Add (EbmlWriter.Unsigned (MatroskaIds.FileUid, uid));
+		head.Add (FileDataId);
+		head.Add (EbmlWriter.Size (bytes.Length));
+
+		output.Add (AttachedFileId);
+		output.Add (EbmlWriter.Size (head.Length + bytes.Length));
+		output.Add (head.Span);
+		output.Add (bytes);
 	}
 
-	/// <summary>FileUID: "not 0", "as random as possible" (RFC 9559 section 5.1.6.1.5), and unique here.</summary>
+	static readonly byte[] AttachedFileId = [0x61, 0xA7];
+	static readonly byte[] FileDataId = [0x46, 0x5C];
+	static readonly byte[] AttachmentsId = [0x19, 0x41, 0xA4, 0x69];
+
+	/// <summary>
+	/// FileUID: "not 0", "as random as possible" (RFC 9559 section 5.1.6.1.5), and unlike every
+	/// FileUID already in the file. Track, chapter and edition UIDs are separate spaces.
+	/// </summary>
 	static ulong NewUid (HashSet<ulong> used)
 	{
 		var bytes = new byte[8];
@@ -419,20 +457,31 @@ internal static class MatroskaAttachments
 	}
 
 	/// <summary>
+	/// The <c>Attachments</c> element around <paramref name="payload"/>, built in one copy.
 	/// A CRC-32 that led the old element leads the new one (RFC 9559 section 6.2).
 	/// It covers the rest of the payload, little-endian (RFC 8794 section 11.3.1).
 	/// </summary>
-	static byte[] WithCrc (ReadOnlySpan<byte> payload, bool crc)
+	static byte[] AttachmentsElement (ReadOnlySpan<byte> payload, bool crc)
 	{
-		if (!crc)
-			return EbmlWriter.Master (MatroskaIds.Attachments, payload).ToArray ();
+		var crcLength = crc ? 6 : 0;
+		var size = EbmlWriter.Size (crcLength + payload.Length);
+		var element = new byte[AttachmentsId.Length + size.Length + crcLength + payload.Length];
+		AttachmentsId.CopyTo (element, 0);
+		size.CopyTo (element, AttachmentsId.Length);
+		var at = AttachmentsId.Length + size.Length;
+		if (crc) {
+			var value = MatroskaRewrite.Crc32 (payload);
+			element[at] = 0xBF;
+			element[at + 1] = 0x84;
+			element[at + 2] = (byte)value;
+			element[at + 3] = (byte)(value >> 8);
+			element[at + 4] = (byte)(value >> 16);
+			element[at + 5] = (byte)(value >> 24);
+			at += crcLength;
+		}
 
-		var value = MatroskaRewrite.Crc32 (payload);
-		var crcElement = new byte[] { 0xBF, 0x84, (byte)value, (byte)(value >> 8), (byte)(value >> 16), (byte)(value >> 24) };
-		using var body = new BinaryDataBuilder (payload.Length + crcElement.Length);
-		body.Add (crcElement);
-		body.Add (payload);
-		return EbmlWriter.Master (MatroskaIds.Attachments, body.ToBinaryData ().Span).ToArray ();
+		payload.CopyTo (element.AsSpan (at));
+		return element;
 	}
 
 	/// <summary>
