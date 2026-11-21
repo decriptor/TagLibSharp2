@@ -188,19 +188,28 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 		var found = new List<ulong> ();
 		foreach (var (id, start, end) in SegmentChildren (file)) {
 			if (id == MatroskaIds.Cues && EbmlReader.TryRead (file, start, end, out var cues) && !cues.UnknownSize)
-				CollectCues (file, cues.DataOffset, cues.End, found);
+				CollectCues (file, MatroskaIds.Cues, cues.DataOffset, cues.End, found);
 		}
 
 		return found;
 	}
 
-	static void CollectCues (byte[] file, int offset, int end, List<ulong> found)
+	/// <summary>
+	/// Reads CueClusterPosition on its RFC 9559 section 5.1.5 path only: Cues, CuePoint,
+	/// CueTrackPositions. The same ID anywhere else in the Cues is not a position.
+	/// </summary>
+	static void CollectCues (byte[] file, ulong parent, int offset, int end, List<ulong> found)
 	{
+		var child = parent switch {
+			MatroskaIds.Cues => MatroskaIds.CuePoint,
+			MatroskaIds.CuePoint => MatroskaIds.CueTrackPositions,
+			_ => ulong.MaxValue
+		};
 		while (offset < end && EbmlReader.TryRead (file, offset, end, out var element) && !element.UnknownSize) {
-			if (element.Id == MatroskaIds.CueClusterPosition)
+			if (parent == MatroskaIds.CueTrackPositions && element.Id == MatroskaIds.CueClusterPosition)
 				found.Add (EbmlReader.ReadUInt (file.AsSpan (element.DataOffset, (int)element.DataLength)));
-			else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions)
-				CollectCues (file, element.DataOffset, element.End, found);
+			else if (element.Id == child)
+				CollectCues (file, element.Id, element.DataOffset, element.End, found);
 			offset = element.End;
 		}
 	}

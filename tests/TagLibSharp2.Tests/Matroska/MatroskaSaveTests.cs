@@ -1191,16 +1191,25 @@ public partial class MatroskaFileTests
 		return stored == computed;
 	}
 
-	static bool TryFindCuePosition (ReadOnlySpan<byte> body, ref ulong position)
+	/// <summary>
+	/// Finds the first CueClusterPosition in a Cues payload, on its RFC 9559 section 5.1.5 path only:
+	/// CuePoint, then CueTrackPositions.
+	/// </summary>
+	static bool TryFindCuePosition (ReadOnlySpan<byte> body, ref ulong position, ulong parent = MatroskaIds.Cues)
 	{
+		var child = parent switch {
+			MatroskaIds.Cues => MatroskaIds.CuePoint,
+			MatroskaIds.CuePoint => MatroskaIds.CueTrackPositions,
+			_ => ulong.MaxValue
+		};
 		var offset = 0;
 		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
-			if (element.Id == MatroskaIds.CueClusterPosition && element.DataLength > 0) {
+			if (parent == MatroskaIds.CueTrackPositions && element.Id == MatroskaIds.CueClusterPosition && element.DataLength > 0) {
 				position = EbmlReader.ReadUInt (body.Slice (element.DataOffset, (int)element.DataLength));
 				return true;
 			}
 
-			if (element.Id is 0xBB or 0xB7 && TryFindCuePosition (body.Slice (element.DataOffset, (int)element.DataLength), ref position))
+			if (element.Id == child && TryFindCuePosition (body.Slice (element.DataOffset, (int)element.DataLength), ref position, element.Id))
 				return true;
 			offset = element.End;
 		}
