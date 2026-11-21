@@ -766,6 +766,49 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_ThousandsOfTinyClusters_UpdatesTheLastPosition ()
+	{
+		// The segment offset is piece.Offset minus the segment payload start, which is O(1).
+		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
+		var small = Master (0x1F43B675, new byte[] { 0x11 });
+		// The shared element helper stores a 14-bit master size, so a few thousand tiny clusters is the fixture limit.
+		const int count = 2500;
+		var children = new List<byte[]> (count + 2) { info };
+		for (var i = 0; i < count; i++)
+			children.Add (small);
+		var lastPos = 0;
+		foreach (var child in children)
+			lastPos += child.Length;
+		var marker = new byte[] { 0xAB, 0xCD, 0xEF };
+		var position = Element (MatroskaIds.Position, UIntBytes ((ulong)lastPos));
+		var last = UnknownWithCrc (0x1F43B675, Concat (position, Element (0xEC, marker)));
+		children.Add (last);
+		var original = FileWith (children.ToArray ());
+		Assert.IsTrue (IsElementAt (original, (ulong)lastPos, MatroskaIds.Cluster));
+		Assert.IsTrue (TryReadUnknownClusterPosition (original, out var originalPosition, out var originalCrc, out _));
+		Assert.IsTrue (originalCrc);
+		Assert.AreEqual ((ulong)lastPos, originalPosition);
+
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Moved";
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/many-fast.mkv", original);
+		var watch = System.Diagnostics.Stopwatch.StartNew ();
+		var saved = parsed.SaveToFile ("/many-fast.mkv", original, fs);
+		watch.Stop ();
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		Assert.IsTrue (watch.Elapsed < TimeSpan.FromSeconds (2), "cluster offsets are O(1)");
+		var bytes = fs.ReadAllBytes ("/many-fast.mkv");
+		Assert.AreEqual ("Moved", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		Assert.IsTrue (TryReadUnknownClusterPosition (bytes, out var updated, out var crcOk, out _));
+		Assert.IsTrue (crcOk);
+		Assert.AreNotEqual ((ulong)lastPos, updated);
+		Assert.IsTrue (IsElementAt (bytes, updated, MatroskaIds.Cluster));
+	}
+
+	[TestMethod]
 	public void Save_EmptyClusterPosition_KeepsThePayloadWhenTheClusterGrows ()
 	{
 		var marker = new byte[] { 0xE1, 0xE2, 0xE3, 0xE4 };
