@@ -97,12 +97,23 @@ public class MpegPsIntegrationTests : FileFormatTestBase
 			var after = MpegPsFile.Read (written).File!;
 			Assert.AreEqual ("TagLibSharp2 integration", after.Tag!.Title);
 			Assert.AreEqual (before.Duration, after.Duration);
-			var originalStream = original.AsSpan (before.Id3v2Size, original.Length - before.Id3v2Size - (before.Id3v1Tag is null ? 0 : 128));
-			var writtenStream = written.AsSpan (after.Id3v2Size, written.Length - after.Id3v2Size - (after.Id3v1Tag is null ? 0 : 128));
-			Assert.IsTrue (originalStream.SequenceEqual (writtenStream), "stream bytes changed");
+			Assert.IsTrue (Stream (original, before).SequenceEqual (Stream (written, after)), "stream bytes changed");
 		} finally {
 			File.Delete (copy);
 		}
+	}
+
+	// The bytes between the prepended tag and the appended tag or ID3v1. An appended tag ends
+	// with a "3DI" footer whose syncsafe size excludes its header and footer.
+	static ReadOnlySpan<byte> Stream (byte[] data, MpegPsFile file)
+	{
+		var end = data.Length - (file.Id3v1Tag is null ? 0 : 128);
+		if (end - file.Id3v2Size >= 10 && data[end - 10] == '3' && data[end - 9] == 'D' && data[end - 8] == 'I') {
+			var size = (data[end - 4] << 21) | (data[end - 3] << 14) | (data[end - 2] << 7) | data[end - 1];
+			end -= size + 20;
+		}
+
+		return data.AsSpan (file.Id3v2Size, end - file.Id3v2Size);
 	}
 
 	static string CopyToTemp (string path)
