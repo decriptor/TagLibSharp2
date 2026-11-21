@@ -51,9 +51,10 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_MoveThatWouldDropAnotherSeek_IsNotUsed ()
+	public void Save_Move_WidensSeekPositionsInTheFirstSeekHead ()
 	{
-		// Moving the Cues past offset 255 would void its one-byte Seek, so the tags take the old path.
+		// The move pushes the Cues past offset 255. The first SeekHead is written again, so its
+		// one-byte Seek for the Cues widens instead of being voided.
 		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
 		var tags = Tags (Tag (30, Simple ("TITLE", "Old")));
 		var probe = Master (0x114D9B74, Concat (SeekEntry (MatroskaIds.Info, 1), SeekEntry (MatroskaIds.Tags, 1), SeekEntry (MatroskaIds.Cues, 1)));
@@ -81,8 +82,44 @@ public partial class MatroskaFileTests
 		var cuesSeek = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Cues);
 		Assert.AreEqual (MatroskaIds.Cues, cuesSeek.Id);
 		Assert.IsTrue (IsElementAt (bytes, cuesSeek.Position, MatroskaIds.Cues));
-		Assert.AreEqual (IndexOf (original, cluster) - SegmentBodyAt (original), IndexOf (bytes, cluster) - SegmentBodyAt (bytes));
+		Assert.IsTrue (cuesSeek.Position > 255);
+		AssertEverySeekAndCue (bytes);
+		var tagsSeek = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Tags);
+		Assert.IsTrue (IsElementAt (bytes, tagsSeek.Position, MatroskaIds.Tags));
+		Assert.AreEqual (1, CountOf (bytes, cluster));
 		Assert.AreEqual (new string ('L', 60), MatroskaFile.Read (bytes).File!.Tag.Title);
+	}
+
+	[TestMethod]
+	public void Save_MoveThatWouldDropASecondSeekHeadEntry_IsNotUsed ()
+	{
+		// The second SeekHead's one-byte Cluster Seek cannot hold the moved offset and has no room
+		// to widen, so the move is refused and the tags take the old path.
+		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
+		var tags = Tags (Tag (30, Simple ("TITLE", "Old")));
+		var firstProbe = Master (0x114D9B74, Concat (SeekEntry (MatroskaIds.Info, 1), SeekEntry (MatroskaIds.Tags, 1), SeekEntry (MatroskaIds.SeekHead, 1)));
+		var second = Master (0x114D9B74, SeekEntry (MatroskaIds.Cluster, 1));
+		var infoAt = firstProbe.Length;
+		var tagsAt = infoAt + info.Length;
+		var secondAt = tagsAt + tags.Length;
+		var room = 240 - secondAt - second.Length;
+		var padding = Element (0xEC, new byte[room - (room - 2 < 0x7F ? 2 : 3)]);
+		var clusterAt = secondAt + second.Length + padding.Length;
+		Assert.AreEqual (240, clusterAt);
+		second = Master (0x114D9B74, SeekEntry (MatroskaIds.Cluster, (ulong)clusterAt));
+		var first = Master (0x114D9B74, Concat (SeekEntry (MatroskaIds.Info, (ulong)infoAt), SeekEntry (MatroskaIds.Tags, (ulong)tagsAt), SeekEntry (MatroskaIds.SeekHead, (ulong)secondAt)));
+		var marker = new byte[] { 0x6A, 0x6B };
+		var cluster = Master (0x1F43B675, Concat (Element (0xA3, marker), new byte[30]));
+		var original = FileWith (first, info, tags, second, padding, cluster);
+		Assert.IsTrue (IsElementAt (original, (ulong)clusterAt, MatroskaIds.Cluster));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = new string ('S', 120);
+
+		var bytes = Save (parsed, original);
+
+		Assert.AreEqual (IndexOf (original, cluster) - SegmentBodyAt (original), IndexOf (bytes, cluster) - SegmentBodyAt (bytes));
+		Assert.IsTrue (ReadSeeks (bytes).Exists (entry => entry.Id == MatroskaIds.Cluster && IsElementAt (bytes, entry.Position, MatroskaIds.Cluster)));
+		Assert.AreEqual (new string ('S', 120), MatroskaFile.Read (bytes).File!.Tag.Title);
 	}
 
 	[TestMethod]
@@ -147,10 +184,9 @@ public partial class MatroskaFileTests
 	{
 		foreach (var entry in ReadSeeks (file))
 			Assert.IsTrue (IsElementAt (file, entry.Position, entry.Id), entry.Id.ToString ("X", System.Globalization.CultureInfo.InvariantCulture));
-		if (TryReadCueClusterPosition (file, out var position, out var crcOk)) {
-			Assert.IsTrue (crcOk);
+		if (TryReadCueClusterPosition (file, out var position, out _))
 			Assert.IsTrue (IsElementAt (file, position, MatroskaIds.Cluster));
-		}
+		Assert.IsTrue (EveryCrcMatches (file));
 	}
 
 	/// <summary>A Seek with a two-byte position, so its length does not depend on the offset.</summary>

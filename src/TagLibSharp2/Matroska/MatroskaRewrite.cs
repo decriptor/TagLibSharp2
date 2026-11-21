@@ -213,9 +213,10 @@ static class MatroskaRewrite
 	}
 
 	/// <summary>
-	/// Plans <paramref name="element"/> right after the first SeekHead, rewritten with a Seek for
-	/// <paramref name="id"/> when it has none, or before the first Cluster when there is no SeekHead.
-	/// Every existing <paramref name="id"/> element is voided in place.
+	/// Plans <paramref name="element"/> right after the first SeekHead, or before the first Cluster
+	/// when there is no SeekHead. The first SeekHead is written again with every position already
+	/// moved, each at the width it needs, plus a Seek for <paramref name="id"/>. Every existing
+	/// <paramref name="id"/> element is voided in place.
 	/// </summary>
 	static bool TryPlanMove (ReadOnlySpan<byte> data, List<Piece> pieces, ulong id, byte[] element, out Plan plan)
 	{
@@ -238,45 +239,37 @@ static class MatroskaRewrite
 		}
 
 		var piece = pieces[index];
-		if (piece.UnknownSize)
-			return false;
-		var head = data.Slice (piece.Offset, piece.Length).ToArray ();
-		if (!EbmlReader.TryRead (head, 0, head.Length, out var seekHead) || seekHead.UnknownSize || seekHead.End != head.Length)
-			return false;
-		if (!EbmlReader.TryReadVint (head, 0, head.Length, true, 4, out _, out var idWidth, out _))
+		if (piece.UnknownSize || !TryReadSeekHead (data.Slice (piece.Offset, piece.Length), out var idBytes, out var crc, out var kept, out var seeks))
 			return false;
 
+		// Positions only grow, so each round needs at least as many bytes as the last one.
 		var start = OffsetOf (pieces, index);
-		var grown = head;
-		if (!HasSeek (head, seekHead, id)) {
-			// The new Seek holds the offset just past the grown SeekHead. A wider position can widen
-			// the SeekHead, so the offset is recomputed until it stops moving.
-			var at = start + head.Length;
-			for (var round = 0; round < 4; round++) {
-				var seek = MakeSeek (id, (ulong)at);
-				var size = EncodeFittedSize ((ulong)seekHead.DataLength + (ulong)seek.Length, seekHead.HeaderLength - idWidth);
-				if (size.Length == 0)
+		plan.ShiftFrom = start + piece.Length;
+		var delta = element.Length;
+		byte[] head = [];
+		for (var round = 0; round < 8; round++) {
+			plan.Delta = delta;
+			plan.ElementOffset = start + piece.Length + delta - element.Length;
+			head = BuildSeekHead (idBytes, crc, kept, seeks, plan);
+			var needed = head.Length - piece.Length + element.Length;
+			if (needed == delta)
+				break;
+			if (needed < delta) {
+				// This round's head is shorter than the room planned for it, so a Void takes the slack.
+				if (!TryFit (head, head.Length + delta - needed, out head))
 					return false;
-				using var builder = new BinaryDataBuilder (head.Length + seek.Length + 8);
-				builder.Add (head.AsSpan (0, idWidth));
-				builder.Add (size);
-				builder.Add (head.AsSpan (seekHead.DataOffset));
-				builder.Add (seek);
-				grown = builder.ToArray ();
-				if (start + grown.Length == at)
-					break;
-				at = start + grown.Length;
+				break;
 			}
 
-			if (start + grown.Length != at)
-				return false;
+			delta = needed;
 		}
 
+		if (head.Length - piece.Length + element.Length != plan.Delta)
+			return false;
+
 		plan.GrowIndex = index;
-		plan.Grown = grown;
-		plan.ElementOffset = start + grown.Length;
-		plan.ShiftFrom = start + head.Length;
-		plan.Delta = grown.Length - head.Length + element.Length;
+		plan.Grown = head;
+		plan.GrownSeekHeadIsFinal = true;
 		if (index + 1 < pieces.Count)
 			plan.InsertBefore = index + 1;
 		else
@@ -284,16 +277,66 @@ static class MatroskaRewrite
 		return true;
 	}
 
-	static bool HasSeek (byte[] head, EbmlElement seekHead, ulong id)
+	/// <summary>Splits a SeekHead into its ID bytes, whether it has a CRC-32, other children, and its Seeks.</summary>
+	static bool TryReadSeekHead (ReadOnlySpan<byte> head, out byte[] idBytes, out bool crc, out List<byte[]> kept, out List<(ulong Id, ulong Position)> seeks)
 	{
-		var at = seekHead.DataOffset;
-		while (at < seekHead.End && EbmlReader.TryRead (head, at, seekHead.End, out var child) && !child.UnknownSize) {
-			if (child.Id == MatroskaIds.Seek && TryReadSeek (head, child, out var found, out _, out _) && found == id)
-				return true;
-			at = child.End;
+		idBytes = [];
+		crc = false;
+		kept = new List<byte[]> ();
+		seeks = new List<(ulong, ulong)> ();
+		var copy = head.ToArray ();
+		if (!EbmlReader.TryRead (copy, 0, copy.Length, out var seekHead) || seekHead.UnknownSize || seekHead.End != copy.Length)
+			return false;
+		if (!EbmlReader.TryReadVint (copy, 0, copy.Length, true, 4, out _, out var idWidth, out _))
+			return false;
+		idBytes = copy.AsSpan (0, idWidth).ToArray ();
+		var offset = seekHead.DataOffset;
+		while (offset < seekHead.End) {
+			if (!EbmlReader.TryRead (copy, offset, seekHead.End, out var child) || child.UnknownSize)
+				return false;
+			if (child.Id == MatroskaIds.Seek) {
+				if (TryReadSeek (copy, child, out var seekId, out var position, out _))
+					seeks.Add ((seekId, position));
+			} else if (child.Id == MatroskaIds.Crc32)
+				crc = true;
+			else if (child.Id != MatroskaIds.Void)
+				kept.Add (copy.AsSpan (child.Position, child.End - child.Position).ToArray ());
+			offset = child.End;
 		}
 
-		return false;
+		return true;
+	}
+
+	/// <summary>Writes a SeekHead whose Seeks hold their moved positions, with the target's Seek at the new element.</summary>
+	static byte[] BuildSeekHead (byte[] idBytes, bool crc, List<byte[]> kept, List<(ulong Id, ulong Position)> seeks, Plan plan)
+	{
+		using var body = new BinaryDataBuilder ();
+		// RFC 8794 section 11.3.1: a CRC-32 is the first child. The build fills it in last.
+		if (crc)
+			body.Add (EbmlWriter.Master (MatroskaIds.Crc32, new byte[4]));
+		var listed = false;
+		foreach (var (seekId, position) in seeks) {
+			if (seekId != plan.Id) {
+				body.Add (MakeSeek (seekId, plan.Map (position)));
+				continue;
+			}
+
+			if (!listed)
+				body.Add (MakeSeek (seekId, (ulong)plan.ElementOffset));
+			listed = true;
+		}
+
+		if (!listed)
+			body.Add (MakeSeek (plan.Id, (ulong)plan.ElementOffset));
+		foreach (var child in kept)
+			body.Add (child);
+
+		var payload = body.ToBinaryData ();
+		using var head = new BinaryDataBuilder ();
+		head.Add (idBytes);
+		head.Add (EncodeFittedSize ((ulong)payload.Length, 1));
+		head.Add (payload.Span);
+		return head.ToArray ();
 	}
 
 	/// <summary>Counts the Seek entries, other than <paramref name="except"/>, that point at an element with their ID.</summary>
@@ -478,6 +521,9 @@ static class MatroskaRewrite
 		/// <summary>Gets or sets the bytes that replace piece <see cref="GrowIndex"/>. They can be longer.</summary>
 		public byte[]? Grown { get; set; }
 
+		/// <summary>Gets or sets a value indicating whether <see cref="Grown"/> is a SeekHead whose positions are final.</summary>
+		public bool GrownSeekHeadIsFinal { get; set; }
+
 		/// <summary>Gets or sets where the build put <see cref="Grown"/>.</summary>
 		public int GrownAt { get; set; } = -1;
 
@@ -647,6 +693,12 @@ static class MatroskaRewrite
 		if (strict || plan.ShouldAdd) {
 			// A new entry goes in the first SeekHead. A second one holds only Clusters (RFC 9559 section 6.3).
 			for (var i = 0; i < seekHeads.Count; i++) {
+				// A SeekHead the move wrote already holds every moved position and the target's Seek.
+				if (plan.GrownSeekHeadIsFinal && seekHeads[i].Start == plan.GrownAt) {
+					referenced = true;
+					continue;
+				}
+
 				if (!TryPatchSeekHead (body, seekHeads[i].Start, seekHeads[i].End, plan, strict, i == 0, ref referenced, out error))
 					return false;
 			}
