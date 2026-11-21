@@ -92,6 +92,7 @@ public sealed class ApeTag : Tag
 		public const string Artist = "Artist";
 		public const string Album = "Album";
 		public const string AlbumArtist = "Album Artist";
+		public const string AlbumArtistAlias = "ALBUMARTIST";
 		public const string Year = "Year";
 		public const string Date = "Date"; // Alternative to Year
 		public const string Comment = "Comment";
@@ -177,8 +178,11 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// The first performer. Other names stay on <see cref="Performers"/>; a comma does not join them.
+	/// </remarks>
 	public override string? Artist {
-		get => GetValue (Keys.Artist);
+		get => FirstName (Performers);
 		set => SetOrRemove (Keys.Artist, value);
 	}
 
@@ -203,26 +207,26 @@ public sealed class ApeTag : Tag
 	/// Gets or sets the album artist.
 	/// </summary>
 	/// <remarks>
-	/// Reads from "Album Artist" with fallback to "ALBUMARTIST" for compatibility.
-	/// Writes to "Album Artist".
+	/// The first album artist. Reads "Album Artist", or "ALBUMARTIST" when that item is absent.
+	/// Setting or clearing removes both items and stores the name in "Album Artist".
 	/// </remarks>
 	public override string? AlbumArtist {
-		get => GetValue (Keys.AlbumArtist) ?? GetValue ("ALBUMARTIST");
-		set => SetOrRemove (Keys.AlbumArtist, value);
+		get => FirstName (AlbumArtists);
+		set => SetOrRemove (Keys.AlbumArtist, value, Keys.AlbumArtistAlias);
 	}
 
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Names share one "Album Artist" item, separated by NUL. A single name has no extra NUL.
-	/// Reading also accepts "ALBUMARTIST".
+	/// Reading also accepts "ALBUMARTIST". Setting or clearing removes both items.
 	/// </remarks>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public override string[] AlbumArtists {
 		get {
 			var values = GetTextList (Keys.AlbumArtist);
-			return values.Length > 0 ? values : GetTextList ("ALBUMARTIST");
+			return values.Length > 0 ? values : GetTextList (Keys.AlbumArtistAlias);
 		}
-		set => SetTextList (Keys.AlbumArtist, value);
+		set => SetTextList (Keys.AlbumArtist, value, Keys.AlbumArtistAlias);
 	}
 #pragma warning restore CA1819
 
@@ -239,8 +243,11 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// The first genre. Other names stay on <see cref="Genres"/>; a comma does not join them.
+	/// </remarks>
 	public override string? Genre {
-		get => GetValue (Keys.Genre);
+		get => FirstName (Genres);
 		set => SetOrRemove (Keys.Genre, value);
 	}
 
@@ -330,8 +337,11 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// The first composer. Other names stay on <see cref="Composers"/>; a comma does not join them.
+	/// </remarks>
 	public override string? Composer {
-		get => GetValue (Keys.Composer);
+		get => FirstName (Composers);
 		set => SetOrRemove (Keys.Composer, value);
 	}
 
@@ -799,11 +809,17 @@ public sealed class ApeTag : Tag
 		return result.Count == 0 ? [] : result.ToArray ();
 	}
 
+	static string? FirstName (string[] names) => names.Length == 0 ? null : names[0];
+
 	/// <summary>
 	/// Stores names in one item. A single name has no extra NUL.
+	/// <paramref name="alias"/> is removed on set and on clear so a second item cannot outlive the write.
 	/// </summary>
-	void SetTextList (string key, string[]? values)
+	void SetTextList (string key, string[]? values, string? alias = null)
 	{
+		if (alias is not null)
+			_items.Remove (alias);
+
 		if (values is null || values.Length == 0) {
 			_items.Remove (key);
 			return;
@@ -842,8 +858,11 @@ public sealed class ApeTag : Tag
 	/// </summary>
 	public bool Remove (string key) => _items.Remove (key);
 
-	private void SetOrRemove (string key, string? value)
+	private void SetOrRemove (string key, string? value, string? alias = null)
 	{
+		if (alias is not null)
+			_items.Remove (alias);
+
 		if (string.IsNullOrEmpty (value)) {
 			_items.Remove (key);
 		} else {

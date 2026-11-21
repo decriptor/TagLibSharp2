@@ -440,6 +440,193 @@ public class Id3v2TrailingTerminatorTests
 		Assert.IsNull (tag.GetUserText ("MISSING"));
 	}
 
+	[TestMethod]
+	public void Title_Utf16OddLengthAndRepeatedTerminator_DropsOnlyTerminatorUnits ()
+	{
+		using var oddAndNul = new BinaryDataBuilder ();
+		oddAndNul.Add ((byte)TextEncodingType.Utf16WithBom);
+		oddAndNul.Add (0xFF, 0xFE);
+		oddAndNul.Add (0x41, 0x00);
+		oddAndNul.Add (0, 0);
+		oddAndNul.Add (0x00);
+
+		var kept = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", oddAndNul.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("A", kept.Title);
+		Assert.AreEqual ("A", kept.Frames[0].Text);
+		Assert.HasCount (1, kept.GetTextFrameValues ("TIT2"));
+		Assert.AreEqual ("A", kept.GetTextFrameValues ("TIT2")[0]);
+
+		using var repeated = new BinaryDataBuilder ();
+		repeated.Add ((byte)TextEncodingType.Utf16WithBom);
+		repeated.Add (0xFF, 0xFE);
+		repeated.Add (0x41, 0x00);
+		repeated.Add (0, 0);
+		repeated.Add (0, 0);
+
+		var once = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", repeated.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("A", once.Title);
+		Assert.AreEqual ("A", once.Frames[0].Text);
+		Assert.HasCount (1, once.GetTextFrameValues ("TIT2"));
+
+		using var onlyOdd = new BinaryDataBuilder ();
+		onlyOdd.Add ((byte)TextEncodingType.Utf16WithBom);
+		onlyOdd.Add (0x41);
+
+		var dropped = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", onlyOdd.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("", dropped.Title);
+		Assert.AreEqual ("", dropped.Frames[0].Text);
+		Assert.HasCount (0, dropped.GetTextFrameValues ("TIT2"));
+
+		using var beOdd = new BinaryDataBuilder ();
+		beOdd.Add ((byte)TextEncodingType.Utf16BE);
+		beOdd.Add (0x00, 0x41);
+		beOdd.Add (0x00, 0x42);
+		beOdd.Add (0x00);
+
+		var be = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", beOdd.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("AB", be.Title);
+		Assert.AreEqual ("AB", be.Frames[0].Text);
+	}
+
+	[TestMethod]
+	public void Title_Utf16EmptyBom_IsAnEmptyString ()
+	{
+		using var little = new BinaryDataBuilder ();
+		little.Add ((byte)TextEncodingType.Utf16WithBom);
+		little.Add (0xFF, 0xFE);
+
+		var le = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", little.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("", le.Title);
+		Assert.AreEqual ("", le.Frames[0].Text);
+		Assert.AreEqual (-1, le.Frames[0].Text.IndexOf ('\uFEFF'));
+		Assert.HasCount (0, le.GetTextFrameValues ("TIT2"));
+
+		using var big = new BinaryDataBuilder ();
+		big.Add ((byte)TextEncodingType.Utf16WithBom);
+		big.Add (0xFE, 0xFF);
+
+		var be = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", big.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("", be.Title);
+		Assert.AreEqual ("", be.Frames[0].Text);
+		Assert.AreEqual (-1, be.Frames[0].Text.IndexOf ('\uFEFF'));
+
+		using var onlyTerminator = new BinaryDataBuilder ();
+		onlyTerminator.Add ((byte)TextEncodingType.Utf16WithBom);
+		onlyTerminator.Add (0, 0);
+
+		var trimmed = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", onlyTerminator.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("", trimmed.Title);
+		Assert.AreEqual ("", trimmed.Frames[0].Text);
+	}
+
+	[TestMethod]
+	public void Performers_Utf16WithoutBom_KeepsBothNames ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf16WithBom);
+		builder.Add (Encoding.Unicode.GetBytes ("Alice\0Bob"));
+
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TPE1", builder.ToBinaryData ().ToArray ());
+
+		Assert.AreEqual ("Alice\0Bob", tag.Frames[0].Text);
+		Assert.AreEqual ("Alice", tag.Artist);
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("Alice", tag.Performers[0]);
+		Assert.AreEqual ("Bob", tag.Performers[1]);
+	}
+
+	[TestMethod]
+	public void Performers_Utf16LeadingNul_FirstValueIsEmpty ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf16WithBom);
+		builder.Add (0, 0);
+		builder.Add (0x62, 0x00);
+
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TPE1", builder.ToBinaryData ().ToArray ());
+
+		Assert.AreEqual ("\0b", tag.Frames[0].Text);
+		Assert.AreEqual ("", tag.GetTextFrame ("TPE1"));
+		Assert.AreEqual ("", tag.Artist);
+		var values = tag.GetTextFrameValues ("TPE1");
+		Assert.HasCount (1, values);
+		Assert.AreEqual ("b", values[0]);
+		Assert.HasCount (1, tag.Performers);
+		Assert.AreEqual ("b", tag.Performers[0]);
+	}
+
+	[TestMethod]
+	public void Performers_Utf16EmptyBomBetweenNames_SkipsThatValue ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf16WithBom);
+		builder.Add (0xFF, 0xFE);
+		builder.Add (0x61, 0x00);
+		builder.Add (0, 0);
+		builder.Add (0xFF, 0xFE);
+		builder.Add (0, 0);
+		builder.Add (0x62, 0x00);
+
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TPE1", builder.ToBinaryData ().ToArray ());
+
+		Assert.AreEqual ("a\0\0b", tag.Frames[0].Text);
+		Assert.AreEqual (-1, tag.Frames[0].Text.IndexOf ('\uFEFF'));
+		Assert.AreEqual ("a", tag.GetTextFrame ("TPE1"));
+		Assert.AreEqual ("a", tag.Artist);
+		var values = tag.GetTextFrameValues ("TPE1");
+		Assert.HasCount (2, values);
+		Assert.AreEqual ("a", values[0]);
+		Assert.AreEqual ("b", values[1]);
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("b", tag.Performers[1]);
+	}
+
+	[TestMethod]
+	public void Comment_Utf16OddLength_KeepsTheLastCharacterAndEndsAtTheNul ()
+	{
+		using var odd = new BinaryDataBuilder ();
+		odd.Add ((byte)TextEncodingType.Utf16WithBom);
+		odd.Add ("eng"u8);
+		odd.Add (0xFF, 0xFE);
+		odd.Add (0, 0);
+		odd.Add (0xFF, 0xFE);
+		odd.Add (0x41, 0x00);
+		odd.Add (0x42, 0x00);
+		odd.Add (0x00);
+
+		var kept = CommentFrame.Read (odd.ToBinaryData ().Span, Id3v2Version.V24);
+		Assert.IsTrue (kept.IsSuccess, kept.Error);
+		Assert.AreEqual ("AB", kept.Frame!.Text);
+		AssertNoNul (kept.Frame.Text);
+
+		using var split = new BinaryDataBuilder ();
+		split.Add ((byte)TextEncodingType.Utf16WithBom);
+		split.Add ("eng"u8);
+		split.Add (0xFF, 0xFE);
+		split.Add (0, 0);
+		split.Add (0xFF, 0xFE);
+		split.Add (Encoding.Unicode.GetBytes ("ye"));
+		split.Add (0, 0);
+		split.Add (Encoding.Unicode.GetBytes ("pa"));
+		split.Add (0x00);
+
+		var ended = CommentFrame.Read (split.ToBinaryData ().Span, Id3v2Version.V24);
+		Assert.IsTrue (ended.IsSuccess, ended.Error);
+		Assert.AreEqual ("ye", ended.Frame!.Text);
+		AssertNoNul (ended.Frame.Text);
+
+		using var terminator = new BinaryDataBuilder ();
+		terminator.Add ((byte)TextEncodingType.Utf16WithBom);
+		terminator.Add ("eng"u8);
+		terminator.Add (0xFF, 0xFE);
+		terminator.Add (0, 0);
+		terminator.Add (0, 0);
+
+		var empty = CommentFrame.Read (terminator.ToBinaryData ().Span, Id3v2Version.V24);
+		Assert.IsTrue (empty.IsSuccess, empty.Error);
+		Assert.AreEqual ("", empty.Frame!.Text);
+	}
+
 	static byte[] UserText (string description, string value)
 	{
 		using var builder = new BinaryDataBuilder ();
