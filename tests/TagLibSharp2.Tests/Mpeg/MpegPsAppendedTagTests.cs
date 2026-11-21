@@ -402,11 +402,11 @@ public sealed class MpegPsAppendedTagTests
 
 	// A v2.4 tag with a footer and an extended header whose "tag is an update" flag is set
 	// (ID3v2.4 structure 3.2: size 7 including itself, one flag byte %0b000000, flag data length $00).
-	static byte[] UpdateTag (string title)
+	internal static byte[] UpdateTag (string title, int flagBytes = 1)
 	{
 		var plain = Appended (title);
 		var body = plain.AsSpan (10, plain.Length - 20).ToArray ();
-		byte[] extended = [0x00, 0x00, 0x00, 0x07, 0x01, 0x40, 0x00];
+		byte[] extended = [0x00, 0x00, 0x00, 0x07, (byte)flagBytes, 0x40, 0x00];
 		var size = extended.Length + body.Length;
 		byte[] header = [0x49, 0x44, 0x33, 0x04, 0x00, 0x50, (byte)(size >> 21), (byte)((size >> 14) & 0x7F), (byte)((size >> 7) & 0x7F), (byte)(size & 0x7F)];
 		var footer = (byte[])header.Clone ();
@@ -416,7 +416,7 @@ public sealed class MpegPsAppendedTagTests
 		return Concat (header, extended, body, footer);
 	}
 
-	static int Count (byte[] data, ReadOnlySpan<byte> needle)
+	internal static int Count (byte[] data, ReadOnlySpan<byte> needle)
 	{
 		var count = 0;
 		for (var i = 0; i + needle.Length <= data.Length; i++) {
