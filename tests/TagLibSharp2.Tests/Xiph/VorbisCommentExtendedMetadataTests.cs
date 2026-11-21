@@ -422,14 +422,14 @@ public class VorbisCommentExtendedMetadataTests
 	}
 
 	[TestMethod]
-	public void Movement_Set_RewritesMovementName_ClearRemovesBoth ()
+	public void Movement_Set_WritesMovementName_ClearRemovesIt ()
 	{
 		var comment = new VorbisComment ("test");
 		comment.AddField ("MOVEMENTNAME", "Adagio");
 		comment.Movement = "Allegro";
 
 		Assert.AreEqual ("Allegro", comment.Movement);
-		AssertSingle (comment, "MOVEMENT", "Allegro");
+		Assert.HasCount (0, comment.GetValues ("MOVEMENT"));
 		AssertSingle (comment, "MOVEMENTNAME", "Allegro");
 
 		comment.Movement = null;
@@ -439,23 +439,50 @@ public class VorbisCommentExtendedMetadataTests
 	}
 
 	[TestMethod]
-	public void Movement_SetWithoutMovementName_DoesNotAddIt ()
+	public void Movement_SetOnAnEmptyTag_WritesPicardsMovementName ()
 	{
 		var comment = new VorbisComment ("test");
 		comment.Movement = "Allegro";
 
-		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+		AssertSingle (comment, "MOVEMENTNAME", "Allegro");
+		Assert.HasCount (0, comment.GetValues ("MOVEMENT"));
 	}
 
 	[TestMethod]
-	public void Movement_SetEmpty_RemovesMovementName ()
+	public void Movement_LegacyNameInMovement_IsReadAndKeptInStep ()
+	{
+		// Earlier versions wrote the name to MOVEMENT. A MOVEMENT that is not a number still reads
+		// as the name; a new name updates it, and a clear removes it.
+		var comment = new VorbisComment ("test");
+		comment.AddField ("MOVEMENT", "Allegro");
+		Assert.AreEqual ("Allegro", comment.Movement);
+		Assert.IsNull (comment.MovementNumber);
+
+		comment.Movement = "Adagio";
+		AssertSingle (comment, "MOVEMENT", "Adagio");
+		AssertSingle (comment, "MOVEMENTNAME", "Adagio");
+
+		comment.MovementNumber = 2;
+		AssertSingle (comment, "MOVEMENTNUMBER", "2");
+		AssertSingle (comment, "MOVEMENT", "Adagio");
+
+		comment.Movement = null;
+		Assert.HasCount (0, comment.GetValues ("MOVEMENT"));
+		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+		Assert.AreEqual (2u, comment.MovementNumber);
+	}
+
+	[TestMethod]
+	public void Movement_SetEmpty_LeavesAnEmptyNameAndRemovesALegacyName ()
 	{
 		var comment = new VorbisComment ("test");
 		comment.AddField ("MOVEMENTNAME", "Adagio");
+		comment.AddField ("MOVEMENT", "Adagio");
 		comment.Movement = "";
 
 		Assert.AreEqual ("", comment.Movement);
-		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+		AssertSingle (comment, "MOVEMENTNAME", "");
+		Assert.HasCount (0, comment.GetValues ("MOVEMENT"));
 	}
 
 	[TestMethod]
@@ -484,7 +511,6 @@ public class VorbisCommentExtendedMetadataTests
 	}
 
 	[TestMethod]
-	[DataRow ("MOVEMENT", "MOVEMENTNAME", "Allegro")]
 	[DataRow ("ORIGINALDATE", "ORIGINALYEAR", "1969")]
 	public void EmptyPrimary_UnchangedWriteBack_KeepsBothFields (string primary, string fallback, string fallbackValue)
 	{

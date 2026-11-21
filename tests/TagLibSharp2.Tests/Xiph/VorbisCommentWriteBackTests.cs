@@ -83,7 +83,7 @@ public class VorbisCommentWriteBackTests
 		comment.AddField ("MOVEMENT", "V2");
 		comment.AddField ("MOVEMENTNAME", "N");
 		Assert.AreEqual ("V2", comment.Artist);
-		Assert.AreEqual ("V2", comment.Movement);
+		Assert.AreEqual ("N", comment.Movement);
 		var before = string.Join ("|", comment.Fields.Select (f => f.Name + "=" + f.Value));
 		comment.Artist = comment.Artist;
 		comment.Movement = comment.Movement;
@@ -93,8 +93,8 @@ public class VorbisCommentWriteBackTests
 		comment.Movement = "";
 
 		Assert.AreEqual ("", string.Join ("|", comment.GetValues ("ARTIST")));
-		Assert.AreEqual ("", string.Join ("|", comment.GetValues ("MOVEMENT")));
-		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+		Assert.HasCount (0, comment.GetValues ("MOVEMENT"));
+		Assert.AreEqual ("", string.Join ("|", comment.GetValues ("MOVEMENTNAME")));
 	}
 
 	[TestMethod]

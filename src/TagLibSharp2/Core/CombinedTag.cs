@@ -158,15 +158,15 @@ public class CombinedTag : Tag
 		FirstNonEmptyString (tag => tag.ReadCopyableDate ());
 
 	/// <inheritdoc/>
-	internal override bool ReadsFrom (Tag tag)
+	internal override IEnumerable<Tag> Leaves ()
 	{
-		if (base.ReadsFrom (tag))
-			return true;
+		yield return this;
 		foreach (var inner in _tags) {
-			if (inner is not null && inner.ReadsFrom (tag))
-				return true;
+			if (inner is null)
+				continue;
+			foreach (var leaf in inner.Leaves ())
+				yield return leaf;
 		}
-		return false;
 	}
 
 	/// <inheritdoc/>

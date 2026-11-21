@@ -125,11 +125,15 @@ public class Id3v2WriteBackTests
 		foreach (var f in probe.UserTextFrames)
 			frames.Add (TestBuilders.Id3v2.CreateFrame ("TXXX", Join ([0x01], Utf16 (f.Description), Nul16, Utf16 (value), Nul16, Utf16 ("V2")), version));
 		if (probe.Comments.Count > 0) {
+			// An empty comment first: the getter shows the first non-empty one, as ffprobe and TagLib# do.
+			frames.Add (TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "eng"u8.ToArray (), [0x00]), version));
 			frames.Add (TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "deu"u8.ToArray (), [0x00], System.Text.Encoding.Latin1.GetBytes (value)), version));
 			frames.Add (TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "eng"u8.ToArray (), "note"u8.ToArray (), [0x00], "other"u8.ToArray ()), version));
 		}
-		foreach (var _ in probe.LyricsFrames)
+		foreach (var _ in probe.LyricsFrames) {
+			frames.Add (TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x00], "eng"u8.ToArray (), [0x00]), version));
 			frames.Add (TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x01], "deu"u8.ToArray (), Utf16 (""), Nul16, Utf16 (value)), version));
+		}
 		foreach (var f in probe.UrlFrames)
 			frames.Add (TestBuilders.Id3v2.CreateFrame (f.Id, System.Text.Encoding.Latin1.GetBytes (value), version));
 		foreach (var f in probe.UniqueFileIdFrames)
@@ -176,6 +180,45 @@ public class Id3v2WriteBackTests
 
 		Assert.IsEmpty (failures, string.Join (",", failures));
 		Assert.IsEmpty (uncovered, string.Join (",", uncovered));
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version3)]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	public void CommentAndLyrics_EmptyFirstFrame_ReadTheNextAndEmptyStringClears (byte version)
+	{
+		var body = Join (
+			TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "eng"u8.ToArray (), [0x00]), version),
+			TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "deu"u8.ToArray (), [0x00], "Hallo"u8.ToArray ()), version),
+			TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x00], "eng"u8.ToArray (), [0x00]), version),
+			TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x00], "deu"u8.ToArray (), [0x00], "Lied"u8.ToArray ()), version));
+		var tag = Id3v2Tag.Read (Join (TestBuilders.Id3v2.CreateHeader (version, (uint)body.Length), body)).Tag!;
+		Assert.AreEqual ("Hallo", tag.Comment);
+		Assert.AreEqual ("Lied", tag.Lyrics);
+
+		var before = tag.Render ().ToArray ();
+		tag.Comment = tag.Comment;
+		tag.Lyrics = tag.Lyrics;
+		CollectionAssert.AreEqual (before, tag.Render ().ToArray ());
+
+		tag.Comment = "";
+		tag.Lyrics = "";
+		Assert.IsEmpty (tag.Comments);
+		Assert.IsEmpty (tag.LyricsFrames);
+		Assert.IsNull (tag.Comment);
+		Assert.IsNull (tag.Lyrics);
+	}
+
+	[TestMethod]
+	public void CommentAndLyrics_EveryFrameEmpty_ReadEmpty ()
+	{
+		var body = Join (
+			TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "eng"u8.ToArray (), [0x00]), 4),
+			TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x00], "eng"u8.ToArray (), [0x00]), 4));
+		var tag = Id3v2Tag.Read (Join (TestBuilders.Id3v2.CreateHeader (4, (uint)body.Length), body)).Tag!;
+
+		Assert.AreEqual ("", tag.Comment);
+		Assert.AreEqual ("", tag.Lyrics);
 	}
 
 	[TestMethod]
