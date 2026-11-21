@@ -106,6 +106,13 @@ public readonly struct AudibleFileReadResult : IEquatable<AudibleFileReadResult>
 /// amount, and the cover's image position moves with it. Every other byte, including the encrypted
 /// audio and its DRM keys, is copied unchanged. Decryption is out of scope.
 /// </para>
+/// <para>
+/// Edited files have been checked with ffprobe, ffmpeg, and ExifTool, which read the new values back.
+/// They have not been tested with Audible's own apps. The file carries a 40-hex-digit value under the
+/// key <c>68ec733412b9</c> and 40 opaque bytes in chunk 3 whose purpose is not published; if an app
+/// checks either against the dictionary, it may refuse an edited file. Keep a copy of the original, or
+/// save to a new path.
+/// </para>
 /// </remarks>
 public sealed class AudibleFile : IMediaFile
 {

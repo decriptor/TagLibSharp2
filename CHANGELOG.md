@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `AudibleFile` and `AudibleTag` read and write Audible `.aa` audiobooks: the text dictionary (title, author, narrator, provider, dates, descriptions, keywords, copyright, short and parent titles, product and title IDs, and any other key through `GetValue`/`SetValue`), the cover image, and the duration. A save rewrites the dictionary and moves every table-of-contents offset, the declared file size, and the cover position by the change in its size. The encrypted audio and the DRM keys are copied unchanged; `SetValue` refuses `codec`, `HeaderSeed`, `HeaderKey`, and `EncryptedBlocks`, and `Clear` keeps them. `MediaFormat.Audible` and `TagTypes.Audible` are new, and `.aa` is detected by its magic or extension.
+- `AudibleFile` and `AudibleTag` read and write Audible `.aa` audiobooks: the text dictionary (title, author, narrator, provider, dates, descriptions, keywords, copyright, short and parent titles, product and title IDs, and any other key through `GetValue`/`SetValue`), the cover image, and the duration. A save rewrites the dictionary and moves every table-of-contents offset, the declared file size, and the cover position by the change in its size. The encrypted audio and the DRM keys are copied unchanged; `SetValue` refuses `codec`, `HeaderSeed`, `HeaderKey`, and `EncryptedBlocks`, and `Clear` keeps them. `MediaFormat.Audible` and `TagTypes.Audible` are new, and `.aa` is detected by its magic or extension. Edited `.aa` files have been checked with ffprobe, ffmpeg, and ExifTool, not with Audible's own apps, which may check a digest the file stores; keep a copy of the original or save to a new path.
 - `.aax` opens as MP4 by extension as well as by content. `Mp4Tag` and `Mp4File` gain `Narrator` (`©nrt`), `ShortTitle` (`@sti`), `ParentTitle` (`@pti`), `ParentShortTitle` (`@PST`), `ParentProductId` (`@ppi`), `ProductId` (`prID`), `ReleaseDate` (`rldt`), and `ProductVersion` (`VERS`). An Audible `aavd` sample entry reports AAC.
 
 ### Fixed
 
 - An MP4 `ilst` item whose code the reader had no name for (for example Audible's `CDEK`, `CDET`, `AACR`, or `GUID`) was dropped on read and so removed by the next save. Every `ilst` item is now read and written back.
+- `Mp4Tag.Genre` reads the ID3v1-coded `gnre` item when there is no `©gen`, and `Copyright` reads `©cpy` when there is no `cprt`. Setting either removes the older item, so readers that show both items no longer show the old value next to the new one.
+- In QuickTime metadata (a `keys` atom in `meta`), the mapped text properties read the item whose key names their field (`title`, `artist`, `genre`, and so on, with or without the `com.apple.quicktime.` prefix). Setting one rewrites that item instead of adding a second, iTunes-coded one.
 
 ## [0.6.0] - 2026-01-05
 
