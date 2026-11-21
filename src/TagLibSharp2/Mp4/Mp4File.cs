@@ -1028,17 +1028,20 @@ public sealed class Mp4File : IMediaFile
 
 			// Handle cover art specially
 			if (atomId == Mp4AtomMapping.CoverArt) {
-				ParseCoverArt (atomBox, tag);
+				if (!ParseCoverArt (atomBox, tag))
+					tag.PreserveIlstAtom (atomBox.Render ());
 				continue;
 			}
 
 			// Handle freeform atoms (----)
 			if (atomId == Mp4AtomMapping.FreeformAtom) {
-				ParseFreeformAtom (atomBox, tag);
+				if (!ParseFreeformAtom (atomBox, tag))
+					tag.PreserveIlstAtom (atomBox.Render ());
 				continue;
 			}
 
-			// Standard atoms contain data sub-atoms
+			// Standard atoms contain data sub-atoms.
+			// Names outside ContainerBoxes have no children, so the original box is kept.
 			var dataAtoms = new List<Mp4DataAtom> ();
 			foreach (var child in atomBox.Children) {
 				if (child.Type == "data" && child.Data.Length >= 8) {
@@ -1049,12 +1052,14 @@ public sealed class Mp4File : IMediaFile
 
 			if (dataAtoms.Count > 0)
 				tag.SetAtoms (atomId, dataAtoms);
+			else
+				tag.PreserveIlstAtom (atomBox.Render ());
 		}
 
 		return tag;
 	}
 
-	static void ParseCoverArt (Mp4Box covrBox, Mp4Tag tag)
+	static bool ParseCoverArt (Mp4Box covrBox, Mp4Tag tag)
 	{
 		var pictures = new List<Mp4Picture> ();
 
@@ -1066,11 +1071,14 @@ public sealed class Mp4File : IMediaFile
 			}
 		}
 
-		if (pictures.Count > 0)
-			tag.Pictures = [.. pictures];
+		if (pictures.Count == 0)
+			return false;
+
+		tag.Pictures = [.. pictures];
+		return true;
 	}
 
-	static void ParseFreeformAtom (Mp4Box freeformBox, Mp4Tag tag)
+	static bool ParseFreeformAtom (Mp4Box freeformBox, Mp4Tag tag)
 	{
 		// Freeform atoms have mean, name, and data children
 		string? mean = null;
@@ -1090,10 +1098,12 @@ public sealed class Mp4File : IMediaFile
 			}
 		}
 
-		if (!string.IsNullOrEmpty (mean) && !string.IsNullOrEmpty (name) && dataAtoms.Count > 0) {
-			var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-			tag.SetAtoms (key, dataAtoms);
-		}
+		if (string.IsNullOrEmpty (mean) || string.IsNullOrEmpty (name) || dataAtoms.Count == 0)
+			return false;
+
+		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
+		tag.SetAtoms (key, dataAtoms);
+		return true;
 	}
 
 	/// <summary>

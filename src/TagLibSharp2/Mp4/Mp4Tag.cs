@@ -51,6 +51,9 @@ public sealed class Mp4Tag : Tag
 	readonly Dictionary<string, List<Mp4DataAtom>> _atoms = new ();
 	readonly List<Mp4Picture> _pictures = new ();
 
+	// ilst children that are not rebuilt from _atoms, such as "orch". A title edit must not drop them.
+	readonly List<BinaryData> _preservedAtoms = new ();
+
 	/// <inheritdoc/>
 	public override TagTypes TagType => TagTypes.Apple;
 
@@ -593,6 +596,7 @@ public sealed class Mp4Tag : Tag
 		get => [.. _pictures];
 		set {
 			_pictures.Clear ();
+			DropPreserved (Mp4AtomMapping.CoverArt);
 			if (value is not null) {
 				foreach (var pic in value) {
 					if (pic is Mp4Picture mp4Pic)
@@ -662,7 +666,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	uint? GetInteger (string atomId)
@@ -681,7 +685,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeInteger, BinaryData.FromUInt32BE (value.Value));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	bool GetBoolean (string atomId)
@@ -700,7 +704,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeInteger, new BinaryData ([1]));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	bool GetTrackDisc (string atomId, out uint number, out uint total)
@@ -723,7 +727,7 @@ public sealed class Mp4Tag : Tag
 		data[5] = (byte)(total & 0xFF);
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeBinary, new BinaryData (data));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	string? GetFreeform (string mean, string name)
@@ -745,12 +749,13 @@ public sealed class Mp4Tag : Tag
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
-		_atoms[key] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (key, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	void RemoveAtom (string atomId)
 	{
 		_atoms.Remove (atomId);
+		DropPreserved (atomId);
 	}
 
 	/// <inheritdoc/>
@@ -758,6 +763,7 @@ public sealed class Mp4Tag : Tag
 	{
 		_atoms.Clear ();
 		_pictures.Clear ();
+		_preservedAtoms.Clear ();
 	}
 
 	/// <inheritdoc/>
@@ -779,15 +785,14 @@ public sealed class Mp4Tag : Tag
 
 		if (_pictures.Count > 0) {
 			var coverDataAtoms = new List<Mp4DataAtom> ();
-			foreach (var pic in _pictures) {
-				var isJpeg = pic.MimeType.Contains ("jpeg", StringComparison.OrdinalIgnoreCase) ||
-							 pic.MimeType.Contains ("jpg", StringComparison.OrdinalIgnoreCase);
-				var typeIndicator = isJpeg ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng;
-				coverDataAtoms.Add (new Mp4DataAtom (typeIndicator, pic.PictureData));
-			}
+			foreach (var pic in _pictures)
+				coverDataAtoms.Add (new Mp4DataAtom (pic.RenderTypeIndicator, pic.PictureData));
 
 			RenderStandardAtom (builder, Mp4AtomMapping.CoverArt, coverDataAtoms);
 		}
+
+		foreach (var preserved in _preservedAtoms)
+			builder.Add (preserved);
 
 		return builder.ToBinaryData ();
 	}
@@ -880,7 +885,31 @@ public sealed class Mp4Tag : Tag
 			return;
 		}
 
+		DropPreserved (atomId);
 		_atoms[atomId] = dataAtoms;
+	}
+
+	internal void PreserveIlstAtom (BinaryData box)
+	{
+		if (!box.IsEmpty)
+			_preservedAtoms.Add (box);
+	}
+
+	void DropPreserved (string atomId)
+	{
+		// Freeform keys are "----:mean:name". Only a real 4-character atom replaces a preserved box.
+		if (atomId.Length != 4)
+			return;
+
+		_preservedAtoms.RemoveAll (box => BoxType (box) == atomId);
+	}
+
+	static string BoxType (BinaryData box)
+	{
+		if (box.Length < 8)
+			return string.Empty;
+
+		return Polyfills.Latin1.GetString (box.Span.Slice (4, 4));
 	}
 
 	internal IReadOnlyList<Mp4Picture> GetPictureList () => _pictures;
