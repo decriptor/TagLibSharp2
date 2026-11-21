@@ -8,7 +8,7 @@ namespace TagLibSharp2.Aac;
 /// </summary>
 /// <remarks>
 /// <para>
-/// ISO/IEC 13818-7 §6.3 (Table 25) and ISO/IEC 14496-3 §4.4.1.1 (Table 4.2):
+/// ISO/IEC 13818-7 §6.3 (program_config_element) and ISO/IEC 14496-3 §4.4.1.1:
 /// element_instance_tag(4), object_type(2), sampling_frequency_index(4),
 /// num_front_channel_elements(4), num_side_channel_elements(4), num_back_channel_elements(4),
 /// num_lfe_channel_elements(2), num_assoc_data_elements(3), num_valid_cc_elements(4),

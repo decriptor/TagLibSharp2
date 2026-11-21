@@ -8,12 +8,12 @@ namespace TagLibSharp2.Aac;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Both headers store a 2-bit profile. ISO/IEC 13818-7 §6.2 (Table 31): 0 Main, 1 Low Complexity,
+/// Both headers store a 2-bit profile. ISO/IEC 13818-7 §6.2 (adts_fixed_header): 0 Main, 1 Low Complexity,
 /// 2 Scalable Sample Rate, 3 reserved. An MPEG-4 ADTS header (ID = 0) stores the MPEG-4 audio object
 /// type minus one (ISO/IEC 14496-3 §1.A.2.2.1), where 3 is Long Term Prediction.
 /// </para>
 /// <para>
-/// Each value is the MPEG-4 audio object type (ISO/IEC 14496-3 Table 1.1), the 2-bit field plus one.
+/// Each value is the MPEG-4 audio object type (the ISO/IEC 14496-3 audio object type table), the 2-bit field plus one.
 /// HE-AAC signals SBR inside the audio payload, not in this field, so an HE-AAC stream reports
 /// <see cref="LowComplexity"/>.
 /// </para>

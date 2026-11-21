@@ -8,7 +8,7 @@ namespace TagLibSharp2.Aac;
 /// </summary>
 /// <remarks>
 /// <para>
-/// ISO/IEC 13818-7 §6.1 (Table 2) and ISO/IEC 14496-3 §1.A.2.1 (Table 1.A.2):
+/// ISO/IEC 13818-7 §6.1 (adif_header) and ISO/IEC 14496-3 §1.A.2.1:
 /// </para>
 /// <code>
 /// adif_id                         32  "ADIF"
