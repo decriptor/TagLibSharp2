@@ -2,7 +2,7 @@
 
 > Generated: January 2026
 > Last Updated: January 2026 (v0.5.0 release)
-> Status: Production ready - 17 formats read and write tags, polish phase
+> Status: Production ready - 16 formats read and write tags, polish phase
 
 ## Executive Summary
 
@@ -241,9 +241,9 @@ These items from the requirements are explicitly not planned:
 
 | Metric | Current (v0.5.0) | Target |
 |--------|------------------|--------|
-| Format coverage | 15/20 (75%) | 20/20 (100%) |
+| Format coverage | 16/22 (73%) | 22/22 (100%) |
 | Test coverage | 90.1% ✅ | >90% |
-| Round-trip tests | All 17 formats ✅ | All formats |
+| Round-trip tests | All 16 formats ✅ | All formats |
 | Cross-tagger compat | Unit tests ✅ | 7 major taggers |
 | Edge case handling | Complete ✅ | All documented cases |
 
