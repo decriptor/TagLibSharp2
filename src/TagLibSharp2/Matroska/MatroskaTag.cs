@@ -351,7 +351,10 @@ public sealed class MatroskaTag : Tag
 	/// <remarks>
 	/// Writes one <c>SimpleTag</c> per value at the item level, the level <see cref="Comment"/> and
 	/// <see cref="Genre"/> write. Matroska allows a name to repeat (https://www.matroska.org/technical/tagging.html).
-	/// The same name at a broader level stays and is shadowed, as the format defines.
+	/// The same name at a broader level stays and is shadowed, as the format defines. The item level is the
+	/// most specific file-level target in the file, or 50 (album) when there is none, so on a file with
+	/// only album tags <c>"TITLE"</c> writes the album title; <see cref="Title"/> still prefers the segment
+	/// title there.
 	/// </remarks>
 	public override bool SetCustomField (string name, params string[] values)
 	{

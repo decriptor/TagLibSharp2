@@ -1161,9 +1161,12 @@ public abstract class Tag
 	/// value longer than its 16-bit length field.</description></item>
 	/// </list>
 	/// <para>
-	/// A name that a mapped property also uses is stored in the same place, so the property and the custom
-	/// field never disagree. A property that parses its text (for example <see cref="Track"/>) then reads
-	/// the new text the way it reads any other file.
+	/// A name that a mapped property also uses is stored in the same place the property reads, not refused
+	/// and not duplicated. A property that parses its text (for example <see cref="Track"/>) then reads the
+	/// new text the way it reads any other file. A property that reads more than that one place can still
+	/// show something else: on Matroska the name is written at the item level, which is the album level
+	/// (50) when the file has only album tags, so <c>"TITLE"</c> there sets <see cref="Album"/>, and
+	/// <see cref="Title"/> prefers the segment title over a <c>TITLE</c> tag below the track level.
 	/// </para>
 	/// <para>
 	/// ID3v2.3 has no multiple-value text. The values are still separated by U+0000 there, as this library

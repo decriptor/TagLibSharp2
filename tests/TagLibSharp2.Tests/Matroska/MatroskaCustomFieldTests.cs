@@ -95,4 +95,22 @@ public partial class MatroskaFileTests
 
 		AssertCustom (again.Tag.GetCustomField ("MY_FIELD"), "x");
 	}
+
+	[TestMethod]
+	public void CustomField_TitleOnAlbumOnlyFile_IsTheAlbumTitleAndTheSegmentTitleStays ()
+	{
+		// A segment title and only album-level (50) tags: the item level is 50, so TITLE is the album title,
+		// and Title still reads the segment title (RFC 9559 §5.1.2.4, Info\Title).
+		var info = Master (0x1549A966, Element (0x7BA9, "SegTitle"u8));
+		var original = FileWith (info, Tags (Tag (50, Simple ("ARTIST", "A"))), Cluster);
+		var file = MatroskaFile.Read (original).File!;
+		Assert.AreEqual ("SegTitle", file.Tag.Title);
+
+		Assert.IsTrue (file.Tag.SetCustomField ("TITLE", "Custom"));
+		var again = Reopen (file, original);
+
+		AssertCustom (again.Tag.GetCustomField ("TITLE"), "Custom");
+		Assert.AreEqual ("Custom", again.Tag.Album);
+		Assert.AreEqual ("SegTitle", again.Tag.Title);
+	}
 }
