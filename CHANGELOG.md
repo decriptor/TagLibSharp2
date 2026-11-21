@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Matroska: setting `Pictures` writes image attachments (RFC 9559 sections 5.1.6 and 21.1). A new front cover is `cover.jpg` or `cover.png` and goes first; other picture types get names such as `back.jpg` or `artist.png`, which read back as their type. The description goes in `FileDescription`. An attachment that matches a picture keeps its `FileName`, `FileUID` and bytes. Fonts and other non-image attachments are kept. Removing a picture removes only its attachment and any tag that targeted only that attachment.
 - Matroska: a new or moved `Attachments` element goes after the last Cluster or in a Void, and gets an entry in the first SeekHead. The SeekHead can widen its size field to grow into the Void after it.
 - `MatroskaFile.Tracks` lists every `TrackEntry` as a `MatroskaTrack` with `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
-- `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry` when the `Void` right after `Tracks` has room, so no element moves; otherwise the save fails and nothing is written. A track the caller did not set keeps its bytes.
+- `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry`, taking the room from the `Void` right after `Tracks` when it has enough so no element moves; otherwise everything after `Tracks` moves once, with SeekHead, Cues, Cluster `Position`, and CRC-32 values updated. A track the caller did not set keeps its bytes.
 
 ### Changed
 

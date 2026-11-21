@@ -65,8 +65,6 @@ public class MatroskaTrackIntegrationTests : FileFormatTestBase
 
 		var fs = new MockFileSystem ();
 		var saved = file.SaveToFile ("/toggled.mkv", original, fs);
-		if (!saved.IsSuccess && saved.Error!.Contains ("no Void right after Tracks", StringComparison.Ordinal))
-			Assert.Inconclusive ("Adding FlagEnabled to this file would move later elements: " + saved.Error);
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		var toggled = fs.ReadAllBytes ("/toggled.mkv");
 		var again = Open (toggled);
@@ -77,6 +75,7 @@ public class MatroskaTrackIntegrationTests : FileFormatTestBase
 				Assert.AreEqual (file.Tracks[i].IsEnabled, again.Tracks[i].IsEnabled);
 		}
 
+		// Blocks are byte-identical; only a moved cluster's Position value differs.
 		CollectionAssert.AreEqual (Children (original, MatroskaIds.Cluster), Children (toggled, MatroskaIds.Cluster));
 
 		again.Tracks[index].IsEnabled = before;
@@ -102,6 +101,25 @@ public class MatroskaTrackIntegrationTests : FileFormatTestBase
 		return 0;
 	}
 
+	/// <summary>
+	/// A cluster payload with its <c>Position</c> value zeroed. Position is the cluster's own segment
+	/// position (RFC 9559 §5.1.3.2), so it changes whenever the cluster moves; the blocks do not.
+	/// </summary>
+	static byte[] WithoutPosition (ReadOnlySpan<byte> payload, ulong id)
+	{
+		var copy = payload.ToArray ();
+		if (id != MatroskaIds.Cluster)
+			return copy;
+		var offset = 0;
+		while (offset < copy.Length && EbmlReader.TryRead (copy, offset, copy.Length, out var child) && !child.UnknownSize) {
+			if (child.Id == 0xA7)
+				copy.AsSpan (child.DataOffset, (int)child.DataLength).Clear ();
+			offset = child.End;
+		}
+
+		return copy;
+	}
+
 	/// <summary>A SHA-256 of the payload of every first-Segment child with <paramref name="id"/>, in file order.</summary>
 	static List<string> Children (byte[] file, ulong id)
 	{
@@ -119,7 +137,7 @@ public class MatroskaTrackIntegrationTests : FileFormatTestBase
 
 					var childEnd = child.UnknownSize ? end : child.End;
 					if (child.Id == id)
-						found.Add (Convert.ToHexString (System.Security.Cryptography.SHA256.HashData (file.AsSpan (child.DataOffset, childEnd - child.DataOffset))));
+						found.Add (Convert.ToHexString (System.Security.Cryptography.SHA256.HashData (WithoutPosition (file.AsSpan (child.DataOffset, childEnd - child.DataOffset), id))));
 					if (child.UnknownSize)
 						break;
 					at = child.End;
