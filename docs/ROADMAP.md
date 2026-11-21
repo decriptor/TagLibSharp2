@@ -28,7 +28,7 @@ TagLibSharp2 currently supports **16 formats** with read and write. The library 
 | DFF | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | WavPack | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | Musepack | P1 | ✅ | ✅ | ✅ | - | SV7 and SV8 support |
-| Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values are saved. Attachments and chapters are preserved, not rewritten |
+| Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values and track enabled flags are saved. Attachments and chapters are preserved, not rewritten |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |
 | TrueAudio | P2 | ❌ | ❌ | ❌ | LOW | Uses ID3v2 |
