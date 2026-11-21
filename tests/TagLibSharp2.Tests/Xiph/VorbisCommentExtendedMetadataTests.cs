@@ -356,6 +356,39 @@ public class VorbisCommentExtendedMetadataTests
 	}
 
 	[TestMethod]
+	public void OriginalReleaseDate_SetAndClear_RemovesOriginalYear ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("ORIGINALYEAR", "1969");
+		comment.OriginalReleaseDate = "2001-01-01";
+
+		Assert.AreEqual ("2001-01-01", comment.OriginalReleaseDate);
+		Assert.HasCount (0, comment.GetValues ("ORIGINALYEAR"));
+
+		comment.AddField ("ORIGINALYEAR", "1969");
+		comment.OriginalReleaseDate = null;
+		Assert.IsNull (comment.OriginalReleaseDate);
+		Assert.HasCount (0, comment.GetValues ("ORIGINALYEAR"));
+		Assert.HasCount (0, comment.GetValues ("ORIGINALDATE"));
+	}
+
+	[TestMethod]
+	public void Movement_SetAndClear_RemovesMovementName ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("MOVEMENTNAME", "Adagio");
+		comment.Movement = "Allegro";
+
+		Assert.AreEqual ("Allegro", comment.Movement);
+		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+
+		comment.AddField ("MOVEMENTNAME", "Adagio");
+		comment.Movement = null;
+		Assert.IsNull (comment.Movement);
+		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+	}
+
+	[TestMethod]
 	public void OriginalReleaseDate_SetNull_ClearsField ()
 	{
 		var comment = new VorbisComment ("test");

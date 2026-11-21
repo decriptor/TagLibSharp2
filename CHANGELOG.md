@@ -5,6 +5,14 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- An APE artist, album artist, composer, or genre is the first name. It is not a comma-joined string. A Basic copy from APE into MP4, ASF, RIFF INFO, or ID3v1 keeps that first name. A copy into ID3v2 keeps the full list.
+- Setting or clearing an APE year also removes `Date`. A locator reads as the same string a title locator reads. An empty text item reads as an empty string, and a binary item reads as null, for a name and for a title.
+- Setting or clearing a Vorbis original release date also removes `ORIGINALYEAR`. Setting or clearing a movement also removes `MOVEMENTNAME`.
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes
