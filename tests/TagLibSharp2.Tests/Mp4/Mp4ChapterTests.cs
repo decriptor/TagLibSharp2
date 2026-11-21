@@ -1291,7 +1291,7 @@ public class Mp4ChapterTests
 		//  6  a bad box after the audio stco hides a co64 into the mdat (keep: stbl tail)
 		//  7  no stsz or stz2 (keep: chunk extent unknown); 8 stco and 9 stsz counts past their box (keep)
 		// 10  a moov meta with only an hdlr (drop: it references nothing)
-		// 11  a moov meta with a bad box in front of an iloc into the mdat (keep: meta tail)
+		// 11  a moov meta with a bad box in front of an iloc into the mdat (keep: the iloc is in the unread tail)
 		// 12  a file-level meta with only an hdlr (drop); 13 one whose iloc item is in the mdat (keep)
 		// 14  the audio sizes in stz2 (8-bit entries), chunk in the mdat (keep); 15 chunk elsewhere (drop)
 		// 16  a second trak with the chapter track's track_ID, its chunk in the mdat (keep: compared by object)
@@ -1299,8 +1299,9 @@ public class Mp4ChapterTests
 		// 18  a moov meta whose iloc item uses construction method 1 (idat), not a file offset (drop)
 		// 19  stz2 16-bit sizes, the chunk ending exactly at the mdat (drop); 20 one byte later (keep)
 		// 21  stz2 4-bit sizes of 15, the chunk ending exactly at the mdat (drop); 22 one byte later (keep)
-		// 23  a moov meta that stops parsing at a bad box, with no iloc in sight (keep: the rest is unread)
-		var keep = variant is not (10 or 12 or 15 or 18 or 19 or 21);
+		// 23  a moov meta that stops parsing at a bad box, with no iloc in its unread bytes (drop: every box carries
+		//     its type code, so no iloc hides there; iTunes files have metas with stray trailing bytes)
+		var keep = variant is not (10 or 12 or 15 or 18 or 19 or 21 or 23);
 		var edited = EditChapters (Mp4ChapterTestBuilder.Build (new ()), 1);
 		byte[] bad = [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'];
 		var moovAt = edited.AsSpan ().IndexOf ("moov"u8) - 4;
