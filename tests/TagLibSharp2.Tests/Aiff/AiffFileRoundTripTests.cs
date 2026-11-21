@@ -150,7 +150,7 @@ public class AiffFileRoundTripTests
 		Assert.IsTrue (AiffFile.TryRead (written, out var reloaded));
 
 		// Assert
-		var pictures = reloaded!.Tag!.PictureFrames;
+		var pictures = reloaded!.Id3v2Tag!.PictureFrames;
 		Assert.AreEqual (1, pictures.Count);
 		CollectionAssert.AreEqual (jpegData, pictures[0].PictureData.ToArray ());
 	}
