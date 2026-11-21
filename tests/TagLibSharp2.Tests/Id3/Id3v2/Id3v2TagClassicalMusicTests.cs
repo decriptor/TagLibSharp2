@@ -135,6 +135,41 @@ public sealed class Id3v2TagClassicalMusicTests
 	}
 
 	[TestMethod]
+	public void Movement_SetAndClear_ReplacesAppleFrames ()
+	{
+		var named = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("MVNM", "Scherzo", TestConstants.Id3v2.Version3));
+		Assert.IsTrue (named.IsSuccess, named.Error);
+		named.Tag!.Movement = "Allegro";
+		Assert.AreEqual ("Allegro", named.Tag.Movement);
+		Assert.AreEqual ("Allegro", named.Tag.GetTextFrame ("MVNM"));
+		Assert.AreEqual ("Allegro", named.Tag.GetUserText ("MOVEMENT"));
+
+		named.Tag.Movement = null;
+		Assert.IsNull (named.Tag.Movement);
+		Assert.IsNull (named.Tag.GetTextFrame ("MVNM"));
+		Assert.IsNull (named.Tag.GetUserText ("MOVEMENT"));
+
+		var indexed = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("MVIN", "1/4", TestConstants.Id3v2.Version3));
+		Assert.IsTrue (indexed.IsSuccess, indexed.Error);
+		indexed.Tag!.MovementNumber = 9;
+		Assert.AreEqual (9u, indexed.Tag.MovementNumber);
+		Assert.AreEqual (4u, indexed.Tag.MovementTotal);
+
+		indexed.Tag.MovementTotal = 9;
+		Assert.AreEqual (9u, indexed.Tag.MovementNumber);
+		Assert.AreEqual (9u, indexed.Tag.MovementTotal);
+
+		indexed.Tag.MovementNumber = null;
+		Assert.IsNull (indexed.Tag.MovementNumber);
+		Assert.AreEqual (9u, indexed.Tag.MovementTotal);
+
+		indexed.Tag.MovementTotal = null;
+		Assert.IsNull (indexed.Tag.MovementNumber);
+		Assert.IsNull (indexed.Tag.MovementTotal);
+		Assert.IsNull (indexed.Tag.GetTextFrame ("MVIN"));
+	}
+
+	[TestMethod]
 	public void Movement_SetNull_ClearsValue ()
 	{
 		var tag = new Id3v2Tag ();
