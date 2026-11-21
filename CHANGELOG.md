@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chapter URL track (samples with an `href` modifier, 3GPP TS 26.245 §5.17.1.5) and chapter image tracks stay.
   Chapters and the tag are separate: `ClearAllMetadata()` and `Tag = null` keep the chapters, and
   `Chapters = []` keeps the tag.
+- `AviFile` reads and writes AVI files (RIFF `AVI ` form, including OpenDML `odml`/`indx` and `AVIX` forms). `MediaFile.Read` detects them as `MediaFormat.Avi`; WAV stays the `WAVE` form.
+  - Properties: duration (OpenDML `dmlh` total frames when present, timed by the video stream's rate and scale), video width, height, frame rate and BITMAPINFOHEADER FourCC, and the first audio stream's WAVEFORMATEX sample rate, channels, bits and bitrate.
+  - Tags: every `LIST INFO` in the first RIFF form (`InfoTag`) and an ID3v2 tag in an `ID32` chunk (`Id3v2Tag`). The unified `Tag` puts INFO first.
+  - Saving keeps the `movi` sample bytes. New tags reuse the tag and `JUNK` space before `movi`, so nothing moves; when they do not fit, the data moves and the RIFF size, absolute `idx1` offsets, `indx` super index entries and standard index base offsets are shifted. A save is refused, without writing, when an index cannot be verified first. An unchanged save writes the original bytes.
 
 #### Raw AAC (ADTS/ADIF) Support
 - `AacFile` reads and writes raw AAC files (`.aac`): ADTS (ISO/IEC 13818-7 §6.2, MPEG-2 and MPEG-4) and ADIF (§6.1)

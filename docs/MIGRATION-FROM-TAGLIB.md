@@ -483,7 +483,7 @@ async Task<string?> GetTitleAsync(string path, CancellationToken ct = default)
 TagLibSharp2 is under active development. These TagLib# features are planned but not yet implemented:
 
 - **Formats**: Speex, TrueAudio, Tracker formats (MOD/S3M/IT/XM)
-- **Features**: Matroska/WebM non-picture attachments are not written (tag values, chapters, and picture attachments are; WebM has no attachments), MPEG-4 video files
+- **Features**: Matroska/WebM non-picture attachments are not written (tag values, chapters, and picture attachments are; WebM has no attachments), MPEG-4 video files, AVI DivX (`IDVX`) and MovieID (`LIST MID `) tags (they are kept unchanged on save)
 
 ## Format-Specific Examples
 
@@ -714,7 +714,7 @@ if (result.IsSuccess)
 
 TagLibSharp2 includes several features not available in TagLib#:
 
-- **Automatic format detection**: `MediaFile.Read()` auto-detects MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A (including Audible .aax), ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, Matroska/WebM, MPEG program streams / video elementary streams, raw AAC (ADTS/ADIF), and Audible .aa
+- **Automatic format detection**: `MediaFile.Read()` auto-detects MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A (including Audible .aax), ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, Matroska/WebM, MPEG program streams / video elementary streams, raw AAC (ADTS/ADIF), Audible .aa, and AVI
 - **DSD audio support**: Native DSF and DFF format support for high-resolution DSD audio
 - **Lossless format breadth**: WavPack and Monkey's Audio support with APE tag handling
 - **Async I/O**: Full async support throughout the API with cancellation token support
