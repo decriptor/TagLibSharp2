@@ -343,6 +343,18 @@ public class AacFileTests
 	}
 
 	[TestMethod]
+	public void Read_Adif_HeaderLongerThanTheFirstRead_IsRead ()
+	{
+		// Two program config elements with 250-byte comments: a header past the 256-byte first read.
+		var data = Adif (64_000, programs: [[true], [true, false]], comment: new string ('c', 250), payloadBytes: 8_000);
+
+		var props = Properties (data);
+		Assert.AreEqual (TimeSpan.FromSeconds (1), props.Duration);
+		Assert.IsTrue (AacFile.IsValidFormat (data));
+		Assert.AreEqual (MediaFormat.Aac, MediaFile.Read (new MemoryStream (data)).Format);
+	}
+
+	[TestMethod]
 	public void Read_Adif_ProfileThreeIsReserved ()
 	{
 		Assert.AreEqual (AacProfile.Unknown, Properties (Adif (64_000, profile: 3)).Profile);

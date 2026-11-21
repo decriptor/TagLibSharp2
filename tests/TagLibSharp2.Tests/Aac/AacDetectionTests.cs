@@ -185,6 +185,86 @@ public class AacDetectionTests
 	}
 
 	[TestMethod]
+	public async Task Id3v2ThenPaddingThenOneFrameThenId3v1_DetectsAndOpens ()
+	{
+		// The ID3v1 tag after the only frame confirms it. Detection and the reader judge against the same
+		// bytes, so the file opens on every path (DetectEverywhere fails on a surface that does not open).
+		var data = Concat (Id3v2Bytes ("T"), new byte[100], AdtsFrame (300), Id3v1Bytes ("Back"));
+
+		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (data, "song.aac"));
+		var file = MediaFile.ReadFromData (data, "song.aac").GetFileAs<AacFile> ()!;
+		Assert.AreEqual (1, file.Properties!.FrameCount);
+		Assert.AreEqual ("Back", file.Id3v1Tag!.Title);
+	}
+
+	[TestMethod]
+	public async Task FalseMpegHeaderInTheGap_WhoseSuccessorIsInTheTrailingTag_DetectsAndOpens ()
+	{
+		// MPEG-2 Layer II, 160 kbps, 16 kHz: a 1440-byte frame whose successor falls inside the ID3v1 tag, so it is
+		// contradicted there. The audio region alone could not check it. Both paths must see the tag bytes.
+		byte[] falseMpeg = [0xFF, 0xF5, 0xE8, 0x00];
+		var gap = Concat (new byte[10], falseMpeg, new byte[10]);
+		var data = Concat (Id3v2Bytes ("T"), gap, Adts (3, length: 450), Id3v1Bytes ("Back"));
+
+		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (data));
+		Assert.AreEqual (3, MediaFile.ReadFromData (data).GetFileAs<AacFile> ()!.Properties!.FrameCount);
+	}
+
+	[TestMethod]
+	public async Task TruncatedAdifHeader_IsNotDetectedEither ()
+	{
+		var adif = Adif (64_000, comment: "a comment", payloadBytes: 0);
+		var data = Concat (Id3v2Bytes ("T"), adif.AsSpan (0, adif.Length - 3).ToArray ());
+
+		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (data));
+		Assert.IsFalse (AacFile.IsValidFormat (adif.AsSpan (0, adif.Length - 3)));
+	}
+
+	[TestMethod]
+	public void Id3TaggedNonMpegData_WithALateAdtsLookalike_IsNeverAac ()
+	{
+		// An ADTS header that cannot be checked counts only at the first byte after the tag. A FLAC frame
+		// sync (FF F8) is ADTS-shaped, so FLAC, WavPack, MP4 or Matroska data behind an ID3v2 tag would
+		// otherwise detect as AAC on some prefix.
+		byte[] lookalike = [0xFF, 0xF8, 0x15, 0x07, 0x09, 0xCB, 0x00];
+		var data = Concat (Id3v2Bytes ("T"), "fLaC"u8.ToArray (), new byte[40], lookalike, new byte[300]);
+		var tagEnd = Id3v2Bytes ("T").Length;
+		for (var length = tagEnd + 1; length <= data.Length; length++) {
+			Assert.AreNotEqual (MediaFormat.Aac, MediaFile.DetectFormat (data.AsSpan (0, length)), $"prefix {length}");
+			Assert.IsFalse (AacFile.IsValidFormat (data.AsSpan (0, length)), $"prefix {length}");
+		}
+	}
+
+	[TestMethod]
+	public async Task UncheckableMpegHeaderBeforeConfirmedAdts_IsMp3 ()
+	{
+		// The MPEG frame (417 bytes) runs past the data, so it cannot be checked, and it decides MP3 even though
+		// confirmed ADTS frames follow inside it.
+		var data = Concat (Id3v2Bytes ("T"), new byte[1], Mp3Frames (1).AsSpan (0, 4).ToArray (), new byte[4], Adts (3), new byte[20]);
+
+		Assert.IsFalse (AacFile.IsValidFormat (data));
+		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (data));
+	}
+
+	[TestMethod]
+	public async Task AdtsHeaderCutByTheStreamChunkEdge_IsFoundOnEveryPath ()
+	{
+		// The stream search reads 16 bytes, then 4 KB: a header at 4106-4111 bytes past the tag straddles
+		// that chunk's end and must be read again whole.
+		var tag = Id3v2Bytes ("T");
+		for (var gap = 4100; gap <= 4113; gap++) {
+			var data = Concat (tag, new byte[gap], Adts (20));
+			Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (data), $"gap {gap}");
+
+			// Both twins name the same first frame, so no frame is lost.
+			using var stream = new MemoryStream (data);
+			Assert.AreEqual (gap, AacStream.FindStart (data.AsSpan (tag.Length), AacStream.FirstFrameSearchBytes), $"span, gap {gap}");
+			Assert.AreEqual (tag.Length + gap, AacStream.FindStart (stream, tag.Length, data.Length, AacStream.FirstFrameSearchBytes), $"stream, gap {gap}");
+			Assert.AreEqual (20, MediaFile.ReadFromData (data).GetFileAs<AacFile> ()!.Properties!.FrameCount, $"gap {gap}");
+		}
+	}
+
+	[TestMethod]
 	public async Task LargeId3v2ThenAdts_IsAacThroughTheShortPeek ()
 	{
 		// The stream peek is 32 bytes and the tag is far longer.
