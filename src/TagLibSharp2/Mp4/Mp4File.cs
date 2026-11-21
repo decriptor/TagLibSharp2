@@ -1001,16 +1001,97 @@ public sealed class Mp4File : IMediaFile
 		if (ilst is null)
 			return null;
 
-		return ParseIlst (ilst);
+		return ParseIlst (ilst, ReadQuickTimeKeys (meta));
 	}
 
-	static Mp4Tag ParseIlst (Mp4Box ilst)
+	/// <summary>
+	/// Reads the keys of a meta whose handler is "mdta". Each ilst item's type is then a 1-based
+	/// index into this list (https://developer.apple.com/documentation/quicktime-file-format/metadata_item_keys_atom).
+	/// Entry i holds the key without the com.apple.quicktime. prefix, or null when it is not an
+	/// "mdta" namespace key. Returns null for any other handler.
+	/// </summary>
+	static string?[]? ReadQuickTimeKeys (Mp4Box meta)
+	{
+		var hdlr = meta.FindChild ("hdlr");
+		var keys = meta.FindChild ("keys");
+		if (hdlr is null || keys is null || hdlr.Data.Length < 12 || !hdlr.Data.Span.Slice (8, 4).SequenceEqual ("mdta"u8))
+			return null;
+
+		// keys: version and flags (4), entry_count (4), then key_size (4) + key_namespace (4) + key_value.
+		var span = keys.Data.Span;
+		if (span.Length < 8)
+			return null;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (span.Slice (4, 4));
+		var names = new List<string?> ();
+		var offset = 8;
+		while (names.Count < count && offset + 8 <= span.Length) {
+			var size = BinaryPrimitives.ReadUInt32BigEndian (span.Slice (offset, 4));
+			if (size < 8 || size > span.Length - offset)
+				break;
+
+			var value = span.Slice (offset + 8, (int)size - 8);
+			names.Add (span.Slice (offset + 4, 4).SequenceEqual ("mdta"u8) ? QuickTimeKeyName (value) : null);
+			offset += (int)size;
+		}
+
+		return [.. names];
+	}
+
+	static string QuickTimeKeyName (ReadOnlySpan<byte> value)
+	{
+		var key = System.Text.Encoding.UTF8.GetString (value.ToArray ());
+		return key.StartsWith (Mp4AtomMapping.QuickTimeKeyPrefix, StringComparison.Ordinal)
+			? key.Substring (Mp4AtomMapping.QuickTimeKeyPrefix.Length)
+			: key;
+	}
+
+	static bool IsMappedQuickTimeKey (string key) => key is
+		Mp4AtomMapping.QuickTimeTitle or Mp4AtomMapping.QuickTimeArtist or Mp4AtomMapping.QuickTimeAlbum or
+		Mp4AtomMapping.QuickTimeComment or Mp4AtomMapping.QuickTimeYear or Mp4AtomMapping.QuickTimeDescription or
+		Mp4AtomMapping.QuickTimePublisher or Mp4AtomMapping.QuickTimeGenre or Mp4AtomMapping.QuickTimeCopyright;
+
+	static string? QuickTimeKeyOf (Mp4Box item, string?[]? keys)
+	{
+		if (keys is null || item.Type.Length != 4)
+			return null;
+
+		var index = ((uint)item.Type[0] << 24) | ((uint)item.Type[1] << 16) | ((uint)item.Type[2] << 8) | item.Type[3];
+		if (index == 0 || index > keys.Length)
+			return null;
+
+		var key = keys[index - 1];
+		return key is not null && IsMappedQuickTimeKey (key) ? key : null;
+	}
+
+	static string? FirstText (Mp4Box item)
+	{
+		foreach (var child in Mp4BoxParser.ParseChildren (item.Data.Span)) {
+			if (child.Type != "data" || child.Data.Length < 8)
+				continue;
+
+			var atom = Mp4DataAtom.Parse (child.Data.Span);
+			if (atom.TypeIndicator == Mp4AtomMapping.TypeUtf8)
+				return atom.ToUtf8String ();
+		}
+
+		return null;
+	}
+
+	static Mp4Tag ParseIlst (Mp4Box ilst, string?[]? quickTimeKeys)
 	{
 		var tag = new Mp4Tag ();
 
 		// Each child of ilst is a metadata atom (©nam, ©ART, etc.)
 		foreach (var atomBox in ilst.Children) {
 			var atomId = atomBox.Type;
+
+			// In an "mdta" meta, a numeric type names a key; keep the item and let its property read it.
+			var quickTimeKey = QuickTimeKeyOf (atomBox, quickTimeKeys);
+			if (quickTimeKey is not null) {
+				tag.AddQuickTimeItem (quickTimeKey, atomBox.Render (), FirstText (atomBox));
+				continue;
+			}
 
 			// Handle cover art specially
 			if (atomId == Mp4AtomMapping.CoverArt) {
