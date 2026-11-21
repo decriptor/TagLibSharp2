@@ -515,6 +515,8 @@ Then chpl holds the first 255 chapters, titles cut to 255 UTF-8 bytes on a chara
 And the chapter track holds every chapter: an existing track keeps its track_ID, otherwise a new one is added
   and every sound and video track gets a chap reference to it
 And the new samples sit in their own mdat right after moov
+And that mdat replaces the one an earlier chapter save wrote, so repeated edits do not grow the file
+And old chapter samples that share an mdat with other media stay there unreferenced
 And every other track's chunk offsets move with the same update a tag edit makes
 And ffprobe, MediaInfo, and TagLibSharp2 read the same list back
 ```
