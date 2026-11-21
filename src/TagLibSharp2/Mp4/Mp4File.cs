@@ -696,13 +696,7 @@ public sealed class Mp4File : IMediaFile
 				list.Add (chapter);
 			}
 
-			// A stable sort: chapters that start together keep their order.
-			var sorted = list
-				.Select ((chapter, index) => (chapter, index))
-				.OrderBy (item => item.chapter.StartTime)
-				.ThenBy (item => item.index)
-				.Select (item => item.chapter)
-				.ToList ();
+			var sorted = Mp4ChapterCodec.SortByStart (list);
 			if (SameChapters (sorted, _chapters))
 				return;
 
