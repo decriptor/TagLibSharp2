@@ -586,6 +586,154 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (4u, again.Track);
 	}
 
+	// Each shape: the file's Tags element, then the track and disc number texts as stored, then what it reads.
+	static IEnumerable<(string Name, byte[] Tags, string TrackText, string DiscText, uint Track, uint TotalTracks, uint Disc, uint TotalDiscs)> NumberAndTotalShapes ()
+	{
+		var emptyTargets = Master (0x63C0, Array.Empty<byte> ());
+		yield return ("ffmpeg mp3 (empty Targets, slash forms)", Tags (Master (0x7373, Concat (emptyTargets,
+			Simple ("PART_NUMBER", "4/12"), Simple ("DISC", "2/3")))), "4/12", "2/3", 4, 12, 2, 3);
+		yield return ("no Targets, slash forms", Tags (BareTag (Simple ("PART_NUMBER", "4/12"), Simple ("DISC", "2/3"))),
+			"4/12", "2/3", 4, 12, 2, 3);
+		yield return ("T30 slash + T50 slash", Tags (Tag (30, Simple ("PART_NUMBER", "4/12")), Tag (50, Simple ("PART_NUMBER", "2/3"))),
+			"4/12", "2/3", 4, 12, 2, 3);
+		yield return ("T30 slash + T60 DISCNUMBER slash", Tags (Tag (30, Simple ("PART_NUMBER", "4/12")), Tag (60, Simple ("DISCNUMBER", "8/9"))),
+			"4/12", "8/9", 4, 12, 8, 9);
+		yield return ("TOTAL_PARTS at 30 and 50", Tags (
+			Tag (50, Simple ("PART_NUMBER", "1"), Simple ("TOTAL_PARTS", "2")),
+			Tag (30, Simple ("PART_NUMBER", "3"), Simple ("TOTAL_PARTS", "12"))),
+			"3", "1", 3, 12, 1, 2);
+		yield return ("untargeted TOTAL_PARTS + T50 slash", Tags (
+			BareTag (Simple ("PART_NUMBER", "4"), Simple ("TOTAL_PARTS", "12")),
+			Tag (50, Simple ("PART_NUMBER", "2/3"))),
+			"4", "2/3", 4, 12, 2, 3);
+	}
+
+	[TestMethod]
+	public void NumberEdit_KeepsBothTotalsAndLeavesNoStaleNumber ()
+	{
+		// Setting or clearing Track or DiscNumber changes only that number, whichever form holds the totals.
+		var ops = new (string Name, Action<MatroskaTag> Apply, uint? Track, uint? Disc)[] {
+			("Track = 7", tag => tag.Track = 7, 7, null),
+			("Track = null", tag => tag.Track = null, null, null),
+			("DiscNumber = 5", tag => tag.DiscNumber = 5, null, 5),
+			("DiscNumber = null", tag => tag.DiscNumber = null, null, null),
+			("Track = 7, DiscNumber = 5", tag => { tag.Track = 7; tag.DiscNumber = 5; }, 7, 5),
+		};
+		foreach (var shape in NumberAndTotalShapes ()) {
+			var original = FileWith (shape.Tags, Master (0x1F43B675, new byte[] { 1 }));
+			var source = MatroskaFile.Read (original).File!.Tag;
+			Assert.AreEqual (shape.Track, source.Track, shape.Name);
+			Assert.AreEqual (shape.TotalTracks, source.TotalTracks, shape.Name);
+			Assert.AreEqual (shape.Disc, source.DiscNumber, shape.Name);
+			Assert.AreEqual (shape.TotalDiscs, source.TotalDiscs, shape.Name);
+
+			foreach (var op in ops) {
+				var touchesTrack = op.Name.StartsWith ("Track", StringComparison.Ordinal);
+				var touchesDisc = op.Name.Contains ("DiscNumber");
+				var expectTrack = touchesTrack ? op.Track : shape.Track;
+				var expectDisc = touchesDisc ? op.Disc : shape.Disc;
+				var parsed = MatroskaFile.Read (original).File!;
+				op.Apply (parsed.Tag);
+				var context = $"{shape.Name}: {op.Name}";
+				AssertNumbers (parsed.Tag, expectTrack, shape.TotalTracks, expectDisc, shape.TotalDiscs, context + " (memory)");
+
+				var again = SaveAndReread (parsed, original, out var bytes);
+				AssertNumbers (again, expectTrack, shape.TotalTracks, expectDisc, shape.TotalDiscs, context + " (saved)");
+				if (touchesTrack)
+					Assert.IsFalse (HasTagString (bytes, shape.TrackText), context + ": the old track number is still in the file");
+				if (touchesDisc)
+					Assert.IsFalse (HasTagString (bytes, shape.DiscText), context + ": the old disc number is still in the file");
+			}
+		}
+	}
+
+	[TestMethod]
+	public void CopyTo_NumbersOnly_KeepsTheTargetsTotals ()
+	{
+		var source = MatroskaFile.Read (FileWith (Tags (Tag (30, Simple ("PART_NUMBER", "3")), Tag (50, Simple ("PART_NUMBER", "1"))))).File!.Tag;
+		Assert.IsNull (source.TotalTracks);
+		Assert.IsNull (source.TotalDiscs);
+		foreach (var shape in NumberAndTotalShapes ()) {
+			var original = FileWith (shape.Tags, Master (0x1F43B675, new byte[] { 1 }));
+			var parsed = MatroskaFile.Read (original).File!;
+			source.CopyTo (parsed.Tag);
+
+			AssertNumbers (parsed.Tag, 3, shape.TotalTracks, 1, shape.TotalDiscs, shape.Name + " (memory)");
+			AssertNumbers (SaveAndReread (parsed, original, out _), 3, shape.TotalTracks, 1, shape.TotalDiscs, shape.Name + " (saved)");
+		}
+	}
+
+	[TestMethod]
+	public void Track_Set_KeepsTheSlashFormOfItsOwnElement ()
+	{
+		// ffmpeg reads "7/12" back as track 7 of 12. It does not read TOTAL_PARTS as the track total.
+		var original = FileWith (Tags (BareTag (Simple ("PART_NUMBER", "4/12"))), Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Track = 7;
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		Assert.AreEqual (7u, again.Track);
+		Assert.AreEqual (12u, again.TotalTracks);
+		Assert.IsTrue (HasTagString (bytes, "7/12"));
+		Assert.IsFalse (FileTargetHas (bytes, 30, "PART_NUMBER"));
+	}
+
+	[TestMethod]
+	public void Track_Set_RemovesTheUntargetedNumberBesideLevel30 ()
+	{
+		// The level 30 number wins on read, but another reader would still see the untargeted 4 as a second track.
+		var original = FileWith (
+			Tags (BareTag (Simple ("PART_NUMBER", "4")), Tag (30, Simple ("PART_NUMBER", "9"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (9u, parsed.Tag.Track);
+		parsed.Tag.Track = 7;
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		Assert.AreEqual (7u, again.Track);
+		Assert.IsFalse (HasTagString (bytes, "4"));
+		Assert.IsFalse (HasTagString (bytes, "9"));
+	}
+
+	[TestMethod]
+	public void DiscNumber_Set_LeavesOneExplicitAlbumPart ()
+	{
+		var original = FileWith (
+			Tags (Tag (50, Simple ("PART_NUMBER", "7")), Tag (50, Simple ("PART_NUMBER", "3"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.DiscNumber = 5;
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		Assert.AreEqual (5u, again.DiscNumber);
+		Assert.IsFalse (HasTagString (bytes, "7"));
+		Assert.IsFalse (HasTagString (bytes, "3"));
+	}
+
+	static void AssertNumbers (MatroskaTag tag, uint? track, uint? totalTracks, uint? disc, uint? totalDiscs, string context)
+	{
+		Assert.AreEqual (track, tag.Track, context + ": Track");
+		Assert.AreEqual (totalTracks, tag.TotalTracks, context + ": TotalTracks");
+		Assert.AreEqual (disc, tag.DiscNumber, context + ": DiscNumber");
+		Assert.AreEqual (totalDiscs, tag.TotalDiscs, context + ": TotalDiscs");
+	}
+
+	static MatroskaTag SaveAndReread (MatroskaFile parsed, byte[] original, out byte[] bytes)
+	{
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/numbers.mkv", original);
+		var saved = parsed.SaveToFile ("/numbers.mkv", original, fs);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		bytes = fs.ReadAllBytes ("/numbers.mkv");
+		var result = MatroskaFile.Read (bytes);
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		return result.File!.Tag;
+	}
+
+	// A TagString element holding exactly this text.
+	static bool HasTagString (byte[] file, string text) =>
+		file.AsSpan ().IndexOf (Element (0x4487, Encoding.UTF8.GetBytes (text))) >= 0;
+
 	[TestMethod]
 	public void Save_EmptyTargets_StaysEmptyAndOmitsTargetType50 ()
 	{
