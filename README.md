@@ -39,6 +39,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
 | **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
 | **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
+| **Chapters** | ✅ | — | — | — | — | — | — | ✅¹⁰ | — | — | — | — | — | — |
 | **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
 | **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — | — | — |
 | **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | — | ✅⁷ | ✅⁷ | — | — | — |
@@ -53,6 +54,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 ⁷ Via channel type in fmt chunk (Mono, Stereo, 5.1 surround)
 ⁸ Via APE tag
 ⁹ Via ASF Extended Content Description
+¹⁰ Nero `chpl` box and QuickTime chapter track, read and write (`Mp4File.Chapters`)
 
 ### Tag Format by Container
 
@@ -251,6 +253,7 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
 - [x] Album art (covr atom) with JPEG/PNG detection
 - [x] MusicBrainz IDs and ReplayGain via freeform atoms
 - [x] Atomic file writing with mdat relocation
+- [x] Chapters: Nero `chpl` and QuickTime chapter text track (`tref`/`chap`), read and write
 - [x] MediaFile factory integration for format auto-detection
 
 ### Phase 12: DSF & APE Tags ✅

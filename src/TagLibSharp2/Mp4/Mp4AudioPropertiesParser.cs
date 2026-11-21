@@ -198,7 +198,7 @@ public static class Mp4AudioPropertiesParser
 			if (timescale == 0)
 				return TimeSpan.Zero;
 
-			return TimeSpan.FromSeconds ((double)duration / timescale);
+			return FromSeconds ((double)duration / timescale);
 		} else if (version == 1) {
 			// Version 1: creation_time(8) + modification_time(8) + timescale(4) + duration(8)
 			if (mvhdData.Length < 32)
@@ -210,11 +210,18 @@ public static class Mp4AudioPropertiesParser
 			if (timescale == 0)
 				return TimeSpan.Zero;
 
-			return TimeSpan.FromSeconds ((double)duration / timescale);
+			return FromSeconds ((double)duration / timescale);
 		}
 
 		return TimeSpan.Zero;
 	}
+
+	/// <summary>
+	/// <see cref="TimeSpan.FromSeconds(double)"/> that saturates instead of throwing. A version 1 header holds a
+	/// 64-bit duration, and a small timescale can put it past <see cref="TimeSpan.MaxValue"/> (ISO 14496-12 §8.2.2).
+	/// </summary>
+	internal static TimeSpan FromSeconds (double seconds) =>
+		seconds >= 922_337_203_685d ? TimeSpan.MaxValue : TimeSpan.FromSeconds (seconds);
 
 	/// <summary>
 	/// Parses duration from mdhd (media header) box.
@@ -238,7 +245,7 @@ public static class Mp4AudioPropertiesParser
 			if (timescale == 0)
 				return TimeSpan.Zero;
 
-			return TimeSpan.FromSeconds ((double)duration / timescale);
+			return FromSeconds ((double)duration / timescale);
 		} else if (version == 1) {
 			if (mdhdData.Length < 36)
 				return TimeSpan.Zero;
@@ -249,7 +256,7 @@ public static class Mp4AudioPropertiesParser
 			if (timescale == 0)
 				return TimeSpan.Zero;
 
-			return TimeSpan.FromSeconds ((double)duration / timescale);
+			return FromSeconds ((double)duration / timescale);
 		}
 
 		return TimeSpan.Zero;
