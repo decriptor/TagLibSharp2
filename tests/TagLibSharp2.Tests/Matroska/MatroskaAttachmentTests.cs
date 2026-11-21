@@ -716,6 +716,25 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	[DataRow ("cover.png", "image/png", true, "cover.jpg|cover.png|font.ttf")]
+	[DataRow ("cover.jpg", "application/octet-stream", false, "cover_2.jpg|cover.jpg|font.ttf")]
+	public void Save_KeptCoverThatIsNotAPicture_IsNotTheNormalCover (string keptName, string keptType, bool emptyData, string expected)
+	{
+		// A kept cover.* that the reader does not surface (empty FileData or a non-image type) cannot
+		// be shown, so it is not the normal cover of RFC 9559 section 21.1: the new cover goes first.
+		var kept = Picture (keptName, keptType, null, emptyData ? [] : Jpeg, 5);
+		var original = Movie (Attachments (kept, Font (6)), Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		var file = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (0, file.Tag.Pictures.Length);
+		file.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Png)];
+
+		var files = AttachedFiles (Save (file, original));
+
+		Assert.AreEqual (expected, string.Join ("|", files.Select (f => f.Name)));
+		CollectionAssert.AreEqual (kept, files[1].Raw);
+	}
+
+	[TestMethod]
 	public void Save_CopyWithAnEmptyMediaType_MatchesByTheDetectedType ()
 	{
 		// Picture.DetectMimeType reads image/jpeg from the bytes, which is the stored type.
