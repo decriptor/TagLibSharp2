@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Matroska: setting `Pictures` writes image attachments (RFC 9559 sections 5.1.6 and 21.1). A new front cover is `cover.jpg` or `cover.png` and goes first; other picture types get names such as `back.jpg` or `artist.png`, which read back as their type. The description goes in `FileDescription`. An attachment that matches a picture keeps its `FileName`, `FileUID` and bytes. Fonts and other non-image attachments are kept. Removing a picture removes only its attachment and any tag that targeted only that attachment.
+- Matroska: a new or moved `Attachments` element goes after the last Cluster or in a Void, and gets an entry in the first SeekHead. The SeekHead can widen its size field to grow into the Void after it.
+
+### Changed
+
+- Matroska: a save fails when a picture is not an `image/` media type, has no data, would be added to a WebM file, or could not be referenced by the SeekHead. A save that does not set `Pictures` keeps the `Attachments` element byte for byte.
+- Matroska: an attachment named `back.jpg`, `artist.png` and so on reads with that picture type instead of `Other`.
+- Matroska: a new SeekHead entry is added only to the first SeekHead (RFC 9559 section 6.3).
+
 ### Fixed
 
 - Ogg Vorbis comment packets that run across pages without the continuation flag keep their comments, and a stream whose last audio page is cut off keeps its duration (#126). `missing_flag.ogg` from that issue now opens with its title, artist, album, genre, cover and 10.189 s duration. Its framing byte is 0x01: the comments were lost in page reassembly, not at the framing bit.
