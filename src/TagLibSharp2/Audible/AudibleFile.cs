@@ -577,7 +577,9 @@ public sealed class AudibleFile : IMediaFile
 				return BinaryData.Empty;
 			}
 
-			if (offset is < 0 or > uint.MaxValue || size is < 0 or > uint.MaxValue || offset + size > uint.MaxValue)
+			// Neither goes below zero: a moved offset was at least the old dictionary end, and a grown or shrunk
+			// size belongs to an entry that contains the dictionary. Both are 32-bit fields in the file.
+			if (offset + size > uint.MaxValue)
 				return BinaryData.Empty;
 
 			var at = HeaderSize + (i * TocEntrySize);
