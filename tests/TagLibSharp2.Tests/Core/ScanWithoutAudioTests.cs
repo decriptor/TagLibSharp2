@@ -12,10 +12,12 @@ using TagLibSharp2.Dsf;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Matroska;
 using TagLibSharp2.Mp4;
+using TagLibSharp2.Mpeg;
 using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Tests;
 using TagLibSharp2.Tests.Asf;
+using TagLibSharp2.Tests.Mpeg;
 using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
 
@@ -142,6 +144,13 @@ public class ScanWithoutAudioTests
 		await AssertScanAsync (InsertBeforeApe (TestBuilders.Musepack.CreateWithMetadata ("Window")), "song.mpc");
 
 	[TestMethod]
+	public void Read_MpegPs_SkipsTheMiddleOfTheStream () => AssertScan (ProgramStreamWithPadding (), "clip.mpg", contiguous: false);
+
+	[TestMethod]
+	public async Task ReadAsync_MpegPs_SkipsTheMiddleOfTheStream () =>
+		await AssertScanAsync (ProgramStreamWithPadding (), "clip.mpg", contiguous: false);
+
+	[TestMethod]
 	public void Read_Dsf_SkipsSampleData () => AssertScan (DsfWithSamples (), "song.dsf");
 
 	[TestMethod]
@@ -253,6 +262,7 @@ public class ScanWithoutAudioTests
 		DsfFile dsf => dsf.SaveToFile (path, fileSystem),
 		DffFile dff => dff.SaveToFile (path, fileSystem),
 		AsfFile asf => asf.SaveToFile (path, fileSystem),
+		MpegPsFile mpeg => mpeg.SaveToFile (path, fileSystem),
 		_ => FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name)
 	};
 
@@ -269,6 +279,7 @@ public class ScanWithoutAudioTests
 		DsfFile dsf => dsf.SaveToFileAsync (path, fileSystem),
 		DffFile dff => dff.SaveToFileAsync (path, fileSystem),
 		AsfFile asf => asf.SaveToFileAsync (path, fileSystem),
+		MpegPsFile mpeg => mpeg.SaveToFileAsync (path, fileSystem),
 		_ => Task.FromResult (FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name))
 	};
 
@@ -304,6 +315,14 @@ public class ScanWithoutAudioTests
 		data.CopyTo (box, 8);
 		return box;
 	}
+
+	// An ID3v2 tag, then a program stream with a padding stream of PayloadBytes after its first packs.
+	static byte[] ProgramStreamWithPadding () => MpegPsTestBuilder.Concat (
+		new Id3v2Tag { Title = "Window" }.Render ().ToArray (),
+		MpegPsTestBuilder.ProgramStream (new MpegPsTestBuilder.Options {
+			PaddingBytes = PayloadBytes,
+			PaddingMarker = Marker ()
+		}));
 
 	static byte[] MatroskaWithCluster ()
 	{
