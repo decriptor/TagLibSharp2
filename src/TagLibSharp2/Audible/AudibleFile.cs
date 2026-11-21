@@ -665,27 +665,29 @@ public sealed class AudibleFile : IMediaFile
 				header = StreamBytes.ReadAtMost (stream, tocBytes);
 			}
 			return (header, stream.Length);
-		} catch (IOException) {
-			return null;
-		} catch (UnauthorizedAccessException) {
+		} catch (Exception ex) when (IsReadBackFailure (ex)) {
 			return null;
 		}
 	}
 
-	async Task<(byte[] Header, long Length)?> ReadSourceHeaderAsync (IFileSystem? fileSystem, CancellationToken cancellationToken)
+	// The read-back runs after the atomic rename has committed the save, so nothing it meets may turn that
+	// success into a failure: it does not observe the caller's token, and a failed read only skips the refresh.
+	static bool IsReadBackFailure (Exception ex) =>
+		ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException
+			or OperationCanceledException or InvalidOperationException; // InvalidOperation covers ObjectDisposed
+
+	async Task<(byte[] Header, long Length)?> ReadSourceHeaderAsync (IFileSystem? fileSystem)
 	{
 		try {
 			using var stream = (fileSystem ?? DefaultFileSystem.Instance).OpenRead (SourcePath!);
-			var header = await StreamBytes.ReadAtMostAsync (stream, HeaderSize, cancellationToken).ConfigureAwait (false);
+			var header = await StreamBytes.ReadAtMostAsync (stream, HeaderSize, CancellationToken.None).ConfigureAwait (false);
 			var tocBytes = TocBytes (header);
 			if (tocBytes > header.Length) {
 				stream.Position = 0;
-				header = await StreamBytes.ReadAtMostAsync (stream, tocBytes, cancellationToken).ConfigureAwait (false);
+				header = await StreamBytes.ReadAtMostAsync (stream, tocBytes, CancellationToken.None).ConfigureAwait (false);
 			}
 			return (header, stream.Length);
-		} catch (IOException) {
-			return null;
-		} catch (UnauthorizedAccessException) {
+		} catch (Exception ex) when (IsReadBackFailure (ex)) {
 			return null;
 		}
 	}
@@ -715,7 +717,7 @@ public sealed class AudibleFile : IMediaFile
 		var fs = fileSystem ?? _sourceFileSystem;
 		var result = await AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken).ConfigureAwait (false);
 		if (result.IsSuccess && Rendered (rendered) is { } layout && SourcePath is not null)
-			RefreshLayout (layout, await ReadSourceHeaderAsync (fs, cancellationToken).ConfigureAwait (false));
+			RefreshLayout (layout, await ReadSourceHeaderAsync (fs).ConfigureAwait (false));
 		return result;
 	}
 
