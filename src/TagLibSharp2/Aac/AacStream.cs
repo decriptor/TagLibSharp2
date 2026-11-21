@@ -124,7 +124,7 @@ internal static class AacStream
 	public static int FindStart (ReadOnlySpan<byte> data, int searchBytes)
 	{
 		if (AdifHeader.HasMagic (data))
-			return 0;
+			return AdifHeader.TryParse (data[..Math.Min (AdifHeader.MaxSize, data.Length)], out _) ? 0 : -1;
 
 		var limit = Math.Min (searchBytes, data.Length);
 		for (var i = 0; i < limit; i++) {
@@ -163,7 +163,7 @@ internal static class AacStream
 			if (!ReadAt (stream, pos, chunk, length))
 				return -1;
 			if (pos == offset && AdifHeader.HasMagic (chunk.AsSpan (0, length)))
-				return offset;
+				return TryReadAdifHeader (stream, offset, end, out _) ? offset : -1;
 
 			var scan = (int)Math.Min (length, limit - pos);
 			for (var i = 0; i < scan; i++) {
@@ -228,13 +228,18 @@ internal static class AacStream
 	/// Reads the stream properties from the audio region [<paramref name="start"/>, <paramref name="end"/>).
 	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
 	/// </summary>
+	/// <remarks>
+	/// The start is judged against the whole stream, as detection judges it, not against the audio region.
+	/// So a frame that ends where a trailing tag begins is confirmed by that tag on both paths, and a file
+	/// that detects as AAC always opens. Frames are counted only inside the audio region.
+	/// </remarks>
 	public static bool TryRead (Stream stream, long start, long end, out AacAudioProperties? properties)
 	{
 		properties = null;
-		if (start < 0 || end > stream.Length || end - start < 4)
+		if (start < 0 || end > stream.Length || start > end)
 			return false;
 
-		var first = FindStart (stream, start, end, FirstFrameSearchBytes);
+		var first = FindStart (stream, start, stream.Length, FirstFrameSearchBytes);
 		if (first < 0)
 			return false;
 
@@ -245,12 +250,32 @@ internal static class AacStream
 		return TryWalkAdts (new ScanReader (stream, end), first, end, out properties);
 	}
 
+	// Most ADIF headers are a few dozen bytes. Read a short prefix first and the bounded maximum only when
+	// the header does not fit in it.
+	const int AdifProbeBytes = 256;
+
+	static bool TryReadAdifHeader (Stream stream, long start, long end, out AdifHeader header)
+	{
+		header = default;
+		var room = end - start;
+		var length = (int)Math.Min (AdifProbeBytes, room);
+		var bytes = new byte[length];
+		if (!ReadAt (stream, start, bytes, length))
+			return false;
+		if (AdifHeader.TryParse (bytes, out header))
+			return true;
+		if (room <= AdifProbeBytes)
+			return false;
+
+		bytes = new byte[(int)Math.Min (AdifHeader.MaxSize, room)];
+		return ReadAt (stream, start, bytes, bytes.Length) && AdifHeader.TryParse (bytes, out header);
+	}
+
 	static bool TryReadAdif (Stream stream, long start, long end, out AacAudioProperties? properties)
 	{
 		properties = null;
-		var length = (int)Math.Min (AdifHeader.MaxSize, end - start);
-		var bytes = new byte[length];
-		if (!ReadAt (stream, start, bytes, length) || !AdifHeader.TryParse (bytes, out var header))
+		// The header is bounded by the stream, as detection bounds it. The payload ends at the trailing tags.
+		if (!TryReadAdifHeader (stream, start, stream.Length, out var header))
 			return false;
 
 		var payload = end - start - header.Size;
