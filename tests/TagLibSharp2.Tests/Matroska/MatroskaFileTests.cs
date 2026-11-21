@@ -25,6 +25,7 @@ public partial class MatroskaFileTests
 			Tag (30,
 				Simple ("TITLE", "Track Name"),
 				Simple ("PART_NUMBER", "3"),
+				Simple ("TOTAL_PARTS", "7"),
 				Simple ("ARTIST", ""))));
 
 		var result = MatroskaFile.Read (file);
@@ -35,9 +36,9 @@ public partial class MatroskaFileTests
 		Assert.IsNull (result.File.Tag.Artist);
 		Assert.AreEqual (0, result.File.Tag.Performers.Length);
 		Assert.AreEqual (3u, result.File.Tag.Track);
-		Assert.AreEqual (10u, result.File.Tag.TotalTracks);
+		Assert.AreEqual (7u, result.File.Tag.TotalTracks);
 		Assert.IsNull (result.File.Tag.DiscNumber);
-		Assert.IsNull (result.File.Tag.TotalDiscs);
+		Assert.AreEqual (10u, result.File.Tag.TotalDiscs);
 		Assert.AreEqual (1, result.File.Tag.AlbumArtists.Length);
 		Assert.AreEqual ("Album Artist", result.File.Tag.AlbumArtists[0]);
 	}
@@ -55,7 +56,7 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (8u, tag.DiscNumber);
 		Assert.AreEqual (10u, tag.TotalDiscs);
 		Assert.AreEqual (3u, tag.Track);
-		Assert.AreEqual (10u, tag.TotalTracks);
+		Assert.IsNull (tag.TotalTracks);
 	}
 
 	[TestMethod]
@@ -73,8 +74,7 @@ public partial class MatroskaFileTests
 	{
 		var tag = MatroskaFile.Read (FileWith (Tags (
 			Tag (60, Simple ("PART_NUMBER", "1"), Simple ("TOTAL_PARTS", "2")),
-			Tag (50, Simple ("TOTAL_PARTS", "10")),
-			Tag (30, Simple ("PART_NUMBER", "3"))))).File!.Tag;
+			Tag (30, Simple ("PART_NUMBER", "3"), Simple ("TOTAL_PARTS", "10"))))).File!.Tag;
 
 		Assert.IsNull (tag.DiscNumber);
 		Assert.IsNull (tag.TotalDiscs);
@@ -109,27 +109,37 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void ExplicitAlbumTotalParts_IsTheDiscTotalAndTheTrackTotal ()
+	public void ExplicitAlbumTotalParts_IsTheDiscTotal_NotTheTrackTotal ()
 	{
-		// One TOTAL_PARTS element on the explicit-50 target that also holds the disc.
 		var tag = MatroskaFile.Read (FileWith (Tags (
 			Tag (50, Simple ("PART_NUMBER", "2"), Simple ("TOTAL_PARTS", "4")),
-			Tag (30, Simple ("PART_NUMBER", "3"))))).File!.Tag;
+			Tag (30, Simple ("PART_NUMBER", "3"), Simple ("TOTAL_PARTS", "12"))))).File!.Tag;
 
 		Assert.AreEqual (2u, tag.DiscNumber);
 		Assert.AreEqual (3u, tag.Track);
 		Assert.AreEqual (4u, tag.TotalDiscs);
-		Assert.AreEqual (4u, tag.TotalTracks);
+		Assert.AreEqual (12u, tag.TotalTracks);
 
 		tag.TotalDiscs = 6;
 		Assert.AreEqual (6u, tag.TotalDiscs);
-		Assert.AreEqual (6u, tag.TotalTracks);
+		Assert.AreEqual (12u, tag.TotalTracks);
+		Assert.AreEqual (2u, tag.DiscNumber);
+		Assert.AreEqual (3u, tag.Track);
 
 		tag.TotalTracks = 8;
 		Assert.AreEqual (8u, tag.TotalTracks);
-		Assert.AreEqual (8u, tag.TotalDiscs);
-		Assert.AreEqual (2u, tag.DiscNumber);
+		Assert.AreEqual (6u, tag.TotalDiscs);
+
+		tag.TotalTracks = null;
+		Assert.IsNull (tag.TotalTracks);
+		Assert.AreEqual (6u, tag.TotalDiscs);
 		Assert.AreEqual (3u, tag.Track);
+
+		tag.TotalTracks = 8;
+		tag.TotalDiscs = null;
+		Assert.IsNull (tag.TotalDiscs);
+		Assert.AreEqual (8u, tag.TotalTracks);
+		Assert.AreEqual (2u, tag.DiscNumber);
 	}
 
 	[TestMethod]
@@ -189,8 +199,7 @@ public partial class MatroskaFileTests
 		parsed.Tag.DiscNumber = 2;
 		parsed.Tag.TotalDiscs = 3;
 		Assert.AreEqual (4u, parsed.Tag.Track);
-		// That new explicit-50 TOTAL_PARTS is the only album total.
-		Assert.AreEqual (3u, parsed.Tag.TotalTracks);
+		Assert.IsNull (parsed.Tag.TotalTracks);
 
 		var fs = new MockFileSystem ();
 		fs.AddFile ("/disc.mkv", original);
@@ -201,7 +210,7 @@ public partial class MatroskaFileTests
 		var again = MatroskaFile.Read (bytes).File!.Tag;
 		Assert.AreEqual (2u, again.DiscNumber);
 		Assert.AreEqual (3u, again.TotalDiscs);
-		Assert.AreEqual (3u, again.TotalTracks);
+		Assert.IsNull (again.TotalTracks);
 		Assert.AreEqual (4u, again.Track);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 50 })) >= 0);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 30 })) >= 0);
@@ -331,6 +340,8 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (5u, again.Track);
 		Assert.IsNull (again.DiscNumber);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 50 })) < 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Id (MatroskaIds.Targets)) >= 0);
+		Assert.IsTrue (AllTagsHaveTargets (bytes));
 		Assert.AreEqual (1, CountOf (bytes, marker));
 	}
 
@@ -356,6 +367,294 @@ public partial class MatroskaFileTests
 		Assert.IsNull (again.Track);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 50 })) >= 0);
 		Assert.IsTrue (TargetTypeIsExplicit (bytes, 50));
+	}
+
+	[TestMethod]
+	public void Read_UntargetedTotalParts_IsTheTrackTotal ()
+	{
+		var tag = MatroskaFile.Read (FileWith (Tags (BareTag (
+			Simple ("PART_NUMBER", "4"),
+			Simple ("TOTAL_PARTS", "12"))))).File!.Tag;
+
+		Assert.AreEqual (4u, tag.Track);
+		Assert.AreEqual (12u, tag.TotalTracks);
+		Assert.IsNull (tag.DiscNumber);
+		Assert.IsNull (tag.TotalDiscs);
+	}
+
+	[TestMethod]
+	public void Read_SlashForm_ParsesTheLeadingNumberAndOptionalTotal ()
+	{
+		// The number after the slash is the total, not a second disc or track number.
+		var targeted = MatroskaFile.Read (FileWith (Tags (
+			Tag (30, Simple ("PART_NUMBER", "4/12"), Simple ("DISC", "2/3"))))).File!.Tag;
+
+		Assert.AreEqual (4u, targeted.Track);
+		Assert.AreEqual (12u, targeted.TotalTracks);
+		Assert.AreEqual (2u, targeted.DiscNumber);
+		Assert.AreEqual (3u, targeted.TotalDiscs);
+
+		var bare = MatroskaFile.Read (FileWith (Tags (
+			BareTag (Simple ("PART_NUMBER", "4/12"), Simple ("DISC", "2/3"))))).File!.Tag;
+
+		Assert.AreEqual (4u, bare.Track);
+		Assert.AreEqual (12u, bare.TotalTracks);
+		Assert.AreEqual (2u, bare.DiscNumber);
+		Assert.AreEqual (3u, bare.TotalDiscs);
+
+		var album = MatroskaFile.Read (FileWith (Tags (Tag (50, Simple ("PART_NUMBER", "2/3"))))).File!.Tag;
+
+		Assert.AreEqual (2u, album.DiscNumber);
+		Assert.AreEqual (3u, album.TotalDiscs);
+		Assert.IsNull (album.Track);
+		Assert.IsNull (album.TotalTracks);
+	}
+
+	[TestMethod]
+	public void CopyTo_Disc1Of2AndTrack3Of12_KeepsBothTotals ()
+	{
+		var source = MatroskaFile.Read (FileWith (Tags (
+			BareTag (Simple ("DISC", "1/2"), Simple ("PART_NUMBER", "3/12"))))).File!.Tag;
+		Assert.AreEqual (1u, source.DiscNumber);
+		Assert.AreEqual (2u, source.TotalDiscs);
+		Assert.AreEqual (3u, source.Track);
+		Assert.AreEqual (12u, source.TotalTracks);
+
+		var target = MatroskaFile.Read (FileWith (Master (0x1F43B675, new byte[] { 1 }))).File!.Tag;
+		source.CopyTo (target);
+
+		Assert.AreEqual (1u, target.DiscNumber);
+		Assert.AreEqual (2u, target.TotalDiscs);
+		Assert.AreEqual (3u, target.Track);
+		Assert.AreEqual (12u, target.TotalTracks);
+	}
+
+	[TestMethod]
+	public void Total_SetOne_DoesNotInventOrClearTheOther ()
+	{
+		var original = FileWith (
+			Tags (Tag (30, Simple ("TITLE", "Song"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var discs = MatroskaFile.Read (original).File!;
+		discs.Tag.TotalDiscs = 2;
+		Assert.AreEqual (2u, discs.Tag.TotalDiscs);
+		Assert.IsNull (discs.Tag.TotalTracks);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/discs.mkv", original);
+		Assert.IsTrue (discs.SaveToFile ("/discs.mkv", original, fs).IsSuccess);
+		var discBytes = fs.ReadAllBytes ("/discs.mkv");
+		var discAgain = MatroskaFile.Read (discBytes).File!.Tag;
+		Assert.AreEqual (2u, discAgain.TotalDiscs);
+		Assert.IsNull (discAgain.TotalTracks);
+		Assert.IsTrue (FileTargetHas (discBytes, 50, "TOTAL_PARTS"));
+		Assert.IsFalse (FileTargetHas (discBytes, 30, "TOTAL_PARTS"));
+
+		var tracks = MatroskaFile.Read (original).File!;
+		tracks.Tag.TotalTracks = 12;
+		Assert.AreEqual (12u, tracks.Tag.TotalTracks);
+		Assert.IsNull (tracks.Tag.TotalDiscs);
+		fs.AddFile ("/tracks.mkv", original);
+		Assert.IsTrue (tracks.SaveToFile ("/tracks.mkv", original, fs).IsSuccess);
+		var trackBytes = fs.ReadAllBytes ("/tracks.mkv");
+		var trackAgain = MatroskaFile.Read (trackBytes).File!.Tag;
+		Assert.AreEqual (12u, trackAgain.TotalTracks);
+		Assert.IsNull (trackAgain.TotalDiscs);
+		Assert.IsTrue (FileTargetHas (trackBytes, 30, "TOTAL_PARTS"));
+		Assert.IsFalse (FileTargetHas (trackBytes, 50, "TOTAL_PARTS"));
+	}
+
+	[TestMethod]
+	public void Total_ClearOne_LeavesTheOtherAfterSave ()
+	{
+		var original = FileWith (
+			Tags (
+				Tag (50, Simple ("PART_NUMBER", "1"), Simple ("TOTAL_PARTS", "2")),
+				Tag (30, Simple ("PART_NUMBER", "3"), Simple ("TOTAL_PARTS", "12"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var fs = new MockFileSystem ();
+
+		var clearTracks = MatroskaFile.Read (original).File!;
+		clearTracks.Tag.TotalTracks = null;
+		fs.AddFile ("/clear-tracks.mkv", original);
+		Assert.IsTrue (clearTracks.SaveToFile ("/clear-tracks.mkv", original, fs).IsSuccess);
+		var tracks = MatroskaFile.Read (fs.ReadAllBytes ("/clear-tracks.mkv")).File!.Tag;
+		Assert.IsNull (tracks.TotalTracks);
+		Assert.AreEqual (2u, tracks.TotalDiscs);
+		Assert.AreEqual (3u, tracks.Track);
+		Assert.AreEqual (1u, tracks.DiscNumber);
+
+		var clearDiscs = MatroskaFile.Read (original).File!;
+		clearDiscs.Tag.TotalDiscs = null;
+		fs.AddFile ("/clear-discs.mkv", original);
+		Assert.IsTrue (clearDiscs.SaveToFile ("/clear-discs.mkv", original, fs).IsSuccess);
+		var discs = MatroskaFile.Read (fs.ReadAllBytes ("/clear-discs.mkv")).File!.Tag;
+		Assert.IsNull (discs.TotalDiscs);
+		Assert.AreEqual (12u, discs.TotalTracks);
+		Assert.AreEqual (1u, discs.DiscNumber);
+		Assert.AreEqual (3u, discs.Track);
+	}
+
+	[TestMethod]
+	public void Total_Clear_StripsTheSlashWithoutClearingTheNumber ()
+	{
+		var original = FileWith (
+			Tags (Tag (30, Simple ("PART_NUMBER", "4/12"), Simple ("DISC", "2/3"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (4u, parsed.Tag.Track);
+		Assert.AreEqual (12u, parsed.Tag.TotalTracks);
+		Assert.AreEqual (2u, parsed.Tag.DiscNumber);
+		Assert.AreEqual (3u, parsed.Tag.TotalDiscs);
+
+		parsed.Tag.TotalTracks = null;
+		Assert.AreEqual (4u, parsed.Tag.Track);
+		Assert.IsNull (parsed.Tag.TotalTracks);
+		Assert.AreEqual (3u, parsed.Tag.TotalDiscs);
+
+		parsed.Tag.TotalDiscs = null;
+		Assert.AreEqual (2u, parsed.Tag.DiscNumber);
+		Assert.IsNull (parsed.Tag.TotalDiscs);
+		Assert.AreEqual (4u, parsed.Tag.Track);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/slash.mkv", original);
+		Assert.IsTrue (parsed.SaveToFile ("/slash.mkv", original, fs).IsSuccess);
+		var again = MatroskaFile.Read (fs.ReadAllBytes ("/slash.mkv")).File!.Tag;
+		Assert.AreEqual (4u, again.Track);
+		Assert.IsNull (again.TotalTracks);
+		Assert.AreEqual (2u, again.DiscNumber);
+		Assert.IsNull (again.TotalDiscs);
+	}
+
+	[TestMethod]
+	public void Track_Clear_RemovesUntargetedPartNumber ()
+	{
+		var original = FileWith (
+			Tags (BareTag (Simple ("PART_NUMBER", "4"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (4u, parsed.Tag.Track);
+		parsed.Tag.Track = null;
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/untargeted-track.mkv", original);
+		Assert.IsTrue (parsed.SaveToFile ("/untargeted-track.mkv", original, fs).IsSuccess);
+
+		Assert.IsNull (MatroskaFile.Read (fs.ReadAllBytes ("/untargeted-track.mkv")).File!.Tag.Track);
+	}
+
+	[TestMethod]
+	public void Track_Clear_RemovesLevel30AndUntargetedPartNumbers ()
+	{
+		var original = FileWith (
+			Tags (
+				BareTag (Simple ("PART_NUMBER", "4")),
+				Tag (30, Simple ("PART_NUMBER", "9"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (9u, parsed.Tag.Track);
+		parsed.Tag.Track = null;
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/both-tracks.mkv", original);
+		Assert.IsTrue (parsed.SaveToFile ("/both-tracks.mkv", original, fs).IsSuccess);
+
+		Assert.IsNull (MatroskaFile.Read (fs.ReadAllBytes ("/both-tracks.mkv")).File!.Tag.Track);
+	}
+
+	[TestMethod]
+	public void DiscNumber_Clear_RemovesExplicitPartAndDiscNames ()
+	{
+		var original = FileWith (
+			Tags (
+				Tag (50, Simple ("PART_NUMBER", "3")),
+				Tag (30, Simple ("DISC", "2"), Simple ("PART_NUMBER", "4")),
+				Tag (60, Simple ("DISCNUMBER", "8"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (3u, parsed.Tag.DiscNumber);
+		Assert.AreEqual (4u, parsed.Tag.Track);
+		parsed.Tag.DiscNumber = null;
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/disc.mkv", original);
+		Assert.IsTrue (parsed.SaveToFile ("/disc.mkv", original, fs).IsSuccess);
+		var again = MatroskaFile.Read (fs.ReadAllBytes ("/disc.mkv")).File!.Tag;
+
+		Assert.IsNull (again.DiscNumber);
+		Assert.AreEqual (4u, again.Track);
+	}
+
+	[TestMethod]
+	public void Save_EmptyTargets_StaysEmptyAndOmitsTargetType50 ()
+	{
+		var original = FileWith (
+			Tags (Master (0x7373, Concat (
+				Master (0x63C0, Array.Empty<byte> ()),
+				Simple ("TITLE", "Old"),
+				Simple ("PART_NUMBER", "4")))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (4u, parsed.Tag.Track);
+		Assert.IsNull (parsed.Tag.DiscNumber);
+		parsed.Tag.Title = "Renamed";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/empty-targets.mkv", original);
+		Assert.IsTrue (parsed.SaveToFile ("/empty-targets.mkv", original, fs).IsSuccess);
+		var bytes = fs.ReadAllBytes ("/empty-targets.mkv");
+		var again = MatroskaFile.Read (bytes).File!.Tag;
+
+		Assert.AreEqual ("Renamed", again.Title);
+		Assert.AreEqual (4u, again.Track);
+		Assert.IsNull (again.DiscNumber);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Id (MatroskaIds.Targets)) >= 0);
+		Assert.IsTrue (AllTagsHaveTargets (bytes));
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 50 })) < 0);
+	}
+
+	[TestMethod]
+	public void Read_EmptyTargetTypeValue_MatchesStoredAlbumLevel ()
+	{
+		var empty = Master (0x7373, Concat (
+			Master (0x63C0, Element (0x68CA, Array.Empty<byte> ())),
+			Simple ("PART_NUMBER", "3"),
+			Simple ("TOTAL_PARTS", "4"),
+			Simple ("TITLE", "Album")));
+		var stored = Tags (Tag (50,
+			Simple ("PART_NUMBER", "3"),
+			Simple ("TOTAL_PARTS", "4"),
+			Simple ("TITLE", "Album")));
+		var fromEmpty = MatroskaFile.Read (FileWith (Tags (empty))).File!.Tag;
+		var fromStored = MatroskaFile.Read (FileWith (stored)).File!.Tag;
+
+		Assert.AreEqual (fromStored.DiscNumber, fromEmpty.DiscNumber);
+		Assert.AreEqual (fromStored.TotalDiscs, fromEmpty.TotalDiscs);
+		Assert.AreEqual (fromStored.Track, fromEmpty.Track);
+		Assert.AreEqual (fromStored.TotalTracks, fromEmpty.TotalTracks);
+		Assert.AreEqual (3u, fromEmpty.DiscNumber);
+		Assert.AreEqual (4u, fromEmpty.TotalDiscs);
+		Assert.IsNull (fromEmpty.Track);
+		Assert.IsNull (fromEmpty.TotalTracks);
+
+		var original = FileWith (Tags (empty), Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Album = "Saved";
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/empty-level.mkv", original);
+		Assert.IsTrue (parsed.SaveToFile ("/empty-level.mkv", original, fs).IsSuccess);
+		var bytes = fs.ReadAllBytes ("/empty-level.mkv");
+		var again = MatroskaFile.Read (bytes).File!.Tag;
+
+		Assert.AreEqual ("Saved", again.Album);
+		Assert.AreEqual (3u, again.DiscNumber);
+		Assert.AreEqual (4u, again.TotalDiscs);
+		Assert.IsNull (again.Track);
+		Assert.IsNull (again.TotalTracks);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 50 })) >= 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, Array.Empty<byte> ())) < 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 0 })) < 0);
 	}
 
 	[TestMethod]
@@ -1486,6 +1785,45 @@ public partial class MatroskaFileTests
 		ChapterTag (level, null, simpleTags);
 
 	static byte[] BareTag (params byte[][] simpleTags) => Master (0x7373, Concat (simpleTags));
+
+	static bool AllTagsHaveTargets (byte[] file)
+	{
+		if (!TrySegmentBody (file, out var body, out _))
+			return false;
+		var offset = 0;
+		var saw = false;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
+			if (element.Id == MatroskaIds.Tags) {
+				var tags = body.AsSpan (element.DataOffset, (int)element.DataLength);
+				var tagAt = 0;
+				while (tagAt < tags.Length && EbmlReader.TryRead (tags, tagAt, tags.Length, out var tag) && !tag.UnknownSize) {
+					if (tag.Id == MatroskaIds.Tag) {
+						saw = true;
+						if (!TagBodyHasTargets (tags.Slice (tag.DataOffset, (int)tag.DataLength)))
+							return false;
+					}
+
+					tagAt = tag.End;
+				}
+			}
+
+			offset = element.End;
+		}
+
+		return saw;
+	}
+
+	static bool TagBodyHasTargets (ReadOnlySpan<byte> body)
+	{
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var child) && !child.UnknownSize) {
+			if (child.Id == MatroskaIds.Targets)
+				return true;
+			offset = child.End;
+		}
+
+		return false;
+	}
 
 	static bool FileTargetHas (byte[] file, ulong level, string name)
 	{
