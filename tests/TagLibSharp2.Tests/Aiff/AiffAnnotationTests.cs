@@ -573,35 +573,57 @@ public partial class AiffAnnotationTests
 	}
 
 	[TestMethod]
-	public void SetComment_MoreNotesThanOneComtHolds_SplitsThemWithoutWrapping ()
+	[DataRow (new[] { 65534 }, new[] { 65534 }, false, DisplayName = "65,534 in one chunk")]
+	[DataRow (new[] { 65535 }, new[] { 65535 }, false, DisplayName = "65,535 in one full chunk stays")]
+	[DataRow (new[] { 32768, 32767 }, new[] { 32767, 32768 }, false, DisplayName = "65,535 over two chunks")]
+	[DataRow (new[] { 32768, 32768 }, new[] { 32768, 32768 }, false, DisplayName = "65,536 over two chunks")]
+	[DataRow (new[] { 65534, 65534 }, new[] { 65534, 65534 }, false, DisplayName = "131,068 over two chunks")]
+	[DataRow (new[] { 65535, 65534 }, new[] { 65534, 65535 }, false, DisplayName = "131,069 over two chunks")]
+	[DataRow (new[] { 65535, 65535 }, new[] { 65535, 65535 }, false, DisplayName = "131,070 in two full chunks")]
+	[DataRow (new[] { 43690, 43690, 43689 }, new[] { 43689, 43690, 43690 }, false, DisplayName = "131,069 over three chunks")]
+	[DataRow (new[] { 49151, 49151, 49151, 49151 }, new[] { 49151, 49151, 49151, 49151 }, false, DisplayName = "196,604 over four chunks")]
+	[DataRow (new[] { 40000, 40000 }, new[] { 40000, 40000 }, true, DisplayName = "80,000 after a file-comment chunk")]
+	public void SetComment_MoreNotesThanOneComtHolds_SplitsThemWithoutWrapping (int[] input, int[] expected, bool withFileComment)
 	{
-		// numComments is 16 bits (AIFF 1.3, Comments Chunk). Two COMT chunks of 40,000 notes
-		// each must not come back as one chunk whose count wrapped to 14,464, nor as more
-		// chunks than the input had, nor with a count of exactly 65,535 (MediaInfo hangs).
-		const int perChunk = 40000;
-		var entries = new (uint, ushort, byte[])[perChunk];
-		for (var i = 0; i < perChunk; i++)
-			entries[i] = ((uint)i, 9, [0x6E]);
-		var file = ReadAiff (Form (ComtEntries ((0, 0, [0x46])), ComtEntries (entries), ComtEntries (entries), Comm (), Ssnd ()));
+		// numComments is 16 bits (AIFF 1.3, Comments Chunk). After a comment edit the notes
+		// go back over at most as many COMT chunks as the file had, in order, and a chunk
+		// holds 65,535 notes (MediaInfo 26.10 hangs on that count) only when the notes do
+		// not fit 65,534 to a chunk.
+		var chunks = new List<byte[]> ();
+		if (withFileComment)
+			chunks.Add (ComtEntries ((0, 0, [0x46])));
+		var timestamp = 0u;
+		foreach (var size in input) {
+			var entries = new (uint, ushort, byte[])[size];
+			for (var i = 0; i < size; i++)
+				entries[i] = (timestamp++, 9, [0x6E]);
+			chunks.Add (ComtEntries (entries));
+		}
 
-		file.Tag!.Comment = "Edited";
+		chunks.Add (Comm ());
+		chunks.Add (Ssnd ());
+		var file = ReadAiff (Form ([.. chunks]));
+
+		file.Comment = "Edited";
 
 		var again = ReadAiff (file.Render ().ToArray ());
-		var chunks = again.AllChunks.Where (c => c.FourCC == "COMT").ToList ();
-		var total = 0;
-		foreach (var chunk in chunks) {
+		var written = again.AllChunks.Where (c => c.FourCC == "COMT").ToList ();
+		var counts = new List<int> ();
+		var next = 0u;
+		foreach (var chunk in written) {
 			var count = chunk.Data.ToUInt16BE ();
 			var notes = ReadNotes (chunk.Data);
 			Assert.AreEqual (count, notes.Count);
 			var end = 2 + notes.Sum (n => 8 + n.Text.Length + (n.Text.Length & 1));
 			Assert.AreEqual (chunk.Data.Length, end, "numComments must describe every entry in the chunk");
-			total += count;
+			foreach (var note in notes)
+				Assert.AreEqual (next++, note.Timestamp, "notes keep their order");
+			counts.Add (count);
 		}
 
-		Assert.AreEqual (2 * perChunk, total);
-		Assert.AreEqual (2, chunks.Count);
-		Assert.IsTrue (chunks.All (c => c.Data.ToUInt16BE () < ushort.MaxValue));
-		Assert.AreEqual ("Edited", again.Tag!.Comment);
+		CollectionAssert.AreEqual (expected, counts, string.Join (",", counts));
+		Assert.AreEqual ((uint)input.Sum (), next);
+		Assert.AreEqual ("Edited", again.Comment);
 	}
 
 	[TestMethod]

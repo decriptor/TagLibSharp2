@@ -213,6 +213,7 @@ public sealed class AiffFile : IMediaFile
 	bool _nameEdited;
 	bool _authorEdited;
 	bool _copyrightEdited;
+	int _commentChunks;
 
 	enum NativeCommentKind
 	{
@@ -559,6 +560,7 @@ public sealed class AiffFile : IMediaFile
 				AddText (_annotations, MacRoman.Decode (chunk.Data.Span));
 				break;
 			case "COMT":
+				_commentChunks++;
 				ReadComments (chunk.Data);
 				break;
 			case "NAME":
@@ -805,16 +807,17 @@ public sealed class AiffFile : IMediaFile
 	// An edited comment drops every COMT chunk. Notes for other markers were not
 	// edited, so they go back in one COMT chunk. AIFF 1.3, Comments Chunk (AIFF-C
 	// section 7.0): "No more than one Comments Chunk may appear in a single FORM AIFF."
-	// numComments is 16 bits, so more than 65,535 notes can only come from an input
-	// that already had several COMT chunks. Those are spread evenly over the fewest
-	// chunks that hold them, which is never more chunks than the input had. An even
-	// spread also writes a count of exactly 65,535 only when every chunk is full;
-	// MediaInfo 26.10 hangs on that count.
+	// numComments is 16 bits, so n > 65,535 notes can only come from an input that
+	// already had several COMT chunks. Notes are spread evenly over
+	// k = min (ceil (n / 65,534), input COMT chunks) chunks: never more chunks than
+	// the input had, and no chunk holds 65,535 notes unless n > 65,534 x input chunks.
+	// MediaInfo 26.10 hangs on a count of exactly 65,535.
 	void AppendMarkerNotes (List<AiffChunk> output)
 	{
 		if (!_commentEdited || _markers.Count == 0)
 			return;
-		var chunks = (_markers.Count + ushort.MaxValue - 1) / ushort.MaxValue;
+		const int PerChunk = ushort.MaxValue - 1;
+		var chunks = Math.Min ((_markers.Count + PerChunk - 1) / PerChunk, Math.Max (1, _commentChunks));
 		var start = 0;
 		for (var i = 0; i < chunks; i++) {
 			var count = (_markers.Count - start) / (chunks - i);
