@@ -387,13 +387,18 @@ public sealed class MatroskaTag : Tag
 	/// <returns>The EBML element, or empty when there are no tags.</returns>
 	public override BinaryData Render ()
 	{
-		if (_blocks.Count == 0)
-			return BinaryData.Empty;
-
 		using var tags = new BinaryDataBuilder ();
-		foreach (var block in _blocks)
+		var rendered = 0;
+		foreach (var block in _blocks) {
+			// A Tag contains at least one SimpleTag (RFC 9559 section 5.1.8.1.2). One that a clear emptied is
+			// dropped. One that was already empty when read is kept, so a save leaves it as it was.
+			if (block.Tags.Count == 0 && !block.WasEmpty)
+				continue;
 			tags.Add (block.Render ());
-		return EbmlWriter.Master (MatroskaIds.Tags, tags.ToBinaryData ().Span);
+			rendered++;
+		}
+
+		return rendered == 0 ? BinaryData.Empty : EbmlWriter.Master (MatroskaIds.Tags, tags.ToBinaryData ().Span);
 	}
 
 	internal void SetSegmentTitle (string? title) => _segmentTitle = title;
@@ -1150,6 +1155,9 @@ internal sealed class TagBlock
 	public bool IsFileLevel => !HasChapter && !HasAttachment && !HasTrack && !HasEdition;
 
 	public List<SimpleTag> Tags { get; } = new ();
+
+	/// <summary>The Tag had no SimpleTag when it was read.</summary>
+	public bool WasEmpty { get; set; }
 
 	readonly List<byte[]> _targetChildren = [];
 

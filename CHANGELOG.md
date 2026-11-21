@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Editing Title, Artist, Comment, Copyright or Performers on an AIFF file writes the value to the ID3 chunk and removes that field's native chunk on save, even when the new value equals the old one. `COMT` notes attached to other markers are kept byte for byte. An unchanged save leaves the native chunks as they are
 - Matroska: when a save inserts tags before an unknown-size Cluster, each Cluster `Position` at or past the insertion point moves with the data and the Cluster CRC-32 is recomputed (#118). `CueCodecState`, a Segment Position (RFC 9559 section 5.1.5.1.2.6), moves the same way, and is voided if the new value does not fit. A live `0` stays `0`, and a `Position` that no longer fits is voided, since it is optional. The walk is linear in the number of top-level elements.
 - Matroska: `DiscNumber` and `TotalDiscs` are read and written (#130). Setting or clearing a track or disc number or total leaves the other three as they were, including a total held in a `4/12` or `2/3` slash, and a clear removes every element the getter could still read.
-- Matroska: every rendered Tag has a `Targets` element. An omitted `TargetTypeValue` is not written back as 50, and an empty one reads as the default 50.
+- Matroska: every rendered Tag has a `Targets` element. An omitted `TargetTypeValue` is not written back as 50, and an empty one reads as the default 50. A Tag that a clear leaves with no SimpleTag is not written (RFC 9559 section 5.1.8.1.2); one that was already empty when read is kept.
 
 ## [0.6.0] - 2026-01-05
 
