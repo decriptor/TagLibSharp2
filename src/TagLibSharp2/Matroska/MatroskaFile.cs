@@ -52,7 +52,8 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 
 /// <summary>
 /// A Matroska or WebM file. Reading maps <c>Tags</c> onto <see cref="Tag"/>.
-/// Saving splices <see cref="MatroskaTag.Render"/> into the first <c>Segment</c>.
+/// Saving splices <see cref="MatroskaTag.Render"/> into the first <c>Segment</c>,
+/// after writing any <see cref="MatroskaTrack.IsEnabled"/> the caller set.
 /// </summary>
 public sealed class MatroskaFile : IMediaFile
 {
@@ -363,14 +364,39 @@ public sealed class MatroskaFile : IMediaFile
 	/// <summary>Writes the rendered <c>Tags</c> element into a copy of <paramref name="originalData"/>.</summary>
 	/// <returns>The rewritten file, or empty when the container cannot be bounded.</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
-		MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out _)
+		TryRender (originalData, out var rewritten, out _)
 			? new BinaryData (rewritten)
 			: BinaryData.Empty;
+
+	/// <summary>
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the tags.
+	/// With no track set, the container goes straight to the tag rewrite.
+	/// </summary>
+	bool TryRender (ReadOnlySpan<byte> originalData, out byte[] rewritten, out string error)
+	{
+		List<TrackFlagEdit>? edits = null;
+		foreach (var track in Tracks) {
+			if (track.IsEnabledAssigned)
+				(edits ??= new List<TrackFlagEdit> ()).Add (new TrackFlagEdit (track.Ordinal, track.TrackNumber, track.TrackUid, track.IsEnabled));
+		}
+
+		if (edits is null)
+			return MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error);
+
+		if (!MatroskaRewrite.TryWriteTrackFlags (originalData, edits, out var flagged, out error)) {
+			rewritten = [];
+			return false;
+		}
+
+		return flagged is null
+			? MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error)
+			: MatroskaRewrite.TryRewrite (flagged, Tag, out rewritten, out error);
+	}
 
 	/// <summary>Saves tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
 	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out var error))
+		if (!TryRender (originalData, out var rewritten, out var error))
 			return FileWriteResult.Failure (error);
 
 		fileSystem ??= _sourceFileSystem;
@@ -407,7 +433,7 @@ public sealed class MatroskaFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData.Span, Tag, out var rewritten, out var error))
+		if (!TryRender (originalData.Span, out var rewritten, out var error))
 			return Task.FromResult (FileWriteResult.Failure (error));
 
 		fileSystem ??= _sourceFileSystem;
