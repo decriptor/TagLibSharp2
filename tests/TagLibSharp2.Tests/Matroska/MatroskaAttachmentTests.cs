@@ -691,19 +691,58 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_NewFrontCover_GoesAfterAKeptFrontCover ()
+	[DataRow ("cover.jpg", PictureType.FrontCover, "cover.jpg|font.ttf|cover_2.jpg")]
+	[DataRow ("cover.png", PictureType.FrontCover, "cover.png|font.ttf|cover.jpg")]
+	[DataRow ("small_cover.jpg", PictureType.FrontCover, "cover.jpg|small_cover.jpg|font.ttf")]
+	[DataRow ("cover_land.jpg", PictureType.FrontCover, "cover.jpg|cover_land.jpg|font.ttf")]
+	[DataRow ("small_cover_land.jpg", PictureType.FrontCover, "cover.jpg|small_cover_land.jpg|font.ttf")]
+	[DataRow ("back_cover.jpg", PictureType.FrontCover, "cover.jpg|back_cover.jpg|font.ttf")]
+	[DataRow ("Cover.jpg", PictureType.FrontCover, "cover.jpg|Cover.jpg|font.ttf")]
+	[DataRow ("back.jpg", PictureType.BackCover, "cover.jpg|back.jpg|font.ttf")]
+	public void Save_NewFrontCover_GoesFirst_UnlessTheNormalCoverIsKept (string keptName, PictureType keptType, string expected)
 	{
-		// RFC 9559 section 21.1: the normal cover, cover.(jpg|png), SHOULD be the first attachment.
-		var cover = Picture ("cover.jpg", "image/jpeg", null, Jpeg, 5);
-		var font = Font (6);
-		var original = Movie (Attachments (cover, font), Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		// RFC 9559 section 21.1: the normal cover is cover.(jpg|png) and SHOULD be the first
+		// attachment. small_ and _land variants are not the normal cover, and names are case-sensitive.
+		var kept = Picture (keptName, "image/jpeg", null, Jpeg, 5);
+		var original = Movie (Attachments (kept, Font (6)), Master (MatroskaIds.Cluster, new byte[] { 1 }));
 		var file = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (keptType, file.Tag.Pictures.Single ().PictureType);
 		file.Tag.Pictures = [.. file.Tag.Pictures, new TestPicture ("image/jpeg", PictureType.FrontCover, "", Png)];
 
 		var files = AttachedFiles (Save (file, original));
 
-		Assert.AreEqual ("cover.jpg|font.ttf|cover_2.jpg", string.Join ("|", files.Select (f => f.Name)));
-		CollectionAssert.AreEqual (cover, files[0].Raw);
+		Assert.AreEqual (expected, string.Join ("|", files.Select (f => f.Name)));
+		CollectionAssert.AreEqual (kept, files.Single (f => f.Name == keptName).Raw);
+	}
+
+	[TestMethod]
+	public void Save_CopyWithAnEmptyMediaType_MatchesByTheDetectedType ()
+	{
+		// Picture.DetectMimeType reads image/jpeg from the bytes, which is the stored type.
+		var cover = Picture ("cover.jpg", "image/jpeg", null, Jpeg, 5);
+		var targeted = Master (0x7373, Concat (
+			Master (0x63C0, Concat (Element (0x68CA, new byte[] { 30 }), Element (0x63C6, new byte[] { 5 }))),
+			Simple ("COMMENT", "hello")));
+		var original = Movie (Tags (targeted), Attachments (cover), Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		var file = MatroskaFile.Read (original).File!;
+		file.Tag.Pictures = [.. file.Tag.Pictures.Select (p => (IPicture)new TestPicture ("", p.PictureType, p.Description, p.PictureData.ToArray ()))];
+
+		var bytes = Save (file, original);
+
+		CollectionAssert.AreEqual (original, bytes);
+		Assert.AreEqual (1, CountOf (bytes, targeted));
+	}
+
+	[TestMethod]
+	public void Save_CopyWithAnotherCase_MatchesTheStoredMediaType ()
+	{
+		// Media types are case-insensitive (RFC 6838 section 4.2), so IMAGE/JPEG and image/jpeg match.
+		var cover = Picture ("cover.jpg", "IMAGE/JPEG", null, Jpeg, 5);
+		var original = Movie (Attachments (cover, Font (6)), Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		var file = MatroskaFile.Read (original).File!;
+		file.Tag.Pictures = [.. file.Tag.Pictures.Select (p => (IPicture)new TestPicture ("image/jpeg", p.PictureType, p.Description, p.PictureData.ToArray ()))];
+
+		CollectionAssert.AreEqual (original, Save (file, original));
 	}
 
 	[TestMethod]
