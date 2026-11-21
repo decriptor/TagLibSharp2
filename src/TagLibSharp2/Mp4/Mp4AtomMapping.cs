@@ -78,6 +78,51 @@ internal static class Mp4AtomMapping
 	public const string FreeformMean = "mean";
 	public const string FreeformName = "name";
 
+	/// <summary>
+	/// The tag's key for a freeform atom: <c>----:</c>, the mean, <c>:</c>, then the name. A <c>:</c> or
+	/// <c>\</c> in the mean is escaped with <c>\</c>, so the first unescaped <c>:</c> after the prefix ends the
+	/// mean and both parts round-trip whatever they hold. Means without either character, such as
+	/// <c>com.apple.iTunes</c>, give the plain <c>----:mean:name</c> key.
+	/// </summary>
+	public static string FreeformKey (string mean, string name)
+	{
+		var escaped = new System.Text.StringBuilder (FreeformAtom.Length + mean.Length + name.Length + 2);
+		escaped.Append (FreeformAtom).Append (':');
+		foreach (var c in mean) {
+			if (c is ':' or '\\')
+				escaped.Append ('\\');
+			escaped.Append (c);
+		}
+		return escaped.Append (':').Append (name).ToString ();
+	}
+
+	/// <summary>
+	/// Splits a key made by <see cref="FreeformKey"/>. False when <paramref name="key"/> is not a freeform key.
+	/// </summary>
+	public static bool TrySplitFreeformKey (string key, out string mean, out string name)
+	{
+		mean = name = "";
+		var prefix = FreeformAtom.Length + 1;
+		if (key.Length < prefix || !key.StartsWith (FreeformAtom + ":", StringComparison.Ordinal))
+			return false;
+
+		var unescaped = new System.Text.StringBuilder ();
+		for (var i = prefix; i < key.Length; i++) {
+			var c = key[i];
+			if (c == '\\' && i + 1 < key.Length) {
+				unescaped.Append (key[++i]);
+				continue;
+			}
+			if (c == ':') {
+				mean = unescaped.ToString ();
+				name = key.Substring (i + 1);
+				return true;
+			}
+			unescaped.Append (c);
+		}
+		return false;
+	}
+
 	// Common freeform namespaces
 	public const string AppleNamespace = "com.apple.iTunes";
 	public const string MusicBrainzNamespace = "org.musicbrainz";

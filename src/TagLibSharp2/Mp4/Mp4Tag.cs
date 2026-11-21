@@ -703,7 +703,7 @@ public sealed class Mp4Tag : Tag
 
 	string? GetFreeform (string mean, string name)
 	{
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
+		var key = Mp4AtomMapping.FreeformKey (mean, name);
 		if (!_atoms.TryGetValue (key, out var dataAtoms) || dataAtoms.Count == 0)
 			return null;
 
@@ -712,7 +712,7 @@ public sealed class Mp4Tag : Tag
 
 	void SetFreeform (string mean, string name, string? value)
 	{
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
+		var key = Mp4AtomMapping.FreeformKey (mean, name);
 
 		if (string.IsNullOrEmpty (value)) {
 			RemoveAtom (key);
@@ -790,7 +790,7 @@ public sealed class Mp4Tag : Tag
 	}
 
 	static string FreeformKey (string name) =>
-		$"{Mp4AtomMapping.FreeformAtom}:{Mp4AtomMapping.AppleNamespace}:{name}";
+		Mp4AtomMapping.FreeformKey (Mp4AtomMapping.AppleNamespace, name);
 
 	/// <inheritdoc/>
 	public override void Clear ()
@@ -861,15 +861,8 @@ public sealed class Mp4Tag : Tag
 
 	static void RenderFreeformAtom (BinaryDataBuilder builder, string key, List<Mp4DataAtom> dataAtoms)
 	{
-		// The key is "----:mean:name". The name is everything after the second colon, so a name that
-		// contains a colon still renders.
-		var meanStart = Mp4AtomMapping.FreeformAtom.Length + 1;
-		var meanEnd = key.IndexOf (':', meanStart);
-		if (meanEnd < 0)
+		if (!Mp4AtomMapping.TrySplitFreeformKey (key, out var mean, out var name))
 			return;
-
-		var mean = key.Substring (meanStart, meanEnd - meanStart);
-		var name = key.Substring (meanEnd + 1);
 
 		var meanBytes = System.Text.Encoding.UTF8.GetBytes (mean);
 		var nameBytes = System.Text.Encoding.UTF8.GetBytes (name);

@@ -574,6 +574,44 @@ public class CustomFieldTests
 	}
 
 	[TestMethod]
+	[DataRow ("a:b", "c")]
+	[DataRow ("a", "b:c")]
+	[DataRow ("x\\y", "z")]
+	[DataRow ("a\\:b", "c\\d")]
+	[DataRow (":lead", "trail:")]
+	public void Mp4_FreeformMeanAndName_RoundTripWhateverTheyHold (string mean, string name)
+	{
+		var original = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var file = Mp4File.Read (original).File!;
+
+		file.SetFreeformTag (mean, name, "val");
+		var rendered = file.Render (original).ToArray ();
+
+		// mean and name are full boxes: size, type, version and flags, then the UTF-8 text.
+		byte[] meanBox = [.. "mean"u8, 0, 0, 0, 0, .. Encoding.UTF8.GetBytes (mean)];
+		byte[] nameBox = [.. "name"u8, 0, 0, 0, 0, .. Encoding.UTF8.GetBytes (name)];
+		Assert.IsTrue (rendered.AsSpan ().IndexOf (meanBox) >= 0, "the mean is written as given");
+		Assert.IsTrue (rendered.AsSpan ().IndexOf (nameBox) >= 0, "the name is written as given");
+		var again = Mp4File.Read (rendered).File!;
+		Assert.AreEqual ("val", again.GetFreeformTag (mean, name));
+		CollectionAssert.AreEqual (rendered, again.Render (rendered).ToArray (), "an unchanged save keeps the atom");
+	}
+
+	[TestMethod]
+	public void Mp4_FreeformMeanWithColon_IsNotAnotherMeanAndName ()
+	{
+		var original = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var file = Mp4File.Read (original).File!;
+
+		file.SetFreeformTag ("a:b", "c", "one");
+		file.SetFreeformTag ("a", "b:c", "two");
+		var again = Mp4File.Read (file.Render (original).Span).File!;
+
+		Assert.AreEqual ("one", again.GetFreeformTag ("a:b", "c"));
+		Assert.AreEqual ("two", again.GetFreeformTag ("a", "b:c"));
+	}
+
+	[TestMethod]
 	public void Mp4_FreeformSetThroughTheFile_IsTheCustomField ()
 	{
 		var original = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);

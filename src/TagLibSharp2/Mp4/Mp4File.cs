@@ -621,7 +621,7 @@ public sealed class Mp4File : IMediaFile
 		if (Tag is null)
 			return null;
 
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
+		var key = Mp4AtomMapping.FreeformKey (mean ?? "", name ?? "");
 		var atoms = Tag.GetAtoms ();
 		if (!atoms.TryGetValue (key, out var dataAtoms) || dataAtoms.Count == 0)
 			return null;
@@ -638,7 +638,7 @@ public sealed class Mp4File : IMediaFile
 	public void SetFreeformTag (string mean, string name, string? value)
 	{
 		var tag = EnsureTag ();
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
+		var key = Mp4AtomMapping.FreeformKey (mean ?? "", name ?? "");
 
 		if (string.IsNullOrEmpty (value)) {
 			tag.SetAtoms (key, null!);
@@ -1091,7 +1091,7 @@ public sealed class Mp4File : IMediaFile
 		}
 
 		if (!string.IsNullOrEmpty (mean) && !string.IsNullOrEmpty (name) && dataAtoms.Count > 0) {
-			var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
+			var key = Mp4AtomMapping.FreeformKey (mean, name);
 			tag.SetAtoms (key, dataAtoms);
 		}
 	}
