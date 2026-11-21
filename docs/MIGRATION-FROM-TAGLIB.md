@@ -483,7 +483,7 @@ async Task<string?> GetTitleAsync(string path, CancellationToken ct = default)
 TagLibSharp2 is under active development. These TagLib# features are planned but not yet implemented:
 
 - **Formats**: Speex, TrueAudio, Tracker formats (MOD/S3M/IT/XM)
-- **Features**: Matroska/WebM picture attachments and chapters are not written (tag values are), MPEG-4 video files
+- **Features**: Matroska/WebM chapters are not written (tag values and picture attachments are; WebM has no attachments), MPEG-4 video files
 
 ## Format-Specific Examples
 
