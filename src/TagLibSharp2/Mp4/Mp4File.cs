@@ -572,6 +572,70 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
+	/// Gets or sets the narrator ("©nrt", written by Audible in .aax files).
+	/// </summary>
+	public string? Narrator {
+		get => Tag?.Narrator;
+		set => EnsureTag ().Narrator = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the short title ("@sti", written by Audible in .aax files).
+	/// </summary>
+	public string? ShortTitle {
+		get => Tag?.ShortTitle;
+		set => EnsureTag ().ShortTitle = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the parent (series or collection) title ("@pti", written by Audible in .aax files).
+	/// </summary>
+	public string? ParentTitle {
+		get => Tag?.ParentTitle;
+		set => EnsureTag ().ParentTitle = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the parent short title ("@PST", written by Audible in .aax files).
+	/// </summary>
+	public string? ParentShortTitle {
+		get => Tag?.ParentShortTitle;
+		set => EnsureTag ().ParentShortTitle = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the parent product identifier ("@ppi", written by Audible in .aax files).
+	/// </summary>
+	public string? ParentProductId {
+		get => Tag?.ParentProductId;
+		set => EnsureTag ().ParentProductId = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the product identifier ("prID", written by Audible in .aax files).
+	/// </summary>
+	public string? ProductId {
+		get => Tag?.ProductId;
+		set => EnsureTag ().ProductId = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the release date, as stored (for example <c>02-Jul-2012</c>) ("rldt", written by Audible in .aax files).
+	/// </summary>
+	public string? ReleaseDate {
+		get => Tag?.ReleaseDate;
+		set => EnsureTag ().ReleaseDate = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the product version ("VERS", written by Audible in .aax files).
+	/// </summary>
+	public string? ProductVersion {
+		get => Tag?.ProductVersion;
+		set => EnsureTag ().ProductVersion = value;
+	}
+
+	/// <summary>
 	/// Gets or sets the content rating (Clean/Explicit/None).
 	/// </summary>
 	public Mp4ContentRating ContentRating {
@@ -842,7 +906,8 @@ public sealed class Mp4File : IMediaFile
 				// + samplerate(4, 16.16 fixed)
 				var codecType = entryData.Slice (4, 4).ToStringLatin1 ();
 				codec = codecType switch {
-					"mp4a" => Mp4AudioCodec.Aac,
+					// Audible .aax stores AAC in an "aavd" entry: the mp4a layout, esds included, with encrypted samples.
+					"mp4a" or "aavd" => Mp4AudioCodec.Aac,
 					"alac" => Mp4AudioCodec.Alac,
 					"fLaC" => Mp4AudioCodec.Flac,
 					"Opus" => Mp4AudioCodec.Opus,

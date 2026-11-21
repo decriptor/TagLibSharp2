@@ -73,6 +73,17 @@ internal static class Mp4AtomMapping
 	public const string Description = "desc";
 	public const string LongDescription = "ldes";
 
+	// Audiobook atoms written by Audible in .aax files. The atom codes are the ones ExifTool names
+	// (exiftool -listx -QuickTime:ItemList:all); '@' is a literal 0x40, not the 0xA9 copyright sign.
+	public const string Narrator = "©nrt";
+	public const string AudibleShortTitle = "@sti";
+	public const string AudibleParentTitle = "@pti";
+	public const string AudibleParentShortTitle = "@PST";
+	public const string AudibleParentProductId = "@ppi";
+	public const string AudibleProductId = "prID";
+	public const string AudibleReleaseDate = "rldt";
+	public const string AudibleProductVersion = "VERS";
+
 	// Freeform metadata namespace
 	public const string FreeformAtom = "----";
 	public const string FreeformMean = "mean";

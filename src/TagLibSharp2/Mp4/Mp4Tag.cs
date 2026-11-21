@@ -575,6 +575,94 @@ public sealed class Mp4Tag : Tag
 		set => SetText (Mp4AtomMapping.Keywords, value);
 	}
 
+	/// <summary>
+	/// Gets or sets the narrator.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "©nrt" atom that Audible writes in .aax audiobooks. ExifTool reports it as Narrator.
+	/// </remarks>
+	public string? Narrator {
+		get => GetText (Mp4AtomMapping.Narrator);
+		set => SetText (Mp4AtomMapping.Narrator, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the short title.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@sti" atom that Audible writes in .aax audiobooks. ExifTool reports it as ShortTitle.
+	/// </remarks>
+	public string? ShortTitle {
+		get => GetText (Mp4AtomMapping.AudibleShortTitle);
+		set => SetText (Mp4AtomMapping.AudibleShortTitle, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the parent (series or collection) title.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@pti" atom that Audible writes in .aax audiobooks. ExifTool reports it as ParentTitle.
+	/// </remarks>
+	public string? ParentTitle {
+		get => GetText (Mp4AtomMapping.AudibleParentTitle);
+		set => SetText (Mp4AtomMapping.AudibleParentTitle, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the parent short title.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@PST" atom that Audible writes in .aax audiobooks. ExifTool reports it as ParentShortTitle.
+	/// </remarks>
+	public string? ParentShortTitle {
+		get => GetText (Mp4AtomMapping.AudibleParentShortTitle);
+		set => SetText (Mp4AtomMapping.AudibleParentShortTitle, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the parent product identifier.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@ppi" atom that Audible writes in .aax audiobooks. ExifTool reports it as ParentProductID.
+	/// </remarks>
+	public string? ParentProductId {
+		get => GetText (Mp4AtomMapping.AudibleParentProductId);
+		set => SetText (Mp4AtomMapping.AudibleParentProductId, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the product identifier.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "prID" atom that Audible writes in .aax audiobooks. ExifTool reports it as ProductID.
+	/// </remarks>
+	public string? ProductId {
+		get => GetText (Mp4AtomMapping.AudibleProductId);
+		set => SetText (Mp4AtomMapping.AudibleProductId, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the release date, as stored (for example <c>02-Jul-2012</c>).
+	/// </summary>
+	/// <remarks>
+	/// Uses the "rldt" atom that Audible writes in .aax audiobooks. ExifTool reports it as ReleaseDate.
+	/// </remarks>
+	public string? ReleaseDate {
+		get => GetText (Mp4AtomMapping.AudibleReleaseDate);
+		set => SetText (Mp4AtomMapping.AudibleReleaseDate, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the product version.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "VERS" atom that Audible writes in .aax audiobooks. ExifTool reports it as ProductVersion.
+	/// </remarks>
+	public string? ProductVersion {
+		get => GetText (Mp4AtomMapping.AudibleProductVersion);
+		set => SetText (Mp4AtomMapping.AudibleProductVersion, value);
+	}
+
 	/// <inheritdoc/>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public override IPicture[] Pictures {
