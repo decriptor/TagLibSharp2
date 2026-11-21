@@ -1101,6 +1101,7 @@ namespace TagLibSharp2.Core
         Asf = 13,
         Musepack = 14,
         Matroska = 15,
+        MpegPs = 16,
     }
     [System.Flags]
     public enum MediaTypes
@@ -2664,6 +2665,54 @@ namespace TagLibSharp2.Mpeg
         Layer3 = 1,
         Layer2 = 2,
         Layer1 = 3,
+    }
+    public sealed class MpegPsFile : System.IDisposable, TagLibSharp2.Core.IMediaFile
+    {
+        public TagLibSharp2.Core.AudioProperties? AudioProperties { get; }
+        public System.TimeSpan? Duration { get; }
+        public TagLibSharp2.Core.MediaFormat Format { get; }
+        public TagLibSharp2.Id3.Id3v1Tag? Id3v1Tag { get; set; }
+        public int Id3v2Size { get; }
+        public TagLibSharp2.Id3.Id3v2.Id3v2Tag? Id3v2Tag { get; set; }
+        public TagLibSharp2.Core.MediaTypes MediaTypes { get; }
+        public string? SourcePath { get; }
+        public TagLibSharp2.Mpeg.MpegPsStreamType StreamType { get; }
+        public int SystemsVersion { get; }
+        public TagLibSharp2.Core.Tag? Tag { get; }
+        public TagLibSharp2.Core.VideoProperties? VideoProperties { get; }
+        public int VideoVersion { get; }
+        public void Dispose() { }
+        public TagLibSharp2.Id3.Id3v2.Id3v2Tag EnsureId3v2Tag() { }
+        public TagLibSharp2.Core.BinaryData Render(System.ReadOnlySpan<byte> originalData) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, System.ReadOnlySpan<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, System.ReadOnlyMemory<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool IsValidFormat(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Mpeg.MpegPsFileReadResult Read(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Mpeg.MpegPsFileReadResult ReadFromFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public static System.Threading.Tasks.Task<TagLibSharp2.Mpeg.MpegPsFileReadResult> ReadFromFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool TryRead(System.ReadOnlySpan<byte> data, out TagLibSharp2.Mpeg.MpegPsFile? file) { }
+    }
+    public readonly struct MpegPsFileReadResult : System.IEquatable<TagLibSharp2.Mpeg.MpegPsFileReadResult>
+    {
+        public string? Error { get; }
+        public TagLibSharp2.Mpeg.MpegPsFile? File { get; }
+        public bool IsSuccess { get; }
+        public bool Equals(TagLibSharp2.Mpeg.MpegPsFileReadResult other) { }
+        public override bool Equals(object? obj) { }
+        public override int GetHashCode() { }
+        public static TagLibSharp2.Mpeg.MpegPsFileReadResult Failure(string error) { }
+        public static TagLibSharp2.Mpeg.MpegPsFileReadResult Success(TagLibSharp2.Mpeg.MpegPsFile file) { }
+        public static bool operator !=(TagLibSharp2.Mpeg.MpegPsFileReadResult left, TagLibSharp2.Mpeg.MpegPsFileReadResult right) { }
+        public static bool operator ==(TagLibSharp2.Mpeg.MpegPsFileReadResult left, TagLibSharp2.Mpeg.MpegPsFileReadResult right) { }
+    }
+    public enum MpegPsStreamType
+    {
+        ProgramStream = 0,
+        VideoElementaryStream = 1,
     }
     public enum MpegVersion
     {

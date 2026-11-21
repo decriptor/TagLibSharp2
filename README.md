@@ -26,6 +26,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Format Support**:
   - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
   - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): tags, duration, audio and video properties, and pictures. Tag values can be saved. Picture attachments are read but not rewritten.
+  - MPEG program streams (`.mpg`, `.mpeg`, `.mpe`, `.vob`) and MPEG video elementary streams (`.mpv`, `.m1v`, `.m2v`): duration, MPEG-1/MPEG-2 video properties, and the first audio stream (MPEG audio, AC-3, LPCM). ID3v2 in front of the stream, an ID3v2.4 tag appended after it (the layout TagLib# writes), and ID3v1 are read and written in place; the stream bytes are not changed.
 
 ## Format Support Matrix
 
@@ -72,6 +73,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | WavPack | APE tag | — | Native only |
 | Monkey's Audio | APE tag | — | Native only |
 | Musepack | APE tag | — | Native only |
+| MPEG program stream / video elementary stream | — (ISO/IEC 11172-1 and 13818-1 define none) | ID3v2 (in front), ID3v1 (at the end) | ID3v2 preferred |
 
 ## Installation
 
