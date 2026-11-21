@@ -531,28 +531,88 @@ public partial class AiffAnnotationTests
 	}
 
 	[TestMethod]
-	public void SetComment_KeepsEveryMarkerNoteByteForByte ()
+	[DataRow (false, DisplayName = "comment edit")]
+	[DataRow (true, DisplayName = "Tag.Clear")]
+	public void SetComment_KeepsEveryMarkerNoteByteForByte (bool clear)
 	{
-		// A comment edit rewrites COMT without the marker-0 entry. The other notes were not
-		// edited, so their bytes stay as read: UTF-8, Mac OS Roman, and a trailing NUL.
+		// A comment edit or Clear rewrites COMT without the marker-0 entry. The other notes
+		// were not edited, so each stays as read: UTF-8, Mac OS Roman, a trailing NUL, no
+		// text at all, and text that is only NULs.
 		var cafe = new byte[] { 0x43, 0x61, 0x66, 0xC3, 0xA9 };
 		var ost = new byte[] { 0x85, 0x73, 0x74 };
 		var cue = new byte[] { 0x63, 0x75, 0x65, 0x00 };
+		var nuls = new byte[] { 0x00, 0x00 };
 		var file = ReadAiff (Form (
-			ComtEntries ((0, 0, System.Text.Encoding.Latin1.GetBytes ("File")), (11, 3, cafe), (12, 4, ost), (13, 5, cue)),
+			ComtEntries (
+				(0, 0, System.Text.Encoding.Latin1.GetBytes ("File")),
+				(11, 3, cafe),
+				(12, 4, ost),
+				(13, 5, cue),
+				(14, 6, []),
+				(15, 7, nuls)),
 			Comm (),
 			Ssnd ()));
 		Assert.AreEqual ("File", file.Tag!.Comment);
 
-		file.Tag.Comment = "Edited";
+		if (clear)
+			file.Tag.Clear ();
+		else
+			file.Tag.Comment = "Edited";
 
 		var again = ReadAiff (file.Render ().ToArray ());
-		Assert.AreEqual ("Edited", again.Id3v2Tag!.Comment);
+		Assert.AreEqual (clear ? null : "Edited", again.Id3v2Tag?.Comment);
 		var notes = ReadNotes (again.GetChunk ("COMT")!.Data);
-		Assert.AreEqual (3, notes.Count);
+		Assert.AreEqual (5, notes.Count);
 		AssertNote (notes[0], 11, 3, cafe);
 		AssertNote (notes[1], 12, 4, ost);
 		AssertNote (notes[2], 13, 5, cue);
+		AssertNote (notes[3], 14, 6, []);
+		AssertNote (notes[4], 15, 7, nuls);
+	}
+
+	[TestMethod]
+	public void SetComment_MoreNotesThanOneComtHolds_SplitsThemWithoutWrapping ()
+	{
+		// numComments is 16 bits (AIFF 1.3 section 13). Two COMT chunks of 40,000 notes
+		// each must not come back as one chunk whose count wrapped to 14,464.
+		const int perChunk = 40000;
+		var entries = new (uint, ushort, byte[])[perChunk];
+		for (var i = 0; i < perChunk; i++)
+			entries[i] = ((uint)i, 9, [0x6E]);
+		var file = ReadAiff (Form (ComtEntries ((0, 0, [0x46])), ComtEntries (entries), ComtEntries (entries), Comm (), Ssnd ()));
+
+		file.Tag!.Comment = "Edited";
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		var chunks = again.AllChunks.Where (c => c.FourCC == "COMT").ToList ();
+		var total = 0;
+		foreach (var chunk in chunks) {
+			var count = chunk.Data.ToUInt16BE ();
+			var notes = ReadNotes (chunk.Data);
+			Assert.AreEqual (count, notes.Count);
+			var end = 2 + notes.Sum (n => 8 + n.Text.Length + (n.Text.Length & 1));
+			Assert.AreEqual (chunk.Data.Length, end, "numComments must describe every entry in the chunk");
+			total += count;
+		}
+
+		Assert.AreEqual (2 * perChunk, total);
+		Assert.AreEqual ("Edited", again.Tag!.Comment);
+	}
+
+	[TestMethod]
+	public void Clear_WithOnlyMarkerNotesLeft_ReportsNoTagType ()
+	{
+		// A marker note is not a tag field: IsEmpty and TagType agree after Clear, and a file
+		// whose only native text is marker notes has no tag view.
+		var file = ReadAiff (Form (Text ("NAME", "Song"), Marked ((5, "Cue")), Comm (), Ssnd ()));
+		Assert.AreEqual (TagTypes.RiffInfo, file.Tag!.TagType);
+
+		file.Tag.Clear ();
+
+		Assert.IsTrue (file.Tag.IsEmpty);
+		Assert.AreEqual (TagTypes.None, file.Tag.TagType);
+		var notesOnly = ReadAiff (Form (Marked ((5, "Cue")), Comm (), Ssnd ()));
+		Assert.IsNull (notesOnly.Tag);
 	}
 
 	[TestMethod]

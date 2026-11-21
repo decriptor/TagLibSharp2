@@ -594,8 +594,6 @@ public sealed class AiffFile : IMediaFile
 		|| _author is not null
 		|| _copyright is not null;
 
-	internal bool HasNativeSource => HasNativeFields || _markers.Count > 0;
-
 	string? NativeComment => _commentKind switch {
 		NativeCommentKind.MarkerComment => Join (_markerComments),
 		NativeCommentKind.Annotation => Join (_annotations),
@@ -719,13 +717,11 @@ public sealed class AiffFile : IMediaFile
 			if ((textLength & 1) == 1 && offset < data.Length)
 				offset++;
 
-			if (string.IsNullOrEmpty (text))
-				continue;
-
-			if (marker == 0)
-				_markerComments.Add (text!);
-			else
+			// A note for another marker is kept even with no text, so a rewrite keeps it.
+			if (marker != 0)
 				_markers.Add (new MarkerNote (timestamp, marker, raw));
+			else if (!string.IsNullOrEmpty (text))
+				_markerComments.Add (text!);
 		}
 	}
 
@@ -807,18 +803,24 @@ public sealed class AiffFile : IMediaFile
 	}
 
 	// An edited comment drops every COMT chunk. Notes for other markers were not
-	// edited, so they go back in one COMT chunk (AIFF 1.3 section 13).
+	// edited, so they go back in one COMT chunk (AIFF 1.3 section 13). numComments is
+	// 16 bits, so notes read from several chunks that do not fit in one stay split.
 	void AppendMarkerNotes (List<AiffChunk> output)
 	{
-		if (_commentEdited && _markers.Count > 0)
-			output.Add (new AiffChunk ("COMT", RenderComments (_markers)));
+		if (!_commentEdited)
+			return;
+		for (var start = 0; start < _markers.Count; start += ushort.MaxValue) {
+			var count = Math.Min (ushort.MaxValue, _markers.Count - start);
+			output.Add (new AiffChunk ("COMT", RenderComments (_markers, start, count)));
+		}
 	}
 
-	static BinaryData RenderComments (List<MarkerNote> notes)
+	static BinaryData RenderComments (List<MarkerNote> notes, int start, int count)
 	{
 		using var body = new BinaryDataBuilder ();
-		body.AddUInt16BE ((ushort)notes.Count);
-		foreach (var note in notes) {
+		body.AddUInt16BE ((ushort)count);
+		for (var i = start; i < start + count; i++) {
+			var note = notes[i];
 			body.AddUInt32BE (note.Timestamp);
 			body.AddUInt16BE (note.MarkerId);
 			// Raw came from a 16-bit count, so it always fits.
