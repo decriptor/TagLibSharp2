@@ -1062,14 +1062,14 @@ public sealed class Mp4File : IMediaFile
 					var pictures = new Mp4Picture[dataAtoms.Count];
 					for (var i = 0; i < pictures.Length; i++)
 						pictures[i] = Mp4Picture.FromDataAtom (dataAtoms[i]);
-					tag.SetKeyedPictures (pictures, type);
+					tag.SetKeyedPictures (pictures, type, item.Render ());
 					break;
 				}
 			case Mp4KeyedKind.Freeform:
-				tag.SetKeyedFreeform (field.Mean!, field.Name!, dataAtoms, type);
+				tag.SetKeyedFreeform (field.Mean!, field.Name!, dataAtoms, type, item.Render ());
 				break;
 			default:
-				if (!tag.SetKeyedAtoms (field.AtomId, dataAtoms, type, keys.IsTextKey (type)))
+				if (!tag.SetKeyedAtoms (field.AtomId, dataAtoms, type, keys.IsTextKey (type), item.Render ()))
 					tag.PreserveIlstAtom (item.Render ());
 				break;
 		}

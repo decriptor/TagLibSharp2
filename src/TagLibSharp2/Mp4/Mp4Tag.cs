@@ -73,6 +73,10 @@ public sealed class Mp4Tag : Tag
 	readonly Dictionary<(string Mean, string Name), uint> _keyIndexByFreeform = new ();
 	uint _artworkKeyIndex;
 
+	// A second keyed item for a field (say "title" and "com.apple.quicktime.title"). The getter
+	// reads the first; these are kept as they are until the field is set, which drops them.
+	readonly Dictionary<string, List<uint>> _keyedTwins = new (StringComparer.Ordinal);
+
 	/// <inheritdoc/>
 	public override TagTypes TagType => TagTypes.Apple;
 
@@ -809,6 +813,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		DropPreservedFreeform (mean, name);
+		DropFreeformTwins (mean, name);
 		if (dataAtoms is null || dataAtoms.Count == 0)
 			return;
 
@@ -838,6 +843,7 @@ public sealed class Mp4Tag : Tag
 		_keyIndexByAtom.Clear ();
 		_keyIndexByFreeform.Clear ();
 		_artworkKeyIndex = 0;
+		_keyedTwins.Clear ();
 	}
 
 	/// <inheritdoc/>
@@ -870,31 +876,66 @@ public sealed class Mp4Tag : Tag
 	/// to the iTunes form here and back on render.
 	/// </summary>
 	/// <returns>False when the text is not a value of that field; the caller keeps the item as it is.</returns>
-	internal bool SetKeyedAtoms (string atomId, List<Mp4DataAtom> dataAtoms, uint keyIndex, bool textKey)
+	internal bool SetKeyedAtoms (string atomId, List<Mp4DataAtom> dataAtoms, uint keyIndex, bool textKey, BinaryData item)
 	{
 		var atoms = textKey ? FromKeyedText (atomId, dataAtoms) : dataAtoms;
 		if (atoms.Count == 0)
 			return false;
 
+		if (_keyIndexByAtom.TryGetValue (atomId, out var first) && first != keyIndex && _atoms.ContainsKey (atomId)) {
+			KeepTwin (atomId, keyIndex, item);
+			return true;
+		}
+
 		SetAtoms (atomId, atoms);
-		if (!_keyIndexByAtom.TryGetValue (atomId, out _))
-			_keyIndexByAtom[atomId] = keyIndex;
+		_keyIndexByAtom[atomId] = keyIndex;
 		return true;
 	}
 
-	internal void SetKeyedFreeform (string mean, string name, List<Mp4DataAtom> dataAtoms, uint keyIndex)
+	internal void SetKeyedFreeform (string mean, string name, List<Mp4DataAtom> dataAtoms, uint keyIndex, BinaryData item)
 	{
+		if (_keyIndexByFreeform.TryGetValue ((mean, name), out var first) && first != keyIndex && FindFreeform (mean, name) is not null) {
+			KeepTwin (FreeformId (mean, name), keyIndex, item);
+			return;
+		}
+
 		SetFreeformAtoms (mean, name, dataAtoms);
-		if (!_keyIndexByFreeform.TryGetValue ((mean, name), out _))
-			_keyIndexByFreeform[(mean, name)] = keyIndex;
+		_keyIndexByFreeform[(mean, name)] = keyIndex;
 	}
 
-	internal void SetKeyedPictures (Mp4Picture[] pictures, uint keyIndex)
+	internal void SetKeyedPictures (Mp4Picture[] pictures, uint keyIndex, BinaryData item)
 	{
+		if (_artworkKeyIndex != 0 && _artworkKeyIndex != keyIndex && _pictures.Count > 0) {
+			KeepTwin (Mp4AtomMapping.CoverArt, keyIndex, item);
+			return;
+		}
+
 		Pictures = pictures;
-		if (_artworkKeyIndex == 0)
-			_artworkKeyIndex = keyIndex;
+		_artworkKeyIndex = keyIndex;
 	}
+
+	void KeepTwin (string fieldId, uint keyIndex, BinaryData item)
+	{
+		PreserveIlstAtom (item);
+		if (!_keyedTwins.TryGetValue (fieldId, out var twins)) {
+			twins = new List<uint> ();
+			_keyedTwins[fieldId] = twins;
+		}
+
+		twins.Add (keyIndex);
+	}
+
+	void DropTwins (string fieldId)
+	{
+		if (!_keyedTwins.TryGetValue (fieldId, out var twins))
+			return;
+
+		_keyedTwins.Remove (fieldId);
+		foreach (var type in twins)
+			DropPreserved (type);
+	}
+
+	static string FreeformId (string mean, string name) => Mp4AtomMapping.FreeformAtom + "\n" + mean + "\n" + name;
 
 	// Writes every field as an item typed by its key index, in index order, and never an iTunes
 	// atom type: "The atom type for each metadata item atom should be set equal to the index of the
@@ -1152,7 +1193,12 @@ public sealed class Mp4Tag : Tag
 		if (atomId.Length != 4)
 			return;
 
-		var typeKey = TypeKey (atomId);
+		DropPreserved (TypeKey (atomId));
+		DropTwins (atomId);
+	}
+
+	void DropPreserved (uint typeKey)
+	{
 		if (!_preservedByType.TryGetValue (typeKey, out var indexes))
 			return;
 
@@ -1173,6 +1219,8 @@ public sealed class Mp4Tag : Tag
 
 		_preservedFreeformByKey.Remove ((mean, name));
 	}
+
+	void DropFreeformTwins (string mean, string name) => DropTwins (FreeformId (mean, name));
 
 	static uint TypeKey (string atomId) =>
 		((uint)(byte)atomId[0] << 24) |

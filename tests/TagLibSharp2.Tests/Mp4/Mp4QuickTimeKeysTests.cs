@@ -330,6 +330,51 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Tag!.Artist);
 	}
 
+	// Two keys for one field: the getter reads the first, an unedited save keeps both, and a set
+	// leaves one.
+	[TestMethod]
+	[DataRow ("title", "com.apple.quicktime.title", "Title")]
+	[DataRow ("MOOD", "MOOD", "Mood")]
+	[DataRow ("track", "track", "Track")]
+	public void TwoKeysForOneField_FirstIsReadAndASetLeavesOne (string first, string second, string property)
+	{
+		var isTrack = property == "Track";
+		var firstItem = TestBuilders.Mp4.CreateMdtaItem (1, isTrack ? "1/9" : "A");
+		var secondItem = TestBuilders.Mp4.CreateMdtaItem (2, isTrack ? "2/9" : "B");
+		var data = Keyed ([first, second], firstItem, secondItem);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual (isTrack ? 1u : "A", Get (file.Tag!, property));
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		Set (file.Tag!, property, isTrack ? 5u : "New");
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, firstItem));
+		Assert.AreEqual (0, Count (rendered, secondItem));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, isTrack ? "5/9" : "New")));
+		Assert.AreEqual (isTrack ? 5u : "New", Get (Mp4File.Read (rendered).File!.Tag!, property));
+	}
+
+	[TestMethod]
+	public void TwoArtworkKeys_FirstIsReadAndASetLeavesOne ()
+	{
+		var jpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+		var png = new byte[] { 0x89, 0x50, 0x4E, 0x47 };
+		var data = Keyed (["com.apple.quicktime.artwork", "com.apple.quicktime.artwork"],
+			TestBuilders.Mp4.CreateMdtaItem (1, Mp4AtomMapping.TypeJpeg, jpeg),
+			TestBuilders.Mp4.CreateMdtaItem (2, Mp4AtomMapping.TypePng, png));
+
+		var file = Mp4File.Read (data).File!;
+		Assert.HasCount (1, file.Pictures);
+		CollectionAssert.AreEqual (jpeg, file.Pictures[0].PictureData.ToArray ());
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Tag!.Pictures = [new Mp4Picture (png, isJpeg: false)];
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (2, Mp4AtomMapping.TypePng, png)));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, Mp4AtomMapping.TypePng, png)));
+	}
+
 	[TestMethod]
 	public void UneditedSave_IsByteIdentical ()
 	{
