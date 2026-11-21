@@ -2494,22 +2494,30 @@ namespace TagLibSharp2.Mp4
         public string? MusicBrainzReleaseCountry { get; set; }
         public string? MusicBrainzReleaseStatus { get; set; }
         public string? MusicBrainzReleaseType { get; set; }
+        public string? Narrator { get; set; }
         public string? OriginalReleaseDate { get; set; }
+        public string? ParentProductId { get; set; }
+        public string? ParentShortTitle { get; set; }
+        public string? ParentTitle { get; set; }
         public TagLibSharp2.Core.IPicture[] Pictures { get; }
         public string? PodcastCategory { get; set; }
         public string? PodcastEpisodeGuid { get; set; }
         public string? PodcastFeedUrl { get; set; }
         public string? PodcastKeywords { get; set; }
+        public string? ProductId { get; set; }
+        public string? ProductVersion { get; set; }
         public TagLibSharp2.Core.AudioProperties Properties { get; }
         public string? R128AlbumGain { get; set; }
         public double? R128AlbumGainDb { get; set; }
         public string? R128TrackGain { get; set; }
         public double? R128TrackGainDb { get; set; }
+        public string? ReleaseDate { get; set; }
         public string? Remixer { get; set; }
         public string? ReplayGainAlbumGain { get; set; }
         public string? ReplayGainAlbumPeak { get; set; }
         public string? ReplayGainTrackGain { get; set; }
         public string? ReplayGainTrackPeak { get; set; }
+        public string? ShortTitle { get; set; }
         public string? SourcePath { get; }
         public string? Subtitle { get; set; }
         public TagLibSharp2.Mp4.Mp4Tag? Tag { get; set; }
@@ -2624,20 +2632,28 @@ namespace TagLibSharp2.Mp4
         public override string? MusicBrainzReleaseType { get; set; }
         public override string? MusicBrainzTrackId { get; set; }
         public override string? MusicBrainzWorkId { get; set; }
+        public string? Narrator { get; set; }
         public override string? OriginalReleaseDate { get; set; }
+        public string? ParentProductId { get; set; }
+        public string? ParentShortTitle { get; set; }
+        public string? ParentTitle { get; set; }
         public override TagLibSharp2.Core.IPicture[] Pictures { get; set; }
         public string? PodcastCategory { get; set; }
         public string? PodcastEpisodeGuid { get; set; }
         public override string? PodcastFeedUrl { get; set; }
         public string? PodcastKeywords { get; set; }
+        public string? ProductId { get; set; }
+        public string? ProductVersion { get; set; }
         public override string? Publisher { get; set; }
         public override string? R128AlbumGain { get; set; }
         public override string? R128TrackGain { get; set; }
+        public string? ReleaseDate { get; set; }
         public override string? Remixer { get; set; }
         public override string? ReplayGainAlbumGain { get; set; }
         public override string? ReplayGainAlbumPeak { get; set; }
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
+        public string? ShortTitle { get; set; }
         public override string? Subtitle { get; set; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }

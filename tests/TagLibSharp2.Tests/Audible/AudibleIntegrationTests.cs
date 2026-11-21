@@ -114,6 +114,6 @@ public class AudibleIntegrationTests : FileFormatTestBase
 		Assert.AreEqual (MediaFormat.Mp4, result.Format);
 		var file = (Mp4File)result.File!;
 		Assert.AreEqual ("aax", file.FileType);
-		Console.WriteLine ($"{file.Title} / {file.Properties.Duration}");
+		Console.WriteLine ($"{file.Title} / {file.Narrator} / {file.ProductId} / {file.Properties.Duration}");
 	}
 }
