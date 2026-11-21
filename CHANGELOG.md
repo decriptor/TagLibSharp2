@@ -5,6 +5,17 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `AudibleFile` and `AudibleTag` read and write Audible `.aa` audiobooks: the text dictionary (title, author, narrator, provider, dates, descriptions, keywords, copyright, short and parent titles, product and title IDs, and any other key through `GetValue`/`SetValue`), the cover image, and the duration. A save rewrites the dictionary and moves every table-of-contents offset, the declared file size, and the cover position by the change in its size. The encrypted audio and the DRM keys are copied unchanged; `SetValue` refuses `codec`, `HeaderSeed`, `HeaderKey`, and `EncryptedBlocks`, and `Clear` keeps them. `MediaFormat.Audible` and `TagTypes.Audible` are new, and `.aa` is detected by its magic or extension.
+- `.aax` opens as MP4 by extension as well as by content. `Mp4Tag` and `Mp4File` gain `Narrator` (`©nrt`), `ShortTitle` (`@sti`), `ParentTitle` (`@pti`), `ParentShortTitle` (`@PST`), `ParentProductId` (`@ppi`), `ProductId` (`prID`), `ReleaseDate` (`rldt`), and `ProductVersion` (`VERS`). An Audible `aavd` sample entry reports AAC.
+
+### Fixed
+
+- An MP4 `ilst` item whose code the reader had no name for (for example Audible's `CDEK`, `CDET`, `AACR`, or `GUID`) was dropped on read and so removed by the next save. Every `ilst` item is now read and written back.
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes
