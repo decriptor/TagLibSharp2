@@ -1114,9 +1114,9 @@ public abstract class Tag
 	/// <c>com.apple.iTunes</c> and the name as its <c>name</c>. Matched exactly. Each value is its own
 	/// <c>data</c> atom.</description></item>
 	/// <item><term>ASF</term><description>An Extended Content Description attribute, matched
-	/// case-insensitively. Each value is its own attribute. <c>Title</c>, <c>Author</c>,
-	/// <c>Copyright</c>, <c>Description</c>, and <c>Rating</c> are the Content Description
-	/// fields.</description></item>
+	/// case-insensitively; <c>Title</c>, <c>Author</c>, <c>Copyright</c>, <c>Description</c>, and
+	/// <c>Rating</c> are the Content Description fields. That holds the first value, and the others are
+	/// file-level records of the Metadata Library Object, as Windows writes them.</description></item>
 	/// <item><term>Matroska</term><description>A file-level <c>SimpleTag</c> at the level that
 	/// <see cref="Comment"/> uses. Matched exactly. Each value is its own <c>SimpleTag</c>.</description></item>
 	/// <item><term>RIFF INFO</term><description>A chunk whose four-character code is the name. One value.</description></item>
@@ -1155,10 +1155,12 @@ public abstract class Tag
 	/// <item><description>The name is where the format keeps pictures: <c>METADATA_BLOCK_PICTURE</c> in a
 	/// Vorbis comment, an APE key that starts with <c>Cover Art</c>, or ASF <c>WM/Picture</c>. Use
 	/// <see cref="Pictures"/> instead.</description></item>
-	/// <item><description>The format holds one value under the name and more were given (RIFF INFO, and the
-	/// five ASF Content Description fields).</description></item>
+	/// <item><description>The format holds one value under the name and more were given (RIFF
+	/// INFO).</description></item>
 	/// <item><description>The value cannot be encoded: RIFF INFO text outside ISO-8859-1, or an ASF name or
 	/// value longer than its 16-bit length field.</description></item>
+	/// <item><description>The ASF file's Metadata or Metadata Library Object could not be parsed, so values
+	/// stored there would survive the write.</description></item>
 	/// </list>
 	/// <para>
 	/// A name that a mapped property also uses is stored in the same place the property reads, not refused

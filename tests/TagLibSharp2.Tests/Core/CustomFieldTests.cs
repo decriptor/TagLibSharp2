@@ -11,6 +11,7 @@ using TagLibSharp2.Id3.Id3v2.Frames;
 using TagLibSharp2.Matroska;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Riff;
+using TagLibSharp2.Tests.Asf;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Core;
@@ -80,11 +81,19 @@ public class CustomFieldTests
 
 	static AsfTag ReparseAsf (AsfTag tag)
 	{
-		var content = AsfContentDescription.Parse (tag.RenderContentDescription ().Span);
-		var extended = AsfExtendedContentDescription.Parse (tag.Render ().Span);
-		Assert.IsTrue (content.IsSuccess);
-		Assert.IsTrue (extended.IsSuccess);
-		return new AsfTag (content.Value, extended.Value);
+		// Values 2..n live in the Metadata Library Object, so go through a whole file.
+		var original = AsfTestBuilder.CreateMinimalWma ();
+		var file = AsfFile.Read (original).File!;
+		foreach (var name in new[] { "Title", "Author", "Copyright", "Description", "Rating" })
+			file.Tag.SetCustomField (name, [.. tag.GetCustomField (name)]);
+		var names = tag.ExtendedContentDescription.Descriptors.Select (d => d.Name)
+			.Concat (tag.LibraryRecords?.Select (r => r.Name) ?? [])
+			.Distinct (StringComparer.OrdinalIgnoreCase);
+		foreach (var name in names)
+			file.Tag.SetCustomField (name, [.. tag.GetCustomField (name)]);
+		var again = AsfFile.Read (file.Render (original));
+		Assert.IsTrue (again.IsSuccess, again.Error);
+		return again.File!.Tag;
 	}
 
 	static MatroskaTag ReparseMatroska (MatroskaTag tag)
@@ -640,8 +649,9 @@ public class CustomFieldTests
 
 		Assert.AreEqual (0, tag.ExtendedContentDescription.Descriptors.Count);
 		AssertValues (Reparse (tag).GetCustomField (name), "value");
-		Assert.IsFalse (tag.SetCustomField (name, "a", "b"));
-		AssertValues (tag.GetCustomField (name), "value");
+		Assert.IsTrue (tag.SetCustomField (name, "a", "b"));
+		AssertValues (tag.GetCustomField (name), "a", "b");
+		AssertValues (Reparse (tag).GetCustomField (name), "a", "b");
 		Assert.IsTrue (tag.RemoveCustomField (name));
 		Assert.AreEqual (0, tag.GetCustomField (name).Count);
 	}
@@ -668,14 +678,16 @@ public class CustomFieldTests
 	}
 
 	[TestMethod]
-	public void Asf_EachValueIsItsOwnAttribute ()
+	public void Asf_FirstValueInExtendedContentRestInMetadataLibrary ()
 	{
 		var tag = new AsfTag ();
 
-		tag.SetCustomField ("My/Field", "a", "b");
+		tag.SetCustomField ("My/Field", "a", "b", "c");
 
 		var names = tag.ExtendedContentDescription.Descriptors.Select (d => d.Name).ToList ();
-		AssertValues (names, "My/Field", "My/Field");
+		AssertValues (names, "My/Field");
+		AssertValues (tag.LibraryRecords!.Select (r => r.Text!).ToList (), "b", "c");
+		AssertValues (tag.GetCustomField ("My/Field"), "a", "b", "c");
 	}
 
 	[TestMethod]
