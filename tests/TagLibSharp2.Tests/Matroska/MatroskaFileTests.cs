@@ -765,6 +765,24 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void TotalDiscs_Set_OnATrackOnlyFile_MovesAKnownDiscTo50 ()
+	{
+		// 60 TOTAL_PARTS counts the first lower level in the file. With only a 30 tag that would be tracks.
+		var original = FileWith (
+			Tags (Tag (30, Simple ("PART_NUMBER", "4"), Simple ("DISC", "2"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.TotalDiscs = 3;
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		AssertNumbers (again, 4, null, 2, 3, "set");
+		Assert.IsTrue (FileTargetHas (bytes, 50, "PART_NUMBER"));
+		Assert.IsTrue (FileTargetHas (bytes, 60, "TOTAL_PARTS"));
+		Assert.IsFalse (HasTagName (bytes, "DISC"));
+		CollectionAssert.AreEqual (new ulong[] { 60, 50, 30 }, TargetLevelsInOrder (bytes));
+	}
+
+	[TestMethod]
 	public void Read_TagLibWrittenTotals_FollowTheSpecLevels ()
 	{
 		// TagLib writes the track total at 30 and the disc total at 50. The spec makes 50 the track total.

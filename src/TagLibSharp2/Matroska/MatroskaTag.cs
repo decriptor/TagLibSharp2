@@ -25,6 +25,7 @@ public sealed class MatroskaTag : Tag
 	const ulong CollectionLevel = 70;
 	const ulong VolumeLevel = 60;
 	const ulong AlbumLevel = 50;
+	const ulong PartLevel = 40;
 	const ulong TrackLevel = 30;
 
 	readonly List<TagBlock> _blocks = new ();
@@ -743,6 +744,11 @@ public sealed class MatroskaTag : Tag
 
 	void SetDiscTotal (uint? value)
 	{
+		// 60 TOTAL_PARTS counts "the first lower TargetTypeValue that is specified in the file"
+		// (tagging.html, Target Types Parts). Without a 40 or 50 tag that is the track, so a known disc
+		// number moves to 50 PART_NUMBER first and the 60 total then counts discs.
+		if (value is not null && !HasAlbumOrPartTarget () && DiscNumber is { } disc)
+			DiscNumber = disc;
 		RemoveFileLevel ("DISCTOTAL");
 		RemoveFileLevel ("TOTALDISCS");
 		if (value is null) {
@@ -791,6 +797,8 @@ public sealed class MatroskaTag : Tag
 	static bool IsTrackLevel (TagBlock block) => block.IsFileLevel && block.Level == TrackLevel;
 
 	static bool IsVolume (TagBlock block) => block.IsFileLevel && block.Level == VolumeLevel;
+
+	bool HasAlbumOrPartTarget () => FirstBlock (block => block.IsFileLevel && block.Level is AlbumLevel or PartLevel) is not null;
 
 	static bool HasNumber (TagBlock block, string name) => ParseLeading (Text (block, name)) is not null;
 
