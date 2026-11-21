@@ -108,12 +108,14 @@ public sealed class MatroskaTag : Tag
 	public override uint? Track {
 		get => ParseLeading (TrackPartNumber ());
 		set {
-			if (value is null) {
+			// Changing the number keeps TotalTracks, including a total read from the old "4/12".
+			var total = TrackTotal ();
+			if (value is null)
 				RemoveWhere (IsTrackTarget, "PART_NUMBER");
-				return;
-			}
-
-			SetAt (TrackLevel, "PART_NUMBER", value.Value.ToString (CultureInfo.InvariantCulture));
+			else
+				SetTrackNumber (value.Value.ToString (CultureInfo.InvariantCulture));
+			if (total is not null && TrackTotal () != total)
+				SetTrackTotal (total);
 		}
 	}
 
@@ -126,15 +128,21 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override uint? DiscNumber {
 		// PART_NUMBER is the disc only when TargetTypeValue is stored and equal to 50.
-		get => ParseLeading (TextWhere (IsExplicitAlbum, "PART_NUMBER") ?? FallbackDiscName ());
+		get => ParseLeading (DiscPartNumber ());
 		set {
+			// Changing the number keeps TotalDiscs, including a total read from the old "2/3".
+			var total = DiscTotal ();
+			RemoveDiscNames ();
 			if (value is null) {
 				RemoveWhere (IsExplicitAlbum, "PART_NUMBER");
-				RemoveDiscNames ();
-				return;
+			} else {
+				var home = DiscHome ();
+				ReplaceNumber (home, "PART_NUMBER", value.Value.ToString (CultureInfo.InvariantCulture));
+				RemoveOthers (IsExplicitAlbum, home, "PART_NUMBER");
 			}
 
-			ReplaceOrAdd (DiscHome (), "PART_NUMBER", value.Value.ToString (CultureInfo.InvariantCulture));
+			if (total is not null && DiscTotal () != total)
+				SetDiscTotal (total);
 		}
 	}
 
@@ -654,6 +662,23 @@ public sealed class MatroskaTag : Tag
 		return TextWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "PART_NUMBER");
 	}
 
+	/// <summary>
+	/// Writes the track number where the getter reads it: the level 30 or untargeted <c>PART_NUMBER</c>.
+	/// </summary>
+	void SetTrackNumber (string text)
+	{
+		var home = FirstBlock (block => block.IsFileLevel && block.Level == TrackLevel && block.HasName ("PART_NUMBER"))
+			?? FirstBlock (block => block.IsFileLevel && !block.HasTargetTypeValue && block.HasName ("PART_NUMBER"));
+		if (home is null) {
+			SetAt (TrackLevel, "PART_NUMBER", text);
+			return;
+		}
+
+		ReplaceNumber (home, "PART_NUMBER", text);
+		RemoveOthers (IsTrackTarget, home, "PART_NUMBER");
+	}
+
+	// TOTAL_PARTS and PART_NUMBER: https://www.matroska.org/technical/tagging.html (Organization Information).
 	uint? TrackTotal () =>
 		FirstNumberWhere (block => block.IsFileLevel && block.Level == TrackLevel, "TOTAL_PARTS")
 		?? FirstNumberWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "TOTAL_PARTS")
@@ -670,11 +695,7 @@ public sealed class MatroskaTag : Tag
 		var text = value.Value.ToString (CultureInfo.InvariantCulture);
 		var home = TrackTotalHome ();
 		ReplaceOrAdd (home, "TOTAL_PARTS", text);
-		foreach (var block in _blocks) {
-			if (IsTrackTarget (block) && !ReferenceEquals (block, home))
-				block.Remove ("TOTAL_PARTS");
-		}
-
+		RemoveOthers (IsTrackTarget, home, "TOTAL_PARTS");
 		StripEmbeddedTotal (IsTrackTarget, "PART_NUMBER");
 	}
 
@@ -697,16 +718,11 @@ public sealed class MatroskaTag : Tag
 		return FileBlock (TrackLevel);
 	}
 
-	uint? DiscTotal ()
-	{
-		var dedicated = FirstNumberWhere (IsExplicitAlbum, "TOTAL_PARTS");
-		if (dedicated is not null)
-			return dedicated;
-		var explicitPart = TextWhere (IsExplicitAlbum, "PART_NUMBER");
-		if (explicitPart is not null)
-			return ParseEmbeddedTotal (explicitPart);
-		return ParseEmbeddedTotal (FallbackDiscName ());
-	}
+	string? DiscPartNumber () => TextWhere (IsExplicitAlbum, "PART_NUMBER") ?? LowestLevelText ("DISCNUMBER", "DISC");
+
+	uint? DiscTotal () =>
+		FirstNumberWhere (IsExplicitAlbum, "TOTAL_PARTS")
+		?? ParseEmbeddedTotal (DiscPartNumber ());
 
 	void SetDiscTotal (uint? value)
 	{
@@ -721,10 +737,7 @@ public sealed class MatroskaTag : Tag
 		var text = value.Value.ToString (CultureInfo.InvariantCulture);
 		var home = DiscHome ();
 		ReplaceOrAdd (home, "TOTAL_PARTS", text);
-		foreach (var block in _blocks) {
-			if (IsExplicitAlbum (block) && !ReferenceEquals (block, home))
-				block.Remove ("TOTAL_PARTS");
-		}
+		RemoveOthers (IsExplicitAlbum, home, "TOTAL_PARTS");
 
 		StripEmbeddedTotal (IsExplicitAlbum, "PART_NUMBER");
 		StripEmbeddedTotal (block => block.IsFileLevel, "DISC");
@@ -764,6 +777,16 @@ public sealed class MatroskaTag : Tag
 		}
 	}
 
+	void RemoveOthers (Func<TagBlock, bool> match, TagBlock keep, string name)
+	{
+		foreach (var block in _blocks) {
+			if (match (block) && !ReferenceEquals (block, keep))
+				block.Remove (name);
+		}
+	}
+
+	void RemoveFileLevel (string name) => RemoveWhere (block => block.IsFileLevel, name);
+
 	void StripEmbeddedTotal (Func<TagBlock, bool> match, string name)
 	{
 		foreach (var block in _blocks) {
@@ -795,14 +818,15 @@ public sealed class MatroskaTag : Tag
 		return null;
 	}
 
-	string? FallbackDiscName ()
+	// A name outside the tagging spec has no defined level, so the most specific file-level target wins.
+	string? LowestLevelText (string name, string alias)
 	{
 		ulong? bestLevel = null;
 		string? best = null;
 		foreach (var block in _blocks) {
 			if (!block.IsFileLevel)
 				continue;
-			var text = Text (block, "DISCNUMBER") ?? Text (block, "DISC");
+			var text = Text (block, name) ?? Text (block, alias);
 			if (text is null)
 				continue;
 			if (bestLevel is null || block.Level < bestLevel.Value) {
@@ -816,12 +840,16 @@ public sealed class MatroskaTag : Tag
 
 	void RemoveDiscNames ()
 	{
-		foreach (var block in _blocks) {
-			if (!block.IsFileLevel)
-				continue;
-			block.Remove ("DISC");
-			block.Remove ("DISCNUMBER");
-		}
+		RemoveFileLevel ("DISC");
+		RemoveFileLevel ("DISCNUMBER");
+	}
+
+	// The new number keeps the old element's "/total", so a reader of the slash form still sees the total.
+	static void ReplaceNumber (TagBlock block, string name, string number)
+	{
+		var old = Text (block, name);
+		var total = ParseEmbeddedTotal (old);
+		ReplaceOrAdd (block, name, total is null ? number : number + "/" + total.Value.ToString (CultureInfo.InvariantCulture));
 	}
 
 	static void ReplaceOrAdd (TagBlock block, string name, string value)
