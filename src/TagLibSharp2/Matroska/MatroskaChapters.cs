@@ -68,7 +68,8 @@ public sealed class MatroskaChapters
 
 	readonly List<MatroskaEdition> _editions = new ();
 	readonly List<KeptElement> _kept = new ();
-	byte[] _baseline = [];
+	// A SHA-256 of the element as read: a large Chapters element is not held twice.
+	byte[] _baseline = Fingerprint (null);
 	bool _hadElement;
 	bool _cleared;
 
@@ -150,12 +151,7 @@ public sealed class MatroskaChapters
 	/// Gets a value indicating whether a save has to write <c>Chapters</c>: the editions render differently
 	/// from the ones read, or <see cref="Clear"/> emptied a file that had the element.
 	/// </summary>
-	internal bool IsModified {
-		get {
-			var rendered = Render ();
-			return !rendered.Span.SequenceEqual (_baseline) || (_cleared && _hadElement && rendered.Length == 0);
-		}
-	}
+	internal bool IsModified => DiffersFromRead || (_cleared && _hadElement && !HasContent);
 
 	/// <summary>
 	/// Checks the RFC 9559 rules on chapter times: an end is not before its start (section 20.2.2),
@@ -181,26 +177,53 @@ public sealed class MatroskaChapters
 	/// <returns>The element, or empty when no edition has a chapter.</returns>
 	internal BinaryData Render ()
 	{
-		using var body = new BinaryDataBuilder ();
+		if (!HasContent)
+			return BinaryData.Empty;
+		var measure = ChapterWriter.Measure ();
+		Write (measure);
+		var write = ChapterWriter.ToBuffer (measure);
+		Write (write);
+		return BinaryData.WrapUnsafe (write.Buffer!);
+	}
+
+	/// <summary>RFC 9559 section 20.1: Chapters needs an EditionEntry, parsed or kept.</summary>
+	bool HasContent {
+		get {
+			foreach (var edition in _editions) {
+				if (edition is not null && edition.HasAtoms)
+					return true;
+			}
+
+			return KeptHas (_kept, MatroskaIds.EditionEntry);
+		}
+	}
+
+	void Write (ChapterWriter writer)
+	{
+		writer.Begin (MatroskaIds.Chapters);
 		var anchor = LastRead (_editions);
 		if (anchor < 0)
-			AddKept (body, _kept, IsWebM, rest: true);
+			AddKept (writer, _kept, IsWebM, rest: true);
 		for (var i = 0; i < _editions.Count; i++) {
 			var edition = _editions[i];
 			if (edition is not null && edition.HasAtoms)
-				edition.RenderTo (body, IsWebM);
+				edition.Write (writer, IsWebM);
 			if (i == anchor)
-				AddKept (body, _kept, IsWebM, rest: true);
+				AddKept (writer, _kept, IsWebM, rest: true);
 		}
 
-		// RFC 9559 section 20.1: Chapters needs an EditionEntry. Editions past the entry limit, and
-		// children this type does not model, go back as they were.
-		if (body.Length == 0 && !KeptHas (_kept, MatroskaIds.EditionEntry))
-			return BinaryData.Empty;
-		AddKept (body, _kept, IsWebM);
-		using var element = new BinaryDataBuilder (body.Length + 12);
-		ChapterWriter.Master (element, MatroskaIds.Chapters, body.Span);
-		return element.ToBinaryData ();
+		// Editions past the entry limit, and children this type does not model, go back as they were.
+		AddKept (writer, _kept, IsWebM);
+		writer.End ();
+	}
+
+	/// <summary>Gets a value indicating whether the editions differ from the ones read from the file.</summary>
+	bool DiffersFromRead {
+		get {
+			if (!HasContent)
+				return !Fingerprint (null).AsSpan ().SequenceEqual (_baseline);
+			return !Fingerprint (this).AsSpan ().SequenceEqual (_baseline);
+		}
 	}
 
 	/// <summary>Starts an empty set whose baseline is no <c>Chapters</c> element.</summary>
@@ -219,8 +242,21 @@ public sealed class MatroskaChapters
 				KeepUnknown (chapters._kept, body, element);
 		}
 
-		chapters._baseline = chapters.Render ().ToArray ();
+		chapters._baseline = Fingerprint (chapters.HasContent ? chapters : null);
 		return chapters;
+	}
+
+	/// <summary>A SHA-256 of the rendered element, streamed, so a large element is not rendered into memory to compare it.</summary>
+	static byte[] Fingerprint (MatroskaChapters? chapters)
+	{
+		using var hash = IncrementalHash.CreateHash (HashAlgorithmName.SHA256);
+		if (chapters is not null) {
+			var measure = ChapterWriter.Measure ();
+			chapters.Write (measure);
+			chapters.Write (ChapterWriter.ToHash (measure, hash));
+		}
+
+		return hash.GetHashAndReset ();
 	}
 
 	static readonly RandomNumberGenerator Random = RandomNumberGenerator.Create ();
@@ -282,15 +318,25 @@ public sealed class MatroskaChapters
 	/// <summary>Keeps every parseable element from <paramref name="offset"/> on, without Void and CRC-32, as one copy.</summary>
 	static void KeepRest (ReadOnlySpan<byte> body, int offset, List<KeptElement> kept)
 	{
-		using var rest = new BinaryDataBuilder ();
-		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
+		// Measured first, so the copy is one exact allocation.
+		var length = 0;
+		for (var at = offset; at < body.Length && EbmlReader.TryRead (body, at, body.Length, out var element) && !element.UnknownSize; at = element.End) {
 			if (element.Id is not MatroskaIds.Void and not MatroskaIds.Crc32)
-				rest.Add (body.Slice (element.Position, element.End - element.Position));
-			offset = element.End;
+				length += element.End - element.Position;
 		}
 
-		if (rest.Length > 0)
-			kept.Add (new KeptElement (rest.ToArray (), isRest: true));
+		if (length == 0)
+			return;
+		var rest = new byte[length];
+		var written = 0;
+		for (var at = offset; at < body.Length && EbmlReader.TryRead (body, at, body.Length, out var element) && !element.UnknownSize; at = element.End) {
+			if (element.Id is MatroskaIds.Void or MatroskaIds.Crc32)
+				continue;
+			body.Slice (element.Position, element.End - element.Position).CopyTo (rest.AsSpan (written));
+			written += element.End - element.Position;
+		}
+
+		kept.Add (new KeptElement (rest, isRest: true));
 	}
 
 	internal static void KeepUnknown (List<KeptElement> kept, ReadOnlySpan<byte> body, EbmlElement element) =>
@@ -300,15 +346,15 @@ public sealed class MatroskaChapters
 	/// Writes chapter atoms in list order. The bytes kept past the entry budget follow the last atom
 	/// that was read from the file, so added atoms still come after them.
 	/// </summary>
-	internal static void RenderChapters (BinaryDataBuilder body, IList<MatroskaChapter> chapters, List<KeptElement> kept, bool isWebM, int depth)
+	internal static void WriteChapters (ChapterWriter writer, IList<MatroskaChapter> chapters, List<KeptElement> kept, bool isWebM, int depth)
 	{
 		var anchor = LastRead (chapters);
 		if (anchor < 0)
-			AddKept (body, kept, isWebM, rest: true);
+			AddKept (writer, kept, isWebM, rest: true);
 		for (var i = 0; i < chapters.Count; i++) {
-			chapters[i]?.RenderTo (body, isWebM, depth);
+			chapters[i]?.Write (writer, isWebM, depth);
 			if (i == anchor)
-				AddKept (body, kept, isWebM, rest: true);
+				AddKept (writer, kept, isWebM, rest: true);
 		}
 	}
 
@@ -343,7 +389,7 @@ public sealed class MatroskaChapters
 	/// entry budget, which follow the modelled children as they did in the file. A WebM save leaves out
 	/// every top-level element WebM does not support.
 	/// </summary>
-	internal static void AddKept (BinaryDataBuilder builder, List<KeptElement> kept, bool isWebM, bool rest = false)
+	internal static void AddKept (ChapterWriter builder, List<KeptElement> kept, bool isWebM, bool rest = false)
 	{
 		foreach (var element in kept) {
 			if (element.IsRest != rest)
@@ -424,23 +470,23 @@ public sealed class MatroskaEdition : IReadFromFile
 	/// <returns>True when the chapter was found.</returns>
 	public bool RemoveChapter (MatroskaChapter chapter) => _chapters.Remove (chapter);
 
-	internal void RenderTo (BinaryDataBuilder parent, bool isWebM)
+	internal void Write (ChapterWriter writer, bool isWebM)
 	{
-		using var body = new BinaryDataBuilder (64);
+		writer.Begin (MatroskaIds.EditionEntry);
 		if (!isWebM) {
 			if (Uid != 0)
-				ChapterWriter.Unsigned (body, MatroskaIds.EditionUid, Uid);
+				writer.Unsigned (MatroskaIds.EditionUid, Uid);
 			if (IsHidden)
-				ChapterWriter.Unsigned (body, MatroskaIds.EditionFlagHidden, 1);
+				writer.Unsigned (MatroskaIds.EditionFlagHidden, 1);
 			if (IsDefault)
-				ChapterWriter.Unsigned (body, MatroskaIds.EditionFlagDefault, 1);
+				writer.Unsigned (MatroskaIds.EditionFlagDefault, 1);
 			if (IsOrdered)
-				ChapterWriter.Unsigned (body, MatroskaIds.EditionFlagOrdered, 1);
+				writer.Unsigned (MatroskaIds.EditionFlagOrdered, 1);
 		}
 
-		MatroskaChapters.AddKept (body, _kept, isWebM);
-		MatroskaChapters.RenderChapters (body, _chapters, _kept, isWebM, 1);
-		ChapterWriter.Master (parent, MatroskaIds.EditionEntry, body.Span);
+		MatroskaChapters.AddKept (writer, _kept, isWebM);
+		MatroskaChapters.WriteChapters (writer, _chapters, _kept, isWebM, 1);
+		writer.End ();
 	}
 
 	internal static MatroskaEdition Read (ReadOnlySpan<byte> body, ref int budget)
@@ -599,31 +645,31 @@ public sealed class MatroskaChapter : IReadFromFile
 		return chapter;
 	}
 
-	internal void RenderTo (BinaryDataBuilder parent, bool isWebM, int depth)
+	internal void Write (ChapterWriter writer, bool isWebM, int depth)
 	{
-		using var body = new BinaryDataBuilder (64);
-		ChapterWriter.Unsigned (body, MatroskaIds.ChapterUid, _uid);
+		writer.Begin (MatroskaIds.ChapterAtom);
+		writer.Unsigned (MatroskaIds.ChapterUid, _uid);
 		if (StringUid is not null)
-			ChapterWriter.String (body, MatroskaIds.ChapterStringUid, StringUid);
-		ChapterWriter.Unsigned (body, MatroskaIds.ChapterTimeStart, StartNanoseconds);
+			writer.String (MatroskaIds.ChapterStringUid, StringUid);
+		writer.Unsigned (MatroskaIds.ChapterTimeStart, StartNanoseconds);
 		if (EndNanoseconds is ulong end)
-			ChapterWriter.Unsigned (body, MatroskaIds.ChapterTimeEnd, end);
+			writer.Unsigned (MatroskaIds.ChapterTimeEnd, end);
 		if (!isWebM) {
 			// Both flags have defaults, so RFC 8794 section 11.1.6.4 lets a writer leave them out.
 			if (IsHidden)
-				ChapterWriter.Unsigned (body, MatroskaIds.ChapterFlagHidden, 1);
+				writer.Unsigned (MatroskaIds.ChapterFlagHidden, 1);
 			if (!IsEnabled)
-				ChapterWriter.Unsigned (body, MatroskaIds.ChapterFlagEnabled, 0);
+				writer.Unsigned (MatroskaIds.ChapterFlagEnabled, 0);
 		}
 
-		MatroskaChapters.AddKept (body, _kept, isWebM);
+		MatroskaChapters.AddKept (writer, _kept, isWebM);
 		foreach (var display in _displays)
-			display?.RenderTo (body, isWebM);
+			display?.Write (writer, isWebM);
 
-		// Rendering is recursive. A model built in code is bounded the same way a parsed one is,
+		// Writing is recursive. A model built in code is bounded the same way a parsed one is,
 		// which also stops a chapter that was added inside itself.
-		MatroskaChapters.RenderChapters (body, depth < MatroskaChapters.MaxDepth ? _chapters : [], _kept, isWebM, depth + 1);
-		ChapterWriter.Master (parent, MatroskaIds.ChapterAtom, body.Span);
+		MatroskaChapters.WriteChapters (writer, depth < MatroskaChapters.MaxDepth ? _chapters : [], _kept, isWebM, depth + 1);
+		writer.End ();
 	}
 
 	internal static MatroskaChapter Read (ReadOnlySpan<byte> body, int depth, ref int budget)
@@ -747,30 +793,30 @@ public sealed class MatroskaChapterDisplay
 	/// <summary>Gets the <c>ChapCountry</c> values.</summary>
 	public IList<string> Countries => _countries;
 
-	internal void RenderTo (BinaryDataBuilder parent, bool isWebM)
+	internal void Write (ChapterWriter writer, bool isWebM)
 	{
-		using var body = new BinaryDataBuilder (64);
-		ChapterWriter.String (body, MatroskaIds.ChapString, Text ?? string.Empty);
+		writer.Begin (MatroskaIds.ChapterDisplay);
+		writer.String (MatroskaIds.ChapString, Text ?? string.Empty);
 		foreach (var language in _languages) {
 			if (language is not null)
-				ChapterWriter.String (body, MatroskaIds.ChapLanguage, language);
+				writer.String (MatroskaIds.ChapLanguage, language);
 		}
 
 		if (!isWebM) {
 			foreach (var language in _languagesBcp47) {
 				if (language is not null)
-					ChapterWriter.String (body, MatroskaIds.ChapLanguageBcp47, language);
+					writer.String (MatroskaIds.ChapLanguageBcp47, language);
 			}
 		}
 
 		foreach (var country in _countries) {
 			if (country is not null)
-				ChapterWriter.String (body, MatroskaIds.ChapCountry, country);
+				writer.String (MatroskaIds.ChapCountry, country);
 		}
 
-		MatroskaChapters.AddKept (body, _kept, isWebM);
-		MatroskaChapters.AddKept (body, _kept, isWebM, rest: true);
-		ChapterWriter.Master (parent, MatroskaIds.ChapterDisplay, body.Span);
+		MatroskaChapters.AddKept (writer, _kept, isWebM);
+		MatroskaChapters.AddKept (writer, _kept, isWebM, rest: true);
+		writer.End ();
 	}
 
 	internal static MatroskaChapterDisplay Read (ReadOnlySpan<byte> body, ref int budget)
@@ -806,47 +852,126 @@ public sealed class MatroskaChapterDisplay
 }
 
 /// <summary>
-/// Writes chapter elements straight into the parent's buffer, with the same minimal widths as
-/// <see cref="EbmlWriter"/>, so a large model is not copied once per level.
+/// Writes chapter elements in two passes over the same model: one that only measures each master's
+/// payload, then one that writes into an exactly sized buffer or a hash. No level is copied into its
+/// parent. Sizes use the same minimal widths as <see cref="EbmlWriter"/>.
 /// </summary>
-internal static class ChapterWriter
+internal sealed class ChapterWriter
 {
-	public static void Unsigned (BinaryDataBuilder builder, ulong id, ulong value)
+	readonly List<long> _sizes;
+	readonly Stack<(int Index, long Start)> _open = new ();
+	readonly IncrementalHash? _hash;
+	readonly byte[] _scratch = new byte[16];
+	readonly bool _measuring;
+	int _next;
+
+	ChapterWriter (List<long> sizes, bool measuring, byte[]? buffer, IncrementalHash? hash)
+	{
+		_sizes = sizes;
+		_measuring = measuring;
+		Buffer = buffer;
+		_hash = hash;
+	}
+
+	/// <summary>Gets the written bytes after a buffer pass.</summary>
+	public byte[]? Buffer { get; }
+
+	/// <summary>Gets the bytes written or measured so far.</summary>
+	public long Position { get; private set; }
+
+	public static ChapterWriter Measure () => new (new List<long> (), true, null, null);
+
+	public static ChapterWriter ToBuffer (ChapterWriter measured) =>
+		new (measured._sizes, false, new byte[measured.Position], null);
+
+	public static ChapterWriter ToHash (ChapterWriter measured, IncrementalHash hash) =>
+		new (measured._sizes, false, null, hash);
+
+	public void Begin (ulong id)
+	{
+		WriteId (id);
+		if (_measuring) {
+			_sizes.Add (0);
+			_open.Push ((_sizes.Count - 1, Position));
+			return;
+		}
+
+		WriteSize (_sizes[_next++]);
+	}
+
+	public void End ()
+	{
+		if (!_measuring)
+			return;
+		var (index, start) = _open.Pop ();
+		var payload = Position - start;
+		_sizes[index] = payload;
+		Position += SizeWidth (payload);
+	}
+
+	public void Unsigned (ulong id, ulong value)
 	{
 		var width = 1;
 		for (var probe = value >> 8; probe != 0; probe >>= 8)
 			width++;
-		Header (builder, id, width);
+		WriteId (id);
+		WriteSize (width);
 		for (var i = width - 1; i >= 0; i--)
-			builder.Add ((byte)(value >> (8 * i)));
+			_scratch[width - 1 - i] = (byte)(value >> (8 * i));
+		Add (_scratch.AsSpan (0, width));
 	}
 
-	public static void String (BinaryDataBuilder builder, ulong id, string value)
+	public void String (ulong id, string value)
 	{
 		var bytes = System.Text.Encoding.UTF8.GetBytes (value);
-		Header (builder, id, bytes.Length);
-		builder.Add (bytes);
+		WriteId (id);
+		WriteSize (bytes.Length);
+		Add (bytes);
 	}
 
-	public static void Master (BinaryDataBuilder builder, ulong id, ReadOnlySpan<byte> payload)
+	public void Add (ReadOnlySpan<byte> bytes)
 	{
-		Header (builder, id, payload.Length);
-		builder.Add (payload);
+		if (!_measuring) {
+			if (Buffer is not null)
+				bytes.CopyTo (Buffer.AsSpan ((int)Position));
+			else if (_hash is not null)
+				Hash (bytes);
+		}
+
+		Position += bytes.Length;
 	}
 
-	static void Header (BinaryDataBuilder builder, ulong id, int size)
+	void Hash (ReadOnlySpan<byte> bytes)
 	{
-		var idWidth = id > 0xFFFFFF ? 4 : id > 0xFFFF ? 3 : id > 0xFF ? 2 : 1;
-		for (var i = idWidth - 1; i >= 0; i--)
-			builder.Add ((byte)(id >> (8 * i)));
+		// IncrementalHash on netstandard2.0 takes arrays, so large spans go through in chunks.
+		var chunk = bytes.Length <= _scratch.Length ? _scratch : new byte[Math.Min (bytes.Length, 81_920)];
+		for (var offset = 0; offset < bytes.Length; offset += chunk.Length) {
+			var length = Math.Min (chunk.Length, bytes.Length - offset);
+			bytes.Slice (offset, length).CopyTo (chunk);
+			_hash!.AppendData (chunk, 0, length);
+		}
+	}
 
-		// The same widths as EbmlWriter: all ones is reserved for an unknown size (RFC 8794 section 6.2).
-		var value = (ulong)size;
-		var width = value < 0x7F ? 1 : value < 0x3FFF ? 2 : value < 0x1FFFFF ? 3 : value < 0x0FFFFFFF ? 4 : 8;
-		var raw = (1UL << (7 * width)) | value;
+	void WriteId (ulong id)
+	{
+		var width = id > 0xFFFFFF ? 4 : id > 0xFFFF ? 3 : id > 0xFF ? 2 : 1;
 		for (var i = width - 1; i >= 0; i--)
-			builder.Add ((byte)(raw >> (8 * i)));
+			_scratch[width - 1 - i] = (byte)(id >> (8 * i));
+		Add (_scratch.AsSpan (0, width));
 	}
+
+	void WriteSize (long size)
+	{
+		// All ones is reserved for an unknown size (RFC 8794 section 6.2), so each width stops one short.
+		var width = SizeWidth (size);
+		var raw = (1UL << (7 * width)) | (ulong)size;
+		for (var i = width - 1; i >= 0; i--)
+			_scratch[width - 1 - i] = (byte)(raw >> (8 * i));
+		Add (_scratch.AsSpan (0, width));
+	}
+
+	static int SizeWidth (long size) =>
+		size < 0x7F ? 1 : size < 0x3FFF ? 2 : size < 0x1FFFFF ? 3 : size < 0x0FFFFFFF ? 4 : 8;
 }
 
 /// <summary>An edition or chapter that knows whether it was read from the file or added in code.</summary>
