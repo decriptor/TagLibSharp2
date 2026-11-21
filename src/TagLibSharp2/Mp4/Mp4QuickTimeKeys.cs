@@ -20,6 +20,21 @@ internal enum Mp4MetaPlacement
 }
 
 /// <summary>
+/// How strongly a kept item's value claims its field when a file holds several.
+/// </summary>
+internal enum Mp4SourceRank
+{
+	/// <summary>An item of the second meta (moov/meta beside udta/meta).</summary>
+	Movie = 1,
+
+	/// <summary>A keyed item.</summary>
+	Keyed = 2,
+
+	/// <summary>An iTunes atom, which lenient writers such as mutagen add beside keyed items.</summary>
+	Atom = 3
+}
+
+/// <summary>
 /// What a QuickTime metadata key stands for in the iTunes-style model of <see cref="Mp4Tag"/>.
 /// </summary>
 internal enum Mp4KeyedKind
@@ -99,6 +114,8 @@ internal sealed class Mp4QuickTimeKeys
 		["description"] = Mp4AtomMapping.Description,
 		["genre"] = Mp4AtomMapping.Genre,
 		["publisher"] = Mp4AtomMapping.Publisher,
+		["composer"] = Mp4AtomMapping.Composer,
+		["encodedby"] = Mp4AtomMapping.EncodedBy,
 		["year"] = Mp4AtomMapping.Year,
 		["software"] = Mp4AtomMapping.Encoder,
 		["keywords"] = Mp4AtomMapping.Keywords,
@@ -283,7 +300,7 @@ internal sealed class Mp4QuickTimeKeys
 			case Mp4KeyedKind.Artwork:
 				return (MdtaNamespace, ApplePrefix + "artwork");
 			case Mp4KeyedKind.Freeform:
-				return (MdtaNamespace, field.Name!);
+				return (MdtaNamespace, FreeformKey (field.Mean!, field.Name!));
 		}
 
 		if (AppleStyle && AppleKeyByAtom.TryGetValue (field.AtomId, out var apple))
@@ -337,12 +354,41 @@ internal sealed class Mp4QuickTimeKeys
 			return true;
 		}
 
-		if (FreeformMeans.TryGetValue (name, out var mean)) {
-			field = Mp4KeyedField.Freeform (mean, name);
-			return true;
+		field = FreeformField (name);
+		return true;
+	}
+
+	// Any other "mdta" name is a freeform field. ffmpeg names a freeform field by its name alone;
+	// that name's own mean is org.musicbrainz for the MusicBrainz names and com.apple.iTunes for
+	// the rest. Another mean is written as "mean:name". A mean is told apart from a name by its
+	// reverse-DNS form (dots, no spaces), so a mean without a dot is read back as part of the name.
+	static Mp4KeyedField FreeformField (string key)
+	{
+		var colon = key.AsSpan ().IndexOf (':');
+		if (colon > 0 && IsReverseDns (key.Substring (0, colon)))
+			return Mp4KeyedField.Freeform (key.Substring (0, colon), key.Substring (colon + 1));
+
+		return Mp4KeyedField.Freeform (FreeformMeans.TryGetValue (key, out var mean) ? mean : Mp4AtomMapping.AppleNamespace, key);
+	}
+
+	static string FreeformKey (string mean, string name)
+	{
+		var decoded = TryMap (MdtaNamespace, Encoding.UTF8.GetBytes (name), out var field) ? field : default;
+		var bareRoundTrips = decoded.Kind == Mp4KeyedKind.Freeform && decoded.Mean == mean && decoded.Name == name;
+		return bareRoundTrips ? name : mean + ":" + name;
+	}
+
+	static bool IsReverseDns (string text)
+	{
+		if (text.Length < 3 || text[0] == '.' || text[text.Length - 1] == '.' || text.AsSpan ().IndexOf ('.') < 0)
+			return false;
+
+		foreach (var c in text) {
+			if (!(char.IsLetterOrDigit (c) || c is '.' or '-' or '_'))
+				return false;
 		}
 
-		return false;
+		return true;
 	}
 
 	static Dictionary<string, string> Invert (Dictionary<string, string> map)
