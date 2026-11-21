@@ -89,6 +89,72 @@ public sealed class MpegPsTrailerTests
 	}
 
 	[TestMethod]
+	public void Read_TagInsideAnApeTagBeforeTheAppendedTag_DoesNotChangeTheProperties ()
+	{
+		// TagLib#'s order: stream, APEv2, appended ID3v2, ID3v1. The stream ends at the APE tag.
+		var stream = ProgramStream (new Options { AudioKind = Audio.None, VideoFrames = 75 });
+		var fake = Concat (PackHeader1 (0), Pes (0xC0, 0, Concat (Mp2Frame (), Mp2Frame ()), mpeg2: false));
+		var ape = ApeWithBinary (fake);
+		var data = Concat (stream, ape, Appended ("After Ape"), Id3v1 ("F"));
+		var plain = MpegPsFile.Read (stream).File!;
+
+		var file = MpegPsFile.Read (data).File!;
+
+		Assert.AreEqual ("After Ape", file.Tag!.Title);
+		Assert.AreEqual (plain.Duration, file.Duration);
+		Assert.IsNull (file.AudioProperties);
+		file.Tag.Title = "Changed";
+		var rendered = file.Render (data).ToArray ();
+		CollectionAssert.AreEqual (Concat (stream, ape), rendered.AsSpan (0, stream.Length + ape.Length).ToArray ());
+	}
+
+	[TestMethod]
+	public void Read_ApeAtTheEndReachingIntoThePrependedTag_IsNotATag ()
+	{
+		// An APEv2 footer whose size measures back into the prepended ID3v2 tag.
+		var front = Id3v2 ("Front");
+		var stream = ProgramStream ();
+		var footer = Concat ("APETAGEX"u8.ToArray (), BitConverter.GetBytes (2000), BitConverter.GetBytes (stream.Length + 32 + 5),
+			BitConverter.GetBytes (0), BitConverter.GetBytes (0), new byte[8]);
+		var data = Concat (front, stream, footer);
+
+		var result = MpegPsFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Front", result.File!.Tag!.Title);
+		Assert.AreEqual (TimeSpan.FromSeconds (2), result.File.Duration);
+	}
+
+	[TestMethod]
+	public void Read_HeadThatReachesTheTags_IsNotReadAgain ()
+	{
+		// No sequence header, so the head asks for a larger window; it already holds the whole
+		// stream up to ID3v1, so a second pass would read the same bytes again.
+		var stream = Concat (PackHeader1 (0), Pes (0xE0, Start, Picture (4000), mpeg2: false), PackHeader1 (3600), Pes (0xE0, Start + 3600, Picture (4000), mpeg2: false));
+		var data = Concat (stream, Id3v1 ("Footer"));
+		using var counting = new CountingStream (data);
+
+		var opened = MediaFile.Read (counting, "clip.mpg");
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.IsTrue (counting.BytesRead < 3 * stream.Length, counting.BytesRead.ToString (System.Globalization.CultureInfo.InvariantCulture));
+	}
+
+	const long Start = 45_000;
+
+	sealed class CountingStream (byte[] data) : MemoryStream (data)
+	{
+		public long BytesRead { get; private set; }
+
+		public override int Read (byte[] buffer, int offset, int count)
+		{
+			var read = base.Read (buffer, offset, count);
+			BytesRead += read;
+			return read;
+		}
+	}
+
+	[TestMethod]
 	public void Read_TagInsideAnApeTagAfterAShortStream_DoesNotChangeTheProperties ()
 	{
 		var stream = ProgramStream (new Options { AudioKind = Audio.None, VideoFrames = 75 });
