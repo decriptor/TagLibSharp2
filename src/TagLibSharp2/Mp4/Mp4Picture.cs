@@ -35,6 +35,7 @@ public sealed class Mp4Picture : IPicture
 
 	// Parsed covers keep the file's type code, including 0. Null means the picture was created in memory.
 	readonly int? _parsedTypeIndicator;
+	readonly uint _parsedLocale;
 
 	/// <summary>
 	/// Initializes a new instance of the <see cref="Mp4Picture"/> class.
@@ -51,10 +52,11 @@ public sealed class Mp4Picture : IPicture
 		PictureData = pictureData;
 	}
 
-	Mp4Picture (string mimeType, PictureType pictureType, string description, BinaryData pictureData, int parsedTypeIndicator)
+	Mp4Picture (string mimeType, PictureType pictureType, string description, BinaryData pictureData, int parsedTypeIndicator, uint parsedLocale)
 		: this (mimeType, pictureType, description, pictureData)
 	{
 		_parsedTypeIndicator = parsedTypeIndicator;
+		_parsedLocale = parsedLocale;
 	}
 
 	/// <summary>
@@ -85,7 +87,7 @@ public sealed class Mp4Picture : IPicture
 			_ => "image/unknown"
 		};
 
-		return new Mp4Picture (mimeType, PictureType.FrontCover, string.Empty, dataAtom.Data, dataAtom.TypeIndicator);
+		return new Mp4Picture (mimeType, PictureType.FrontCover, string.Empty, dataAtom.Data, dataAtom.TypeIndicator, dataAtom.Locale);
 	}
 
 	/// <summary>
@@ -98,6 +100,11 @@ public sealed class Mp4Picture : IPicture
 	/// 12 (GIF) is not in that table but is what iTunes-era files use.
 	/// </remarks>
 	internal int RenderTypeIndicator => _parsedTypeIndicator ?? IdentifyType (PictureData.Span, MimeType);
+
+	/// <summary>
+	/// Locale indicator written for this picture: the parsed one, or 0 (every locale) for a new picture.
+	/// </summary>
+	internal uint RenderLocale => _parsedLocale;
 
 	static int IdentifyType (ReadOnlySpan<byte> data, string mimeType)
 	{
