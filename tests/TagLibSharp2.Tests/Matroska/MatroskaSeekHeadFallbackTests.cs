@@ -60,9 +60,10 @@ public partial class MatroskaFileTests
 		var marker = new byte[] { 0x5A, 0x5B };
 		var tagsAt = probe.Length + info.Length;
 		var clusterAt = tagsAt + tags.Length;
-		var cluster = Master (0x1F43B675, Concat (Element (0xA3, marker), new byte[255 - clusterAt - 40]));
+		// The Cues end past offset 255, so the old path's appended Tags lose their one-byte Seek too.
+		var cluster = Master (0x1F43B675, Concat (Element (0xA3, marker), new byte[245 - clusterAt - 10]));
 		var cuesAt = clusterAt + cluster.Length;
-		Assert.IsTrue (cuesAt is > 200 and < 256);
+		Assert.AreEqual (245, cuesAt);
 		var seek = Master (0x114D9B74, Concat (
 			SeekEntry (MatroskaIds.Info, (ulong)probe.Length),
 			SeekEntry (MatroskaIds.Tags, (ulong)tagsAt),
@@ -76,6 +77,7 @@ public partial class MatroskaFileTests
 
 		var bytes = Save (parsed, original);
 
+		Assert.IsTrue (cuesAt + cues.Length > 255);
 		var cuesSeek = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Cues);
 		Assert.AreEqual (MatroskaIds.Cues, cuesSeek.Id);
 		Assert.IsTrue (IsElementAt (bytes, cuesSeek.Position, MatroskaIds.Cues));
@@ -103,17 +105,19 @@ public partial class MatroskaFileTests
 			Element (0xB3, new byte[] { 0 }),
 			Master (0xB7, Concat (Element (0xF7, new byte[] { 1 }), Element (0xF1, new[] { (byte)(clusterAt >> 8), (byte)clusterAt }))))));
 		var original = FileWith (seek, info, tracks, cluster, cues);
-		var grown = Master (0x1654AE6B, Master (0xAE, Concat (
+		var entry = Master (0xAE, Concat (
 			Element (0x83, new byte[] { 2 }),
 			Element (0x86, "A_OPUS"u8),
 			Element (0xB9, new byte[] { 0 }),
-			Element (0x536E, "A much longer track name"u8))));
+			Element (0x536E, "A much longer track name"u8)));
+		// The caller's CRC-32 is left at zero. The grow recomputes it.
+		var grown = Master (0x1654AE6B, Concat (Element (0xBF, new byte[4]), entry));
 
 		Assert.IsTrue (MatroskaRewrite.TryGrow (original, grown, out var bytes, out var error), error);
 
 		AssertEverySeekAndCue (bytes);
 		Assert.IsTrue (EveryCrcMatches (bytes));
-		Assert.IsTrue (bytes.AsSpan ().IndexOf (grown) >= 0);
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (entry) >= 0);
 		Assert.AreEqual (1, CountOf (bytes, marker));
 		Assert.IsTrue (TryReadCueClusterPosition (bytes, out var cuePosition, out _));
 		Assert.AreEqual (cuePosition, ClusterPositionOf (bytes));
