@@ -60,8 +60,8 @@ internal readonly struct AttachedFileInfo
 /// <remarks>
 /// <para>
 /// A front cover is written as <c>cover.jpg</c> or <c>cover.png</c> (another image type keeps its
-/// extension, such as <c>cover.gif</c>) and goes first in storage order, unless a kept front cover
-/// is already there.
+/// extension, such as <c>cover.gif</c>) and goes first in storage order, unless the file keeps its
+/// normal cover <c>cover.*</c>; then the new one goes after the kept attachments.
 /// The guidance names only cover variants, so every other picture type gets the name in
 /// <see cref="StemOf"/>, such as <c>back.jpg</c> or <c>artist.png</c>. None of them contain
 /// "cover", so a reader that looks for cover names does not pick them. A repeated name gets
@@ -326,7 +326,7 @@ internal static class MatroskaAttachments
 
 			if (entry.Info.Name is not null)
 				usedNames.Add (entry.Info.Name);
-			if (entry.IsPicture && entry.Info.PictureType == PictureType.FrontCover)
+			if (entry.IsPicture && IsNormalCover (entry.Info.Name))
 				keptFront = true;
 			capacity += entry.Length;
 		}
@@ -350,7 +350,7 @@ internal static class MatroskaAttachments
 		var attachedFiles = 0;
 
 		// The normal cover SHOULD be the first attachment in storage order (RFC 9559 section 21.1).
-		// A kept front cover is already that cover, so a new one goes after the kept attachments.
+		// A kept normal cover is already that cover, so a new one goes after the kept attachments.
 		foreach (var (picture, mediaType) in added) {
 			if (picture.PictureType == PictureType.FrontCover && !keptFront) {
 				AddAttachedFile (body, picture, mediaType, usedNames, usedUids);
@@ -380,6 +380,18 @@ internal static class MatroskaAttachments
 
 		element = AttachmentsElement (body.Span, hadCrc);
 		return true;
+	}
+
+	/// <summary>
+	/// The normal cover is <c>cover.(jpg|png)</c> (RFC 9559 section 21.1). The <c>small_</c> and
+	/// <c>_land</c> variants are other covers, and file names are case-sensitive.
+	/// </summary>
+	static bool IsNormalCover (string? name)
+	{
+		if (name is null)
+			return false;
+		var dot = name.LastIndexOf ('.');
+		return dot == FrontStem.Length && string.CompareOrdinal (name, 0, FrontStem, 0, FrontStem.Length) == 0;
 	}
 
 	static int FindMatch (ReadOnlySpan<byte> data, List<Entry> existing, bool[] matched, IPicture picture, string mediaType)

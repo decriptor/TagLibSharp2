@@ -329,9 +329,10 @@ public sealed class MatroskaTag : Tag
 	/// <para>
 	/// A new front cover is named <c>cover.jpg</c> or <c>cover.png</c> after its media type; another
 	/// image type keeps its own extension, such as <c>cover.gif</c>. It goes first, as the cover art
-	/// guidance asks, unless the file keeps a front cover, which stays first. Another new picture is
-	/// named after its type, such as <c>back.jpg</c> or <c>artist.png</c>, and goes after the existing
-	/// attachments. The description is written to <c>FileDescription</c>, and reading maps those names
+	/// guidance asks, unless the file keeps its normal cover (<c>cover.*</c>); that one keeps its
+	/// place and the new one goes after the kept attachments. A kept <c>small_cover</c> or
+	/// <c>cover_land</c> is not the normal cover. Another new picture is named after its type, such
+	/// as <c>back.jpg</c> or <c>artist.png</c>, and goes after the existing attachments. The description is written to <c>FileDescription</c>, and reading maps those names
 	/// back to the picture type. A new <c>FileUID</c> is random, nonzero and unlike every
 	/// <c>FileUID</c> in the file.
 	/// </para>
