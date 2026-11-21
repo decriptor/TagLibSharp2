@@ -157,6 +157,18 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 				Assert.IsTrue (children.Exists (child => child.Id == id && child.Start - bodyAt == (int)position), id.ToString ("X", System.Globalization.CultureInfo.InvariantCulture));
 			// Every CueClusterPosition that named a Cluster still does. A broken one in the source stays as it was.
 			Assert.AreEqual (LandingCues (original), LandingCues (after));
+			// A Position left in place names its own Cluster; one that could not widen was voided.
+			foreach (var (id, start, end) in children) {
+				if (id != MatroskaIds.Cluster || !EbmlReader.TryRead (after, start, end, out var cluster))
+					continue;
+				var at = cluster.DataOffset;
+				while (at < end && EbmlReader.TryRead (after, at, end, out var child) && !child.UnknownSize) {
+					if (child.Id == MatroskaIds.ClusterPosition)
+						Assert.AreEqual ((ulong)(start - bodyAt), EbmlReader.ReadUInt (after.AsSpan (child.DataOffset, (int)child.DataLength)), "Cluster Position");
+					at = child.End;
+				}
+			}
+
 			Assert.IsTrue (MatroskaFile.Read (after).File!.Tag.Pictures.Any (p => p.PictureData.Length == cover.Length));
 		} finally {
 			File.Delete (copy);
