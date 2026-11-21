@@ -1091,7 +1091,7 @@ public sealed class Mp4File : IMediaFile
 		}
 
 		if (!string.IsNullOrEmpty (mean) && !string.IsNullOrEmpty (name) && dataAtoms.Count > 0) {
-			var key = Mp4AtomMapping.FreeformKey (mean, name);
+			var key = Mp4AtomMapping.FreeformKey (mean!, name!);
 			tag.SetAtoms (key, dataAtoms);
 		}
 	}
