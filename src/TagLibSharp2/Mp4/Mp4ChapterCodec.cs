@@ -223,7 +223,7 @@ internal static class Mp4ChapterCodec
 				if (deltaLeft > 0)
 					deltaLeft--;
 
-				samples.Add (new TextSample (offset, readLength, time, delta));
+				samples.Add (new TextSample (offset, size, readLength, time, delta));
 				time += delta;
 				offset += size;
 				sampleIndex++;
@@ -407,7 +407,7 @@ internal static class Mp4ChapterCodec
 
 			if (removed.Count > 0)
 				ReplaceReferences (children, removed, add: false);
-			return new ChapterPlan (BinaryData.Empty, children, 0, []);
+			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed);
 		}
 
 		var chpl = RenderChpl (chapters);
@@ -446,7 +446,67 @@ internal static class Mp4ChapterCodec
 		// A replaced track keeps its id, so the references that found it still do.
 		if (existing is null)
 			ReplaceReferences (children, new HashSet<uint> { trackId }, add: true);
-		return new ChapterPlan (chpl, children, trackId, samples);
+		return new ChapterPlan (chpl, children, trackId, samples, existing is null ? null : [existing.Id]);
+	}
+
+	/// <summary>
+	/// True when the box at [<paramref name="boxStart"/>, <paramref name="boxEnd"/>) holds nothing but the old
+	/// samples of the tracks <paramref name="plan"/> replaces: those samples tile its payload exactly, with no gap
+	/// and no overlap, and no other track has a chunk offset inside the box. Such an mdat is the one a previous
+	/// chapter save wrote; once its tracks are rebuilt nothing references it, so it can be dropped.
+	/// A fragmented movie never qualifies: movie fragments locate their data in other ways (§8.8).
+	/// </summary>
+	public static bool HoldsOnlyReplacedSamples (Mp4Box moov, ChapterPlan plan, long boxStart, long payloadStart, long boxEnd)
+	{
+		if (plan.ReplacedTrackIds.Count == 0 || moov.FindChild ("mvex") is not null)
+			return false;
+
+		var ranges = new List<(long Start, long End)> ();
+		var movieTimescale = ReadMovieTimescale (moov);
+		foreach (var track in FindChapterTracks (moov)) {
+			if (!plan.ReplacedTrackIds.Contains (track.Id))
+				continue;
+
+			var layout = ReadLayout (track, movieTimescale, long.MaxValue);
+			if (layout is null)
+				return false;
+			foreach (var sample in layout.Samples)
+				ranges.Add ((sample.Offset, sample.Offset + sample.Size));
+		}
+
+		if (ranges.Count == 0)
+			return false;
+
+		ranges.Sort ((a, b) => a.Start.CompareTo (b.Start));
+		var covered = payloadStart;
+		foreach (var (start, end) in ranges) {
+			if (start != covered || end > boxEnd)
+				return false;
+			covered = end;
+		}
+
+		if (covered != boxEnd)
+			return false;
+
+		foreach (var child in moov.Children) {
+			if (child.Type != "trak")
+				continue;
+			if (TryReadTrackId (child, out var id) && plan.ReplacedTrackIds.Contains (id))
+				continue;
+
+			var stbl = child.FindChild ("mdia")?.FindChild ("minf")?.FindChild ("stbl");
+			var co64 = stbl?.FindChild ("co64");
+			var stco = stbl?.FindChild ("stco");
+			var offsets = co64 is not null ? ReadChunkOffsets (co64.Data.Span, 8)
+				: stco is not null ? ReadChunkOffsets (stco.Data.Span, 4)
+				: [];
+			foreach (var offset in offsets) {
+				if (offset >= boxStart && offset < boxEnd)
+					return false;
+			}
+		}
+
+		return true;
 	}
 
 	/// <summary>
@@ -1297,9 +1357,9 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// One chapter sample: file offset, bytes to read, start and duration in the media timescale.
+	/// One chapter sample: file offset, stsz size, bytes to read, start and duration in the media timescale.
 	/// </summary>
-	internal readonly record struct TextSample (long Offset, int ReadLength, ulong Start, ulong Duration);
+	internal readonly record struct TextSample (long Offset, uint Size, int ReadLength, ulong Start, ulong Duration);
 
 	/// <summary>
 	/// The chapter track's samples and how its media time maps onto the movie timeline.
@@ -1322,8 +1382,16 @@ internal static class Mp4ChapterCodec
 	/// The result of <see cref="Plan"/>. <see cref="TrackId"/> is 0 when no chapter track is written.
 	/// <see cref="Chpl"/> is empty when chpl is removed.
 	/// </summary>
-	internal sealed class ChapterPlan (BinaryData chpl, List<Mp4Box> children, uint trackId, byte[] sampleData)
+	internal sealed class ChapterPlan (
+		BinaryData chpl,
+		List<Mp4Box> children,
+		uint trackId,
+		byte[] sampleData,
+		HashSet<uint>? replaced = null)
 	{
+		/// <summary>The chapter tracks this plan rebuilds or removes. Their old samples are no longer referenced.</summary>
+		public HashSet<uint> ReplacedTrackIds { get; } = replaced ?? [];
+
 		public BinaryData Chpl { get; } = chpl;
 
 		public List<Mp4Box> Children { get; } = children;

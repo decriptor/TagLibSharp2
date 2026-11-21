@@ -23,6 +23,7 @@ public class Mp4ChapterTests
 	static readonly string[] OneTwo = ["One", "Two"];
 	static readonly string[] WithChapterData = ["ftyp", "mdat", "moov", "mdat"];
 	static readonly string[] WithoutChapterData = ["ftyp", "mdat", "moov"];
+	static readonly string[] WithoutChapterDataMoovFirst = ["ftyp", "moov", "mdat"];
 
 	static Mp4ChapterTestBuilder.Options ThreeChapterTrack () => new () {
 		Track = [("Intro", 900), ("Cafè über 日本", 1200), ("Outro", 3900)],
@@ -634,6 +635,132 @@ public class Mp4ChapterTests
 		var second = Save (file, first);
 
 		CollectionAssert.AreEqual (first, second, "the file already holds the list, so nothing is rewritten");
+	}
+
+	static Mp4Chapter[] Edit (int round) => [
+		new Mp4Chapter (TimeSpan.Zero, $"Opening {round}"),
+		new Mp4Chapter (TimeSpan.FromSeconds (2 + (round % 2)), $"Middle {round}"),
+		new Mp4Chapter (TimeSpan.FromSeconds (8), $"Closing {round}"),
+	];
+
+	static byte[] EditChapters (byte[] data, int round)
+	{
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+		file.Chapters = Edit (round);
+		return Save (file, data);
+	}
+
+	[TestMethod]
+	[DataRow (false, false)]
+	[DataRow (true, false)]
+	[DataRow (false, true)]
+	[DataRow (true, true)]
+	public void Save_RepeatedChapterEdits_DoNotGrowTheFile (bool moovFirst, bool startWithChapters)
+	{
+		var options = startWithChapters ? ThreeChapterTrack () : new Mp4ChapterTestBuilder.Options ();
+		options.MoovFirst = moovFirst;
+		if (startWithChapters)
+			options.Chpl = ThreeChpl ();
+		var data = Mp4ChapterTestBuilder.Build (options);
+
+		var first = EditChapters (data, 1);
+		var current = first;
+		for (var round = 2; round <= 5; round++) {
+			current = EditChapters (current, round);
+			Assert.AreEqual (first.Length, current.Length, $"edit {round} is the size of edit 1");
+			CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (current, 1), $"audio after edit {round}");
+			AssertChapters (Mp4ChapterTestBuilder.ReadFile (current).Chapters, (0, $"Opening {round}"), (2 + (round % 2), $"Middle {round}"), (8, $"Closing {round}"));
+		}
+
+		// One mdat for the audio, one for the chapter samples; the chapter one sits right after moov.
+		var types = Mp4ChapterTestBuilder.TopLevelTypes (current);
+		Assert.AreEqual (2, types.Count (t => t == "mdat"), string.Join (",", types));
+		Assert.AreEqual ("mdat", types[types.IndexOf ("moov") + 1]);
+	}
+
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Save_ChapterEditOfGrowingList_ReplacesOwnChapterData (bool moovFirst)
+	{
+		var data = Mp4ChapterTestBuilder.Build (new () { MoovFirst = moovFirst });
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "A")];
+		var once = Save (file, data);
+
+		file = Mp4ChapterTestBuilder.ReadFile (once);
+		file.Chapters = [.. Enumerable.Range (0, 40).Select (i => new Mp4Chapter (TimeSpan.FromMilliseconds (i * 200), $"Chapter number {i}"))];
+		var twice = Save (file, once);
+
+		Assert.AreEqual (2, Mp4ChapterTestBuilder.TopLevelTypes (twice).Count (t => t == "mdat"));
+		Assert.AreEqual (40, Mp4ChapterTestBuilder.ReadFile (twice).Chapters.Count);
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (twice, 1));
+	}
+
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Save_ClearAfterEdit_DropsOwnChapterData (bool moovFirst)
+	{
+		var data = Mp4ChapterTestBuilder.Build (new () { MoovFirst = moovFirst });
+		var edited = EditChapters (data, 1);
+		var file = Mp4ChapterTestBuilder.ReadFile (edited);
+
+		file.Chapters = [];
+		var cleared = Save (file, edited);
+
+		CollectionAssert.AreEqual (moovFirst ? WithoutChapterDataMoovFirst : WithoutChapterData, Mp4ChapterTestBuilder.TopLevelTypes (cleared));
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (cleared, 1));
+		Assert.AreEqual (0, Mp4ChapterTestBuilder.ReadFile (cleared).Chapters.Count);
+	}
+
+	[TestMethod]
+	public void Save_ChapterMdatWithExtraBytes_IsKept ()
+	{
+		// moov last: the chapter mdat is the last box. Four more payload bytes are not chapter samples.
+		var edited = EditChapters (Mp4ChapterTestBuilder.Build (new ()), 1);
+		var chapterMdat = edited.AsSpan ().LastIndexOf ("mdat"u8) - 4;
+		var size = BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (chapterMdat));
+		byte[] padded = [.. edited, 1, 2, 3, 4];
+		BinaryPrimitives.WriteUInt32BigEndian (padded.AsSpan (chapterMdat), size + 4);
+
+		var again = EditChapters (padded, 2);
+
+		Assert.AreEqual (3, Mp4ChapterTestBuilder.TopLevelTypes (again).Count (t => t == "mdat"));
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (again, 1));
+	}
+
+	[TestMethod]
+	public void Save_ChapterMdatReferencedByAnotherTrack_IsKept ()
+	{
+		// The audio track's chunk offset is moved into the chapter mdat. That mdat is no longer chapter-only.
+		var edited = EditChapters (Mp4ChapterTestBuilder.Build (new ()), 1);
+		var chapterPayload = edited.AsSpan ().LastIndexOf ("mdat"u8) + 4;
+		var audioStco = edited.AsSpan ().IndexOf ("stco"u8) - 4;
+		BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (audioStco + 16), (uint)chapterPayload);
+
+		var again = EditChapters (edited, 2);
+
+		Assert.AreEqual (3, Mp4ChapterTestBuilder.TopLevelTypes (again).Count (t => t == "mdat"));
+		var audioAt = BinaryPrimitives.ReadUInt32BigEndian (Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (again), 1)!
+			.FindDescendant ("mdia", "minf", "stbl", "stco")!.Data.Span.Slice (8));
+		var moved = again.AsSpan ((int)audioAt, 8).ToArray ();
+		CollectionAssert.AreEqual (edited.AsSpan (chapterPayload, 8).ToArray (), moved, "the audio offset still finds the same bytes");
+	}
+
+	[TestMethod]
+	public void Save_ChapterSamplesShareMdatWithAudio_LeavesThatMdatAlone ()
+	{
+		// The documented case: the old samples sit in the audio mdat, so they stay there unreferenced.
+		var original = Mp4ChapterTestBuilder.Build (ThreeChapterTrack ());
+		var audioMdat = Mp4ChapterTestBuilder.TopLevelTypes (original).IndexOf ("mdat");
+
+		var edited = EditChapters (original, 1);
+
+		var types = Mp4ChapterTestBuilder.TopLevelTypes (edited);
+		Assert.AreEqual (2, types.Count (t => t == "mdat"));
+		Assert.AreEqual (audioMdat, types.IndexOf ("mdat"), "the shared mdat keeps its place");
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (edited, 1));
 	}
 
 	[TestMethod]
