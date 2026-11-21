@@ -127,6 +127,64 @@ public class AacDetectionTests
 	}
 
 	[TestMethod]
+	public void TruncatedId3TaggedMp3_IsNeverAac ()
+	{
+		// An MPEG header that cannot be checked (its frame runs past the data) decides MP3, as an ADTS
+		// header that cannot be checked decides AAC. Every prefix past the tag stays MP3.
+		var data = Mp3WithAdtsLookalike ();
+		var tagEnd = Id3v2Bytes ("Tagged").Length;
+		for (var length = tagEnd + 4; length <= data.Length; length++) {
+			var prefix = data.AsSpan (0, length);
+			Assert.AreEqual (MediaFormat.Mp3, MediaFile.DetectFormat (prefix), $"prefix {length}");
+			Assert.IsTrue (Mp3File.IsValidFormat (prefix), $"prefix {length}");
+			Assert.IsFalse (AacFile.IsValidFormat (prefix), $"prefix {length}");
+		}
+	}
+
+	[TestMethod]
+	[DataRow (200)]
+	[DataRow (274)]
+	[DataRow (600)]
+	public async Task TruncatedId3TaggedMp3File_OpensAsMp3 (int afterTag)
+	{
+		// Cut inside the first or second MPEG frame, past the ADTS look-alike at 0x93.
+		var data = Mp3WithAdtsLookalike ().AsSpan (0, Id3v2Bytes ("Tagged").Length + afterTag).ToArray ();
+
+		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (data, "cut.mp3"));
+	}
+
+	[TestMethod]
+	public void Detection_ReadsOnlyTheFirstHeaders ()
+	{
+		// The first bytes after the tag decide an MP3 or a clean AAC file: the header and its successor.
+		var tag = Id3v2Bytes ("T");
+		foreach (var (label, data, aac) in new[] {
+			("id3+mp3", Concat (tag, Mp3Frames (100)), false),
+			("mp3", Mp3Frames (100), false),
+			("id3+adts", Concat (tag, Adts (100, length: 400)), true),
+			("adts", Adts (100, length: 400), true) }) {
+			using var stream = new CountingStream (data);
+			Assert.AreEqual (aac, AacFile.IsValidFormat (stream), label);
+			Assert.IsTrue (stream.BytesRead <= 10 + 16 + 7, $"{label}: read {stream.BytesRead} bytes");
+		}
+	}
+
+	[TestMethod]
+	public void MediaFileRead_Id3TaggedMp3_ReadsNoMoreThanTheMp3ReaderNeeds ()
+	{
+		// MP3's own windowed read: the tag, a 32 KB audio probe, and the 128-byte footer.
+		var tag = Id3v2Bytes ("T");
+		var data = Concat (tag, Mp3Frames (1000));
+		using var stream = new CountingStream (data);
+
+		var result = MediaFile.Read (stream, "song.mp3");
+
+		Assert.AreEqual (MediaFormat.Mp3, result.Format);
+		var budget = 32 + tag.Length + 32 * 1024 + 128 + 64;
+		Assert.IsTrue (stream.BytesRead <= budget, $"read {stream.BytesRead} bytes, budget {budget}");
+	}
+
+	[TestMethod]
 	public async Task LargeId3v2ThenAdts_IsAacThroughTheShortPeek ()
 	{
 		// The stream peek is 32 bytes and the tag is far longer.

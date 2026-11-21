@@ -42,38 +42,102 @@ internal static class AacStream
 	// ISO/IEC 13818-7 §6.3 raw_data_block: id_syn_ele ID_PCE.
 	const int ProgramConfigElementId = 5;
 
+	// The first stream read decides most files: an MPEG or ADTS header at the start.
+	const int FirstProbeBytes = 16;
+	const int ProbeChunkBytes = 4096;
+
+	enum SyncKind { Adts, Mpeg }
+
+	enum Verdict { Skip, Aac, Mp3 }
+
+	readonly struct Candidate (SyncKind kind, AdtsHeader adts, int distance, int need)
+	{
+		public SyncKind Kind => kind;
+		public AdtsHeader Adts => adts;
+
+		/// <summary>Offset of the successor header from this one: the frame length.</summary>
+		public int Distance => distance;
+
+		/// <summary>Bytes of the successor header needed to check it.</summary>
+		public int Need => need;
+	}
+
+	// A position whose bytes parse as an ADTS header (layer '00') or an MPEG audio frame header
+	// (layer other than '00', ISO/IEC 11172-3 §2.4.2.3). The layer bits keep the two apart.
+	static bool TryCandidate (ReadOnlySpan<byte> head, out Candidate candidate)
+	{
+		if (AdtsHeader.TryParse (head, out var adts)) {
+			candidate = new Candidate (SyncKind.Adts, adts, adts.FrameLength, AdtsHeader.Size);
+			return true;
+		}
+
+		if (MpegFrame.TryParse (head, out var mpeg) && mpeg is not null) {
+			candidate = new Candidate (SyncKind.Mpeg, default, mpeg.FrameSize, MpegFrame.HeaderSize);
+			return true;
+		}
+
+		candidate = default;
+		return false;
+	}
+
 	/// <summary>
-	/// The bytes <see cref="FindStart(ReadOnlySpan{byte}, long, int)"/> needs to decide a search of <paramref name="searchBytes"/>:
-	/// every candidate plus the farthest successor header.
+	/// Decides one candidate. <paramref name="room"/> is the bytes from the candidate to the end of the data;
+	/// <paramref name="successor"/> holds the header the candidate points at when that header lies inside the data.
+	/// A confirmed header decides for its format. An MPEG header that cannot be checked (its frame or its
+	/// successor runs past the data, or it is free format) also decides MP3, so truncated MP3 data stays MP3.
+	/// An ADTS header that cannot be checked decides AAC only as the first byte of the search.
+	/// A contradicted header is skipped.
 	/// </summary>
-	public static int WindowBytes (int searchBytes) => searchBytes - 1 + SuccessorReach;
+	static Verdict Judge (Candidate candidate, long room, bool first, ReadOnlySpan<byte> successor)
+	{
+		var checkable = candidate.Distance >= candidate.Need
+			&& room >= (long)candidate.Distance + candidate.Need
+			&& successor.Length >= candidate.Need;
+
+		if (candidate.Kind == SyncKind.Mpeg) {
+			if (!checkable)
+				return Verdict.Mp3;
+			return MpegFrame.TryParse (successor, out _) || IsTrailingTag (successor) ? Verdict.Mp3 : Verdict.Skip;
+		}
+
+		if (!checkable)
+			return first ? Verdict.Aac : Verdict.Skip;
+
+		var confirmed = (AdtsHeader.TryParse (successor, out var next) && next.SameStream (candidate.Adts))
+			|| IsTrailingTag (successor);
+		return confirmed ? Verdict.Aac : Verdict.Skip;
+	}
+
+	// The frame ends where an ID3v1, APEv2 (with a header), or Lyrics3 tag begins.
+	static bool IsTrailingTag (ReadOnlySpan<byte> next) =>
+		next.StartsWith ("TAG"u8) || next.StartsWith ("APETAGE"u8) || next.StartsWith ("LYRICSB"u8);
 
 	/// <summary>
 	/// The one rule, for detection and for reading, that says where an AAC stream starts in
-	/// <paramref name="window"/>. "ADIF" at offset 0 starts an ADIF stream. Otherwise the first ADTS header
-	/// in the first <paramref name="searchBytes"/> bytes whose successor confirms it starts an ADTS stream,
-	/// unless an MPEG audio frame (layer other than '00', ISO/IEC 11172-3 §2.4.2.3) comes first.
+	/// <paramref name="data"/>. "ADIF" at offset 0 starts an ADIF stream. Otherwise the first decisive sync in
+	/// the first <paramref name="searchBytes"/> bytes decides (see <see cref="Judge"/>): an ADTS header starts
+	/// an ADTS stream, an MPEG audio frame means the data is not AAC.
 	/// </summary>
-	/// <param name="window">The bytes from the earliest possible start.</param>
-	/// <param name="room">The bytes from the earliest possible start to the end of the data.</param>
+	/// <param name="data">The bytes from the earliest possible start.</param>
 	/// <param name="searchBytes">How many start offsets to try.</param>
-	/// <returns>The offset of the stream in <paramref name="window"/>, or -1.</returns>
-	public static int FindStart (ReadOnlySpan<byte> window, long room, int searchBytes)
+	/// <returns>The offset of the stream in <paramref name="data"/>, or -1.</returns>
+	public static int FindStart (ReadOnlySpan<byte> data, int searchBytes)
 	{
-		if (AdifHeader.HasMagic (window))
+		if (AdifHeader.HasMagic (data))
 			return 0;
 
-		var limit = (int)Math.Min (searchBytes, Math.Min (window.Length, room));
+		var limit = Math.Min (searchBytes, data.Length);
 		for (var i = 0; i < limit; i++) {
-			if (window[i] != 0xFF)
+			if (data[i] != 0xFF || !TryCandidate (data[i..], out var candidate))
 				continue;
 
-			var rest = window[i..];
-			if (AdtsHeader.TryParse (rest, out var header)) {
-				if (IsConfirmed (header, rest, room - i))
+			var at = (long)i + candidate.Distance;
+			var successor = at + candidate.Need <= data.Length ? data.Slice ((int)at, candidate.Need) : [];
+			switch (Judge (candidate, data.Length - i, i == 0, successor)) {
+				case Verdict.Aac:
 					return i;
-			} else if (MpegFrame.IsStartOfAudio (rest)) {
-				return -1;
+				case Verdict.Mp3:
+					return -1;
 			}
 		}
 
@@ -81,20 +145,64 @@ internal static class AacStream
 	}
 
 	/// <summary>
-	/// The stream twin of <see cref="FindStart(ReadOnlySpan{byte}, long, int)"/>: reads the window at <paramref name="offset"/>. The stream position moves.
+	/// The stream twin of <see cref="FindStart(ReadOnlySpan{byte}, int)"/>. It reads 16 bytes, then 4 KB chunks
+	/// only while no sync has decided, and each successor header on its own, so a file decided at its first
+	/// byte costs about 23 bytes. The stream position moves.
 	/// </summary>
 	public static long FindStart (Stream stream, long offset, long end, int searchBytes)
 	{
 		if (offset < 0 || offset >= end)
 			return -1;
 
-		var length = (int)Math.Min (WindowBytes (searchBytes), end - offset);
-		var window = new byte[length];
-		if (!ReadAt (stream, offset, window, length))
-			return -1;
+		var limit = Math.Min (offset + searchBytes, end);
+		var chunk = new byte[FirstProbeBytes];
+		var small = new byte[AdtsHeader.Size];
+		var pos = offset;
+		while (pos < limit) {
+			var length = (int)Math.Min (chunk.Length, end - pos);
+			if (!ReadAt (stream, pos, chunk, length))
+				return -1;
+			if (pos == offset && AdifHeader.HasMagic (chunk.AsSpan (0, length)))
+				return offset;
 
-		var found = FindStart (window, end - offset, searchBytes);
-		return found < 0 ? -1 : offset + found;
+			var scan = (int)Math.Min (length, limit - pos);
+			for (var i = 0; i < scan; i++) {
+				if (chunk[i] != 0xFF)
+					continue;
+
+				var here = pos + i;
+				ReadOnlySpan<byte> head = chunk.AsSpan (i, length - i);
+				if (head.Length < AdtsHeader.Size && end - here > head.Length) {
+					var headLength = (int)Math.Min (AdtsHeader.Size, end - here);
+					if (!ReadAt (stream, here, small, headLength))
+						return -1;
+					head = small.AsSpan (0, headLength);
+				}
+
+				if (!TryCandidate (head, out var candidate))
+					continue;
+
+				var at = here + candidate.Distance;
+				ReadOnlySpan<byte> successor = [];
+				if (at + candidate.Need <= pos + length)
+					successor = chunk.AsSpan ((int)(at - pos), candidate.Need);
+				else if (at + candidate.Need <= end && ReadAt (stream, at, small, candidate.Need))
+					successor = small.AsSpan (0, candidate.Need);
+
+				switch (Judge (candidate, end - here, here == offset, successor)) {
+					case Verdict.Aac:
+						return here;
+					case Verdict.Mp3:
+						return -1;
+				}
+			}
+
+			pos += scan;
+			if (chunk.Length == FirstProbeBytes)
+				chunk = new byte[ProbeChunkBytes];
+		}
+
+		return -1;
 	}
 
 	/// <summary>
@@ -113,12 +221,12 @@ internal static class AacStream
 			return following.SameStream (header);
 
 		// The frame ends where an ID3v1, APEv2, or Lyrics3 tag begins.
-		return next.StartsWith ("TAG"u8) || next.StartsWith ("APETAGE"u8) || next.StartsWith ("LYRICSB"u8);
+		return IsTrailingTag (next);
 	}
 
 	/// <summary>
 	/// Reads the stream properties from the audio region [<paramref name="start"/>, <paramref name="end"/>).
-	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, long, int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
+	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
 	/// </summary>
 	public static bool TryRead (Stream stream, long start, long end, out AacAudioProperties? properties)
 	{
@@ -276,7 +384,7 @@ internal static class AacStream
 	/// </summary>
 	sealed class ScanReader (Stream stream, long end)
 	{
-		readonly byte[] _buffer = new byte[SearchChunkBytes + SuccessorReach];
+		byte[]? _buffer;
 		readonly byte[] _header = new byte[AdtsHeader.Size];
 		long _start = -1;
 		int _length;
@@ -295,6 +403,8 @@ internal static class AacStream
 			var bufferEnd = _start + _length;
 			var inside = _start >= 0 && at >= _start && at < bufferEnd;
 			if (!inside || (bufferEnd < end && bufferEnd - at < SuccessorReach)) {
+				// Allocated on the first resync. A clean file never needs it.
+				_buffer ??= new byte[SearchChunkBytes + SuccessorReach];
 				var length = (int)Math.Min (_buffer.Length, end - at);
 				if (!ReadAt (stream, at, _buffer, length))
 					return [];
@@ -302,12 +412,12 @@ internal static class AacStream
 				_length = length;
 			}
 
-			return _buffer.AsSpan ((int)(at - _start), (int)(_start + _length - at));
+			return _buffer!.AsSpan ((int)(at - _start), (int)(_start + _length - at));
 		}
 
 		public bool TryHeader (long pos, out AdtsHeader header)
 		{
-			if (_start >= 0 && pos >= _start && pos + AdtsHeader.Size <= _start + _length)
+			if (_buffer is not null && _start >= 0 && pos >= _start && pos + AdtsHeader.Size <= _start + _length)
 				return AdtsHeader.TryParse (_buffer.AsSpan ((int)(pos - _start), AdtsHeader.Size), out header);
 
 			header = default;

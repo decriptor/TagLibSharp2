@@ -202,6 +202,42 @@ public static class AacTestBuilder
 	public static int IndexOf (byte[] haystack, byte[] needle) =>
 		haystack.AsSpan ().IndexOf (needle);
 
+	/// <summary>A read-only stream that counts reads and bytes.</summary>
+	public sealed class CountingStream (byte[] data) : MemoryStream (data, writable: false)
+	{
+		public int Reads { get; private set; }
+
+		public long BytesRead { get; private set; }
+
+		public void Reset ()
+		{
+			Reads = 0;
+			BytesRead = 0;
+			Position = 0;
+		}
+
+		public override int Read (byte[] buffer, int offset, int count)
+		{
+			Reads++;
+			var n = base.Read (buffer, offset, count);
+			BytesRead += n;
+			return n;
+		}
+	}
+
+	/// <summary>
+	/// An ID3v2 tag, then MPEG-1 Layer III frames whose first frame's payload holds a byte run that parses
+	/// as an MPEG-2 ADTS header (FF F8 15 07 09 CB: Main, 32 kHz, 4 channels, 6222-byte frame), as a real
+	/// encoder's output can.
+	/// </summary>
+	public static byte[] Mp3WithAdtsLookalike (int frames = 5)
+	{
+		var mp3 = Mp3Frames (frames);
+		byte[] lookalike = [0xFF, 0xF8, 0x15, 0x07, 0x09, 0xCB, 0x00];
+		lookalike.CopyTo (mp3, 0x93);
+		return Concat (Id3v2Bytes ("Tagged"), mp3);
+	}
+
 	sealed class BitWriter
 	{
 		readonly List<byte> _bytes = [];
