@@ -746,6 +746,34 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	[DataRow (0)]
+	[DataRow (1)]
+	[DataRow (2)]
+	public void Read_ImplicitBaseAfterAnUnreadableTraf_IsUnknown (int broken)
+	{
+		// The chapter traf has no base flags, so it starts where the audio traf's data ends (§8.8.7). When the audio
+		// traf has no tfhd (1) or a trun whose count runs past its box (2), that end is unknown: the chapter samples
+		// are not read from a guessed position, and chpl gives the titles. Intact (0), the fragment titles win.
+		var options = FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.PreviousTraf);
+		options.Chpl = [(TimeSpan.Zero, "C1"), (TimeSpan.FromSeconds (2), "C2")];
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var audioTraf = data.AsSpan ().IndexOf ("traf"u8);
+		if (broken == 1)
+			"free"u8.CopyTo (data.AsSpan (audioTraf + data.AsSpan (audioTraf).IndexOf ("tfhd"u8)));
+		if (broken == 2) {
+			var trun = audioTraf + data.AsSpan (audioTraf).IndexOf ("trun"u8) - 4;
+			BinaryPrimitives.WriteUInt32BigEndian (data.AsSpan (trun + 12), 50);
+		}
+
+		var chapters = Mp4ChapterTestBuilder.ReadFile (data).Chapters;
+
+		if (broken == 0)
+			AssertChapters (chapters, (0, "Intro"), (1.5, "Middle ü"), (3.5, "End 日本"));
+		else
+			AssertChapters (chapters, (0, "C1"), (2, "C2"));
+	}
+
+	[TestMethod]
 	public void Read_FragmentWithAnUnreadableTrafForAnotherTrack_StillReadsTheChapterTraf ()
 	{
 		// A traf whose tfhd is cut short is skipped; the chapter traf after it is still read.
@@ -1237,15 +1265,42 @@ public class Mp4ChapterTests
 	[DataRow (7)]
 	[DataRow (8)]
 	[DataRow (9)]
+	[DataRow (10)]
+	[DataRow (11)]
+	[DataRow (12)]
+	[DataRow (13)]
+	[DataRow (14)]
+	[DataRow (15)]
+	[DataRow (16)]
+	[DataRow (17)]
+	[DataRow (18)]
+	[DataRow (19)]
+	[DataRow (20)]
+	[DataRow (21)]
+	[DataRow (22)]
+	[DataRow (23)]
 	public void Save_ChapterMdatReferencedByAnotherTrack_IsKept (int variant)
 	{
-		// The audio track's chunk is moved into the chapter mdat, so that mdat is no longer chapter-only. The guard
-		// fails closed when it cannot read a track's tables: a bad box in the audio stbl in front of stco (1), or in
-		// the trak in front of mdia (2), or a trak in moov's unread tail (3). A chunk that starts before the mdat
-		// and runs into it counts (4). An item location box (iloc) anywhere in moov keeps the mdat too (5). A bad
-		// box after the audio stco hides a co64 that points into the mdat (6): the unread stbl tail keeps it.
-		// Without stsz the extent of a chunk that starts just before the mdat is unknown (7). A chunk table (8) or
-		// size table (9) whose count runs past its box hides entries, so it keeps the mdat too.
+		// One rule: the earlier chapter mdat goes only when every byte range anything else references can be
+		// computed and none overlaps it. Each row changes the first edit's output, then edits again.
+		//  0  the audio chunk moved into the chapter mdat (keep)
+		//  1  a bad box in the audio stbl in front of stco; 2 in the trak in front of mdia (keep: tables unread)
+		//  3  a trak in moov's unread tail whose chunk is in the mdat (keep)
+		//  4  an audio chunk that starts 50 bytes before the mdat and runs into it (keep)
+		//  5  a moov meta whose iloc item (construction method 0) is in the mdat (keep)
+		//  6  a bad box after the audio stco hides a co64 into the mdat (keep: stbl tail)
+		//  7  no stsz or stz2 (keep: chunk extent unknown); 8 stco and 9 stsz counts past their box (keep)
+		// 10  a moov meta with only an hdlr (drop: it references nothing)
+		// 11  a moov meta with a bad box in front of an iloc into the mdat (keep: meta tail)
+		// 12  a file-level meta with only an hdlr (drop); 13 one whose iloc item is in the mdat (keep)
+		// 14  the audio sizes in stz2 (8-bit entries), chunk in the mdat (keep); 15 chunk elsewhere (drop)
+		// 16  a second trak with the chapter track's track_ID, its chunk in the mdat (keep: compared by object)
+		// 17  sizes and counts of 0xFFFFFFFF: the chunk extent overflows (keep)
+		// 18  a moov meta whose iloc item uses construction method 1 (idat), not a file offset (drop)
+		// 19  stz2 16-bit sizes, the chunk ending exactly at the mdat (drop); 20 one byte later (keep)
+		// 21  stz2 4-bit sizes of 15, the chunk ending exactly at the mdat (drop); 22 one byte later (keep)
+		// 23  a moov meta that stops parsing at a bad box, with no iloc in sight (keep: the rest is unread)
+		var keep = variant is not (10 or 12 or 15 or 18 or 19 or 21);
 		var edited = EditChapters (Mp4ChapterTestBuilder.Build (new ()), 1);
 		byte[] bad = [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'];
 		var moovAt = edited.AsSpan ().IndexOf ("moov"u8) - 4;
@@ -1254,67 +1309,141 @@ public class Mp4ChapterTests
 		var minfAt = mdiaAt + edited.AsSpan (mdiaAt).IndexOf ("minf"u8) - 4;
 		var stblAt = minfAt + edited.AsSpan (minfAt).IndexOf ("stbl"u8) - 4;
 		var stcoAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stco"u8) - 4;
+		var stszAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stsz"u8) - 4;
+		var stscAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stsc"u8) - 4;
+		var stszLength = (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (stszAt));
 		var trakLength = (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (trakAt));
 		var stblEnd = stblAt + (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (stblAt));
 		var moovEnd = moovAt + (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (moovAt));
-
-		var meta = Mp4TestBuilder.CreateFullBox ("meta", 0, 0, Mp4TestBuilder.CreateFullBox ("iloc", 0, 0, [0x44, 0, 0, 0]));
-		var (insertAt, inserted, containers) = variant switch {
-			1 => (stcoAt, bad, new[] { moovAt, trakAt, mdiaAt, minfAt, stblAt }),
-			2 => (mdiaAt, bad, new[] { moovAt, trakAt }),
-			3 => (moovEnd, [.. bad, .. edited.AsSpan (trakAt, trakLength)], new[] { moovAt }),
-			5 => (moovEnd, meta, new[] { moovAt }),
-			6 => (stblEnd, new byte[8 + 24], new[] { moovAt, trakAt, mdiaAt, minfAt, stblAt }),
-			_ => (moovEnd, Array.Empty<byte> (), new[] { moovAt }),
+		var hdlr = Mp4TestBuilder.CreateFullBox ("hdlr", 0, 0, [0, 0, 0, 0, .. "pict"u8, .. new byte[13]]);
+		const int count = Mp4ChapterTestBuilder.AudioSampleCount;
+		byte[] stz2 = variant switch {
+			19 or 20 => Mp4TestBuilder.CreateFullBox ("stz2", 0, 0, [0, 0, 0, 16, 0, 0, 0, count,
+				.. Enumerable.Range (0, count).SelectMany (_ => new byte[] { 0, Mp4ChapterTestBuilder.AudioSampleSize })]),
+			21 or 22 => Mp4TestBuilder.CreateFullBox ("stz2", 0, 0, [0, 0, 0, 4, 0, 0, 0, count, .. Enumerable.Repeat ((byte)0xFF, count / 2)]),
+			_ => Mp4TestBuilder.CreateFullBox ("stz2", 0, 0, [0, 0, 0, 8, 0, 0, 0, count,
+				.. Enumerable.Repeat ((byte)Mp4ChapterTestBuilder.AudioSampleSize, count)]),
 		};
 
-		// The chapter mdat follows moov; every inserted byte moves it.
-		var chapterPayload = moovEnd + 8 + inserted.Length;
+		// Where the bytes go, how many original bytes they replace, and the boxes whose size grows with them.
+		int[] inStbl = [moovAt, trakAt, mdiaAt, minfAt, stblAt];
+		var (at, removed, inserted, containers) = variant switch {
+			1 => (stcoAt, 0, bad, inStbl),
+			2 => (mdiaAt, 0, bad, new[] { moovAt, trakAt }),
+			3 or 16 => (moovEnd, 0, new byte[(variant == 3 ? 8 : 0) + trakLength], new[] { moovAt }),
+			5 or 18 => (moovEnd, 0, Meta (hdlr, Iloc (variant == 18 ? 1 : 0, 0)), new[] { moovAt }),
+			6 => (stblEnd, 0, new byte[8 + 24], inStbl),
+			10 => (moovEnd, 0, Meta (hdlr), new[] { moovAt }),
+			11 => (moovEnd, 0, Meta (hdlr, bad, Iloc (0, 0)), new[] { moovAt }),
+			23 => (moovEnd, 0, Meta (hdlr, bad, Mp4TestBuilder.CreateBox ("free", [1, 2, 3, 4])), new[] { moovAt }),
+			12 => (edited.Length, 0, Meta (hdlr), Array.Empty<int> ()),
+			13 => (edited.Length, 0, Meta (hdlr, Iloc (0, 0)), Array.Empty<int> ()),
+			14 or 15 or 19 or 20 or 21 or 22 => (stszAt, stszLength, stz2, inStbl),
+			_ => (moovEnd, 0, Array.Empty<byte> (), new[] { moovAt }),
+		};
+
+		// The chapter mdat follows moov; every byte added to moov moves it.
+		var inMoov = containers.Contains (moovAt) ? inserted.Length - removed : 0;
+		var chapterPayload = moovEnd + 8 + inMoov;
 		var moov = edited.AsSpan (moovAt, moovEnd - moovAt).ToArray ();
 		Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.TextTrackId, (uint)chapterPayload);
-		// Rows 3, 5, 6, 8 and 9 leave the parsed audio stco alone: only the unread trak, the iloc, the hidden
-		// co64, or the entries past the box can reach the mdat.
-		if (variant is not 3 and not 5 and not 6 and not 8 and not 9)
-			Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.AudioTrackId, (uint)(variant is 4 or 7 ? chapterPayload - 50 : chapterPayload));
+		// Rows that reach the mdat through another box leave the parsed audio stco alone.
+		var chunkLength = variant switch {
+			19 or 20 => count * Mp4ChapterTestBuilder.AudioSampleSize,
+			21 or 22 => count * 15,
+			_ => 0,
+		};
+		var boxStart = chapterPayload - 8;
+		var audioChunk = variant switch {
+			4 or 7 or 17 => chapterPayload - 50,
+			19 or 21 => boxStart - chunkLength,
+			20 or 22 => boxStart - chunkLength + 1,
+			_ => chapterPayload,
+		};
+		if (variant is 0 or 1 or 2 or 4 or 7 or 14 or 17 or 19 or 20 or 21 or 22)
+			Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.AudioTrackId, (uint)audioChunk);
 		moov.CopyTo (edited, moovAt);
-		if (variant == 7) {
-			var stszAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stsz"u8);
-			"free"u8.CopyTo (edited.AsSpan (stszAt));
+
+		switch (variant) {
+			case 3:
+			case 16: {
+					// A copy of the audio trak whose chunk sits in the mdat: behind a bad box (3), or as track 2 (16).
+					var copy = Mp4TestBuilder.CreateMoovBox (edited.AsSpan (trakAt, trakLength).ToArray ());
+					Mp4ChapterCodec.WriteChunkOffset (copy, Mp4ChapterTestBuilder.AudioTrackId, (uint)chapterPayload);
+					var trak = copy.AsSpan (8).ToArray ();
+					if (variant == 16)
+						BinaryPrimitives.WriteUInt32BigEndian (trak.AsSpan (trak.AsSpan ().IndexOf ("tkhd"u8) + 16), Mp4ChapterTestBuilder.TextTrackId);
+					inserted = variant == 3 ? [.. bad, .. trak] : trak;
+					break;
+				}
+			case 5:
+			case 11:
+			case 13:
+			case 18:
+				inserted = variant switch {
+					5 => Meta (hdlr, Iloc (0, chapterPayload)),
+					11 => Meta (hdlr, bad, Iloc (0, chapterPayload)),
+					13 => Meta (hdlr, Iloc (0, chapterPayload)),
+					_ => Meta (hdlr, Iloc (1, chapterPayload)),
+				};
+				break;
+			case 6: {
+					var co64 = Mp4TestBuilder.CreateFullBox ("co64", 0, 0, [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+					BinaryPrimitives.WriteUInt64BigEndian (co64.AsSpan (16), (ulong)chapterPayload);
+					inserted = [.. bad, .. co64];
+					break;
+				}
+			case 7:
+				"free"u8.CopyTo (edited.AsSpan (stszAt + 4));
+				break;
+			case 8:
+				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stcoAt + 12), 2);
+				break;
+			case 9:
+				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 16), Mp4ChapterTestBuilder.AudioSampleCount + 1);
+				break;
+			case 17:
+				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 12), uint.MaxValue);
+				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 16), uint.MaxValue);
+				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stscAt + 20), uint.MaxValue);
+				break;
 		}
 
-		if (variant == 8)
-			BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stcoAt + 12), 2);
-		if (variant == 9) {
-			var stszAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stsz"u8) - 4;
-			BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 16), Mp4ChapterTestBuilder.AudioSampleCount + 1);
-		}
-		if (variant == 3) {
-			// The tail trak is a copy of the audio trak whose chunk sits in the chapter mdat.
-			var copy = Mp4TestBuilder.CreateMoovBox (edited.AsSpan (trakAt, trakLength).ToArray ());
-			Mp4ChapterCodec.WriteChunkOffset (copy, Mp4ChapterTestBuilder.AudioTrackId, (uint)chapterPayload);
-			inserted = [.. bad, .. copy.AsSpan (8)];
-		}
-
-		if (variant == 6) {
-			var co64 = Mp4TestBuilder.CreateFullBox ("co64", 0, 0, [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
-			BinaryPrimitives.WriteUInt64BigEndian (co64.AsSpan (16), (ulong)chapterPayload);
-			inserted = [.. bad, .. co64];
-		}
-
-		byte[] file = [.. edited.AsSpan (0, insertAt), .. inserted, .. edited.AsSpan (insertAt)];
-		foreach (var at in containers)
-			BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (at), BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (at)) + (uint)inserted.Length);
+		byte[] file = [.. edited.AsSpan (0, at), .. inserted, .. edited.AsSpan (at + removed)];
+		foreach (var box in containers)
+			BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (box), (uint)(BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (box)) + inserted.Length - removed));
 
 		var again = EditChapters (file, 2);
 
-		Assert.AreEqual (3, ReadableTopLevelTypes (again).Count (t => t == "mdat"), "the chapter mdat that another track uses is kept");
-		if (variant is 3 or 5 or 6)
+		Assert.AreEqual (keep ? 3 : 2, ReadableTopLevelTypes (again).Count (t => t == "mdat"), keep ? "kept" : "dropped");
+		if (!keep)
+			Assert.AreEqual (EditChapters (again, 3).Length, again.Length, "a dropped mdat keeps the size constant");
+		if (variant is 3 or 5 or 6 or 10 or 12 or 13 or 16 or 18)
 			CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (again, 1), "the parsed audio track is intact");
 		if (variant == 0) {
 			var audioAt = BinaryPrimitives.ReadUInt32BigEndian (Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (again), 1)!
 				.FindDescendant ("mdia", "minf", "stbl", "stco")!.Data.Span.Slice (8));
 			CollectionAssert.AreEqual (file.AsSpan (chapterPayload, 8).ToArray (), again.AsSpan ((int)audioAt, 8).ToArray (), "the audio offset still finds the same bytes");
 		}
+	}
+
+	static byte[] Meta (params byte[][] children) => Mp4TestBuilder.CreateFullBox ("meta", 0, 0, [.. children.SelectMany (c => c)]);
+
+	/// <summary>
+	/// iloc (§8.11.3) version 1, 4-byte offsets and lengths, no base or index: one item, one 4-byte extent at
+	/// <paramref name="offset"/>, with <paramref name="method"/> as its construction method.
+	/// </summary>
+	static byte[] Iloc (int method, int offset)
+	{
+		var body = new byte[2 + 2 + 2 + 2 + 2 + 2 + 4 + 4];
+		body[0] = 0x44;
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (2), 1);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (6), (ushort)method);
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (10), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (12), (uint)offset);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (16), 4);
+		return Mp4TestBuilder.CreateFullBox ("iloc", 1, 0, body);
 	}
 
 	[TestMethod]

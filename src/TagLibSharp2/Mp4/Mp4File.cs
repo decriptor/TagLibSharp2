@@ -1645,7 +1645,7 @@ public sealed class Mp4File : IMediaFile
 			: WrapBox ("mdat", new BinaryData (chapterPlan.SampleData));
 		// The mdat an earlier chapter save wrote sits right after moov and holds only the samples this save
 		// replaces. It goes, so repeated chapter edits do not leave a dead copy each time.
-		var droppedIndex = FindReplacedChapterData (boxes, moovIndex, chapterPlan, tailStart >= 0);
+		var droppedIndex = FindReplacedChapterData (boxes, moovIndex, chapterPlan, tailStart >= 0 ? originalData[tailStart..] : []);
 		var replacedLength = oldMoovLength + (droppedIndex < 0 ? 0 : boxes[droppedIndex].Length);
 		var delta = newMoov.Length + chapterData.Length - replacedLength;
 		var oldMoovEnd = oldMoovStart + replacedLength;
@@ -2383,17 +2383,15 @@ public sealed class Mp4File : IMediaFile
 		List<(Mp4Box Box, int Start, int Length)> boxes,
 		int moovIndex,
 		Mp4ChapterCodec.ChapterPlan? plan,
-		bool unreadTail)
+		ReadOnlySpan<byte> unreadTail)
 	{
 		var next = moovIndex + 1;
 		if (plan is null || next >= boxes.Count || boxes[next].Box.Type != "mdat")
 			return -1;
 
-		// Unread bytes after the last box could hold a movie fragment that points into the mdat, and a top-level
-		// meta can locate items anywhere (iloc, §8.11.3). Fail closed.
-		if (unreadTail && boxes[moovIndex].Box.FindChild ("mvex") is not null)
-			return -1;
-		if (boxes.Exists (b => b.Box.Type == "meta"))
+		// Unread bytes after the last box could hold a movie fragment, or an iloc (§8.11.3), that points into the
+		// mdat. Fail closed.
+		if (unreadTail.Length > 0 && (boxes[moovIndex].Box.FindChild ("mvex") is not null || unreadTail.IndexOf ("iloc"u8) >= 0))
 			return -1;
 
 		var (box, start, length) = boxes[next];
@@ -2405,7 +2403,8 @@ public sealed class Mp4File : IMediaFile
 				fragments.Add ((top, at));
 		}
 
-		return Mp4ChapterCodec.HoldsOnlyReplacedSamples (moov, fragments, plan, start, start + header, start + length) ? next : -1;
+		var topLevel = boxes.ConvertAll (b => b.Box);
+		return Mp4ChapterCodec.HoldsOnlyReplacedSamples (moov, fragments, plan, start, start + header, start + length, topLevel) ? next : -1;
 	}
 
 	/// <summary>

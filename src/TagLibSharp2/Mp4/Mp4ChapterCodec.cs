@@ -347,21 +347,31 @@ internal static class Mp4ChapterCodec
 
 			var previousEnd = moofStart;
 			var firstTraf = true;
+			// After a traf whose data length is unknown, the implicit base of the next one (§8.8.7: the end of the
+			// previous traf's data) is unknown too.
+			var previousEndKnown = true;
 			foreach (var traf in moof.Children) {
 				if (traf.Type != "traf")
 					continue;
 
-				if (traf.UnparsedTail.Length > 0) {
+				var trafComplete = traf.UnparsedTail.Length == 0;
+				if (!trafComplete) {
 					if (measuring)
 						return false;
 					complete = false;
 				}
 
-				if (!TryReadTfhd (traf, firstTraf, moofStart, previousEnd, moov, defaults, out var id, out var baseOffset, out var defaultDuration, out var defaultSize)) {
+				if (!TryReadTfhd (traf, firstTraf, moofStart, previousEnd, moov, defaults, out var id, out var tfhdFlags, out var baseOffset, out var defaultDuration, out var defaultSize)) {
 					if (measuring)
 						return false;
 					complete = false;
 					firstTraf = false;
+					previousEndKnown = false;
+					continue;
+				}
+
+				if (!firstTraf && !previousEndKnown && (tfhdFlags & 0x020001) == 0) {
+					complete = false;
 					continue;
 				}
 
@@ -383,11 +393,13 @@ internal static class Mp4ChapterCodec
 						if (measuring)
 							return false;
 						complete = false;
+						trafComplete = false;
 						break;
 					}
 				}
 
 				previousEnd = runEnd;
+				previousEndKnown = trafComplete;
 				firstTraf = false;
 			}
 		}
@@ -407,11 +419,13 @@ internal static class Mp4ChapterCodec
 		Mp4Box moov,
 		Dictionary<uint, (uint Duration, uint Size)> defaults,
 		out uint id,
+		out uint flags,
 		out long baseOffset,
 		out uint defaultDuration,
 		out uint defaultSize)
 	{
 		id = 0;
+		flags = 0;
 		baseOffset = 0;
 		defaultDuration = 0;
 		defaultSize = 0;
@@ -419,7 +433,7 @@ internal static class Mp4ChapterCodec
 		if (tfhd.Length < 8)
 			return false;
 
-		var flags = BinaryPrimitives.ReadUInt32BigEndian (tfhd) & 0xFFFFFF;
+		flags = BinaryPrimitives.ReadUInt32BigEndian (tfhd) & 0xFFFFFF;
 		id = BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4));
 		var pos = 8;
 		baseOffset = firstTraf || (flags & 0x020000) != 0 ? moofStart : previousEnd;
@@ -856,19 +870,24 @@ internal static class Mp4ChapterCodec
 		if (chapters.Count == 0) {
 			// Every track a chap reference names is chapter media: titles, Apple chapter URLs (text), and Apple
 			// chapter images (video). Apple players show chapters from any of them, so all of them go.
-			var removed = new HashSet<uint> ();
-			foreach (var track in FindChapterTracks (moov, textOnly: false))
-				removed.Add (track.Id);
+			// The trak objects go, not every trak with their IDs: a trak that shares an ID is not chapter media.
+			var media = FindChapterTracks (moov, textOnly: false);
+			var removed = new HashSet<uint> (media.Select (t => t.Id));
 			if (HasFragments (fragments, removed))
 				return ChapterPlan.Refused (FragmentedChapterTrackError);
 
-			children.RemoveAll (b => b.Type == "trak" && TryReadTrackId (b, out var id) && removed.Contains (id));
+			children.RemoveAll (b => media.Exists (t => ReferenceEquals (t.Trak, b)));
+			foreach (var child in children) {
+				if (child.Type == "trak" && TryReadTrackId (child, out var id))
+					removed.Remove (id);
+			}
+
 			if (removed.Count > 0) {
 				ReplaceReferences (children, removed, add: false);
 				WithoutTrex (children, removed);
 			}
 
-			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed);
+			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed, null, media);
 		}
 
 		if (existing is not null && HasFragments (fragments, [existing.Id]))
@@ -911,7 +930,7 @@ internal static class Mp4ChapterCodec
 		// A replaced track keeps its id, so the references that found it still do, and its trex stays valid.
 		if (existing is null)
 			ReplaceReferences (children, new HashSet<uint> { trackId }, add: true);
-		return new ChapterPlan (chpl, children, trackId, samples, existing is null ? null : [existing.Id]);
+		return new ChapterPlan (chpl, children, trackId, samples, existing is null ? null : [existing.Id], null, existing is null ? [] : [existing]);
 	}
 
 	/// <summary>
@@ -932,22 +951,52 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// True when the box at [<paramref name="boxStart"/>, <paramref name="boxEnd"/>) holds nothing but the old
-	/// samples of the tracks <paramref name="plan"/> replaces: those samples tile its payload exactly, with no gap
-	/// and no overlap, and no other track has a chunk offset inside the box. Such an mdat is the one a previous
-	/// chapter save wrote; once its tracks are rebuilt nothing references it, so it can be dropped.
-	/// In a fragmented movie, no traf run of any track may reach into the box either (§8.8.7, §8.8.8), and
-	/// every traf must be readable.
+	/// True when the box at [<paramref name="boxStart"/>, <paramref name="boxEnd"/>) can be dropped: the old
+	/// samples of the tracks <paramref name="plan"/> replaces tile its payload exactly, with no gap and no overlap,
+	/// and every byte range anything else in the file references can be computed and none overlaps it. Such an
+	/// mdat is the one a previous chapter save wrote. Anything that cannot be computed keeps it.
 	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// The references are: every other trak's chunks (<see cref="TryTrackRanges"/>), every item extent of every
+	/// iloc in a meta at file, movie or track level (<see cref="TryItemRanges"/>, §8.11.3), and every traf run
+	/// (§8.8.7, §8.8.8). Traks are compared by object, not track_ID, so a trak that shares the replaced track's
+	/// ID is still checked.
+	/// </para>
+	/// </remarks>
 	public static bool HoldsOnlyReplacedSamples (
 		Mp4Box moov,
 		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
 		ChapterPlan plan,
 		long boxStart,
 		long payloadStart,
-		long boxEnd)
+		long boxEnd) =>
+		HoldsOnlyReplacedSamples (moov, fragments, plan, boxStart, payloadStart, boxEnd, [moov]);
+
+	/// <summary>
+	/// <see cref="HoldsOnlyReplacedSamples(Mp4Box, IReadOnlyList{ValueTuple{Mp4Box, long}}, ChapterPlan, long, long, long)"/>
+	/// with the file's top-level boxes, so a file-level meta's iloc is counted too.
+	/// </summary>
+	/// <param name="moov">The movie box.</param>
+	/// <param name="fragments">Top-level moof boxes with their file offsets.</param>
+	/// <param name="plan">The chapter save.</param>
+	/// <param name="boxStart">The candidate mdat's file offset.</param>
+	/// <param name="payloadStart">Where its payload starts.</param>
+	/// <param name="boxEnd">Where it ends.</param>
+	/// <param name="topLevel">The file's top-level boxes, moov among them.</param>
+	public static bool HoldsOnlyReplacedSamples (
+		Mp4Box moov,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		ChapterPlan plan,
+		long boxStart,
+		long payloadStart,
+		long boxEnd,
+		IReadOnlyList<Mp4Box> topLevel)
 	{
-		if (plan.ReplacedTrackIds.Count == 0)
+		var replaced = plan.ReplacedTraks ?? FindChapterTracks (moov, textOnly: false)
+			.Where (t => plan.ReplacedTrackIds.Contains (t.Id))
+			.ToList ();
+		if (replaced.Count == 0)
 			return false;
 
 		// Fail closed: a fragment that cannot be read could point into the box.
@@ -955,20 +1004,33 @@ internal static class Mp4ChapterCodec
 		if (runs is null)
 			return false;
 
-		foreach (var (start, end) in runs) {
+		if (!TilesExactly (moov, replaced, payloadStart, boxEnd))
+			return false;
+
+		var references = new List<(long Start, long End)> (runs);
+		if (!TryCollectReferences (moov, topLevel, replaced, references))
+			return false;
+
+		foreach (var (start, end) in references) {
 			if (start < boxEnd && end > boxStart)
 				return false;
 		}
 
+		return true;
+	}
+
+	/// <summary>
+	/// True when the samples of the replaced tracks cover [<paramref name="payloadStart"/>, <paramref name="boxEnd"/>)
+	/// end to end.
+	/// </summary>
+	static bool TilesExactly (Mp4Box moov, List<ChapterTrack> replaced, long payloadStart, long boxEnd)
+	{
 		var ranges = new List<(long Start, long End)> ();
 		var movieTimescale = ReadMovieTimescale (moov);
-		foreach (var track in FindChapterTracks (moov)) {
-			if (!plan.ReplacedTrackIds.Contains (track.Id))
-				continue;
-
+		foreach (var track in replaced) {
 			var layout = ReadLayout (track, movieTimescale, long.MaxValue);
 			if (layout is null)
-				return false;
+				continue;
 			foreach (var sample in layout.Samples)
 				ranges.Add ((sample.Offset, sample.Offset + sample.Size));
 		}
@@ -984,20 +1046,29 @@ internal static class Mp4ChapterCodec
 			covered = end;
 		}
 
-		if (covered != boxEnd)
-			return false;
+		return covered == boxEnd;
+	}
 
-		// Fail closed on moov too: an unread moov tail can hold a trak, and an item location (iloc, §8.11.3)
-		// can point anywhere.
-		if (moov.UnparsedTail.Length > 0 || ContainsBox (moov, "iloc", 0))
+	/// <summary>
+	/// Every file range the movie references outside the replaced traks: the other traks' chunks and every iloc
+	/// item extent under <paramref name="topLevel"/>. False when any of them cannot be computed: an unread moov
+	/// tail (it can hold a trak), a trak whose tables cannot be read, a meta or an iloc that does not parse, or
+	/// an unread box tail that names a meta or an iloc.
+	/// </summary>
+	static bool TryCollectReferences (Mp4Box moov, IReadOnlyList<Mp4Box> topLevel, List<ChapterTrack> replaced, List<(long Start, long End)> ranges)
+	{
+		if (moov.UnparsedTail.Length > 0)
 			return false;
 
 		foreach (var child in moov.Children) {
-			if (child.Type != "trak")
+			if (child.Type != "trak" || replaced.Exists (t => ReferenceEquals (t.Trak, child)))
 				continue;
-			if (TryReadTrackId (child, out var id) && plan.ReplacedTrackIds.Contains (id))
-				continue;
-			if (!TrackDataAvoids (child, boxStart, boxEnd))
+			if (!TryTrackRanges (child, ranges))
+				return false;
+		}
+
+		foreach (var box in topLevel) {
+			if (!TryItemRanges (box, ranges, 0))
 				return false;
 		}
 
@@ -1005,13 +1076,12 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// True when every chunk of <paramref name="trak"/> lies outside [<paramref name="start"/>, <paramref name="end"/>).
-	/// A chunk spans its offset plus the sizes of its samples (§8.7.3 to §8.7.5), so a chunk that starts before
-	/// the range and runs into it counts. A track with no chunk offset table has no data. False, failing closed,
-	/// when the extent of a chunk cannot be known: an unread tail on the trak, mdia, minf, or stbl, a missing
-	/// stsz or stsc (stz2 included), or a count past its box.
+	/// Adds the chunk extents of <paramref name="trak"/>: each chunk's offset (stco/co64) plus the sizes of its
+	/// samples (stsc with stsz or stz2; §8.7.3 to §8.7.5). A trak with no chunk offset table has no data. False
+	/// when an extent cannot be computed: an unread tail on the trak, mdia, minf, or stbl, a missing table, a
+	/// count past its box, an stz2 field size other than 4, 8, or 16, or arithmetic that does not fit 63 bits.
 	/// </summary>
-	static bool TrackDataAvoids (Mp4Box trak, long start, long end)
+	static bool TryTrackRanges (Mp4Box trak, List<(long Start, long End)> ranges)
 	{
 		var mdia = trak.FindChild ("mdia");
 		var minf = mdia?.FindChild ("minf");
@@ -1020,34 +1090,25 @@ internal static class Mp4ChapterCodec
 			|| minf!.UnparsedTail.Length > 0 || stbl.UnparsedTail.Length > 0)
 			return false;
 
-		var stsz = stbl.FindChild ("stsz");
-		var stsc = stbl.FindChild ("stsc");
 		var co64 = stbl.FindChild ("co64");
 		var stco = stbl.FindChild ("stco");
 		if (stco is null && co64 is null)
 			return true;
-		if (stsz is null || stsc is null)
-			return false;
 
 		var width = co64 is not null ? 8 : 4;
 		var chunkTable = (co64 ?? stco)!.Data.Span;
 		if (!TableComplete (chunkTable, 8, width))
 			return false;
 
-		var sizes = stsz.Data.Span;
-		if (sizes.Length < 12)
-			return false;
-		var constant = BinaryPrimitives.ReadUInt32BigEndian (sizes.Slice (4));
-		var sampleCount = (long)BinaryPrimitives.ReadUInt32BigEndian (sizes.Slice (8));
-		if (constant == 0 && !TableComplete (sizes.Slice (4), 8, 4))
-			return false;
-
-		var rowTable = stsc.Data.Span;
-		if (!TableComplete (rowTable, 8, 12))
-			return false;
-
-		var rows = ReadStscRows (rowTable);
 		var chunks = ReadChunkOffsets (chunkTable, width);
+		if (chunks.Count == 0)
+			return true;
+
+		var stsc = stbl.FindChild ("stsc");
+		if (stsc is null || !TableComplete (stsc.Data.Span, 8, 12) || !SampleSizes.TryRead (stbl, out var sizes))
+			return false;
+
+		var rows = ReadStscRows (stsc.Data.Span);
 		var row = 0;
 		long sample = 0;
 		for (var chunk = 0; chunk < chunks.Count; chunk++) {
@@ -1055,23 +1116,214 @@ internal static class Mp4ChapterCodec
 			while (row + 1 < rows.Count && rows[row + 1].FirstChunk <= chunkNumber)
 				row++;
 			var perChunk = rows.Count > 0 && rows[row].FirstChunk <= chunkNumber ? rows[row].SamplesPerChunk : 0u;
-			var inChunk = Math.Min (perChunk, Math.Max (0, sampleCount - sample));
-
-			long length;
-			if (constant != 0) {
-				length = inChunk * constant;
-			} else {
-				length = 0;
-				for (var k = 0L; k < inChunk; k++)
-					length += BinaryPrimitives.ReadUInt32BigEndian (sizes.Slice (12 + (int)((sample + k) * 4)));
-			}
-
-			sample += inChunk;
+			var inChunk = Math.Min (perChunk, Math.Max (0, sizes.Count - sample));
 			var offset = chunks[chunk];
-			if (offset < end && offset + Math.Max (length, 1) > start)
+			if (offset < 0 || offset >= long.MaxValue / 2 || !sizes.TrySum (sample, inChunk, out var length)
+				|| length > long.MaxValue - offset)
 				return false;
+
+			ranges.Add ((offset, offset + Math.Max (length, 1)));
+			sample += inChunk;
 		}
 
+		return true;
+	}
+
+	/// <summary>
+	/// The sample sizes of an stbl: stsz (§8.7.3.2), a constant or one 32-bit entry per sample, or stz2
+	/// (§8.7.3.3), entries of 4, 8, or 16 bits (4-bit entries two to a byte, high nibble first).
+	/// </summary>
+	readonly ref struct SampleSizes
+	{
+		readonly ReadOnlySpan<byte> _entries;
+		readonly uint _constant;
+		readonly int _bits;
+
+		SampleSizes (ReadOnlySpan<byte> entries, uint constant, int bits, long count)
+		{
+			_entries = entries;
+			_constant = constant;
+			_bits = bits;
+			Count = count;
+		}
+
+		public long Count { get; }
+
+		public static bool TryRead (Mp4Box stbl, out SampleSizes sizes)
+		{
+			sizes = default;
+			var stsz = stbl.FindChild ("stsz");
+			if (stsz is not null) {
+				var body = stsz.Data.Span;
+				if (body.Length < 12)
+					return false;
+				var constant = BinaryPrimitives.ReadUInt32BigEndian (body.Slice (4));
+				var count = BinaryPrimitives.ReadUInt32BigEndian (body.Slice (8));
+				if (constant == 0 && count > (ulong)(body.Length - 12) / 4)
+					return false;
+				sizes = new SampleSizes (body.Slice (12), constant, 32, count);
+				return true;
+			}
+
+			var stz2 = stbl.FindChild ("stz2");
+			if (stz2 is null)
+				return false;
+
+			var compact = stz2.Data.Span;
+			if (compact.Length < 12)
+				return false;
+			var bits = compact[7];
+			var entries = BinaryPrimitives.ReadUInt32BigEndian (compact.Slice (8));
+			if (bits is not (4 or 8 or 16) || ((ulong)entries * bits + 7) / 8 > (ulong)(compact.Length - 12))
+				return false;
+			sizes = new SampleSizes (compact.Slice (12), 0, bits, entries);
+			return true;
+		}
+
+		/// <summary>
+		/// The total size of <paramref name="count"/> samples from <paramref name="first"/>; false on overflow.
+		/// </summary>
+		public bool TrySum (long first, long count, out long total)
+		{
+			total = 0;
+			if (count <= 0)
+				return true;
+
+			if (_constant != 0) {
+				if (count > long.MaxValue / _constant)
+					return false;
+				total = count * _constant;
+				return true;
+			}
+
+			for (var i = first; i < first + count; i++) {
+				long size = _bits switch {
+					32 => BinaryPrimitives.ReadUInt32BigEndian (_entries.Slice ((int)(i * 4))),
+					16 => BinaryPrimitives.ReadUInt16BigEndian (_entries.Slice ((int)(i * 2))),
+					8 => _entries[(int)i],
+					_ => (i & 1) == 0 ? _entries[(int)(i / 2)] >> 4 : _entries[(int)(i / 2)] & 0x0F,
+				};
+				if (total > long.MaxValue - size)
+					return false;
+				total += size;
+			}
+
+			return true;
+		}
+	}
+
+	/// <summary>
+	/// Adds the file extents of every iloc under <paramref name="box"/>. A meta without an iloc references
+	/// nothing. False when a meta, or the box an iloc would sit in, stops parsing (its unread tail could hold
+	/// the iloc), when an unread tail anywhere names an iloc or a meta, or when an iloc does not parse.
+	/// </summary>
+	static bool TryItemRanges (Mp4Box box, List<(long Start, long End)> ranges, int depth)
+	{
+		if (depth > 32)
+			return false;
+
+		var tail = box.UnparsedTail.Span;
+		if (tail.Length > 0 && (box.Type == "meta" || tail.IndexOf ("iloc"u8) >= 0 || tail.IndexOf ("meta"u8) >= 0))
+			return false;
+
+		foreach (var child in box.Children) {
+			if (child.Type == "iloc") {
+				if (!TryIlocRanges (child.Data.Span, ranges))
+					return false;
+			} else if (!TryItemRanges (child, ranges, depth + 1)) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// iloc (§8.11.3): version 0 to 2; offset, length, and base offset sizes of 0, 4, or 8 bytes; an index size
+	/// in versions 1 and 2. Construction method 0 places each extent at base_offset + extent_offset in a file
+	/// (counted here for any data reference, as it may be this file); an extent_length of 0 runs to the end.
+	/// Methods 1 (idat) and 2 (item) are not file offsets. False when the box is cut short, a field size is not
+	/// 0, 4, or 8, or a sum does not fit 63 bits.
+	/// </summary>
+	static bool TryIlocRanges (ReadOnlySpan<byte> iloc, List<(long Start, long End)> ranges)
+	{
+		if (iloc.Length < 8)
+			return false;
+
+		var version = iloc[0];
+		if (version > 2)
+			return false;
+
+		var offsetSize = iloc[4] >> 4;
+		var lengthSize = iloc[4] & 0x0F;
+		var baseSize = iloc[5] >> 4;
+		var indexSize = version is 1 or 2 ? iloc[5] & 0x0F : 0;
+		if (!IsWidth (offsetSize) || !IsWidth (lengthSize) || !IsWidth (baseSize) || !IsWidth (indexSize))
+			return false;
+
+		var pos = 6;
+		ulong count;
+		if (version < 2) {
+			if (!TryReadWidth (iloc, ref pos, 2, out count))
+				return false;
+		} else if (!TryReadWidth (iloc, ref pos, 4, out count)) {
+			return false;
+		}
+
+		for (var item = 0UL; item < count; item++) {
+			if (!TryReadWidth (iloc, ref pos, version < 2 ? 2 : 4, out _))
+				return false;
+
+			ulong method = 0;
+			if (version is 1 or 2) {
+				if (!TryReadWidth (iloc, ref pos, 2, out method))
+					return false;
+				method &= 0x0F;
+			}
+
+			if (!TryReadWidth (iloc, ref pos, 2, out _) || !TryReadWidth (iloc, ref pos, baseSize, out var baseOffset)
+				|| !TryReadWidth (iloc, ref pos, 2, out var extents))
+				return false;
+
+			for (var extent = 0UL; extent < extents; extent++) {
+				if (!TryReadWidth (iloc, ref pos, indexSize, out _) || !TryReadWidth (iloc, ref pos, offsetSize, out var extentOffset)
+					|| !TryReadWidth (iloc, ref pos, lengthSize, out var extentLength))
+					return false;
+				if (method != 0)
+					continue;
+				if (baseOffset > long.MaxValue || extentOffset > (ulong)long.MaxValue - baseOffset)
+					return false;
+
+				var start = (long)(baseOffset + extentOffset);
+				if (extentLength == 0) {
+					ranges.Add ((start, long.MaxValue));
+				} else {
+					if (extentLength > (ulong)(long.MaxValue - start))
+						return false;
+					ranges.Add ((start, start + (long)extentLength));
+				}
+			}
+		}
+
+		return true;
+	}
+
+	static bool IsWidth (int size) => size is 0 or 4 or 8;
+
+	static bool TryReadWidth (ReadOnlySpan<byte> data, ref int pos, int width, out ulong value)
+	{
+		value = 0;
+		if (width == 0)
+			return true;
+		if (data.Length - pos < width)
+			return false;
+
+		value = width switch {
+			2 => BinaryPrimitives.ReadUInt16BigEndian (data.Slice (pos)),
+			4 => BinaryPrimitives.ReadUInt32BigEndian (data.Slice (pos)),
+			_ => BinaryPrimitives.ReadUInt64BigEndian (data.Slice (pos)),
+		};
+		pos += width;
 		return true;
 	}
 
@@ -1085,23 +1337,6 @@ internal static class Mp4ChapterCodec
 
 		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (countAt - 4));
 		return count <= (ulong)(payload.Length - countAt) / (ulong)entrySize;
-	}
-
-	/// <summary>
-	/// True when a parsed box of <paramref name="type"/> sits anywhere under <paramref name="box"/>, or when the
-	/// nesting is too deep to tell.
-	/// </summary>
-	static bool ContainsBox (Mp4Box box, string type, int depth)
-	{
-		if (depth > 16)
-			return true;
-
-		foreach (var child in box.Children) {
-			if (child.Type == type || ContainsBox (child, type, depth + 1))
-				return true;
-		}
-
-		return false;
 	}
 
 	/// <summary>
@@ -2057,8 +2292,14 @@ internal static class Mp4ChapterCodec
 		uint trackId,
 		byte[] sampleData,
 		HashSet<uint>? replaced = null,
-		string? error = null)
+		string? error = null,
+		List<ChapterTrack>? replacedTraks = null)
 	{
+		/// <summary>
+		/// The trak objects this plan rebuilds or removes, or null to find them by <see cref="ReplacedTrackIds"/>.
+		/// </summary>
+		public List<ChapterTrack>? ReplacedTraks { get; } = replacedTraks;
+
 		/// <summary>Why the chapters cannot be written, or null.</summary>
 		public string? Error { get; } = error;
 
