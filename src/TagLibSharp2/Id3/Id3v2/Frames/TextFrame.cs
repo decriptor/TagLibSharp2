@@ -123,23 +123,12 @@ public sealed class TextFrame
 
 	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data)
 	{
-		if (data.Length < 2)
-			return string.Empty;
+		// Strip trailing double-null bytes only (preserve internal nulls for multi-value support)
+		while (data.Length >= 2 && data[data.Length - 2] == 0 && data[data.Length - 1] == 0)
+			data = data.Slice (0, data.Length - 2);
 
-		// Check BOM to determine endianness
-		var isLittleEndian = data[0] == 0xFF && data[1] == 0xFE;
-		var isBigEndian = data[0] == 0xFE && data[1] == 0xFF;
-
-		if (!isLittleEndian && !isBigEndian) {
-			// No BOM found - fall back to little-endian (Windows default)
-			// This handles buggy taggers that don't write BOM
-			return DecodeTextUtf16 (data, isLittleEndian: true);
-		}
-
-		// Skip BOM
-		data = data.Slice (2);
-
-		return DecodeTextUtf16 (data, isLittleEndian);
+		// Each string may lead with its own BOM; none is part of the text.
+		return Utf16Text.Decode (data);
 	}
 
 	static string DecodeTextUtf16BE (ReadOnlySpan<byte> data)
@@ -168,7 +157,7 @@ public sealed class TextFrame
 		return encoding switch {
 			TextEncodingType.Latin1 => BinaryData.FromStringLatin1 (text),
 			TextEncodingType.Utf8 => BinaryData.FromStringUtf8 (text),
-			TextEncodingType.Utf16WithBom => BinaryData.FromStringUtf16 (text, includeBom: true),
+			TextEncodingType.Utf16WithBom => Utf16Text.Encode (text),
 			TextEncodingType.Utf16BE => EncodeTextUtf16BE (text),
 			_ => BinaryData.Empty
 		};
