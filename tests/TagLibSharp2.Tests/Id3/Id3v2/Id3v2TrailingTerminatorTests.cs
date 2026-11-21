@@ -9,7 +9,8 @@ using TagLibSharp2.Id3.Id3v2.Frames;
 namespace TagLibSharp2.Tests.Id3.Id3v2;
 
 /// <summary>
-/// A stored terminator is not part of the text. Internal NULs still separate values.
+/// A stored terminator is not part of the text.
+/// Text frames keep internal NULs between values. A comment or lyric ends at the first NUL.
 /// </summary>
 [TestClass]
 [TestCategory ("Unit")]
@@ -56,7 +57,7 @@ public class Id3v2TrailingTerminatorTests
 	}
 
 	[TestMethod]
-	public void Comment_InternalNul_IsNotASeparator ()
+	public void Comment_InternalNul_EndsTheText ()
 	{
 		// Description terminator, then ye + NUL + pa, then a trailing terminator.
 		using var builder = new BinaryDataBuilder ();
@@ -67,8 +68,17 @@ public class Id3v2TrailingTerminatorTests
 
 		var tag = ReadFrame (TestConstants.Id3v2.Version4, "COMM", builder.ToBinaryData ().ToArray ());
 
-		Assert.AreEqual ("ye\0pa", tag.Comment);
-		Assert.AreEqual (2, tag.Comment!.IndexOf ('\0'));
+		Assert.AreEqual ("ye", tag.Comment);
+		AssertNoNul (tag.Comment);
+	}
+
+	[TestMethod]
+	public void Comment_Utf16InternalNul_EndsTheText ()
+	{
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "COMM", Utf16Comment ("eng", "", "ye\0pa", terminated: true));
+
+		Assert.AreEqual ("ye", tag.Comment);
+		AssertNoNul (tag.Comment);
 	}
 
 	[TestMethod]
@@ -166,7 +176,7 @@ public class Id3v2TrailingTerminatorTests
 	}
 
 	[TestMethod]
-	public void Lyrics_InternalNul_IsNotASeparator ()
+	public void Lyrics_InternalNul_EndsTheText ()
 	{
 		using var builder = new BinaryDataBuilder ();
 		builder.Add ((byte)TextEncodingType.Latin1);
@@ -177,7 +187,18 @@ public class Id3v2TrailingTerminatorTests
 		var frame = LyricsFrame.Read (builder.ToBinaryData ().Span, Id3v2Version.V24);
 
 		Assert.IsTrue (frame.IsSuccess, frame.Error);
-		Assert.AreEqual ("ye\0pa", frame.Frame!.Text);
+		Assert.AreEqual ("ye", frame.Frame!.Text);
+		AssertNoNul (frame.Frame.Text);
+	}
+
+	[TestMethod]
+	public void Lyrics_Utf16InternalNul_EndsTheText ()
+	{
+		var frame = LyricsFrame.Read (Utf16Comment ("eng", "", "ye\0pa", terminated: true), Id3v2Version.V24);
+
+		Assert.IsTrue (frame.IsSuccess, frame.Error);
+		Assert.AreEqual ("ye", frame.Frame!.Text);
+		AssertNoNul (frame.Frame.Text);
 	}
 
 	[TestMethod]
@@ -272,157 +293,161 @@ public class Id3v2TrailingTerminatorTests
 	}
 
 	[TestMethod]
-	public void SyncLyrics_TrailingTerminator_IsNotPartOfTheLine ()
-	{
-		using var builder = new BinaryDataBuilder ();
-		builder.Add ((byte)TextEncodingType.Latin1);
-		builder.Add ("eng"u8);
-		builder.Add ((byte)TimestampFormat.Milliseconds);
-		builder.Add ((byte)SyncLyricsType.Lyrics);
-		builder.Add (0);
-		builder.Add ("yepa"u8);
-		builder.Add (0);
-		builder.Add (0, 0, 0, 1);
-		builder.Add ("next"u8);
-		builder.Add (0);
-		builder.Add (0, 0, 0, 2);
-
-		var frame = SyncLyricsFrame.Read (builder.ToBinaryData ().Span, Id3v2Version.V24);
-
-		Assert.IsTrue (frame.IsSuccess, frame.Error);
-		Assert.AreEqual ("", frame.Frame!.Description);
-		Assert.HasCount (2, frame.Frame.SyncItems);
-		Assert.AreEqual ("yepa", frame.Frame.SyncItems[0].Text);
-		AssertNoNul (frame.Frame.SyncItems[0].Text);
-		Assert.AreEqual (1u, frame.Frame.SyncItems[0].Timestamp);
-		Assert.AreEqual ("next", frame.Frame.SyncItems[1].Text);
-		AssertNoNul (frame.Frame.SyncItems[1].Text);
-		Assert.AreEqual (2u, frame.Frame.SyncItems[1].Timestamp);
-	}
-
-	[TestMethod]
-	public void SyncLyrics_Utf16LineWithTerminator_DropsTrailingNul ()
-	{
-		using var builder = new BinaryDataBuilder ();
-		builder.Add ((byte)TextEncodingType.Utf16WithBom);
-		builder.Add ("eng"u8);
-		builder.Add ((byte)TimestampFormat.Milliseconds);
-		builder.Add ((byte)SyncLyricsType.Lyrics);
-		builder.Add (0xFF, 0xFE);
-		builder.Add (Encoding.Unicode.GetBytes ("desc"));
-		builder.Add (0, 0);
-		builder.Add (0xFF, 0xFE);
-		builder.Add (Encoding.Unicode.GetBytes ("yepa"));
-		builder.Add (0, 0);
-		builder.Add (0, 0, 0, 5);
-
-		var frame = SyncLyricsFrame.Read (builder.ToBinaryData ().Span, Id3v2Version.V24);
-
-		Assert.IsTrue (frame.IsSuccess, frame.Error);
-		Assert.AreEqual ("desc", frame.Frame!.Description);
-		AssertNoNul (frame.Frame.Description);
-		Assert.HasCount (1, frame.Frame.SyncItems);
-		Assert.AreEqual ("yepa", frame.Frame.SyncItems[0].Text);
-		AssertNoNul (frame.Frame.SyncItems[0].Text);
-		Assert.AreEqual (5u, frame.Frame.SyncItems[0].Timestamp);
-	}
-
-	[TestMethod]
-	public void GeneralObject_TrailingTerminator_IsNotPartOfTheText ()
-	{
-		using var builder = new BinaryDataBuilder ();
-		builder.Add ((byte)TextEncodingType.Latin1);
-		builder.Add ("text/plain"u8);
-		builder.Add (0);
-		builder.Add ("yepa.txt"u8);
-		builder.Add (0);
-		builder.Add ("cover"u8);
-		builder.Add (0);
-		builder.Add (0, 1, 0);
-
-		var frame = GeneralObjectFrame.Read (builder.ToBinaryData ().Span, Id3v2Version.V24);
-
-		Assert.IsTrue (frame.IsSuccess, frame.Error);
-		Assert.AreEqual ("yepa.txt", frame.Frame!.FileName);
-		AssertNoNul (frame.Frame.FileName);
-		Assert.AreEqual ("cover", frame.Frame.Description);
-		AssertNoNul (frame.Frame.Description);
-		CollectionAssert.AreEqual (new byte[] { 0, 1, 0 }, frame.Frame.Data.ToArray ());
-	}
-
-	[TestMethod]
-	public void GeneralObject_Utf16NamesWithTerminator_DropTrailingNul ()
-	{
-		using var builder = new BinaryDataBuilder ();
-		builder.Add ((byte)TextEncodingType.Utf16WithBom);
-		builder.Add ("application/octet-stream"u8);
-		builder.Add (0);
-		builder.Add (0xFF, 0xFE);
-		builder.Add (Encoding.Unicode.GetBytes ("yepa"));
-		builder.Add (0, 0);
-		builder.Add (Encoding.Unicode.GetBytes ("note"));
-		builder.Add (0, 0);
-		builder.Add (9);
-
-		var frame = GeneralObjectFrame.Read (builder.ToBinaryData ().Span, Id3v2Version.V24);
-
-		Assert.IsTrue (frame.IsSuccess, frame.Error);
-		Assert.AreEqual ("yepa", frame.Frame!.FileName);
-		AssertNoNul (frame.Frame.FileName);
-		Assert.AreEqual ("note", frame.Frame.Description);
-		AssertNoNul (frame.Frame.Description);
-		CollectionAssert.AreEqual (new byte[] { 9 }, frame.Frame.Data.ToArray ());
-	}
-
-	[TestMethod]
-	public void InvolvedPeople_TrailingTerminator_DoesNotCollapsePairs ()
-	{
-		using var builder = new BinaryDataBuilder ();
-		builder.Add ((byte)TextEncodingType.Utf8);
-		builder.Add ("guitar"u8);
-		builder.Add (0);
-		builder.Add ("Jane"u8);
-		builder.Add (0);
-		builder.Add ("bass"u8);
-		builder.Add (0);
-		builder.Add ("Bob"u8);
-		builder.Add (0);
-
-		var frame = InvolvedPeopleFrame.Read ("TMCL", builder.ToBinaryData ().Span, Id3v2Version.V24);
-
-		Assert.IsTrue (frame.IsSuccess, frame.Error);
-		Assert.AreEqual (2, frame.Frame!.Count);
-		Assert.AreEqual ("Jane", frame.Frame.GetPerson ("guitar"));
-		Assert.AreEqual ("Bob", frame.Frame.GetPerson ("bass"));
-		AssertNoNul (frame.Frame.Pairs[0].Role);
-		AssertNoNul (frame.Frame.Pairs[0].Person);
-		AssertNoNul (frame.Frame.Pairs[1].Role);
-		AssertNoNul (frame.Frame.Pairs[1].Person);
-	}
-
-	[TestMethod]
-	public void InvolvedPeople_Utf16PairsWithTerminator_KeepBothPairs ()
+	public void InvolvedPeople_Utf16OddLength_DoesNotDropTheLastCharacter ()
 	{
 		using var builder = new BinaryDataBuilder ();
 		builder.Add ((byte)TextEncodingType.Utf16WithBom);
 		builder.Add (0xFF, 0xFE);
 		builder.Add (Encoding.Unicode.GetBytes ("guitar"));
 		builder.Add (0, 0);
-		builder.Add (Encoding.Unicode.GetBytes ("Jane"));
-		builder.Add (0, 0);
-		builder.Add (Encoding.Unicode.GetBytes ("bass"));
-		builder.Add (0, 0);
-		builder.Add (Encoding.Unicode.GetBytes ("Bob"));
-		builder.Add (0, 0);
+		builder.Add (0x41, 0x00); // A
+		builder.Add (0x00); // lone byte; pairing it with the low byte of A would eat the name
 
 		var frame = InvolvedPeopleFrame.Read ("TIPL", builder.ToBinaryData ().Span, Id3v2Version.V24);
 
 		Assert.IsTrue (frame.IsSuccess, frame.Error);
-		Assert.AreEqual (2, frame.Frame!.Count);
-		Assert.AreEqual (("guitar", "Jane"), frame.Frame.Pairs[0]);
-		Assert.AreEqual (("bass", "Bob"), frame.Frame.Pairs[1]);
-		AssertNoNul (frame.Frame.Pairs[0].Person);
-		AssertNoNul (frame.Frame.Pairs[1].Person);
+		Assert.AreEqual (1, frame.Frame!.Count);
+		Assert.AreEqual ("A", frame.Frame.GetPerson ("guitar"));
+	}
+
+	[TestMethod]
+	public void Performers_Utf16BomOnEachValue_ReturnsBothNames ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf16WithBom);
+		builder.Add (0xFF, 0xFE);
+		builder.Add (Encoding.Unicode.GetBytes ("a"));
+		builder.Add (0, 0);
+		builder.Add (0xFF, 0xFE);
+		builder.Add (Encoding.Unicode.GetBytes ("b"));
+		builder.Add (0, 0);
+
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TPE1", builder.ToBinaryData ().ToArray ());
+
+		Assert.AreEqual ("a\0b", tag.Frames[0].Text);
+		Assert.AreEqual (-1, tag.Frames[0].Text.IndexOf ('\uFEFF'));
+		Assert.AreEqual ("a", tag.GetTextFrame ("TPE1"));
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("a", tag.Performers[0]);
+		Assert.AreEqual ("b", tag.Performers[1]);
+		Assert.AreEqual ("a", tag.Artist);
+	}
+
+	[TestMethod]
+	public void Performers_Utf16SecondValueBigEndianBom_ReturnsBothNames ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf16WithBom);
+		builder.Add (0xFF, 0xFE);
+		builder.Add (0x61, 0x00);
+		builder.Add (0, 0);
+		builder.Add (0xFE, 0xFF);
+		builder.Add (0x00, 0x62);
+
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TPE1", builder.ToBinaryData ().ToArray ());
+
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("a", tag.Performers[0]);
+		Assert.AreEqual ("b", tag.Performers[1]);
+		Assert.AreEqual (-1, tag.Performers[1].IndexOf ('\uFEFF'));
+	}
+
+	[TestMethod]
+	public void Performers_Utf16SecondValueWithoutBom_UsesFirstBom ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf16WithBom);
+		builder.Add (0xFE, 0xFF);
+		builder.Add (0x00, 0x61);
+		builder.Add (0, 0);
+		builder.Add (0x00, 0x62);
+
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TPE1", builder.ToBinaryData ().ToArray ());
+
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("a", tag.Performers[0]);
+		Assert.AreEqual ("b", tag.Performers[1]);
+	}
+
+	[TestMethod]
+	public void Title_Utf16OddLength_DoesNotDropLastCharacter ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf16WithBom);
+		builder.Add (0xFF, 0xFE);
+		builder.Add (0x41, 0x00);
+		builder.Add (0x42, 0x00);
+		builder.Add (0x00);
+
+		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", builder.ToBinaryData ().ToArray ());
+
+		Assert.AreEqual ("AB", tag.Title);
+		Assert.AreEqual ("AB", tag.Frames[0].Text);
+	}
+
+	[TestMethod]
+	public void Text_LeadingNul_FirstValueIsEmpty ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Latin1);
+		builder.Add (0, (byte)'b', 0);
+		var leading = builder.ToBinaryData ().ToArray ();
+
+		var v23 = ReadFrame (TestConstants.Id3v2.Version3, "TIT2", leading);
+		Assert.AreEqual ("", v23.GetTextFrame ("TIT2"));
+		Assert.AreEqual ("\0b", v23.Frames[0].Text);
+		var values23 = v23.GetTextFrameValues ("TIT2");
+		Assert.HasCount (1, values23);
+		Assert.AreEqual ("b", values23[0]);
+
+		var v24 = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", leading);
+		Assert.AreEqual ("", v24.GetTextFrame ("TIT2"));
+		var values24 = v24.GetTextFrameValues ("TIT2");
+		Assert.HasCount (1, values24);
+		Assert.AreEqual ("b", values24[0]);
+
+		using var skipped = new BinaryDataBuilder ();
+		skipped.Add ((byte)TextEncodingType.Latin1);
+		skipped.Add (0, 0, (byte)'T');
+		var allEmpty = ReadFrame (TestConstants.Id3v2.Version3, "TIT2", skipped.ToBinaryData ().ToArray ());
+		Assert.AreEqual ("", allEmpty.GetTextFrame ("TIT2"));
+		Assert.AreEqual ("T", allEmpty.GetTextFrameValues ("TIT2")[0]);
+		Assert.IsNull (new Id3v2Tag ().GetTextFrame ("TIT2"));
+	}
+
+	[TestMethod]
+	public void CatalogNumber_EmbeddedNul_ReturnsFirstValue ()
+	{
+		var catalog = UserText ("CATALOGNUMBER", "A\0B");
+		var barcode = UserText ("BARCODE", "A\0B");
+		var tag = ReadTag (
+			TestConstants.Id3v2.Version4,
+			TestBuilders.Id3v2.CreateFrame ("TXXX", catalog, TestConstants.Id3v2.Version4),
+			TestBuilders.Id3v2.CreateFrame ("TXXX", barcode, TestConstants.Id3v2.Version4));
+
+		Assert.AreEqual ("A", tag.CatalogNumber);
+		Assert.AreEqual ("A", tag.Barcode);
+		Assert.AreEqual ("A", tag.GetUserText ("CATALOGNUMBER"));
+		AssertNoNul (tag.CatalogNumber);
+
+		string? stored = null;
+		for (var i = 0; i < tag.UserTextFrames.Count; i++) {
+			if (tag.UserTextFrames[i].Description == "CATALOGNUMBER")
+				stored = tag.UserTextFrames[i].Value;
+		}
+
+		Assert.AreEqual ("A\0B", stored);
+		Assert.IsNull (tag.GetUserText ("MISSING"));
+	}
+
+	static byte[] UserText (string description, string value)
+	{
+		using var builder = new BinaryDataBuilder ();
+		builder.Add ((byte)TextEncodingType.Utf8);
+		builder.Add (Encoding.UTF8.GetBytes (description));
+		builder.Add (0);
+		builder.Add (Encoding.UTF8.GetBytes (value));
+		return builder.ToBinaryData ().ToArray ();
 	}
 
 	static byte[] Utf16Comment (string language, string description, string text, bool terminated)

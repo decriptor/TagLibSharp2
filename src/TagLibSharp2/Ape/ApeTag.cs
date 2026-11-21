@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using TagLibSharp2.Core;
 
 #pragma warning disable CA1307 // Specify StringComparison for clarity - IndexOf with char doesn't need it
@@ -182,6 +183,17 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one item. A NUL separates them, and a single name has no extra NUL.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] Performers {
+		get => GetTextList (Keys.Artist);
+		set => SetTextList (Keys.Artist, value);
+	}
+#pragma warning restore CA1819
+
+	/// <inheritdoc/>
 	public override string? Album {
 		get => GetValue (Keys.Album);
 		set => SetOrRemove (Keys.Album, value);
@@ -200,6 +212,21 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one "Album Artist" item, separated by NUL. A single name has no extra NUL.
+	/// Reading also accepts "ALBUMARTIST".
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] AlbumArtists {
+		get {
+			var values = GetTextList (Keys.AlbumArtist);
+			return values.Length > 0 ? values : GetTextList ("ALBUMARTIST");
+		}
+		set => SetTextList (Keys.AlbumArtist, value);
+	}
+#pragma warning restore CA1819
+
+	/// <inheritdoc/>
 	public override string? Year {
 		get => GetValue (Keys.Year) ?? GetValue (Keys.Date);
 		set => SetOrRemove (Keys.Year, value);
@@ -216,6 +243,17 @@ public sealed class ApeTag : Tag
 		get => GetValue (Keys.Genre);
 		set => SetOrRemove (Keys.Genre, value);
 	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one item. A NUL separates them, and a single name has no extra NUL.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] Genres {
+		get => GetTextList (Keys.Genre);
+		set => SetTextList (Keys.Genre, value);
+	}
+#pragma warning restore CA1819
 
 	/// <inheritdoc/>
 	public override uint? Track {
@@ -296,6 +334,17 @@ public sealed class ApeTag : Tag
 		get => GetValue (Keys.Composer);
 		set => SetOrRemove (Keys.Composer, value);
 	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one item. A NUL separates them, and a single name has no extra NUL.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] Composers {
+		get => GetTextList (Keys.Composer);
+		set => SetTextList (Keys.Composer, value);
+	}
+#pragma warning restore CA1819
 
 	/// <inheritdoc/>
 	public override string? Conductor {
@@ -726,6 +775,50 @@ public sealed class ApeTag : Tag
 	public void SetValue (string key, string value)
 	{
 		_items[key] = ApeTagItem.CreateText (key, value);
+	}
+
+	/// <summary>
+	/// Reads every non-empty NUL-separated value. Internal NULs are separators, not stripped text.
+	/// </summary>
+	string[] GetTextList (string key)
+	{
+		if (!_items.TryGetValue (key, out var item) || item.ItemType != ApeItemType.Text)
+			return [];
+
+		var text = Encoding.UTF8.GetString (item.RawValue);
+		if (text.Length == 0)
+			return [];
+
+		var parts = text.Split ('\0');
+		var result = new List<string> (parts.Length);
+		for (var i = 0; i < parts.Length; i++) {
+			if (parts[i].Length != 0)
+				result.Add (parts[i]);
+		}
+
+		return result.Count == 0 ? [] : result.ToArray ();
+	}
+
+	/// <summary>
+	/// Stores names in one item. A single name has no extra NUL.
+	/// </summary>
+	void SetTextList (string key, string[]? values)
+	{
+		if (values is null || values.Length == 0) {
+			_items.Remove (key);
+			return;
+		}
+
+		var kept = new List<string> (values.Length);
+		for (var i = 0; i < values.Length; i++) {
+			if (!string.IsNullOrEmpty (values[i]))
+				kept.Add (values[i]);
+		}
+
+		if (kept.Count == 0)
+			_items.Remove (key);
+		else
+			SetValue (key, string.Join ("\0", kept));
 	}
 
 	/// <summary>

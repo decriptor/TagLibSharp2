@@ -1451,7 +1451,7 @@ public sealed class Id3v2Tag : Tag
 	/// </summary>
 	/// <param name="frameId">The frame ID (e.g., TIT2, TPE1).</param>
 	/// <returns>
-	/// The first non-empty value, or null if the frame is absent.
+	/// The first value, even when that value is empty, or null when the frame is absent.
 	/// A NUL separates further values and is not included. A slash is not a separator here.
 	/// </returns>
 	public string? GetTextFrame (string frameId)
@@ -1477,25 +1477,16 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <summary>
-	/// Returns the first non-empty NUL-separated piece. No slash split.
+	/// Returns the text before the first NUL. A leading NUL is an empty value, not a reason to skip ahead.
 	/// </summary>
 	static string FirstTextValue (string text)
 	{
-		var start = 0;
 		for (var i = 0; i < text.Length; i++) {
-			if (text[i] != '\0')
-				continue;
-
-			if (i > start)
-				return text.Substring (start, i - start);
-			start = i + 1;
+			if (text[i] == '\0')
+				return text.Substring (0, i);
 		}
 
-		if (start == 0)
-			return text;
-		if (start < text.Length)
-			return text.Substring (start);
-		return string.Empty;
+		return text;
 	}
 
 	/// <summary>
@@ -2112,12 +2103,15 @@ public sealed class Id3v2Tag : Tag
 	/// Gets the value of a user-defined text frame (TXXX) by description.
 	/// </summary>
 	/// <param name="description">The description (key) of the TXXX frame.</param>
-	/// <returns>The value, or null if not found.</returns>
+	/// <returns>
+	/// The first value, even when that value is empty, or null when the frame is absent.
+	/// An embedded NUL is not included. The frame still stores the rest of the text.
+	/// </returns>
 	public string? GetUserText (string description)
 	{
 		for (var i = 0; i < _userTextFrames.Count; i++) {
 			if (string.Equals (_userTextFrames[i].Description, description, StringComparison.OrdinalIgnoreCase))
-				return _userTextFrames[i].Value;
+				return FirstTextValue (_userTextFrames[i].Value);
 		}
 		return null;
 	}

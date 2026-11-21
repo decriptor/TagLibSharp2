@@ -159,9 +159,7 @@ public sealed class UserUrlFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
-		// Descriptions follow the text rule: a trailing terminator is not part of the string.
-		data = Id3Text.TrimTrailingTerminator (data, encoding);
-
+		// The description slice already stops at its terminator.
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),

@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
@@ -282,6 +283,44 @@ public class TagCopyTests
 		Assert.HasCount (2, target.Genres);
 		Assert.HasCount (2, target.Composers);
 		Assert.AreEqual ("Composer 1", target.Composer);
+	}
+
+	[TestMethod]
+	public void CopyTo_Id3v2ToApe_KeepsAlbumArtistsAndComposers ()
+	{
+		var source = new Id3v2Tag {
+			AlbumArtists = ["Ada", "Bea"],
+			Composers = ["Cara", "Dan"],
+			Performers = ["Eve", "Fay"],
+			Genres = ["Jazz", "Soul"]
+		};
+
+		// The single-value getter stays the first name, not the NUL-joined blob.
+		Assert.AreEqual ("Ada", source.AlbumArtist);
+		Assert.AreEqual ("Cara", source.Composer);
+		Assert.AreEqual ("Eve", source.Artist);
+		Assert.AreEqual ("Jazz", source.Genre);
+		Assert.AreEqual (-1, source.GetTextFrame ("TPE2")!.IndexOf ('\0'));
+
+		var target = new ApeTag ();
+		source.CopyTo (target);
+
+		var parsed = ApeTag.Parse (target.Render ().Span);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		var round = parsed.Tag!;
+
+		Assert.HasCount (2, round.AlbumArtists);
+		Assert.AreEqual ("Ada", round.AlbumArtists[0]);
+		Assert.AreEqual ("Bea", round.AlbumArtists[1]);
+		Assert.HasCount (2, round.Composers);
+		Assert.AreEqual ("Cara", round.Composers[0]);
+		Assert.AreEqual ("Dan", round.Composers[1]);
+		Assert.HasCount (2, round.Performers);
+		Assert.AreEqual ("Eve", round.Performers[0]);
+		Assert.AreEqual ("Fay", round.Performers[1]);
+		Assert.HasCount (2, round.Genres);
+		Assert.AreEqual ("Jazz", round.Genres[0]);
+		Assert.AreEqual ("Soul", round.Genres[1]);
 	}
 
 	[TestMethod]

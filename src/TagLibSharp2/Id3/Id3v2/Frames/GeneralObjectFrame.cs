@@ -197,8 +197,7 @@ public sealed class GeneralObjectFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
-		data = Id3Text.TrimTrailingTerminator (data, encoding);
-
+		// ReadNullTerminatedString already dropped this field's terminator.
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),
