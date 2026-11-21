@@ -853,7 +853,7 @@ public sealed class Mp4Tag : Tag
 			builder.Add ((byte)((dataAtom.TypeIndicator >> 8) & 0xFF));
 			builder.Add ((byte)(dataAtom.TypeIndicator & 0xFF));
 
-			builder.Add (BinaryData.FromUInt32BE (0));
+			builder.Add (BinaryData.FromUInt32BE (dataAtom.Locale));
 
 			builder.Add (dataAtom.Data);
 		}
@@ -864,7 +864,7 @@ public sealed class Mp4Tag : Tag
 		var payloads = new BinaryData[_pictures.Count];
 		var dataSize = 0;
 		for (var i = 0; i < _pictures.Count; i++) {
-			payloads[i] = Mp4DataAtom.CreateImage (_pictures[i].PictureData, _pictures[i].RenderTypeIndicator);
+			payloads[i] = Mp4DataAtom.CreateImage (_pictures[i].PictureData, _pictures[i].RenderTypeIndicator, _pictures[i].RenderLocale);
 			dataSize += 8 + payloads[i].Length;
 		}
 
@@ -916,7 +916,7 @@ public sealed class Mp4Tag : Tag
 			builder.Add ((byte)((dataAtom.TypeIndicator >> 8) & 0xFF));
 			builder.Add ((byte)(dataAtom.TypeIndicator & 0xFF));
 
-			builder.Add (BinaryData.FromUInt32BE (0));
+			builder.Add (BinaryData.FromUInt32BE (dataAtom.Locale));
 
 			builder.Add (dataAtom.Data);
 		}
