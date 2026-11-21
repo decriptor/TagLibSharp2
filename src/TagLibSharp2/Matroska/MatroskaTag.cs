@@ -724,10 +724,15 @@ public sealed class MatroskaTag : Tag
 
 	string? DiscPartNumber () => TextWhere (IsExplicitAlbum, "PART_NUMBER") ?? LowestLevelText ("DISCNUMBER", "DISC");
 
-	uint? DiscTotal () =>
-		FirstNumberWhere (IsExplicitAlbum, "TOTAL_PARTS")
-		?? ParseEmbeddedTotal (DiscPartNumber ())
-		?? ParseLeading (LowestLevelText ("DISCTOTAL", "TOTALDISCS"));
+	// Read from the block the setter writes to: the one holding the disc PART_NUMBER, as DiscHome picks it.
+	uint? DiscTotal ()
+	{
+		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
+		return (withPart is null ? null : ParseLeading (Text (withPart, "TOTAL_PARTS")))
+			?? FirstNumberWhere (IsExplicitAlbum, "TOTAL_PARTS")
+			?? ParseEmbeddedTotal (DiscPartNumber ())
+			?? ParseLeading (LowestLevelText ("DISCTOTAL", "TOTALDISCS"));
+	}
 
 	void SetDiscTotal (uint? value)
 	{
