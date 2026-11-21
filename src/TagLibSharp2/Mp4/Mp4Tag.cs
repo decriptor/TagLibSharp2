@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using System.Globalization;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3;
@@ -51,8 +52,13 @@ public sealed class Mp4Tag : Tag
 	readonly Dictionary<string, List<Mp4DataAtom>> _atoms = new ();
 	readonly List<Mp4Picture> _pictures = new ();
 
-	// ilst children that are not rebuilt from _atoms, such as "orch". A title edit must not drop them.
-	readonly List<BinaryData> _preservedAtoms = new ();
+	// mean and name stay separate so a colon in either field is not a delimiter.
+	readonly List<FreeformField> _freeform = new ();
+
+	// ilst children that are not rebuilt from parsed fields, such as "orch".
+	// Indexed by 4-byte type so one edit does not scan every child.
+	readonly List<PreservedBox?> _preservedAtoms = new ();
+	readonly Dictionary<uint, List<int>> _preservedByType = new ();
 
 	/// <inheritdoc/>
 	public override TagTypes TagType => TagTypes.Apple;
@@ -188,8 +194,19 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Copyright {
-		get => GetText (Mp4AtomMapping.Copyright);
-		set => SetText (Mp4AtomMapping.Copyright, value);
+		get {
+			var text = GetText (Mp4AtomMapping.Copyright);
+			if (!string.IsNullOrEmpty (text))
+				return text;
+
+			// ©cpy is an alias. A non-empty cprt wins over it.
+			return GetText (Mp4AtomMapping.CopyrightAlias);
+		}
+		set {
+			SetText (Mp4AtomMapping.Copyright, value);
+			// A leftover ©cpy would still be returned after cprt is cleared.
+			RemoveAtom (Mp4AtomMapping.CopyrightAlias);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -730,26 +747,53 @@ public sealed class Mp4Tag : Tag
 		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
-	string? GetFreeform (string mean, string name)
+	internal string? GetFreeform (string mean, string name)
 	{
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-		if (!_atoms.TryGetValue (key, out var dataAtoms) || dataAtoms.Count == 0)
+		var field = FindFreeform (mean, name);
+		if (field is null || field.Atoms.Count == 0)
 			return null;
 
-		return dataAtoms[0].ToUtf8String ();
+		return field.Atoms[0].ToUtf8String ();
 	}
 
-	void SetFreeform (string mean, string name, string? value)
+	internal void SetFreeform (string mean, string name, string? value)
 	{
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-
 		if (string.IsNullOrEmpty (value)) {
-			RemoveAtom (key);
+			SetFreeformAtoms (mean, name, new List<Mp4DataAtom> ());
 			return;
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
-		SetAtoms (key, new List<Mp4DataAtom> { dataAtom });
+		SetFreeformAtoms (mean, name, new List<Mp4DataAtom> { dataAtom });
+	}
+
+	internal void SetFreeformAtoms (string mean, string name, List<Mp4DataAtom> dataAtoms)
+	{
+		RemoveFreeform (mean, name);
+		DropPreservedFreeform (mean, name);
+		if (dataAtoms is null || dataAtoms.Count == 0)
+			return;
+
+		_freeform.Add (new FreeformField (mean, name, dataAtoms));
+	}
+
+	FreeformField? FindFreeform (string mean, string name)
+	{
+		for (var i = 0; i < _freeform.Count; i++) {
+			var field = _freeform[i];
+			if (string.Equals (field.Mean, mean, StringComparison.Ordinal) &&
+				string.Equals (field.Name, name, StringComparison.Ordinal))
+				return field;
+		}
+
+		return null;
+	}
+
+	void RemoveFreeform (string mean, string name)
+	{
+		_freeform.RemoveAll (field =>
+			string.Equals (field.Mean, mean, StringComparison.Ordinal) &&
+			string.Equals (field.Name, name, StringComparison.Ordinal));
 	}
 
 	void RemoveAtom (string atomId)
@@ -763,7 +807,9 @@ public sealed class Mp4Tag : Tag
 	{
 		_atoms.Clear ();
 		_pictures.Clear ();
+		_freeform.Clear ();
 		_preservedAtoms.Clear ();
+		_preservedByType.Clear ();
 	}
 
 	/// <inheritdoc/>
@@ -771,28 +817,19 @@ public sealed class Mp4Tag : Tag
 	{
 		using var builder = new BinaryDataBuilder ();
 
-		foreach (var kvp in _atoms) {
-			var atomId = kvp.Key;
-			var dataAtoms = kvp.Value;
+		foreach (var kvp in _atoms)
+			RenderStandardAtom (builder, kvp.Key, kvp.Value);
 
-			if (atomId.StartsWith (Mp4AtomMapping.FreeformAtom + ":", StringComparison.Ordinal)) {
-				RenderFreeformAtom (builder, atomId, dataAtoms);
-				continue;
-			}
+		foreach (var field in _freeform)
+			RenderFreeformAtom (builder, field.Mean, field.Name, field.Atoms);
 
-			RenderStandardAtom (builder, atomId, dataAtoms);
+		if (_pictures.Count > 0)
+			RenderPictures (builder);
+
+		foreach (var preserved in _preservedAtoms) {
+			if (preserved is not null)
+				builder.Add (preserved.Box);
 		}
-
-		if (_pictures.Count > 0) {
-			var coverDataAtoms = new List<Mp4DataAtom> ();
-			foreach (var pic in _pictures)
-				coverDataAtoms.Add (new Mp4DataAtom (pic.RenderTypeIndicator, pic.PictureData));
-
-			RenderStandardAtom (builder, Mp4AtomMapping.CoverArt, coverDataAtoms);
-		}
-
-		foreach (var preserved in _preservedAtoms)
-			builder.Add (preserved);
 
 		return builder.ToBinaryData ();
 	}
@@ -825,15 +862,27 @@ public sealed class Mp4Tag : Tag
 		}
 	}
 
-	static void RenderFreeformAtom (BinaryDataBuilder builder, string key, List<Mp4DataAtom> dataAtoms)
+	void RenderPictures (BinaryDataBuilder builder)
 	{
-		var parts = key.Split (':');
-		if (parts.Length != 3)
-			return;
+		var payloads = new BinaryData[_pictures.Count];
+		var dataSize = 0;
+		for (var i = 0; i < _pictures.Count; i++) {
+			payloads[i] = Mp4DataAtom.CreateImage (_pictures[i].PictureData, _pictures[i].RenderTypeIndicator);
+			dataSize += 8 + payloads[i].Length;
+		}
 
-		var mean = parts[1];
-		var name = parts[2];
+		builder.Add (BinaryData.FromUInt32BE ((uint)(8 + dataSize)));
+		builder.Add (BinaryData.FromStringLatin1 (Mp4AtomMapping.CoverArt));
 
+		foreach (var payload in payloads) {
+			builder.Add (BinaryData.FromUInt32BE ((uint)(8 + payload.Length)));
+			builder.Add (BinaryData.FromStringLatin1 ("data"));
+			builder.Add (payload);
+		}
+	}
+
+	static void RenderFreeformAtom (BinaryDataBuilder builder, string mean, string name, List<Mp4DataAtom> dataAtoms)
+	{
 		var meanBytes = System.Text.Encoding.UTF8.GetBytes (mean);
 		var nameBytes = System.Text.Encoding.UTF8.GetBytes (name);
 
@@ -876,8 +925,6 @@ public sealed class Mp4Tag : Tag
 		}
 	}
 
-	internal IReadOnlyDictionary<string, List<Mp4DataAtom>> GetAtoms () => _atoms;
-
 	internal void SetAtoms (string atomId, List<Mp4DataAtom> dataAtoms)
 	{
 		if (dataAtoms is null || dataAtoms.Count == 0) {
@@ -889,28 +936,104 @@ public sealed class Mp4Tag : Tag
 		_atoms[atomId] = dataAtoms;
 	}
 
-	internal void PreserveIlstAtom (BinaryData box)
+	internal void PreserveIlstAtom (BinaryData box, string? mean = null, string? name = null)
 	{
-		if (!box.IsEmpty)
-			_preservedAtoms.Add (box);
+		if (box.IsEmpty)
+			return;
+
+		var typeKey = TypeKey (box.Span);
+		var index = _preservedAtoms.Count;
+		_preservedAtoms.Add (new PreservedBox (box, mean, name));
+		if (!_preservedByType.TryGetValue (typeKey, out var indexes)) {
+			indexes = new List<int> ();
+			_preservedByType.Add (typeKey, indexes);
+		}
+
+		indexes.Add (index);
 	}
 
 	void DropPreserved (string atomId)
 	{
-		// Freeform keys are "----:mean:name". Only a real 4-character atom replaces a preserved box.
+		// Freeform keys are longer than 4 characters and are matched by mean and name.
 		if (atomId.Length != 4)
 			return;
 
-		_preservedAtoms.RemoveAll (box => BoxType (box) == atomId);
+		var typeKey = TypeKey (atomId);
+		if (!_preservedByType.TryGetValue (typeKey, out var indexes))
+			return;
+
+		foreach (var index in indexes)
+			_preservedAtoms[index] = null;
+
+		_preservedByType.Remove (typeKey);
 	}
 
-	static string BoxType (BinaryData box)
+	void DropPreservedFreeform (string mean, string name)
+	{
+		var typeKey = TypeKey (Mp4AtomMapping.FreeformAtom);
+		if (!_preservedByType.TryGetValue (typeKey, out var indexes))
+			return;
+
+		for (var i = indexes.Count - 1; i >= 0; i--) {
+			var preserved = _preservedAtoms[indexes[i]];
+			if (preserved is null ||
+				!string.Equals (preserved.Mean, mean, StringComparison.Ordinal) ||
+				!string.Equals (preserved.Name, name, StringComparison.Ordinal))
+				continue;
+
+			_preservedAtoms[indexes[i]] = null;
+			indexes.RemoveAt (i);
+		}
+
+		if (indexes.Count == 0)
+			_preservedByType.Remove (typeKey);
+	}
+
+	static uint TypeKey (string atomId) =>
+		((uint)(byte)atomId[0] << 24) |
+		((uint)(byte)atomId[1] << 16) |
+		((uint)(byte)atomId[2] << 8) |
+		(byte)atomId[3];
+
+	static uint TypeKey (ReadOnlySpan<byte> box)
 	{
 		if (box.Length < 8)
-			return string.Empty;
+			return 0;
 
-		return Polyfills.Latin1.GetString (box.Span.Slice (4, 4));
+		return BinaryPrimitives.ReadUInt32BigEndian (box.Slice (4, 4));
 	}
 
 	internal IReadOnlyList<Mp4Picture> GetPictureList () => _pictures;
+
+	sealed class FreeformField
+	{
+		public FreeformField (string mean, string name, List<Mp4DataAtom> atoms)
+		{
+			Mean = mean;
+			Name = name;
+			Atoms = atoms;
+		}
+
+		public string Mean { get; }
+
+		public string Name { get; }
+
+		public List<Mp4DataAtom> Atoms { get; }
+	}
+
+	sealed class PreservedBox
+	{
+		public PreservedBox (BinaryData box, string? mean, string? name)
+		{
+			Box = box;
+			Mean = mean;
+			Name = name;
+		}
+
+		public BinaryData Box { get; }
+
+		public string? Mean { get; }
+
+		public string? Name { get; }
+	}
 }

@@ -10,7 +10,7 @@ namespace TagLibSharp2.Mp4;
 /// </summary>
 /// <remarks>
 /// MP4 cover art is stored in the covr atom, which can contain multiple data children.
-/// Each data child represents one image (JPEG or PNG).
+/// Each data child represents one image (JPEG, PNG, GIF, or BMP).
 /// </remarks>
 public sealed class Mp4Picture : IPicture
 {
@@ -77,6 +77,8 @@ public sealed class Mp4Picture : IPicture
 		var mimeType = dataAtom.TypeIndicator switch {
 			Mp4AtomMapping.TypeJpeg => "image/jpeg",
 			Mp4AtomMapping.TypePng => "image/png",
+			Mp4AtomMapping.TypeGif => "image/gif",
+			Mp4AtomMapping.TypeBmp => "image/bmp",
 			_ => "image/unknown"
 		};
 
@@ -85,21 +87,24 @@ public sealed class Mp4Picture : IPicture
 
 	/// <summary>
 	/// Type code written for this picture. Unchanged parsed bytes keep their original code.
-	/// A picture created in memory uses JPEG or PNG from the MIME type.
+	/// A picture created in memory is sniffed from the bytes, not the MIME string.
 	/// </summary>
-	internal int RenderTypeIndicator =>
-		_parsedTypeIndicator ?? (IsJpegMime ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng);
+	internal int RenderTypeIndicator => _parsedTypeIndicator ?? SniffType (PictureData.Span);
 
-	bool IsJpegMime =>
-		MimeType.Contains ("jpeg", StringComparison.OrdinalIgnoreCase) ||
-		MimeType.Contains ("jpg", StringComparison.OrdinalIgnoreCase);
-
-	/// <summary>
-	/// Converts this picture to a data atom for rendering.
-	/// </summary>
-	/// <returns>The binary representation as a data atom.</returns>
-	internal BinaryData ToDataAtom ()
+	static int SniffType (ReadOnlySpan<byte> data)
 	{
-		return Mp4DataAtom.CreateImage (PictureData, RenderTypeIndicator);
+		if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xD8)
+			return Mp4AtomMapping.TypeJpeg;
+
+		if (data.Length >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47)
+			return Mp4AtomMapping.TypePng;
+
+		if (data.Length >= 4 && data[0] == (byte)'G' && data[1] == (byte)'I' && data[2] == (byte)'F' && data[3] == (byte)'8')
+			return Mp4AtomMapping.TypeGif;
+
+		if (data.Length >= 2 && data[0] == (byte)'B' && data[1] == (byte)'M')
+			return Mp4AtomMapping.TypeBmp;
+
+		return Mp4AtomMapping.TypeBinary;
 	}
 }
