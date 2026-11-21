@@ -452,8 +452,10 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void SaveChapters_Grown_MovesAndRetargetsTheSeek ()
+	public void SaveChapters_Grown_GoBeforeTheClustersAndStayListed ()
 	{
+		// RFC 9559 section 6.6: Chapters SHOULD come before the Clusters. A reader that goes front to
+		// back, such as a piped ffprobe, stops at the first Cluster.
 		var chapters = ChaptersElement (EditionEntry (Atom (1, 0, null, Display ("A"))));
 		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
 		var cluster = Master (0x1F43B675, new byte[] { 0x99, 0x98, 0x97 });
@@ -474,8 +476,42 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (MatroskaIds.Chapters, chaptersSeek.Id);
 		Assert.IsTrue (IsElementAt (bytes, chaptersSeek.Position, MatroskaIds.Chapters));
 		Assert.IsTrue (IsElementAt (bytes, seeks.Find (s => s.Id == MatroskaIds.Cluster).Position, MatroskaIds.Cluster));
-		Assert.AreEqual (SegmentOffsetOf (original, cluster), SegmentOffsetOf (bytes, cluster));
+		Assert.IsTrue (chaptersSeek.Position < (ulong)SegmentOffsetOf (bytes, cluster));
+		Assert.AreEqual (1, CountOf (bytes, cluster));
+		AssertSeeksPreserved (original, bytes);
 		Assert.AreEqual (5, MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters.Count);
+	}
+
+	[TestMethod]
+	public void SaveChapters_EditedAfterTheClusters_MoveBeforeThem ()
+	{
+		// Chapters that a muxer put after the Clusters move in front of them on the next chapter edit,
+		// even when they would fit where they are. A tag edit leaves them alone.
+		var chapters = ChaptersElement (EditionEntry (Atom (1, 0, null, Display (new string ('x', 40)))));
+		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
+		var cluster = Master (0x1F43B675, new byte[] { 0x41, 0x42, 0x43 });
+		var probe = Master (0x114D9B74, Concat (SeekEntry (MatroskaIds.Info, 1), SeekEntry (MatroskaIds.Cluster, 1), SeekEntry (MatroskaIds.Chapters, 1)));
+		var seek = Master (0x114D9B74, Concat (
+			SeekEntry (MatroskaIds.Info, (ulong)probe.Length),
+			SeekEntry (MatroskaIds.Cluster, (ulong)(probe.Length + info.Length)),
+			SeekEntry (MatroskaIds.Chapters, (ulong)(probe.Length + info.Length + cluster.Length))));
+		var original = FileWith (seek, info, cluster, chapters);
+
+		var tagged = MatroskaFile.Read (original).File!;
+		tagged.Tag.Artist = "Someone";
+		var tagOnly = Save (tagged, original);
+		Assert.IsTrue (SegmentOffsetOf (tagOnly, chapters) > SegmentOffsetOf (tagOnly, cluster));
+
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Chapters.Editions[0].Chapters[0].Title = "y";
+		var bytes = Save (parsed, original);
+
+		var listed = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Chapters);
+		Assert.IsTrue (IsElementAt (bytes, listed.Position, MatroskaIds.Chapters));
+		Assert.IsTrue (listed.Position < (ulong)SegmentOffsetOf (bytes, cluster));
+		Assert.AreEqual (1, CountOf (bytes, cluster));
+		AssertSeeksPreserved (original, bytes);
+		Assert.AreEqual ("y", MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters[0].Title);
 	}
 
 	[TestMethod]

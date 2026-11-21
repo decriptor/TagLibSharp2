@@ -346,16 +346,23 @@ static partial class MatroskaRewrite
 
 	/// <summary>
 	/// True when the element was placed but a reader could not find it: no Seek lists it, or there is
-	/// no SeekHead and it sits after the first Cluster.
+	/// no SeekHead and it sits after the first Cluster. Chapters also move whenever they would follow
+	/// the first Cluster.
 	/// </summary>
 	static bool NeedsMove (Layout layout, Plan plan, int seekHeadCount, bool referenced)
 	{
-		if (plan.Element.Length == 0 || plan.ElementOffset < 0 || referenced)
+		if (plan.Element.Length == 0 || plan.ElementOffset < 0)
 			return false;
-		if (seekHeadCount > 0)
-			return true;
 		var first = layout.Pieces.FindIndex (piece => piece.Id == MatroskaIds.Cluster);
-		return first >= 0 && plan.NewElementOffset > (int)plan.Map ((ulong)layout.Starts[first]);
+		var afterClusters = first >= 0 && plan.NewElementOffset > (int)plan.Map ((ulong)layout.Starts[first]);
+
+		// RFC 9559 section 6.6: Chapters SHOULD come before the Clusters, because a reader that goes
+		// front to back stops there. A listed Chapters element after them still moves.
+		if (plan.Id == MatroskaIds.Chapters && afterClusters)
+			return true;
+		if (referenced)
+			return false;
+		return seekHeadCount > 0 || afterClusters;
 	}
 
 	/// <summary>
