@@ -210,49 +210,81 @@ public class AiffAnnotationTests
 	}
 
 	[TestMethod]
-	public void SetComment_WritesTheChunkThatSuppliedIt ()
+	public void SetComment_OnExistingId3_WritesId3AndKeepsLyrics ()
+	{
+		var titleOnly = ReadAiff (Form (
+			Id3 (new Id3v2Tag { Title = "Kept", Lyrics = "la la la" }),
+			Comt ("native"),
+			Comm (),
+			Ssnd ()));
+		titleOnly.Tag!.Comment = "updated";
+		Assert.AreEqual ("updated", titleOnly.Id3v2Tag!.Comment);
+		Assert.AreEqual ("la la la", titleOnly.Id3v2Tag.Lyrics);
+
+		var again = ReadAiff (titleOnly.Render ().ToArray ());
+		Assert.AreEqual ("updated", again.Tag!.Comment);
+		Assert.AreEqual ("updated", again.Id3v2Tag!.Comment);
+		Assert.AreEqual ("la la la", again.Tag.Lyrics);
+		Assert.AreEqual ("la la la", again.Id3v2Tag.Lyrics);
+		Assert.AreEqual ("Kept", again.Tag.Title);
+		Assert.IsNull (again.GetChunk ("COMT"));
+	}
+
+	[TestMethod]
+	public void SetComment_OnRatingOnlyId3_KeepsTheRating ()
+	{
+		var id3 = new Id3v2Tag { Rating = 200 };
+		var file = ReadAiff (Form (Id3 (id3), Comm (), Ssnd ()));
+		Assert.IsFalse (file.Id3v2Tag!.IsEmpty);
+		file.Tag!.Comment = "note";
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("note", again.Id3v2Tag!.Comment);
+		Assert.AreEqual ((byte)200, again.Id3v2Tag.Rating);
+	}
+
+	[TestMethod]
+	public void NewFields_RoundTripThroughId3NotNativeChunks ()
+	{
+		var file = ReadAiff (Form (Comm (), Ssnd ()));
+		file.Title = "Song";
+		file.Artist = "A Person";
+		file.Comment = "Take 2";
+		file.Copyright = "Copyright 2020";
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("Song", again.Id3v2Tag!.Title);
+		Assert.AreEqual ("A Person", again.Id3v2Tag.Artist);
+		Assert.AreEqual ("Take 2", again.Id3v2Tag.Comment);
+		Assert.AreEqual ("Copyright 2020", again.Id3v2Tag.Copyright);
+		Assert.AreEqual ("Take 2", again.Tag!.Comment);
+		Assert.IsNull (again.GetChunk ("NAME"));
+		Assert.IsNull (again.GetChunk ("AUTH"));
+		Assert.IsNull (again.GetChunk ("ANNO"));
+		Assert.IsNull (again.GetChunk ("COMT"));
+		Assert.IsNull (again.GetChunk ("(c) "));
+	}
+
+	[TestMethod]
+	public void SetComment_ReplacesNativeTextWithId3 ()
 	{
 		var fromComt = ReadAiff (Form (Comt ("Take 2"), Comm (), Ssnd ()));
 		fromComt.Tag!.Comment = "Take 3";
 		var comtAgain = ReadAiff (fromComt.Render ().ToArray ());
-		Assert.IsNull (comtAgain.Id3v2Tag);
+		Assert.AreEqual ("Take 3", comtAgain.Id3v2Tag!.Comment);
 		Assert.AreEqual ("Take 3", comtAgain.Tag!.Comment);
-		Assert.IsNotNull (comtAgain.GetChunk ("COMT"));
+		Assert.IsNull (comtAgain.GetChunk ("COMT"));
 
 		var fromAnno = ReadAiff (Form (Text ("ANNO", "Old"), Comm (), Ssnd ()));
 		fromAnno.Tag!.Comment = "New";
 		var annoAgain = ReadAiff (fromAnno.Render ().ToArray ());
-		Assert.IsNull (annoAgain.Id3v2Tag);
-		Assert.AreEqual ("New", annoAgain.Tag!.Comment);
-		Assert.IsNotNull (annoAgain.GetChunk ("ANNO"));
+		Assert.AreEqual ("New", annoAgain.Id3v2Tag!.Comment);
+		Assert.IsNull (annoAgain.GetChunk ("ANNO"));
 		Assert.IsNull (annoAgain.GetChunk ("COMT"));
-
-		var fromId3 = ReadAiff (Form (
-			Comt ("native"),
-			Id3 (new Id3v2Tag { Comment = "from id3" }),
-			Comm (),
-			Ssnd ()));
-		fromId3.Tag!.Comment = "edited";
-		Assert.AreEqual ("edited", fromId3.Id3v2Tag!.Comment);
-		var id3Again = ReadAiff (fromId3.Render ().ToArray ());
-		Assert.AreEqual ("edited", id3Again.Tag!.Comment);
-		id3Again.Id3v2Tag!.Comment = null;
-		Assert.AreEqual ("native", id3Again.Tag!.Comment);
-
-		var titleOnly = ReadAiff (Form (
-			Id3 (new Id3v2Tag { Title = "Kept" }),
-			Comt ("native"),
-			Comm ()));
-		titleOnly.Tag!.Comment = "updated";
-		Assert.IsNull (titleOnly.Id3v2Tag!.Comment);
-		var titleAgain = ReadAiff (titleOnly.Render ().ToArray ());
-		Assert.AreEqual ("updated", titleAgain.Tag!.Comment);
-		Assert.IsNull (titleAgain.Id3v2Tag!.Comment);
-		Assert.AreEqual ("Kept", titleAgain.Tag.Title);
 	}
 
 	[TestMethod]
-	public void SetTitleArtistCopyright_FollowTheSameWriteTarget ()
+	public void SetTitleArtistCopyright_WriteId3AndDropOverriddenNative ()
 	{
 		var native = ReadAiff (Form (
 			Text ("NAME", "Song"),
@@ -264,10 +296,12 @@ public class AiffAnnotationTests
 		native.Tag.Artist = "Someone";
 		native.Tag.Copyright = "Copyright 2021";
 		var nativeAgain = ReadAiff (native.Render ().ToArray ());
-		Assert.IsNull (nativeAgain.Id3v2Tag);
-		Assert.AreEqual ("Renamed", nativeAgain.Tag!.Title);
-		Assert.AreEqual ("Someone", nativeAgain.Tag.Artist);
-		Assert.AreEqual ("Copyright 2021", nativeAgain.Tag.Copyright);
+		Assert.AreEqual ("Renamed", nativeAgain.Id3v2Tag!.Title);
+		Assert.AreEqual ("Someone", nativeAgain.Id3v2Tag.Artist);
+		Assert.AreEqual ("Copyright 2021", nativeAgain.Id3v2Tag.Copyright);
+		Assert.IsNull (nativeAgain.GetChunk ("NAME"));
+		Assert.IsNull (nativeAgain.GetChunk ("AUTH"));
+		Assert.IsNull (nativeAgain.GetChunk ("(c) "));
 
 		var both = ReadAiff (Form (
 			Text ("NAME", "Song"),
@@ -279,7 +313,7 @@ public class AiffAnnotationTests
 		both.Tag!.Title = "Edited";
 		Assert.AreEqual ("Edited", both.Id3v2Tag!.Title);
 		both.Id3v2Tag.Title = null;
-		Assert.AreEqual ("Song", both.Tag.Title);
+		Assert.IsNull (both.Tag.Title);
 
 		both.Tag.Title = null;
 		both.Tag.Artist = null;
@@ -288,6 +322,205 @@ public class AiffAnnotationTests
 		Assert.IsNull (cleared.Tag?.Title);
 		Assert.IsNull (cleared.Tag?.Artist);
 		Assert.IsNull (cleared.Tag?.Copyright);
+	}
+
+	[TestMethod]
+	public void Save_CommentLongerThan64K_WritesId3AndDoesNotThrow ()
+	{
+		var file = ReadAiff (Form (Comm (), Ssnd ()));
+		file.Comment = new string ('q', 70_000);
+		var files = new MockFileSystem ();
+		var saved = file.SaveToFile ("/song.aiff", files);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var again = ReadAiff (files.ReadAllBytes ("/song.aiff"));
+		Assert.AreEqual (70_000, again.Tag!.Comment!.Length);
+		Assert.AreEqual (70_000, again.Id3v2Tag!.Comment!.Length);
+		Assert.IsNull (again.GetChunk ("COMT"));
+		Assert.IsNull (again.GetChunk ("ANNO"));
+	}
+
+	[TestMethod]
+	public void Comment_NotInMacRoman_GoesToId3 ()
+	{
+		var file = ReadAiff (Form (Comm (), Ssnd ()));
+		file.Comment = "Łódź";
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("Łódź", again.Id3v2Tag!.Comment);
+		Assert.IsNull (again.GetChunk ("ANNO"));
+		Assert.IsNull (again.GetChunk ("COMT"));
+	}
+
+	[TestMethod]
+	public void NativeAnno_Ost_StaysMacRomanWhenNotOverridden ()
+	{
+		var ost = new byte[] { 0x85, 0x73, 0x74 };
+		var file = ReadAiff (Form (TextBytes ("ANNO", ost), Comm (), Ssnd ()));
+		file.Tag!.Album = "Album";
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("\u00D6st", again.Tag!.Comment);
+		Assert.IsNull (again.Id3v2Tag?.Comment);
+		CollectionAssert.AreEqual (ost, again.GetChunk ("ANNO")!.Data.ToArray ());
+		Assert.AreEqual ("Album", again.Tag.Album);
+	}
+
+	[TestMethod]
+	public void SetComment_KeepsMarkerCommentsAndMacRomanBytes ()
+	{
+		var ost = new byte[] { 0x85, 0x73, 0x74 };
+		var file = ReadAiff (Form (
+			Marked ((0, "File"), (5, "Cue")),
+			ComtBytes (5, ost),
+			Comm (),
+			Ssnd ()));
+		file.Tag!.Comment = "Edited";
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("Edited", again.Id3v2Tag!.Comment);
+		Assert.AreEqual ("Edited", again.Tag!.Comment);
+		var comt = again.GetChunk ("COMT");
+		Assert.IsNotNull (comt);
+		var data = comt.Data;
+		Assert.IsTrue (data.Span.IndexOf ((byte)0x85) >= 0, "MacRoman Ö was rewritten as UTF-8");
+		Assert.IsTrue (data.Span.IndexOf (new byte[] { 0xC3, 0x96 }) < 0, "MacRoman Ö was rewritten as UTF-8");
+
+		var sawCue = false;
+		var count = data.ToUInt16BE ();
+		var offset = 2;
+		for (var i = 0; i < count; i++) {
+			var timestamp = data.ToUInt32BE (offset);
+			var marker = data.ToUInt16BE (offset + 4);
+			var length = data.ToUInt16BE (offset + 6);
+			var text = data.Slice (offset + 8, length).ToArray ();
+			offset += 8 + length;
+			if ((length & 1) == 1)
+				offset++;
+			if (marker == 5 && System.Text.Encoding.Latin1.GetString (text) == "Cue") {
+				Assert.AreEqual (1u, timestamp);
+				sawCue = true;
+			}
+
+			Assert.AreNotEqual ("File", System.Text.Encoding.Latin1.GetString (text));
+		}
+
+		Assert.IsTrue (sawCue);
+	}
+
+	[TestMethod]
+	public void Performers_FollowArtist_AndEmptyClearsAuth ()
+	{
+		var cleared = ReadAiff (Form (Text ("AUTH", "A Person"), Comm (), Ssnd ()));
+		cleared.Tag!.Performers = [];
+		Assert.IsNull (cleared.Tag.Artist);
+		Assert.AreEqual (0, cleared.Tag.Performers.Length);
+		var gone = ReadAiff (cleared.Render ().ToArray ());
+		Assert.IsNull (gone.GetChunk ("AUTH"));
+		Assert.IsNull (gone.Tag?.Artist);
+
+		var set = ReadAiff (Form (Text ("AUTH", "A Person"), Comm (), Ssnd ()));
+		var people = new[] { "New", "Other" };
+		set.Tag!.Performers = people;
+		var again = ReadAiff (set.Render ().ToArray ());
+		Assert.IsNull (again.GetChunk ("AUTH"));
+		CollectionAssert.AreEqual (people, again.Tag!.Performers);
+		CollectionAssert.AreEqual (people, again.Id3v2Tag!.Performers);
+	}
+
+	[TestMethod]
+	public void ComposersAndPublisher_ForwardThroughTheCombinedTag ()
+	{
+		var file = ReadAiff (Form (Comm (), Ssnd ()));
+		var composers = new[] { "Ada", "Grace" };
+		file.Id3v2Tag = new Id3v2Tag ();
+		file.Tag!.Composers = composers;
+		file.Tag.Publisher = "Label";
+		file.Tag.MusicBrainzTrackId = "mbid-1";
+		Assert.AreEqual (2, file.Tag.Composers.Length);
+		Assert.AreEqual ("Ada", file.Tag.Composers[0]);
+		Assert.AreEqual ("Grace", file.Tag.Composers[1]);
+
+		var copy = new Id3v2Tag ();
+		file.Tag.CopyTo (copy);
+		Assert.AreEqual ("Label", copy.Publisher);
+		Assert.AreEqual ("mbid-1", copy.MusicBrainzTrackId);
+		CollectionAssert.AreEqual (composers, copy.Composers);
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		CollectionAssert.AreEqual (composers, again.Tag!.Composers);
+		Assert.AreEqual ("Label", again.Tag.Publisher);
+		Assert.AreEqual ("mbid-1", again.Tag.MusicBrainzTrackId);
+	}
+
+	[TestMethod]
+	public void Tag_IsCachedGetOnlyView_AndDoesNotDropId3 ()
+	{
+		var file = ReadAiff (Form (Id3 (new Id3v2Tag { Title = "Kept", Lyrics = "words" }), Comm (), Ssnd ()));
+		var view = file.Tag;
+		Assert.IsNotNull (view);
+		Assert.AreSame (view, file.Tag);
+		Assert.IsFalse (view is Id3v2Tag);
+		Assert.IsFalse (typeof (AiffFile).GetProperty (nameof (AiffFile.Tag))!.CanWrite);
+		Assert.AreEqual ("Kept", file.Id3v2Tag!.Title);
+		Assert.IsTrue (file.Id3v2Tag.Render ().Length > 0);
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("Kept", again.Id3v2Tag!.Title);
+		Assert.AreEqual ("words", again.Tag!.Lyrics);
+	}
+
+	[TestMethod]
+	public void ClearLastField_KeepsTheTagObject ()
+	{
+		var file = ReadAiff (Form (Text ("ANNO", "Hi"), Comm (), Ssnd ()));
+		var tag = file.Tag!;
+		tag.Comment = null;
+		Assert.AreSame (tag, file.Tag);
+		tag.Title = "x";
+		Assert.AreEqual ("x", tag.Title);
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("x", again.Id3v2Tag!.Title);
+	}
+
+	[TestMethod]
+	public void NativeOnly_TagType_IsNotNone ()
+	{
+		var native = ReadAiff (Form (Text ("ANNO", "Hi"), Comm ()));
+		Assert.AreEqual (TagTypes.RiffInfo, native.Tag!.TagType);
+
+		var id3 = ReadAiff (Form (Id3 (new Id3v2Tag { Title = "T" }), Comm ()));
+		Assert.AreEqual (TagTypes.Id3v2, id3.Tag!.TagType);
+
+		var both = ReadAiff (Form (
+			Text ("NAME", "Song"),
+			Id3 (new Id3v2Tag { Title = "From Id3" }),
+			Comm ()));
+		Assert.AreEqual (TagTypes.Id3v2 | TagTypes.RiffInfo, both.Tag!.TagType);
+	}
+
+	[TestMethod]
+	public void Read_ThousandsOfAnnoChunks_JoinsWithinASecond ()
+	{
+		const int extra = 4000;
+		var chunks = new List<byte[]> (extra + 3) {
+			Text ("ANNO", " Creator: Logic"),
+			TextBytes ("ANNO", [0x85])
+		};
+		for (var i = 0; i < extra; i++)
+			chunks.Add (Text ("ANNO", "x"));
+		chunks.Add (Comm ());
+
+		var started = System.Diagnostics.Stopwatch.StartNew ();
+		var file = ReadAiff (Form ([.. chunks]));
+		started.Stop ();
+
+		Assert.IsTrue (started.Elapsed < TimeSpan.FromSeconds (1), started.Elapsed.ToString ());
+		var comment = file.Tag!.Comment!;
+		Assert.IsTrue (comment.StartsWith (" Creator: Logic\n\u00D6\n", StringComparison.Ordinal));
+		Assert.AreEqual (extra, comment.Count (ch => ch == 'x'));
+		Assert.AreEqual (TagTypes.RiffInfo, file.Tag.TagType);
 	}
 
 	[TestMethod]
