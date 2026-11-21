@@ -583,6 +583,7 @@ public partial class AiffAnnotationTests
 	[DataRow (new[] { 43690, 43690, 43689 }, new[] { 43689, 43690, 43690 }, false, DisplayName = "131,069 over three chunks")]
 	[DataRow (new[] { 49151, 49151, 49151, 49151 }, new[] { 49151, 49151, 49151, 49151 }, false, DisplayName = "196,604 over four chunks")]
 	[DataRow (new[] { 40000, 40000 }, new[] { 40000, 40000 }, true, DisplayName = "80,000 after a file-comment chunk")]
+	[DataRow (new[] { 65535 }, new[] { 32767, 32768 }, true, DisplayName = "65,535 after a file-comment chunk")]
 	public void SetComment_MoreNotesThanOneComtHolds_SplitsThemWithoutWrapping (int[] input, int[] expected, bool withFileComment)
 	{
 		// numComments is 16 bits (AIFF 1.3, Comments Chunk). After a comment edit the notes
