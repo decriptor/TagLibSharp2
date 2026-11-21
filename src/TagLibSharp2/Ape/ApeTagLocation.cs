@@ -1,6 +1,8 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Core;
+
 namespace TagLibSharp2.Ape;
 
 /// <summary>
@@ -15,6 +17,7 @@ namespace TagLibSharp2.Ape;
 /// LYRICSBEGIN is within 64 KB before that marker. v1 has no size field.
 /// The APE footer, if any, is the 32 bytes immediately before LYRICSBEGIN.
 /// With no Lyrics3 block, the footer is the 32 bytes at EOF-160.
+/// Those 128 bytes are not required to start with "TAG".
 /// When that structure is not a footer, its size does not fit, or the bytes at the size's start
 /// do not parse as the tag, the suffix is still ID3v1 and audio ends at length-128,
 /// or at LYRICSBEGIN when a Lyrics3 block is present. An unparseable tag with a size that fits
@@ -177,11 +180,58 @@ internal readonly struct ApeTagLocation
 			return Id3Only (data.Length, error);
 		}
 
+		// No ID3v1 and no footer at EOF. The no-Lyrics3 footer still starts at EOF-160.
+		if (data.Length >= Id3v1Size + ApeTagFooter.Size) {
+			var footerOffset = data.Length - Id3v1Size - ApeTagFooter.Size;
+			var gapFooter = ApeTagFooter.Parse (data.Slice (footerOffset, ApeTagFooter.Size));
+			if (IsFooter (gapFooter))
+				return FoundAt (data, gapFooter.Footer!, footerOffset);
+		}
+
 		return Missing (
 			data.Length,
 			eofFooter.IsSuccess
 				? "APE structure at end of file is a header, not a footer"
 				: eofFooter.Error!);
+	}
+
+	/// <summary>
+	/// Exclusive end of an APE tag that is not a readable footer at EOF.
+	/// Lyrics3 v2 is located from its size field. v1 searches at most 64 KB for LYRICSBEGIN.
+	/// The audio in front of that window is not read.
+	/// </summary>
+	internal static bool TryTagEnd (Stream stream, out long tagEnd)
+	{
+		tagEnd = 0;
+		if (stream.Length < Id3v1Size + ApeTagFooter.Size)
+			return false;
+
+		if (HasTrailingId3 (stream)) {
+			if (TryLyricsStart (stream, out var lyricsStart)) {
+				if (lyricsStart >= ApeTagFooter.Size && IsFooterAt (stream, lyricsStart)) {
+					tagEnd = lyricsStart;
+					return true;
+				}
+
+				return false;
+			}
+
+			var beforeId3 = stream.Length - Id3v1Size;
+			if (IsFooterAt (stream, beforeId3)) {
+				tagEnd = beforeId3;
+				return true;
+			}
+
+			return false;
+		}
+
+		var beforeGap = stream.Length - Id3v1Size;
+		if (IsFooterAt (stream, beforeGap)) {
+			tagEnd = beforeGap;
+			return true;
+		}
+
+		return false;
 	}
 
 	/// <summary>
@@ -218,6 +268,110 @@ internal readonly struct ApeTagLocation
 	private static bool HasTrailingId3v1 (ReadOnlySpan<byte> data) =>
 		data.Length >= Id3v1Size &&
 		data.Slice (data.Length - Id3v1Size, 3).SequenceEqual ("TAG"u8);
+
+	static bool HasTrailingId3 (Stream stream)
+	{
+		var marker = ReadExact (stream, stream.Length - Id3v1Size, 3);
+		return marker.Length == 3
+			&& marker[0] == (byte)'T'
+			&& marker[1] == (byte)'A'
+			&& marker[2] == (byte)'G';
+	}
+
+	static bool IsFooterAt (Stream stream, long end)
+	{
+		var bytes = ReadExact (stream, end - ApeTagFooter.Size, ApeTagFooter.Size);
+		if (bytes.Length != ApeTagFooter.Size)
+			return false;
+
+		var parsed = ApeTagFooter.Parse (bytes);
+		return parsed.IsSuccess && parsed.Footer is { IsHeader: false };
+	}
+
+	static bool TryLyricsStart (Stream stream, out long lyricsStart)
+	{
+		lyricsStart = -1;
+		var endOffset = stream.Length - Id3v1Size - LyricsEndLength;
+		var marker = ReadExact (stream, endOffset, LyricsEndLength);
+		if (marker.Length != LyricsEndLength)
+			return false;
+
+		if (marker.AsSpan ().SequenceEqual ("LYRICS200"u8))
+			return TryLyrics3V2Start (stream, endOffset, out lyricsStart);
+
+		if (marker.AsSpan ().SequenceEqual ("LYRICSEND"u8))
+			return TryLyrics3V1Start (stream, endOffset, out lyricsStart);
+
+		return false;
+	}
+
+	static bool TryLyrics3V2Start (Stream stream, long endOffset, out long lyricsStart)
+	{
+		lyricsStart = -1;
+		var sizeOffset = endOffset - LyricsSizeLength;
+		if (sizeOffset < LyricsBeginLength)
+			return false;
+
+		var sizeDigits = ReadExact (stream, sizeOffset, LyricsSizeLength);
+		if (sizeDigits.Length != LyricsSizeLength)
+			return false;
+
+		var bodySize = 0;
+		foreach (var digit in sizeDigits) {
+			if (digit is < (byte)'0' or > (byte)'9')
+				return false;
+
+			bodySize = (bodySize * 10) + (digit - (byte)'0');
+		}
+
+		if (bodySize < LyricsBeginLength || bodySize > sizeOffset)
+			return false;
+
+		var begin = sizeOffset - bodySize;
+		var magic = ReadExact (stream, begin, LyricsBeginLength);
+		if (!magic.AsSpan ().SequenceEqual ("LYRICSBEGIN"u8))
+			return false;
+
+		lyricsStart = begin;
+		return true;
+	}
+
+	static bool TryLyrics3V1Start (Stream stream, long endOffset, out long lyricsStart)
+	{
+		lyricsStart = -1;
+		var searchFrom = endOffset - LyricsV1SearchLimit;
+		if (searchFrom < 0)
+			searchFrom = 0;
+
+		var length = endOffset - searchFrom;
+		if (length < LyricsBeginLength || length > int.MaxValue)
+			return false;
+
+		var window = ReadExact (stream, searchFrom, (int)length);
+		if (window.Length != length)
+			return false;
+
+		ReadOnlySpan<byte> beginMarker = "LYRICSBEGIN"u8;
+		for (var i = window.Length - beginMarker.Length; i >= 0; i--) {
+			if (!window.AsSpan (i, beginMarker.Length).SequenceEqual (beginMarker))
+				continue;
+
+			lyricsStart = searchFrom + i;
+			return true;
+		}
+
+		return false;
+	}
+
+	static byte[] ReadExact (Stream stream, long position, int count)
+	{
+		if (count <= 0 || position < 0 || position > stream.Length - count)
+			return [];
+
+		stream.Position = position;
+		var bytes = StreamBytes.ReadAtMost (stream, count);
+		return bytes.Length == count ? bytes : [];
+	}
 
 	private static bool IsFooter (ApeTagFooterParseResult parsed) =>
 		parsed.IsSuccess && !parsed.Footer!.IsHeader;
