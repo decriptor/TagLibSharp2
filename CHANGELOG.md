@@ -5,6 +5,12 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- MPEG program streams and MPEG video elementary streams (`.mpg`, `.mpeg`, `.mpe`, `.vob`, `.mpv`, `.m2v`): `MpegPsFile` and `MediaFormat.MpegPs`. Reads the systems version (ISO/IEC 11172-1 or 13818-1), MPEG-1/MPEG-2 video size, frame rate and bit rate, the first audio stream (MPEG audio, AC-3, LPCM; DTS identified), and the duration from the first and last time stamps, reading only the head and the tail of the stream. Elementary video takes its duration from GOP time codes. An ID3v2 tag in front of the stream and an ID3v1 tag after it are read and written; the stream bytes are copied unchanged and a save with no tag change is byte-identical. A file that starts with ID3v2 followed by a pack header opens as a program stream, not MP3 (#108)
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes

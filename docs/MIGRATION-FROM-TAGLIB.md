@@ -280,6 +280,25 @@ var id3v2 = mp3.Id3v2Tag;  // Nullable, may be null
 var id3v1 = mp3.Id3v1Tag;  // Nullable, may be null
 ```
 
+### MPEG Program Stream and Video Files
+
+**TagLib#**:
+```csharp
+var file = TagLib.File.Create("clip.mpg") as TagLib.Mpeg.File;
+var id3v2 = file?.GetTag(TagTypes.Id3v2) as TagLib.Id3v2.Tag;
+```
+
+**TagLibSharp2**:
+```csharp
+var result = MpegPsFile.ReadFromFile("clip.mpg");
+var mpeg = result.File!;
+var id3v2 = mpeg.EnsureId3v2Tag();   // ID3v2 in front of the first pack
+var video = mpeg.VideoProperties;     // Width, height, frame rate
+var duration = mpeg.Duration;         // From the first and last PTS
+```
+
+An APEv2 tag after the stream is kept unchanged but not read. Only ID3v2 and ID3v1 are read and written, the tags exiftool reads in a program stream.
+
 ### FLAC Files
 
 **TagLib#**:
@@ -643,7 +662,7 @@ if (result.IsSuccess)
 
 TagLibSharp2 includes several features not available in TagLib#:
 
-- **Automatic format detection**: `MediaFile.Read()` auto-detects 16 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, and Matroska/WebM
+- **Automatic format detection**: `MediaFile.Read()` auto-detects 17 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, Matroska/WebM, and MPEG program streams / video elementary streams
 - **DSD audio support**: Native DSF and DFF format support for high-resolution DSD audio
 - **Lossless format breadth**: WavPack and Monkey's Audio support with APE tag handling
 - **Async I/O**: Full async support throughout the API with cancellation token support
