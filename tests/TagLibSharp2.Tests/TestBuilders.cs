@@ -2710,7 +2710,7 @@ public static class TestBuilders
 		/// QuickTime does (a plain atom, no version and flags); otherwise it is udta/meta as ffmpeg
 		/// writes it (a full atom). <paramref name="udtaExtra"/> adds a udta holding those bytes.
 		/// </summary>
-		public static byte[] CreateWithKeyedMeta (string handler, byte[]? keysPayload, byte[][] items, bool inMovie, byte[]? udtaExtra)
+		public static byte[] CreateWithKeyedMeta (string handler, byte[]? keysPayload, byte[][] items, bool inMovie, byte[]? udtaExtra, byte[]? metaTail = null)
 		{
 			var builder = new BinaryDataBuilder ();
 			builder.Add (CreateFtyp ("M4A "));
@@ -2737,6 +2737,8 @@ public static class TestBuilders
 			if (keysPayload is not null)
 				metaContent.Add (CreateBox ("keys", keysPayload));
 			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			if (metaTail is not null)
+				metaContent.Add (metaTail);
 			var meta = CreateBox ("meta", metaContent.ToArray ());
 
 			if (inMovie) {
