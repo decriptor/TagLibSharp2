@@ -6,7 +6,8 @@ using TagLibSharp2.Core;
 namespace TagLibSharp2.Matroska;
 
 /// <summary>
-/// Splices a rendered <c>Tags</c> element into the first Segment.
+/// Splices a rendered <c>Tags</c> element, and an <c>Attachments</c> element when the pictures
+/// changed, into the first Segment.
 /// An unknown-size element is copied only when its end is a parsed sibling or the parent end.
 /// Bytes that do not parse are not scanned once a real element has been seen.
 /// </summary>
@@ -18,16 +19,85 @@ static partial class MatroskaRewrite
 		if (!TryParse (data, out var layout, out error) || layout is null)
 			return false;
 
-		var tags = tag.Render ().ToArray ();
-		var plan = PlanEdit (layout.Pieces, tags);
-		if (!TryBuild (data, layout, plan, out var body, out var seekHeads, out var cues, out var clusters, out var tagsOffset, out error))
-			return false;
-		if (tags.Length > 0 && tagsOffset != plan.TagsOffset) {
-			error = "Matroska tags could not be placed";
+		HashSet<ulong>? removed = null;
+		if (tag.PicturesChanged) {
+			if (!MatroskaAttachments.TryBuild (data, RangesOf (layout, MatroskaIds.Attachments), tag.Pictures, layout.IsWebM, out var attachments, out var changed, out removed, out error))
+				return false;
+
+			// Attachments goes in first, so the tags pass sees the final layout.
+			// RFC 9559 section 6.7: an edited Attachments element SHOULD follow the last Cluster.
+			if (changed) {
+				if (!TryReplace (data, layout, MatroskaIds.Attachments, attachments, out var staged, out error))
+					return false;
+				if (!TryParse (staged, out layout, out error) || layout is null)
+					return false;
+				return TryReplace (staged, layout, MatroskaIds.Tags, tag.RenderWithout (removed).ToArray (), out rewritten, out error);
+			}
+		}
+
+		return TryReplace (data, layout, MatroskaIds.Tags, tag.Render ().ToArray (), out rewritten, out error);
+	}
+
+	/// <summary>Returns true when the first SeekHead has a Seek for <paramref name="id"/>.</summary>
+	static bool IsReferenced (ReadOnlySpan<byte> data, Layout layout, ulong id)
+	{
+		foreach (var piece in layout.Pieces) {
+			if (piece.Id != MatroskaIds.SeekHead)
+				continue;
+			var end = piece.Offset + piece.Length;
+			if (!EbmlReader.TryRead (data, piece.Offset, end, out var seekHead) || seekHead.UnknownSize)
+				return false;
+			var offset = seekHead.DataOffset;
+			while (offset < seekHead.End) {
+				if (!EbmlReader.TryRead (data, offset, seekHead.End, out var seek) || seek.UnknownSize)
+					return false;
+				if (seek.Id == MatroskaIds.Seek) {
+					var inner = seek.DataOffset;
+					while (inner < seek.End && EbmlReader.TryRead (data, inner, seek.End, out var child) && !child.UnknownSize) {
+						if (child.Id == MatroskaIds.SeekId && ReadId (data.Slice (child.DataOffset, (int)child.DataLength)) == id)
+							return true;
+						inner = child.End;
+					}
+				}
+
+				offset = seek.End;
+			}
+
 			return false;
 		}
 
-		if (!TryPatch (body, seekHeads, cues, clusters, plan, out error))
+		return false;
+	}
+
+	static List<(int Offset, int Length)> RangesOf (Layout layout, ulong id)
+	{
+		var ranges = new List<(int, int)> ();
+		foreach (var piece in layout.Pieces) {
+			if (piece.Id == id)
+				ranges.Add ((piece.Offset, piece.Length));
+		}
+
+		return ranges;
+	}
+
+	/// <summary>
+	/// Writes <paramref name="element"/> as the only <paramref name="id"/> element of the Segment.
+	/// An empty element voids every existing one.
+	/// </summary>
+	static bool TryReplace (ReadOnlySpan<byte> data, Layout layout, ulong id, byte[] element, out byte[] rewritten, out string error)
+	{
+		rewritten = [];
+		var plan = PlanEdit (layout.Pieces, id, element, IsReferenced (data, layout, id));
+		if (!TryBuild (data, layout, plan, out var body, out var seekHeads, out var cues, out var clusters, out var elementOffset, out error))
+			return false;
+		if (element.Length > 0 && elementOffset != plan.ElementOffset) {
+			error = plan.PlaceError;
+			return false;
+		}
+
+		if (!TryPatch (body, seekHeads, cues, clusters, plan, out var referenced, out error))
+			return false;
+		if (!IsReachable (layout.Pieces, plan, seekHeads.Count, referenced, out error))
 			return false;
 
 		var originalLength = layout.SegmentEnd - layout.DataOffset;
@@ -40,7 +110,7 @@ static partial class MatroskaRewrite
 
 	sealed class Layout
 	{
-		public Layout (int segmentPosition, int idWidth, int sizeWidth, bool unknownSize, int dataOffset, int segmentEnd, List<Piece> pieces)
+		public Layout (int segmentPosition, int idWidth, int sizeWidth, bool unknownSize, int dataOffset, int segmentEnd, List<Piece> pieces, bool isWebM)
 		{
 			SegmentPosition = segmentPosition;
 			IdWidth = idWidth;
@@ -49,7 +119,10 @@ static partial class MatroskaRewrite
 			DataOffset = dataOffset;
 			SegmentEnd = segmentEnd;
 			Pieces = pieces;
+			IsWebM = isWebM;
 		}
+
+		public bool IsWebM { get; }
 
 		public int SegmentPosition { get; }
 
@@ -87,7 +160,20 @@ static partial class MatroskaRewrite
 
 	sealed class Plan
 	{
-		public byte[] Tags { get; set; } = [];
+		public Plan (ulong id, byte[] element)
+		{
+			Id = id;
+			Element = element;
+		}
+
+		/// <summary>Gets the element being written: <c>Tags</c> or <c>Attachments</c>.</summary>
+		public ulong Id { get; }
+
+		public byte[] Element { get; }
+
+		public string PlaceError => Id == MatroskaIds.Attachments
+			? "Matroska attachments could not be placed"
+			: "Matroska tags could not be placed";
 
 		public int ReplaceStart { get; set; } = -1;
 
@@ -95,13 +181,13 @@ static partial class MatroskaRewrite
 
 		public byte[]? Replacement { get; set; }
 
-		public bool VoidTags { get; set; }
+		public bool VoidExisting { get; set; }
 
 		public bool Append { get; set; }
 
 		public int InsertBefore { get; set; } = -1;
 
-		public int TagsOffset { get; set; } = -1;
+		public int ElementOffset { get; set; } = -1;
 
 		public int ShiftFrom { get; set; } = int.MaxValue;
 
@@ -112,62 +198,62 @@ static partial class MatroskaRewrite
 		public bool ShouldAdd { get; set; }
 	}
 
-	static Plan PlanEdit (List<Piece> pieces, byte[] tags)
+	static Plan PlanEdit (List<Piece> pieces, ulong id, byte[] element, bool referenced)
 	{
-		var plan = new Plan { Tags = tags };
-		var tagIndexes = new List<int> ();
+		var plan = new Plan (id, element);
+		var indexes = new List<int> ();
 		for (var i = 0; i < pieces.Count; i++) {
-			if (pieces[i].Id == MatroskaIds.Tags)
-				tagIndexes.Add (i);
+			if (pieces[i].Id == id)
+				indexes.Add (i);
 		}
 
-		if (tags.Length == 0) {
-			plan.VoidTags = tagIndexes.Count > 0;
-			plan.MustRetarget = tagIndexes.Count > 0;
+		if (element.Length == 0) {
+			plan.VoidExisting = indexes.Count > 0;
+			plan.MustRetarget = indexes.Count > 0;
 			return plan;
 		}
 
-		plan.ShouldAdd = tagIndexes.Count == 0;
-		if (TryFindFit (pieces, tags, out var start, out var end, out var fitted)) {
+		plan.ShouldAdd = indexes.Count == 0;
+		if (TryFindFit (pieces, id, element, !referenced, out var start, out var end, out var fitted)) {
 			plan.ReplaceStart = start;
 			plan.ReplaceEnd = end;
 			plan.Replacement = fitted;
-			plan.TagsOffset = OffsetOf (pieces, start);
-			plan.VoidTags = true;
-			plan.MustRetarget = TagMoved (pieces, tagIndexes, plan.TagsOffset);
+			plan.ElementOffset = OffsetOf (pieces, start);
+			plan.VoidExisting = true;
+			plan.MustRetarget = Moved (pieces, indexes, plan.ElementOffset);
 			return plan;
 		}
 
-		plan.VoidTags = true;
+		plan.VoidExisting = true;
 		var last = pieces.Count - 1;
-		if (last >= 0 && pieces[last].Id == MatroskaIds.Tags) {
+		if (last >= 0 && pieces[last].Id == id) {
 			plan.ReplaceStart = last;
 			plan.ReplaceEnd = last;
-			plan.Replacement = tags;
-			plan.TagsOffset = OffsetOf (pieces, last);
-			plan.MustRetarget = TagMoved (pieces, tagIndexes, plan.TagsOffset);
+			plan.Replacement = element;
+			plan.ElementOffset = OffsetOf (pieces, last);
+			plan.MustRetarget = Moved (pieces, indexes, plan.ElementOffset);
 			return plan;
 		}
 
 		if (last >= 0 && pieces[last].UnknownSize) {
 			plan.InsertBefore = last;
-			plan.TagsOffset = OffsetOf (pieces, last);
-			plan.ShiftFrom = plan.TagsOffset;
-			plan.Delta = tags.Length;
+			plan.ElementOffset = OffsetOf (pieces, last);
+			plan.ShiftFrom = plan.ElementOffset;
+			plan.Delta = element.Length;
 			plan.MustRetarget = true;
 			return plan;
 		}
 
 		plan.Append = true;
-		plan.TagsOffset = OffsetOf (pieces, pieces.Count);
-		plan.MustRetarget = tagIndexes.Count > 0;
+		plan.ElementOffset = OffsetOf (pieces, pieces.Count);
+		plan.MustRetarget = indexes.Count > 0;
 		return plan;
 	}
 
-	static bool TagMoved (List<Piece> pieces, List<int> tagIndexes, int tagsOffset)
+	static bool Moved (List<Piece> pieces, List<int> indexes, int elementOffset)
 	{
-		foreach (var index in tagIndexes) {
-			if (OffsetOf (pieces, index) != tagsOffset)
+		foreach (var index in indexes) {
+			if (OffsetOf (pieces, index) != elementOffset)
 				return true;
 		}
 
@@ -182,14 +268,14 @@ static partial class MatroskaRewrite
 		out List<(int Start, int End)> seekHeads,
 		out List<(int Start, int End)> cues,
 		out List<(int Start, int End, int SegmentOffset)> clusters,
-		out int tagsOffset,
+		out int elementOffset,
 		out string error)
 	{
 		body = [];
 		seekHeads = new List<(int, int)> ();
 		cues = new List<(int, int)> ();
 		clusters = new List<(int, int, int)> ();
-		tagsOffset = -1;
+		elementOffset = -1;
 		error = "";
 		var pieces = layout.Pieces;
 		if (plan.Replacement is not null && plan.ReplaceEnd != pieces.Count - 1) {
@@ -197,7 +283,7 @@ static partial class MatroskaRewrite
 			for (var index = plan.ReplaceStart; index <= plan.ReplaceEnd; index++)
 				region += pieces[index].Length;
 			if (plan.Replacement.Length != region) {
-				error = "Matroska tags could not be placed";
+				error = plan.PlaceError;
 				return false;
 			}
 		}
@@ -206,16 +292,16 @@ static partial class MatroskaRewrite
 		var i = 0;
 		while (i < pieces.Count) {
 			if (i == plan.ReplaceStart && plan.Replacement is not null) {
-				tagsOffset = builder.Length;
+				elementOffset = builder.Length;
 				builder.Add (plan.Replacement);
 				i = plan.ReplaceEnd + 1;
 				continue;
 			}
 
 			var piece = pieces[i];
-			if (plan.VoidTags && piece.Id == MatroskaIds.Tags) {
+			if (plan.VoidExisting && piece.Id == plan.Id) {
 				if (!TryMakeVoid (piece.Length, out var hole)) {
-					error = "Matroska tags could not be placed";
+					error = plan.PlaceError;
 					return false;
 				}
 
@@ -225,8 +311,8 @@ static partial class MatroskaRewrite
 			}
 
 			if (i == plan.InsertBefore) {
-				tagsOffset = builder.Length;
-				builder.Add (plan.Tags);
+				elementOffset = builder.Length;
+				builder.Add (plan.Element);
 			}
 
 			var at = builder.Length;
@@ -244,8 +330,8 @@ static partial class MatroskaRewrite
 		}
 
 		if (plan.Append) {
-			tagsOffset = builder.Length;
-			builder.Add (plan.Tags);
+			elementOffset = builder.Length;
+			builder.Add (plan.Element);
 		}
 
 		body = builder.ToArray ();
@@ -258,16 +344,20 @@ static partial class MatroskaRewrite
 		List<(int Start, int End)> cues,
 		List<(int Start, int End, int SegmentOffset)> clusters,
 		Plan plan,
+		out bool referenced,
 		out string error)
 	{
 		error = "";
+		referenced = false;
 		var strict = plan.MustRetarget || plan.Delta != 0;
 		if (strict || plan.ShouldAdd) {
-			foreach (var seekHead in seekHeads) {
-				if (!TryPatchSeekHead (body, seekHead.Start, seekHead.End, plan, strict, out error))
+			// A new entry goes in the first SeekHead. A second one holds only Clusters (RFC 9559 section 6.3).
+			for (var i = 0; i < seekHeads.Count; i++) {
+				if (!TryPatchSeekHead (body, seekHeads[i].Start, seekHeads[i].End, plan, strict, i == 0, ref referenced, out error))
 					return false;
 			}
-		}
+		} else
+			referenced = true;
 
 		if (plan.Delta == 0)
 			return true;
@@ -285,7 +375,39 @@ static partial class MatroskaRewrite
 		return true;
 	}
 
-	static bool TryPatchSeekHead (byte[] body, int start, int end, Plan plan, bool strict, out string error)
+	/// <summary>
+	/// A new or moved <c>Attachments</c> element must be found by a player that reads the SeekHead
+	/// and the elements before the first Cluster. The SeekHead MUST reference every Top-Level Element
+	/// (RFC 9559 section 6.3); a live layout puts every other element before the Clusters
+	/// (section 25.3.4). A cover that no player would find fails the save instead.
+	/// Tags keep the older best-effort placement.
+	/// </summary>
+	static bool IsReachable (List<Piece> pieces, Plan plan, int seekHeadCount, bool referenced, out string error)
+	{
+		error = "";
+		if (plan.Id != MatroskaIds.Attachments || plan.ElementOffset < 0 || referenced)
+			return true;
+		if (seekHeadCount > 0) {
+			error = "Matroska SeekHead has no room to reference the attachments";
+			return false;
+		}
+
+		for (var i = 0; i < pieces.Count; i++) {
+			if (pieces[i].Id != MatroskaIds.Cluster)
+				continue;
+			var clusterAt = OffsetOf (pieces, i);
+			if (clusterAt >= plan.ShiftFrom)
+				clusterAt += plan.Delta;
+			if (plan.ElementOffset < clusterAt)
+				return true;
+			error = "Matroska file has no SeekHead, so attachments after a Cluster would not be found";
+			return false;
+		}
+
+		return true;
+	}
+
+	static bool TryPatchSeekHead (byte[] body, int start, int end, Plan plan, bool strict, bool mayAdd, ref bool referenced, out string error)
 	{
 		error = "";
 		if (!EbmlReader.TryRead (body, start, Math.Min (end, body.Length), out var seekHead)
@@ -313,7 +435,6 @@ static partial class MatroskaRewrite
 		}
 
 		var changed = false;
-		var referenced = false;
 		foreach (var child in children) {
 			if (child.Id != MatroskaIds.Seek)
 				continue;
@@ -323,7 +444,7 @@ static partial class MatroskaRewrite
 			}
 		}
 
-		if (plan.TagsOffset >= 0 && !referenced && TryAddSeek (body, seekHead, (ulong)plan.TagsOffset)) {
+		if (mayAdd && plan.ElementOffset >= 0 && !referenced && TryAddSeek (body, seekHead, plan.Id, (ulong)plan.ElementOffset)) {
 			changed = true;
 			referenced = true;
 		}
@@ -339,12 +460,12 @@ static partial class MatroskaRewrite
 		if (!TryReadSeek (body, seek, out var id, out var position, out var positionElement))
 			return strict ? TryVoidElement (body, seek, ref changed) : true;
 
-		var isTags = id == MatroskaIds.Tags;
+		var isTarget = id == plan.Id;
 		ulong desired;
-		if (isTags) {
-			if (plan.TagsOffset < 0)
+		if (isTarget) {
+			if (plan.ElementOffset < 0)
 				return TryVoidElement (body, seek, ref changed);
-			desired = (ulong)plan.TagsOffset;
+			desired = (ulong)plan.ElementOffset;
 		} else if (plan.Delta != 0 && position >= (ulong)plan.ShiftFrom) {
 			desired = position + (ulong)plan.Delta;
 			if (desired < position)
@@ -353,7 +474,7 @@ static partial class MatroskaRewrite
 			return true;
 
 		if (desired == position) {
-			if (isTags)
+			if (isTarget)
 				referenced = true;
 			return true;
 		}
@@ -362,17 +483,17 @@ static partial class MatroskaRewrite
 			&& TryWriteUnsigned (body, positionElement.DataOffset, (int)positionElement.DataLength, desired)) {
 			changed = true;
 			UpdateElementCrc (body, seek.Position, seek.End);
-			if (isTags)
+			if (isTarget)
 				referenced = true;
 			return true;
 		}
 
-		var rebuilt = MakeSeek (isTags ? MatroskaIds.Tags : id, desired);
+		var rebuilt = MakeSeek (id, desired);
 		var total = seek.End - seek.Position;
 		if (TryFit (rebuilt, total, out var fitted)) {
 			fitted.CopyTo (body.AsSpan (seek.Position));
 			changed = true;
-			if (isTags)
+			if (isTarget)
 				referenced = true;
 			return true;
 		}
@@ -417,9 +538,9 @@ static partial class MatroskaRewrite
 		return true;
 	}
 
-	static bool TryAddSeek (byte[] body, EbmlElement seekHead, ulong tagsOffset)
+	static bool TryAddSeek (byte[] body, EbmlElement seekHead, ulong id, ulong elementOffset)
 	{
-		var seek = MakeSeek (MatroskaIds.Tags, tagsOffset);
+		var seek = MakeSeek (id, elementOffset);
 		var offset = seekHead.DataOffset;
 		while (offset < seekHead.End) {
 			if (!EbmlReader.TryRead (body, offset, seekHead.End, out var child) || child.UnknownSize)
@@ -438,6 +559,10 @@ static partial class MatroskaRewrite
 		return TryAbsorbVoid (body, seekHead, seek);
 	}
 
+	/// <summary>
+	/// Grows the SeekHead into the Void right after it (RFC 9559 section 25.2).
+	/// A size field that is too narrow is widened by the bytes the Void gives up.
+	/// </summary>
 	static bool TryAbsorbVoid (byte[] body, EbmlElement seekHead, byte[] seek)
 	{
 		var at = seekHead.End;
@@ -446,25 +571,34 @@ static partial class MatroskaRewrite
 		if (voidEl.Id != MatroskaIds.Void || voidEl.UnknownSize || voidEl.Position != at)
 			return false;
 
+		if (!EbmlReader.TryReadVint (body, seekHead.Position, seekHead.DataOffset, true, 4, out _, out var idWidth, out _))
+			return false;
+		var sizeWidth = seekHead.HeaderLength - idWidth;
+		var newDataLength = (ulong)seekHead.DataLength + (ulong)seek.Length;
+		if (sizeWidth < 1)
+			return false;
+		var newWidth = sizeWidth;
+		while (newWidth < 8 && newDataLength > MaxSize (newWidth))
+			newWidth++;
+		if (newDataLength > MaxSize (newWidth))
+			return false;
+
+		var extra = newWidth - sizeWidth;
 		var voidTotal = voidEl.End - voidEl.Position;
-		var remain = voidTotal - seek.Length;
+		var remain = voidTotal - seek.Length - extra;
 		if (remain < 0 || remain == 1)
 			return false;
 		if (remain > 0 && !TryMakeVoid (remain, out _))
 			return false;
 
-		if (!EbmlReader.TryReadVint (body, seekHead.Position, seekHead.DataOffset, true, 4, out _, out var idWidth, out _))
-			return false;
-		var sizeWidth = seekHead.HeaderLength - idWidth;
-		var newDataLength = (ulong)seekHead.DataLength + (ulong)seek.Length;
-		if (sizeWidth < 1 || newDataLength > MaxSize (sizeWidth))
-			return false;
-
-		EncodeSize (newDataLength, sizeWidth).CopyTo (body.AsSpan (seekHead.Position + idWidth));
-		seek.CopyTo (body.AsSpan (at));
+		// Buffer.BlockCopy is safe for an overlapping copy.
+		if (extra > 0)
+			Buffer.BlockCopy (body, seekHead.DataOffset, body, seekHead.DataOffset + extra, at - seekHead.DataOffset);
+		EncodeSize (newDataLength, newWidth).CopyTo (body.AsSpan (seekHead.Position + idWidth));
+		seek.CopyTo (body.AsSpan (at + extra));
 		if (remain > 0 && TryMakeVoid (remain, out var hole))
-			hole.CopyTo (body.AsSpan (at + seek.Length));
-		UpdateElementCrc (body, seekHead.Position, seekHead.End + seek.Length);
+			hole.CopyTo (body.AsSpan (at + extra + seek.Length));
+		UpdateElementCrc (body, seekHead.Position, at + extra + seek.Length);
 		return true;
 	}
 
@@ -666,7 +800,8 @@ static partial class MatroskaRewrite
 			return false;
 		}
 
-		layout = new Layout (segment.Position, idWidth, sizeWidth, segment.UnknownSize, segment.DataOffset, end, pieces);
+		var webm = docType.Equals ("webm", StringComparison.OrdinalIgnoreCase);
+		layout = new Layout (segment.Position, idWidth, sizeWidth, segment.UnknownSize, segment.DataOffset, end, pieces, webm);
 		return true;
 	}
 
@@ -778,12 +913,17 @@ static partial class MatroskaRewrite
 		return output.ToArray ();
 	}
 
-	static bool TryFindFit (List<Piece> pieces, ReadOnlySpan<byte> tags, out int start, out int end, out byte[] fitted)
+	/// <summary>
+	/// The element fits where the old one was, or in a Void.
+	/// An element the SeekHead does not reference yet skips the Void right after a SeekHead:
+	/// the SeekHead grows into it to add the entry (RFC 9559 sections 6.3 and 25.2).
+	/// </summary>
+	static bool TryFindFit (List<Piece> pieces, ulong id, ReadOnlySpan<byte> element, bool needsEntry, out int start, out int end, out byte[] fitted)
 	{
 		for (var i = 0; i < pieces.Count; i++) {
-			if (pieces[i].Id != MatroskaIds.Tags)
+			if (pieces[i].Id != id)
 				continue;
-			if (TryConsume (pieces, i, tags, out end, out fitted)) {
+			if (TryConsume (pieces, i, element, out end, out fitted)) {
 				start = i;
 				return true;
 			}
@@ -792,7 +932,9 @@ static partial class MatroskaRewrite
 		for (var i = 0; i < pieces.Count; i++) {
 			if (pieces[i].Id != MatroskaIds.Void || pieces[i].UnknownSize)
 				continue;
-			if (TryConsume (pieces, i, tags, out end, out fitted)) {
+			if (needsEntry && i > 0 && pieces[i - 1].Id == MatroskaIds.SeekHead)
+				continue;
+			if (TryConsume (pieces, i, element, out end, out fitted)) {
 				start = i;
 				return true;
 			}
@@ -1028,7 +1170,7 @@ static partial class MatroskaRewrite
 		body[payloadOffset + 3] = (byte)(crc >> 24);
 	}
 
-	static uint Crc32 (ReadOnlySpan<byte> data)
+	internal static uint Crc32 (ReadOnlySpan<byte> data)
 	{
 		var crc = 0xFFFFFFFFu;
 		for (var i = 0; i < data.Length; i++)
