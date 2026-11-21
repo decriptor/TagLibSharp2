@@ -17,7 +17,6 @@ namespace TagLibSharp2.Matroska;
 public sealed class MatroskaTag : Tag
 {
 	const ulong CollectionLevel = 70;
-	const ulong VolumeLevel = 60;
 	const ulong AlbumLevel = 50;
 	const ulong TrackLevel = 30;
 
@@ -107,27 +106,43 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override uint? Track {
-		get => ParseNumber (FirstAt (TrackLevel, "PART_NUMBER"));
+		get => ParseNumber (TrackPartNumber ());
 		set => SetAt (TrackLevel, "PART_NUMBER", value?.ToString (CultureInfo.InvariantCulture));
 	}
 
 	/// <inheritdoc/>
 	public override uint? TotalTracks {
 		get => ParseNumber (FirstAt (AlbumLevel, "TOTAL_PARTS"));
-		set => SetAt (AlbumLevel, "TOTAL_PARTS", value?.ToString (CultureInfo.InvariantCulture));
+		set => SetTrackTotal (value);
 	}
 
 	/// <inheritdoc/>
 	public override uint? DiscNumber {
-		// PART_NUMBER at 60 is the disc. Level 30 is the track. PART_OFFSET is neither.
-		get => ParseNumber (FirstAt (VolumeLevel, "PART_NUMBER"));
-		set => SetAt (VolumeLevel, "PART_NUMBER", value?.ToString (CultureInfo.InvariantCulture));
+		// PART_NUMBER is the disc only when TargetTypeValue is stored and equal to 50.
+		get => ParseNumber (TextWhere (IsExplicitAlbum, "PART_NUMBER") ?? FallbackDiscName ());
+		set {
+			if (value is null) {
+				DiscTarget (create: false)?.Remove ("PART_NUMBER");
+				RemoveDiscNames ();
+				return;
+			}
+
+			ReplaceOrAdd (DiscTarget (create: true)!, "PART_NUMBER", value.Value.ToString (CultureInfo.InvariantCulture));
+		}
 	}
 
 	/// <inheritdoc/>
 	public override uint? TotalDiscs {
-		get => ParseNumber (FirstAt (VolumeLevel, "TOTAL_PARTS"));
-		set => SetAt (VolumeLevel, "TOTAL_PARTS", value?.ToString (CultureInfo.InvariantCulture));
+		// One explicit-50 TOTAL_PARTS is both this and TotalTracks when they share that element.
+		get => ParseNumber (DiscTotal ());
+		set {
+			if (value is null) {
+				ClearDiscTotal ();
+				return;
+			}
+
+			ReplaceOrAdd (DiscTarget (create: true)!, "TOTAL_PARTS", value.Value.ToString (CultureInfo.InvariantCulture));
+		}
 	}
 
 	/// <inheritdoc/>
@@ -620,9 +635,182 @@ public sealed class MatroskaTag : Tag
 		return values;
 	}
 
-	void SetItem (string name, string? value) => SetAt (ItemLevel, name, value);
+	// A target broader than the album is not where ordinary fields are written.
+	ulong OrdinaryWriteLevel ()
+	{
+		var level = ItemLevel;
+		return level > AlbumLevel ? AlbumLevel : level;
+	}
 
-	void SetItemValues (string name, string[]? values) => SetAtValues (ItemLevel, name, values);
+	void SetItem (string name, string? value) => SetAt (OrdinaryWriteLevel (), name, value);
+
+	void SetItemValues (string name, string[]? values) => SetAtValues (OrdinaryWriteLevel (), name, values);
+
+	string? TrackPartNumber ()
+	{
+		var atTrack = FirstAt (TrackLevel, "PART_NUMBER");
+		if (atTrack is not null)
+			return atTrack;
+		// ffmpeg writes the track as PART_NUMBER and omits TargetTypeValue. The default 50 is not a disc.
+		return TextWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "PART_NUMBER");
+	}
+
+	void SetTrackTotal (uint? value)
+	{
+		var disc = SeparateDiscTotalBlock ();
+		var homes = new List<TagBlock> ();
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level != AlbumLevel || ReferenceEquals (block, disc))
+				continue;
+			if (block.HasName ("TOTAL_PARTS"))
+				homes.Add (block);
+		}
+
+		if (value is null) {
+			foreach (var home in homes)
+				home.Remove ("TOTAL_PARTS");
+			return;
+		}
+
+		var text = value.Value.ToString (CultureInfo.InvariantCulture);
+		if (homes.Count == 0) {
+			var shared = disc is not null
+				&& FirstBlock (block => block.IsFileLevel && block.Level == AlbumLevel && block.HasName ("TOTAL_PARTS")) is TagBlock only
+				&& ReferenceEquals (only, disc);
+			ReplaceOrAdd (shared ? disc! : FileBlock (AlbumLevel), "TOTAL_PARTS", text);
+			return;
+		}
+
+		ReplaceOrAdd (homes[0], "TOTAL_PARTS", text);
+		for (var i = 1; i < homes.Count; i++)
+			homes[i].Remove ("TOTAL_PARTS");
+	}
+
+	string? DiscTotal ()
+	{
+		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
+		if (withPart is not null)
+			return Text (withPart, "TOTAL_PARTS");
+		var separate = SeparateDiscTotalBlock ();
+		return separate is null ? null : Text (separate, "TOTAL_PARTS");
+	}
+
+	void ClearDiscTotal ()
+	{
+		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
+		if (withPart is not null) {
+			withPart.Remove ("TOTAL_PARTS");
+			return;
+		}
+
+		SeparateDiscTotalBlock ()?.Remove ("TOTAL_PARTS");
+	}
+
+	/// <summary>
+	/// The explicit album target that holds the disc, or a new one that does not reuse the track total.
+	/// </summary>
+	TagBlock? DiscTarget (bool create)
+	{
+		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
+		if (withPart is not null)
+			return withPart;
+		var separate = SeparateDiscTotalBlock ();
+		if (separate is not null)
+			return separate;
+		if (!create)
+			return null;
+		var created = new TagBlock (AlbumLevel);
+		_blocks.Add (created);
+		return created;
+	}
+
+	TagBlock? SeparateDiscTotalBlock ()
+	{
+		var track = FirstBlock (block => block.IsFileLevel && block.Level == AlbumLevel && block.HasName ("TOTAL_PARTS"));
+		return FirstBlock (block => IsExplicitAlbum (block) && !ReferenceEquals (block, track) && block.HasName ("TOTAL_PARTS"));
+	}
+
+	static bool IsExplicitAlbum (TagBlock block) =>
+		block.IsFileLevel && block.HasTargetTypeValue && block.Level == AlbumLevel;
+
+	string? FallbackDiscName ()
+	{
+		ulong? bestLevel = null;
+		string? best = null;
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel)
+				continue;
+			var text = Text (block, "DISCNUMBER") ?? Text (block, "DISC");
+			if (text is null)
+				continue;
+			if (bestLevel is null || block.Level < bestLevel.Value) {
+				bestLevel = block.Level;
+				best = text;
+			}
+		}
+
+		return best;
+	}
+
+	void RemoveDiscNames ()
+	{
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel)
+				continue;
+			block.Remove ("DISC");
+			block.Remove ("DISCNUMBER");
+		}
+	}
+
+	static void ReplaceOrAdd (TagBlock block, string name, string value)
+	{
+		for (var i = 0; i < block.Tags.Count; i++) {
+			if (block.Tags[i].Name != name)
+				continue;
+			block.Tags[i] = CopyTag (block.Tags[i], value);
+			for (var j = block.Tags.Count - 1; j > i; j--) {
+				if (block.Tags[j].Name == name)
+					block.Tags.RemoveAt (j);
+			}
+
+			return;
+		}
+
+		block.Tags.Add (new SimpleTag (name, value));
+	}
+
+	string? TextWhere (Func<TagBlock, bool> match, string name)
+	{
+		foreach (var block in _blocks) {
+			if (!match (block))
+				continue;
+			var text = Text (block, name);
+			if (text is not null)
+				return text;
+		}
+
+		return null;
+	}
+
+	TagBlock? FirstBlock (Func<TagBlock, bool> match)
+	{
+		foreach (var block in _blocks) {
+			if (match (block))
+				return block;
+		}
+
+		return null;
+	}
+
+	static string? Text (TagBlock block, string name)
+	{
+		foreach (var tag in block.Tags) {
+			if (tag.Name == name && !string.IsNullOrEmpty (tag.Text))
+				return tag.Text;
+		}
+
+		return null;
+	}
 
 	void SetAt (ulong level, string name, string? value)
 	{
@@ -772,9 +960,15 @@ public sealed class MatroskaTag : Tag
 /// <summary>One <c>Tag</c> element and the target it describes.</summary>
 internal sealed class TagBlock
 {
-	public TagBlock (ulong level) => Level = level;
+	public TagBlock (ulong level, bool hasTargetTypeValue = true)
+	{
+		Level = level;
+		HasTargetTypeValue = hasTargetTypeValue;
+	}
 
 	public ulong Level { get; set; }
+
+	public bool HasTargetTypeValue { get; set; }
 
 	public bool HasChapter { get; set; }
 
@@ -837,12 +1031,14 @@ internal sealed class TagBlock
 			return new BinaryData (_original);
 
 		using var body = new BinaryDataBuilder ();
-		body.Add (EbmlWriter.Unsigned (MatroskaIds.TargetTypeValue, Level));
+		if (HasTargetTypeValue)
+			body.Add (EbmlWriter.Unsigned (MatroskaIds.TargetTypeValue, Level));
 		foreach (var child in _targetChildren)
 			body.Add (child);
-		var targets = EbmlWriter.Master (MatroskaIds.Targets, body.ToBinaryData ().Span);
 		using var tag = new BinaryDataBuilder ();
-		tag.Add (targets);
+		var targets = body.ToBinaryData ();
+		if (targets.Length > 0)
+			tag.Add (EbmlWriter.Master (MatroskaIds.Targets, targets.Span));
 		foreach (var simple in Tags)
 			tag.Add (simple.Render ());
 		return EbmlWriter.Master (MatroskaIds.Tag, tag.ToBinaryData ().Span);
