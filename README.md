@@ -73,7 +73,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | WavPack | APE tag | — | Native only |
 | Monkey's Audio | APE tag | — | Native only |
 | Musepack | APE tag | — | Native only |
-| MPEG program stream / video elementary stream | — (ISO/IEC 11172-1 and 13818-1 define none) | ID3v2 (in front), ID3v1 (at the end) | ID3v2 preferred |
+| MPEG program stream / video elementary stream | — (ISO/IEC 11172-1 and 13818-1 define none) | ID3v2 (in front, or ID3v2.4 appended after the stream), ID3v1 (at the end) | ID3v2 preferred (an appended tag replaces a prepended one, ID3v2.4 §5) |
 
 ## Installation
 
