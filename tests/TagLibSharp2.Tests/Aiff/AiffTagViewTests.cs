@@ -145,6 +145,8 @@ public partial class AiffAnnotationTests
 		Assert.AreSame (view, file.Tag);
 		Assert.AreEqual ("New", view.Title);
 
+		Assert.ThrowsExactly<NotSupportedException> (() => view.Render ());
+
 		file.Id3v2Tag = null;
 		Assert.AreSame (view, file.Tag, "The view outlives the ID3 tag it was created over.");
 		view.Album = "Again";
