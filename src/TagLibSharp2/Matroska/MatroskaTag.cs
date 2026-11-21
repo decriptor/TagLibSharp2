@@ -679,13 +679,17 @@ public sealed class MatroskaTag : Tag
 	}
 
 	// TOTAL_PARTS and PART_NUMBER: https://www.matroska.org/technical/tagging.html (Organization Information).
+	// TRACKTOTAL and TOTALTRACKS are Vorbis names that ffmpeg copies from FLAC. The tagging spec names only TOTAL_PARTS.
 	uint? TrackTotal () =>
 		FirstNumberWhere (block => block.IsFileLevel && block.Level == TrackLevel, "TOTAL_PARTS")
 		?? FirstNumberWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "TOTAL_PARTS")
-		?? ParseEmbeddedTotal (TrackPartNumber ());
+		?? ParseEmbeddedTotal (TrackPartNumber ())
+		?? ParseLeading (LowestLevelText ("TRACKTOTAL", "TOTALTRACKS"));
 
 	void SetTrackTotal (uint? value)
 	{
+		RemoveFileLevel ("TRACKTOTAL");
+		RemoveFileLevel ("TOTALTRACKS");
 		if (value is null) {
 			RemoveWhere (IsTrackTarget, "TOTAL_PARTS");
 			StripEmbeddedTotal (IsTrackTarget, "PART_NUMBER");
@@ -722,10 +726,13 @@ public sealed class MatroskaTag : Tag
 
 	uint? DiscTotal () =>
 		FirstNumberWhere (IsExplicitAlbum, "TOTAL_PARTS")
-		?? ParseEmbeddedTotal (DiscPartNumber ());
+		?? ParseEmbeddedTotal (DiscPartNumber ())
+		?? ParseLeading (LowestLevelText ("DISCTOTAL", "TOTALDISCS"));
 
 	void SetDiscTotal (uint? value)
 	{
+		RemoveFileLevel ("DISCTOTAL");
+		RemoveFileLevel ("TOTALDISCS");
 		if (value is null) {
 			RemoveWhere (IsExplicitAlbum, "TOTAL_PARTS");
 			StripEmbeddedTotal (IsExplicitAlbum, "PART_NUMBER");
