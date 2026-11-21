@@ -2140,7 +2140,8 @@ public sealed class Id3v2Tag : Tag
 			return true;
 
 		var encoding = Version >= 4 ? TextEncodingType.Utf8 : TextEncodingType.Utf16WithBom;
-		var frame = new UserTextFrame (name, string.Join ("\0", kept), encoding);
+		// ID3v2.3 §3.3: every Unicode string begins with a BOM.
+		var frame = new UserTextFrame (name, string.Join ("\0", kept), encoding) { BomPerString = true };
 		_userTextFrames.Insert (at < 0 ? _userTextFrames.Count : at, frame);
 		return true;
 	}

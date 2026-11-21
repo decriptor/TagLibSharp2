@@ -109,6 +109,31 @@ public class Utf16MultiStringTests
 		Assert.IsTrue (TextFrame.Read ("TPE1", tpe1, Id3v2Version.V24).Frame!.RenderContent ().Span.SequenceEqual (tpe1));
 	}
 
+	public static IEnumerable<object[]> ReadLayouts => [
+		["one BOM per string", (byte[])[.. Le, .. Utf16 ("first", false), 0, 0, .. Le, .. Utf16 ("second", false)]],
+		["one BOM per string, terminated", (byte[])[.. Le, .. Utf16 ("first", false), 0, 0, .. Le, .. Utf16 ("second", false), 0, 0]],
+		["one BOM for the frame", (byte[])[.. Le, .. Utf16 ("first", false), 0, 0, .. Utf16 ("second", false)]],
+		["one string, terminated", (byte[])[.. Le, .. Utf16 ("first/second", false), 0, 0]],
+		["inner NUL, one BOM", (byte[])[.. Le, .. Utf16 ("T", false), 0, 0, .. Utf16 ("T", false)]],
+	];
+
+	[TestMethod]
+	[DynamicData (nameof (ReadLayouts))]
+	public void Utf16Frame_UnchangedRender_KeepsTheLayoutItWasReadWith (string layout, byte[] text)
+	{
+		_ = layout;
+		byte[] txxx = [0x01, .. Le, .. Utf16 ("MyField", false), 0, 0, .. text];
+		byte[] tpe1 = [0x01, .. text];
+
+		CollectionAssert.AreEqual (txxx, UserTextFrame.Read (txxx, Id3v2Version.V24).Frame!.RenderContent ().ToArray ());
+		var textFrame = TextFrame.Read ("TPE1", tpe1, Id3v2Version.V24).Frame!;
+		var expected = tpe1;
+		// TextFrame drops a trailing terminator on read, as it always has.
+		if (tpe1[^1] == 0 && tpe1[^2] == 0)
+			expected = tpe1[..^2];
+		CollectionAssert.AreEqual (expected, textFrame.RenderContent ().ToArray ());
+	}
+
 	[TestMethod]
 	public void Utf16SingleString_RendersAsBefore ()
 	{
