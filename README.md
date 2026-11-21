@@ -41,6 +41,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
 | **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
 | **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
+| **Chapters** | ✅ | — | — | — | — | — | — | ✅¹¹ | — | — | — | — | — | — | — |
 | **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
 | **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — | — | — | — |
 | **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | — | ✅⁷ | ✅⁷ | — | — | — | — |
@@ -56,6 +57,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 ⁸ Via APE tag
 ⁹ Via ASF Extended Content Description
 ¹⁰ From the ADTS frame headers or the ADIF header. HE-AAC reports the AAC core sample rate.
+¹¹ Nero `chpl` box and QuickTime chapter track, read and write (`Mp4File.Chapters`)
 
 ### Tag Format by Container
 
@@ -258,6 +260,7 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
 - [x] Album art (covr atom) with JPEG/PNG detection
 - [x] MusicBrainz IDs and ReplayGain via freeform atoms
 - [x] Atomic file writing with mdat relocation
+- [x] Chapters: Nero `chpl` and QuickTime chapter text track (`tref`/`chap`), read and write
 - [x] MediaFile factory integration for format auto-detection
 
 ### Phase 12: DSF & APE Tags ✅
