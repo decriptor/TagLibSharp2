@@ -245,7 +245,8 @@ public sealed class ApeTag : Tag
 			return string.IsNullOrEmpty (date) ? year ?? date : date;
 		}
 		set {
-			if (IsWriteBack (value, Year))
+			// The value read changes nothing, in a copy too: Date is its own item and keeps its full date.
+			if (IsValueRead (value, Year))
 				return;
 
 			if (string.IsNullOrEmpty (value)) {

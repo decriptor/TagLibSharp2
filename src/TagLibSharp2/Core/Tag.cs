@@ -91,11 +91,22 @@ public abstract class Tag
 	/// target's first value.
 	/// </summary>
 	internal static bool IsWriteBack (string? value, string? current) =>
-		t_copyDepth == 0 && value is not null && string.Equals (value, current, StringComparison.Ordinal);
+		!IsCopying && IsValueRead (value, current);
+
+	/// <summary>
+	/// True when <paramref name="value"/> is not null and equals <paramref name="current"/> ordinally.
+	/// </summary>
+	internal static bool IsValueRead (string? value, string? current) =>
+		value is not null && string.Equals (value, current, StringComparison.Ordinal);
+
+	/// <summary>
+	/// True while <see cref="CopyTo"/> runs on this thread.
+	/// </summary>
+	internal static bool IsCopying => t_copyDepth > 0;
 
 	/// <inheritdoc cref="IsWriteBack(string?, string?)"/>
 	internal static bool IsWriteBack (uint? value, uint? current) =>
-		t_copyDepth == 0 && value is not null && value == current;
+		!IsCopying && value is not null && value == current;
 
 	/// <summary>
 	/// Gets the type of tag represented by this instance.
