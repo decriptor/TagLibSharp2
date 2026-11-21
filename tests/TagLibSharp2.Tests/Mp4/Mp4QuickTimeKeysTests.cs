@@ -451,6 +451,20 @@ public class Mp4QuickTimeKeysTests
 	}
 
 	[TestMethod]
+	public void MissingKeysAtom_NamesNoItem ()
+	{
+		var item = TestBuilders.Mp4.CreateMdtaItem (1, "T");
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", null, [item], inMovie: false, udtaExtra: null);
+		var file = Mp4File.Read (data).File!;
+		Assert.IsNull (file.Title);
+
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (1, Count (rendered, item));
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
+	}
+
+	[TestMethod]
 	public void DamagedKeys_FromAFile_DoNotThrow ()
 	{
 		var path = Path.GetTempFileName ();
