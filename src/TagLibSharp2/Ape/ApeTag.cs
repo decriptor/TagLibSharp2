@@ -182,7 +182,7 @@ public sealed class ApeTag : Tag
 	/// The first performer. Other names stay on <see cref="Performers"/>; a comma does not join them.
 	/// </remarks>
 	public override string? Artist {
-		get => FirstName (Performers);
+		get => ReadFirstName (Keys.Artist);
 		set => SetOrRemove (Keys.Artist, value);
 	}
 
@@ -211,7 +211,7 @@ public sealed class ApeTag : Tag
 	/// Setting or clearing removes both items and stores the name in "Album Artist".
 	/// </remarks>
 	public override string? AlbumArtist {
-		get => FirstName (AlbumArtists);
+		get => ReadFirstName (Keys.AlbumArtist, Keys.AlbumArtistAlias);
 		set => SetOrRemove (Keys.AlbumArtist, value, Keys.AlbumArtistAlias);
 	}
 
@@ -233,7 +233,7 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? Year {
 		get => GetValue (Keys.Year) ?? GetValue (Keys.Date);
-		set => SetOrRemove (Keys.Year, value);
+		set => SetOrRemove (Keys.Year, value, Keys.Date);
 	}
 
 	/// <inheritdoc/>
@@ -247,7 +247,7 @@ public sealed class ApeTag : Tag
 	/// The first genre. Other names stay on <see cref="Genres"/>; a comma does not join them.
 	/// </remarks>
 	public override string? Genre {
-		get => FirstName (Genres);
+		get => ReadFirstName (Keys.Genre);
 		set => SetOrRemove (Keys.Genre, value);
 	}
 
@@ -341,7 +341,7 @@ public sealed class ApeTag : Tag
 	/// The first composer. Other names stay on <see cref="Composers"/>; a comma does not join them.
 	/// </remarks>
 	public override string? Composer {
-		get => FirstName (Composers);
+		get => ReadFirstName (Keys.Composer);
 		set => SetOrRemove (Keys.Composer, value);
 	}
 
@@ -809,7 +809,33 @@ public sealed class ApeTag : Tag
 		return result.Count == 0 ? [] : result.ToArray ();
 	}
 
-	static string? FirstName (string[] names) => names.Length == 0 ? null : names[0];
+	/// <summary>
+	/// The first text name, or the same string <see cref="GetValue"/> returns for a
+	/// locator, an empty text item, or a binary item.
+	/// </summary>
+	string? ReadFirstName (string key, string? alias = null)
+	{
+		var primary = ReadListedOrRaw (key);
+		if (!string.IsNullOrEmpty (primary) || alias is null)
+			return primary;
+
+		var secondary = ReadListedOrRaw (alias);
+		return string.IsNullOrEmpty (secondary) ? primary ?? secondary : secondary;
+	}
+
+	string? ReadListedOrRaw (string key)
+	{
+		if (!_items.TryGetValue (key, out var item))
+			return null;
+
+		if (item.ItemType == ApeItemType.Text) {
+			var names = GetTextList (key);
+			if (names.Length > 0)
+				return names[0];
+		}
+
+		return item.ValueAsString;
+	}
 
 	/// <summary>
 	/// Stores names in one item. A single name has no extra NUL.

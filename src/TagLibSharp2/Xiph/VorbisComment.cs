@@ -130,7 +130,7 @@ public sealed class VorbisComment : Tag
 	/// </remarks>
 	public override string? OriginalReleaseDate {
 		get => GetValue ("ORIGINALDATE") ?? GetValue ("ORIGINALYEAR");
-		set => SetValue ("ORIGINALDATE", value);
+		set => SetValueRemoving ("ORIGINALDATE", value, "ORIGINALYEAR");
 	}
 
 	/// <inheritdoc/>
@@ -272,7 +272,7 @@ public sealed class VorbisComment : Tag
 	/// </remarks>
 	public override string? Movement {
 		get => GetValue ("MOVEMENT") ?? GetValue ("MOVEMENTNAME");
-		set => SetValue ("MOVEMENT", value);
+		set => SetValueRemoving ("MOVEMENT", value, "MOVEMENTNAME");
 	}
 
 	/// <inheritdoc/>
@@ -910,6 +910,16 @@ public sealed class VorbisComment : Tag
 		RemoveAll (name);
 		if (value is not null)
 			AddField (name, value);
+	}
+
+	/// <summary>
+	/// Writes <paramref name="name"/> and removes <paramref name="alsoRemove"/>,
+	/// so a getter that falls back to the second field cannot revive a stale value.
+	/// </summary>
+	void SetValueRemoving (string name, string? value, string alsoRemove)
+	{
+		RemoveAll (alsoRemove);
+		SetValue (name, value);
 	}
 
 	/// <summary>
