@@ -224,6 +224,29 @@ public sealed class MpegPsGuardTests
 	}
 
 	[TestMethod]
+	[DataRow (0x10)]
+	[DataRow (0x20)]
+	[DataRow (0x00)]
+	public void Read_ExtendedHeaderWithoutTheUpdateFlag_IsNotAnUpdate (int flags)
+	{
+		// 3.2: extended flags %0bcd0000; only b is "Tag is an update". c (CRC) and d (restrictions)
+		// alone leave the appended tag replacing the prepended one (section 5).
+		var front = new Id3v2Tag (Id3v2Version.V24) { Title = "Front", Artist = "Front Artist", Album = "Front Album" }.Render ().ToArray ();
+		var stream = ProgramStream ();
+		var data = Concat (front, stream, UpdateTag ("Back", flags: (byte)flags));
+
+		var file = MpegPsFile.Read (data).File!;
+
+		Assert.AreEqual ("Back", file.Tag!.Title);
+		Assert.IsNull (file.Tag.Artist);
+		Assert.IsNull (file.Tag.Album);
+		file.Tag.Title = "Changed";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (1, Count (rendered, "ID3"u8), "the prepended tag is not kept");
+		CollectionAssert.AreEqual (stream, rendered.AsSpan (0, stream.Length).ToArray ());
+	}
+
+	[TestMethod]
 	public void Read_FooterWithRevisionFF_IsStreamData ()
 	{
 		// 3.1: the version and revision bytes are below $FF; the footer copies them.
