@@ -281,8 +281,19 @@ internal static class Mp4ChapterCodec
 			chapters.AddRange (chpl);
 		}
 
-		return WithEndTimes (chapters, trackEnd ?? duration);
+		return WithEndTimes (SortByStart (chapters), trackEnd ?? duration);
 	}
+
+	/// <summary>
+	/// A stable sort by start time: chapters that start together keep their order.
+	/// </summary>
+	public static List<Mp4Chapter> SortByStart (IEnumerable<Mp4Chapter> chapters) =>
+		chapters
+			.Select ((chapter, index) => (chapter, index))
+			.OrderBy (item => item.chapter.StartTime)
+			.ThenBy (item => item.index)
+			.Select (item => item.chapter)
+			.ToList ();
 
 	/// <summary>
 	/// Sets each end time to the next start, and the last to <paramref name="end"/> (not before its start).
