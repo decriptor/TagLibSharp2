@@ -74,6 +74,7 @@ public sealed class MatroskaFile : IMediaFile
 		_height = layout.Height;
 		_frameRate = layout.FrameRate;
 		_videoCodec = layout.VideoCodec;
+		Tracks = layout.Tracks is null ? [] : layout.Tracks.ToArray ();
 	}
 
 	readonly int _sampleRate;
@@ -95,6 +96,12 @@ public sealed class MatroskaFile : IMediaFile
 
 	/// <summary>Gets audio and video flags from <c>TrackType</c>.</summary>
 	public MediaTypes MediaTypes { get; }
+
+	/// <summary>
+	/// Gets every known-size <c>TrackEntry</c> in file order. RFC 9559 §5.1.4.1.
+	/// <see cref="MatroskaTrack.IsEnabled"/> can be changed and is written on save.
+	/// </summary>
+	public IReadOnlyList<MatroskaTrack> Tracks { get; }
 
 	IMediaProperties? IMediaFile.AudioProperties =>
 		(MediaTypes & MediaTypes.Audio) != 0
@@ -526,9 +533,12 @@ public sealed class MatroskaFile : IMediaFile
 	static void ReadTrackEntry (ReadOnlySpan<byte> entry, ref TrackLayout layout)
 	{
 		ulong kind = 0;
+		ulong number = 0;
+		ulong uid = 0;
 		string? codecId = null;
 		string? codecName = null;
 		var isDefault = true;
+		var isEnabled = true;
 		var privateOffset = -1;
 		var privateLength = 0;
 		var rate = 0;
@@ -547,8 +557,14 @@ public sealed class MatroskaFile : IMediaFile
 			var payload = entry.Slice (element.DataOffset, (int)element.DataLength);
 			if (element.Id == MatroskaIds.TrackType)
 				kind = EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.TrackNumber)
+				number = EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.TrackUid)
+				uid = EbmlReader.ReadUInt (payload);
 			else if (element.Id == MatroskaIds.FlagDefault)
 				isDefault = payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
+			else if (element.Id == MatroskaIds.FlagEnabled)
+				isEnabled = IsFlagSet (payload);
 			else if (element.Id == MatroskaIds.CodecId)
 				codecId = EbmlReader.ReadString (payload).TrimEnd ('\0');
 			else if (element.Id == MatroskaIds.CodecPrivate) {
@@ -578,12 +594,17 @@ public sealed class MatroskaFile : IMediaFile
 		else if (sawAudio && rate == 0)
 			rate = 8000;
 		var codec = CodecLabel (codecId, codecName, codecPrivate);
-		// FlagDefault defaults to 1. Keep the first default track. A later default replaces one that opted out.
+		layout.Tracks ??= new List<MatroskaTrack> ();
+		layout.Tracks.Add (new MatroskaTrack (layout.Tracks.Count, number, uid, kind, codecId, isDefault, isEnabled));
+		// FlagEnabled and FlagDefault both default to 1 (RFC 9559 §5.1.4.1.4, §5.1.4.1.5).
+		// An enabled track beats a disabled one; among those, a default track beats one that opted out.
+		// The first track of the best rank is kept. When every track is disabled, the disabled ones still rank.
+		var rank = (isEnabled ? 2 : 0) + (isDefault ? 1 : 0);
 		if (kind == 2) {
 			layout.Types |= MediaTypes.Audio;
-			if (!layout.HasAudio || (!layout.AudioIsDefault && isDefault)) {
+			if (!layout.HasAudio || rank > layout.AudioRank) {
 				layout.HasAudio = true;
-				layout.AudioIsDefault = isDefault;
+				layout.AudioRank = rank;
 				layout.SampleRate = rate;
 				layout.Channels = channels;
 				layout.BitsPerSample = bits;
@@ -591,9 +612,9 @@ public sealed class MatroskaFile : IMediaFile
 			}
 		} else if (kind == 1) {
 			layout.Types |= MediaTypes.Video;
-			if (!layout.HasVideo || (!layout.VideoIsDefault && isDefault)) {
+			if (!layout.HasVideo || rank > layout.VideoRank) {
 				layout.HasVideo = true;
-				layout.VideoIsDefault = isDefault;
+				layout.VideoRank = rank;
 				layout.Width = width;
 				layout.Height = height;
 				layout.FrameRate = frameRate;
@@ -727,21 +748,28 @@ public sealed class MatroskaFile : IMediaFile
 			body.Slice (info.DataOffset, info.DataLength).ToArray ()));
 	}
 
+	/// <summary>
+	/// A 0/1 flag. An empty element is the default 1 (RFC 8794 §7.1, RFC 9559 §5.1.4.1.4).
+	/// </summary>
+	internal static bool IsFlagSet (ReadOnlySpan<byte> payload) =>
+		payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
+
 	struct TrackLayout
 	{
+		public List<MatroskaTrack>? Tracks;
 		public MediaTypes Types;
 		public int SampleRate;
 		public int Channels;
 		public int BitsPerSample;
 		public string? AudioCodec;
 		public bool HasAudio;
-		public bool AudioIsDefault;
+		public int AudioRank;
 		public int Width;
 		public int Height;
 		public double FrameRate;
 		public string? VideoCodec;
 		public bool HasVideo;
-		public bool VideoIsDefault;
+		public int VideoRank;
 	}
 
 	static void ReadTags (ReadOnlySpan<byte> data, ReadOnlySpan<byte> body, MatroskaTag tag)

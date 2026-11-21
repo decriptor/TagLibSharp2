@@ -2230,6 +2230,7 @@ namespace TagLibSharp2.Matroska
         public TagLibSharp2.Core.MediaTypes MediaTypes { get; }
         public string? SourcePath { get; }
         public TagLibSharp2.Matroska.MatroskaTag Tag { get; }
+        public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Matroska.MatroskaTrack> Tracks { get; }
         public void Dispose() { }
         public TagLibSharp2.Core.BinaryData Render(System.ReadOnlySpan<byte> originalData) { }
         public TagLibSharp2.Core.FileWriteResult SaveToFile(TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
@@ -2307,6 +2308,27 @@ namespace TagLibSharp2.Matroska
         public override string? Year { get; set; }
         public override void Clear() { }
         public override TagLibSharp2.Core.BinaryData Render() { }
+    }
+    public sealed class MatroskaTrack
+    {
+        public string? CodecId { get; }
+        public bool IsDefault { get; }
+        public bool IsEnabled { get; set; }
+        public ulong TrackNumber { get; }
+        public TagLibSharp2.Matroska.MatroskaTrackType TrackType { get; }
+        public ulong TrackUid { get; }
+    }
+    public enum MatroskaTrackType
+    {
+        Unknown = 0,
+        Video = 1,
+        Audio = 2,
+        Complex = 3,
+        Logo = 16,
+        Subtitle = 17,
+        Buttons = 18,
+        Control = 32,
+        Metadata = 33,
     }
 }
 namespace TagLibSharp2.Mp4
