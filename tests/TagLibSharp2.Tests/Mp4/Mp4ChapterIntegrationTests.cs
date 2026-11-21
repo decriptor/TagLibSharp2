@@ -98,7 +98,7 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 	}
 
 	/// <summary>
-	/// SHA-256 of each track's samples, gathered through stsc, stsz, and stco/co64 (ISO 14496-12 §8.7).
+	/// SHA-256 of each track's samples inside the file, gathered through stsc, stsz, and stco/co64 (ISO 14496-12 §8.7).
 	/// </summary>
 	static Dictionary<uint, string> SampleHashes (byte[] file)
 	{
@@ -132,6 +132,10 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 					: (long)BinaryPrimitives.ReadUInt64BigEndian (stco.Span.Slice (8 + ((chunk - 1) * 8)));
 				for (var k = 0; k < perChunk && sample < count; k++, sample++) {
 					var size = constant != 0 ? constant : BinaryPrimitives.ReadUInt32BigEndian (stsz.Slice (12 + (sample * 4)));
+					// A truncated file ends mid-track. Every offset moves by the same amount, so the same
+					// samples stay inside the file before and after a save.
+					if (at + size > file.Length)
+						break;
 					sha.AppendData (file, (int)at, (int)size);
 					at += size;
 				}
