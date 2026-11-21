@@ -243,7 +243,7 @@ These items from the requirements are explicitly not planned:
 |--------|------------------|--------|
 | Format coverage | 15/20 (75%) | 20/20 (100%) |
 | Test coverage | 90.1% ✅ | >90% |
-| Round-trip tests | All 15 formats ✅ | All formats |
+| Round-trip tests | All 17 formats ✅ | All formats |
 | Cross-tagger compat | Unit tests ✅ | 7 major taggers |
 | Edge case handling | Complete ✅ | All documented cases |
 
