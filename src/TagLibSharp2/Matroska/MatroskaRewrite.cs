@@ -679,6 +679,28 @@ static class MatroskaRewrite
 		public bool UnknownSize { get; }
 	}
 
+	[ThreadStatic]
+	static long t_settleCalls;
+
+	[ThreadStatic]
+	static long t_settleSteps;
+
+	/// <summary>Gets or sets how many values the growth search placed on this thread.</summary>
+	internal static long SettleCalls {
+		get => t_settleCalls;
+		set => t_settleCalls = value;
+	}
+
+	/// <summary>
+	/// Gets or sets how many growth entries the search examined on this thread. A save stays linear
+	/// while this is a logarithmic multiple of <see cref="SettleCalls"/>, so tests bound it instead of a
+	/// wall-clock time.
+	/// </summary>
+	internal static long SettleSteps {
+		get => t_settleSteps;
+		set => t_settleSteps = value;
+	}
+
 	sealed class Plan
 	{
 		public Plan (ulong id, byte[] element)
@@ -787,9 +809,11 @@ static class MatroskaRewrite
 		/// </summary>
 		ulong Settle (ulong value, ulong old)
 		{
+			t_settleCalls++;
 			var low = 0;
 			var high = _growthFrom.Length;
 			while (low < high) {
+				t_settleSteps++;
 				var mid = (low + high) >>> 1;
 				if ((ulong)_growthFrom[mid] <= old)
 					low = mid + 1;

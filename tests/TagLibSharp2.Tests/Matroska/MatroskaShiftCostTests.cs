@@ -19,11 +19,18 @@ public partial class MatroskaFileTests
 	{
 		// Cue k holds 0xFFFF - k in two octets. One more octet before them pushes cue 0 over 0xFFFF,
 		// its growth pushes cue 1 over, and so on: each widening causes the next.
-		var small = CascadeAllocation (150, out var smallOk);
-		var large = CascadeAllocation (300, out var largeOk);
+		var small = CascadeCost (150);
+		var large = CascadeCost (300);
 
-		Assert.IsTrue (smallOk && largeOk);
-		Assert.IsTrue (large < small * 3, FormattableString.Invariant ($"allocated {small} bytes for 150 Cues and {large} for 300: not linear"));
+		Assert.IsTrue (small.Ok && large.Ok);
+		Assert.IsTrue (large.Bytes < small.Bytes * 3, FormattableString.Invariant ($"allocated {small.Bytes} bytes for 150 Cues and {large.Bytes} for 300: not linear"));
+		Assert.IsTrue (large.Calls < small.Calls * 3, FormattableString.Invariant ($"placed {small.Calls} values for 150 Cues and {large.Calls} for 300: not linear"));
+
+		// Each value placed is a binary search over at most one growth entry per rendered piece, so
+		// log2(301) + 1 < 10 entries. A linear scan examines up to 301 and doubles with N.
+		Assert.IsTrue (small.Steps > 0, "the growth search is counted");
+		Assert.IsTrue (large.Steps <= large.Calls * 10, FormattableString.Invariant ($"examined {large.Steps} growth entries for {large.Calls} values: not a logarithmic search"));
+		Assert.IsTrue (large.Steps < small.Steps * 3, FormattableString.Invariant ($"examined {small.Steps} growth entries for 150 Cues and {large.Steps} for 300: not linear"));
 	}
 
 	[TestMethod]
@@ -97,14 +104,20 @@ public partial class MatroskaFileTests
 		Assert.AreEqual ("Wrap", MatroskaFile.Read (bytes).File!.Tag.Title);
 	}
 
-	/// <summary>Bytes allocated by one TryGrow over <paramref name="count"/> cascading Cues.</summary>
-	static long CascadeAllocation (int count, out bool ok)
+	/// <summary>
+	/// The bytes allocated, values placed and growth entries searched by one TryGrow over
+	/// <paramref name="count"/> cascading Cues.
+	/// </summary>
+	static (bool Ok, long Bytes, long Calls, long Steps) CascadeCost (int count)
 	{
 		var original = CascadeLayout (count, out var tracks);
 		MatroskaRewrite.TryGrow (original, tracks, out _, out _);
+		MatroskaRewrite.SettleCalls = 0;
+		MatroskaRewrite.SettleSteps = 0;
 		var before = GC.GetAllocatedBytesForCurrentThread ();
-		ok = MatroskaRewrite.TryGrow (original, tracks, out _, out _);
-		return GC.GetAllocatedBytesForCurrentThread () - before;
+		var ok = MatroskaRewrite.TryGrow (original, tracks, out _, out _);
+		var bytes = GC.GetAllocatedBytesForCurrentThread () - before;
+		return (ok, bytes, MatroskaRewrite.SettleCalls, MatroskaRewrite.SettleSteps);
 	}
 
 	/// <summary>
