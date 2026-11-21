@@ -21,12 +21,13 @@ sealed class AiffTag : Tag
 	/// <inheritdoc/>
 	public override TagTypes TagType {
 		get {
-			// TagTypes has no AIFF member. Native NAME/AUTH/ANNO/(c)/COMT text is
-			// reported as RiffInfo, the existing INFO-style chunk type.
+			// TagTypes has no AIFF member. Native NAME/AUTH/ANNO/(c)/COMT-0 text is
+			// reported as RiffInfo, the existing INFO-style chunk type. Notes for other
+			// markers are not tag fields, as in IsEmpty.
 			var types = TagTypes.None;
 			if (Id3 is { IsEmpty: false })
 				types |= TagTypes.Id3v2;
-			if (_file.HasNativeSource)
+			if (_file.HasNativeFields)
 				types |= TagTypes.RiffInfo;
 			return types;
 		}
