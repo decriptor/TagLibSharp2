@@ -33,6 +33,9 @@ public sealed class Mp4Picture : IPicture
 	/// <inheritdoc/>
 	public BinaryData PictureData { get; }
 
+	// Parsed covers keep the file's type code, including 0. Null means the picture was created in memory.
+	readonly int? _parsedTypeIndicator;
+
 	/// <summary>
 	/// Initializes a new instance of the <see cref="Mp4Picture"/> class.
 	/// </summary>
@@ -46,6 +49,12 @@ public sealed class Mp4Picture : IPicture
 		PictureType = pictureType;
 		Description = description ?? string.Empty;
 		PictureData = pictureData;
+	}
+
+	Mp4Picture (string mimeType, PictureType pictureType, string description, BinaryData pictureData, int parsedTypeIndicator)
+		: this (mimeType, pictureType, description, pictureData)
+	{
+		_parsedTypeIndicator = parsedTypeIndicator;
 	}
 
 	/// <summary>
@@ -71,8 +80,19 @@ public sealed class Mp4Picture : IPicture
 			_ => "image/unknown"
 		};
 
-		return new Mp4Picture (mimeType, PictureType.FrontCover, string.Empty, dataAtom.Data);
+		return new Mp4Picture (mimeType, PictureType.FrontCover, string.Empty, dataAtom.Data, dataAtom.TypeIndicator);
 	}
+
+	/// <summary>
+	/// Type code written for this picture. Unchanged parsed bytes keep their original code.
+	/// A picture created in memory uses JPEG or PNG from the MIME type.
+	/// </summary>
+	internal int RenderTypeIndicator =>
+		_parsedTypeIndicator ?? (IsJpegMime ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng);
+
+	bool IsJpegMime =>
+		MimeType.Contains ("jpeg", StringComparison.OrdinalIgnoreCase) ||
+		MimeType.Contains ("jpg", StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>
 	/// Converts this picture to a data atom for rendering.
@@ -80,9 +100,6 @@ public sealed class Mp4Picture : IPicture
 	/// <returns>The binary representation as a data atom.</returns>
 	internal BinaryData ToDataAtom ()
 	{
-		var isJpeg = MimeType.Contains ("jpeg", StringComparison.OrdinalIgnoreCase) ||
-					 MimeType.Contains ("jpg", StringComparison.OrdinalIgnoreCase);
-
-		return Mp4DataAtom.CreateImage (PictureData, isJpeg);
+		return Mp4DataAtom.CreateImage (PictureData, RenderTypeIndicator);
 	}
 }
