@@ -312,6 +312,62 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	public void Save_ReplaceChapters_KeepsLanguageHandlerAndTrackFlags ()
+	{
+		// "eng" packed as three 5-bit letters (§8.4.2): ('e'-0x60)<<10 | ('n'-0x60)<<5 | ('g'-0x60).
+		const ushort English = (5 << 10) | (14 << 5) | 7;
+		var options = ThreeChapterTrack ();
+		options.TextLanguage = English;
+		options.TextHandlerName = "Chapter titles";
+		options.TextTkhdFlags = 0x6;
+		var original = Mp4ChapterTestBuilder.Build (options);
+		var before = Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (original), 2)!;
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+
+		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "A"), new Mp4Chapter (TimeSpan.FromSeconds (2), "B")];
+		var trak = Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (Save (file, original)), 2)!;
+
+		var mdhd = trak.FindDescendant ("mdia", "mdhd")!.Data.Span;
+		Assert.AreEqual (English, BinaryPrimitives.ReadUInt16BigEndian (mdhd.Slice (20)), "language");
+		CollectionAssert.AreEqual (before.FindDescendant ("mdia", "hdlr")!.Data.ToArray (), trak.FindDescendant ("mdia", "hdlr")!.Data.ToArray (), "hdlr");
+		Assert.AreEqual (0x6u, BinaryPrimitives.ReadUInt32BigEndian (trak.FindChild ("tkhd")!.Data.Span) & 0xFFFFFF, "tkhd flags");
+	}
+
+	[TestMethod]
+	public void Save_NewChapters_Mp4BrandWritesNmhdAndTx3g ()
+	{
+		var original = Mp4ChapterTestBuilder.Build (new ());
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "A")];
+
+		var minf = Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (Save (file, original)), 2)!.FindDescendant ("mdia", "minf")!;
+
+		Assert.IsNotNull (minf.FindChild ("nmhd"), "TN2174: the null media header");
+		Assert.IsNull (minf.FindChild ("gmhd"));
+		var stsd = minf.FindDescendant ("stbl", "stsd")!.Data.Span;
+		Assert.AreEqual ("tx3g", Encoding.ASCII.GetString (stsd.Slice (12, 4)), "3GPP TextSampleEntry");
+	}
+
+	[TestMethod]
+	public void Save_NewChapters_QuickTimeBrandWritesGmhdAndQtffTextDescription ()
+	{
+		var original = Mp4ChapterTestBuilder.Build (new () { MajorBrand = "qt  " });
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "A")];
+
+		var minf = Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (Save (file, original)), 2)!.FindDescendant ("mdia", "minf")!;
+
+		var gmhd = minf.FindChild ("gmhd")!.Data.Span;
+		Assert.AreEqual ("gmin", Encoding.ASCII.GetString (gmhd.Slice (4, 4)));
+		Assert.IsNull (minf.FindChild ("nmhd"));
+		var stsd = minf.FindDescendant ("stbl", "stsd")!.Data.Span;
+		Assert.AreEqual ("text", Encoding.ASCII.GetString (stsd.Slice (12, 4)));
+		// Entry: size, format, 6 reserved, data_reference_index, 43 bytes of fields, an empty Pascal font name.
+		Assert.AreEqual (16 + 43 + 1, (int)BinaryPrimitives.ReadUInt32BigEndian (stsd.Slice (8)));
+		Assert.AreEqual (0, stsd[8 + 16 + 43], "text name length");
+	}
+
+	[TestMethod]
 	public void Save_NewChapters_BumpsMvhdNextTrackId ()
 	{
 		var original = Mp4ChapterTestBuilder.Build (new ());
@@ -431,10 +487,10 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
-	public void Save_ClearChapters_RemovesEveryChapterTextTrackAndKeepsImages ()
+	public void Save_ClearChapters_RemovesChapterImageAndUrlTracks ()
 	{
 		// Apple layout: chap names the titles (2), chapter images (3, video), and chapter URLs (4, text).
-		// Both text tracks read as chapter lists, so clearing removes both; the image track stays.
+		// Apple players list chapters from any of them, so clearing removes all three and every chap entry.
 		var options = ThreeChapterTrack ();
 		options.ImageTrack = true;
 		options.UrlTrack = true;
@@ -445,9 +501,43 @@ public class Mp4ChapterTests
 		var saved = Save (file, original);
 
 		var moov = Mp4ChapterTestBuilder.Moov (saved);
-		CollectionAssert.AreEqual (new uint[] { 1, 3 }, Mp4ChapterTestBuilder.TrackIds (moov));
-		CollectionAssert.AreEqual (new uint[] { 3 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		CollectionAssert.AreEqual (new uint[] { 1 }, Mp4ChapterTestBuilder.TrackIds (moov));
+		Assert.IsNull (Mp4ChapterTestBuilder.Trak (moov, 1)!.FindChild ("tref"), "no chap reference is left");
 		Assert.AreEqual (0, Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Count);
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (saved, 1));
+	}
+
+	[TestMethod]
+	public void Save_ClearChapters_KeepsATrackThatHoldsItsOwnChapReference ()
+	{
+		// chap names track 3, which itself references the chapter text track: it is a presentation track.
+		var options = ThreeChapterTrack ();
+		options.ImageTrack = true;
+		var withRef = AddChapReference (Mp4ChapterTestBuilder.Build (options), Mp4ChapterTestBuilder.ImageTrackId, Mp4ChapterTestBuilder.TextTrackId);
+		var file = Mp4ChapterTestBuilder.ReadFile (withRef);
+
+		file.Chapters = [];
+		var moov = Mp4ChapterTestBuilder.Moov (Save (file, withRef));
+
+		CollectionAssert.AreEqual (new uint[] { 1, 3 }, Mp4ChapterTestBuilder.TrackIds (moov));
+	}
+
+	/// <summary>Gives <paramref name="trackId"/> a tref/chap naming <paramref name="target"/>, rebuilding moov.</summary>
+	static byte[] AddChapReference (byte[] data, uint trackId, uint target)
+	{
+		var moov = Mp4ChapterTestBuilder.Moov (data);
+		var moovAt = data.AsSpan ().IndexOf ("moov"u8) - 4;
+		var children = moov.Children.SelectMany (c => {
+			if (c.Type != "trak" || Mp4ChapterTestBuilder.Trak (moov, trackId) != c)
+				return c.Render ().ToArray ();
+			byte[] chap = [0, 0, 0, 12, (byte)'c', (byte)'h', (byte)'a', (byte)'p', 0, 0, 0, (byte)target];
+			var inner = c.Children.SelectMany (k => k.Render ().ToArray ()).ToArray ();
+			return Mp4TestBuilder.CreateBox ("trak", [.. Mp4TestBuilder.CreateBox ("tref", chap), .. inner]);
+		}).ToArray ();
+		var newMoov = Mp4TestBuilder.CreateMoovBox (children);
+		var oldLength = moov.Render ().Length;
+		Assert.AreEqual (data.Length, moovAt + oldLength, "the test layout has moov last");
+		return [.. data.AsSpan (0, moovAt), .. newMoov];
 	}
 
 	[TestMethod]
@@ -538,6 +628,178 @@ public class Mp4ChapterTests
 		var reread = Mp4ChapterTestBuilder.ReadFile (saved).Chapters;
 		Assert.AreEqual (title, reread[0].Title);
 		Assert.AreEqual (TimeSpan.FromSeconds (1), reread[0].StartTime, "chpl matches the cut title, so its start is used");
+	}
+
+	// ---- fragmented movies (ISO 14496-12 §8.8)
+
+	static Mp4ChapterTestBuilder.Options FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase mode) => new () {
+		Track = [("Intro", 900), ("Middle ü", 1200), ("End 日本", 600)],
+		Fragment = mode,
+	};
+
+	[TestMethod]
+	[DataRow ((int)Mp4ChapterTestBuilder.FragmentBase.Moof)]
+	[DataRow ((int)Mp4ChapterTestBuilder.FragmentBase.Explicit)]
+	[DataRow ((int)Mp4ChapterTestBuilder.FragmentBase.PreviousTraf)]
+	public void Read_FragmentedChapterTrack_ReadsSamplesFromMovieFragments (int mode)
+	{
+		var data = Mp4ChapterTestBuilder.Build (FragmentedTrack ((Mp4ChapterTestBuilder.FragmentBase)mode));
+
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+
+		AssertChapters (file.Chapters, (0, "Intro"), (1.5, "Middle ü"), (3.5, "End 日本"));
+		Assert.AreEqual (TimeSpan.Zero, file.Duration, "mvhd duration is 0, as in an empty_moov file");
+		Assert.AreEqual (TimeSpan.FromSeconds (4.5), file.Chapters[2].EndTime, "the last chapter ends with its fragment sample");
+	}
+
+	[TestMethod]
+	public void Read_FragmentedChapterTrack_TfdtSetsTheDecodeTime ()
+	{
+		// tfdt baseMediaDecodeTime 600 in a 600 Hz track (§8.8.12): the fragment's samples start at 1 s.
+		var options = FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.Moof);
+		options.FragmentDecodeTime = 600;
+
+		var file = Mp4ChapterTestBuilder.ReadFile (Mp4ChapterTestBuilder.Build (options));
+
+		AssertChapters (file.Chapters, (1, "Intro"), (2.5, "Middle ü"), (4.5, "End 日本"));
+	}
+
+	[TestMethod]
+	[DataRow ((int)Mp4ChapterTestBuilder.FragmentBase.Moof)]
+	[DataRow ((int)Mp4ChapterTestBuilder.FragmentBase.PreviousTraf)]
+	public void Read_FragmentedChapterTrack_FromStream_MatchesSpanRead (int mode)
+	{
+		var data = Mp4ChapterTestBuilder.Build (FragmentedTrack ((Mp4ChapterTestBuilder.FragmentBase)mode));
+
+		using var stream = new MemoryStream (data);
+		var result = MediaFile.Read (stream, "x.m4a");
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.ReadFile (data).Chapters.ToArray (), ((Mp4File)result.File!).Chapters.ToArray ());
+		Assert.AreEqual (3, ((Mp4File)result.File!).Chapters.Count);
+	}
+
+	[TestMethod]
+	public void Save_FragmentedMovieWithChapterTrack_RefusesAChapterChange ()
+	{
+		var fs = new MockFileSystem ();
+		var data = Mp4ChapterTestBuilder.Build (FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.Moof));
+		fs.AddFile ("/a.m4a", data);
+		var file = Mp4File.ReadFromFile ("/a.m4a", fs).File!;
+
+		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "One")];
+		var write = file.SaveToFile ("/b.m4a", fs);
+
+		Assert.IsFalse (write.IsSuccess, "a chapter track in fragments cannot be rewritten in moov");
+		StringAssert.Contains (write.Error, "fragmented movie");
+		Assert.IsFalse (fs.FileExists ("/b.m4a"));
+		Assert.IsTrue (file.Render (data).IsEmpty);
+	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_FragmentedMovieWithChapterTrack_RefusesClearing ()
+	{
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/a.m4a", Mp4ChapterTestBuilder.Build (FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.Explicit)));
+		var file = (await Mp4File.ReadFromFileAsync ("/a.m4a", fs)).File!;
+
+		file.Chapters = [];
+		var write = await file.SaveToFileAsync ("/b.m4a", fs);
+
+		Assert.IsFalse (write.IsSuccess);
+		StringAssert.Contains (write.Error, "fragmented movie");
+	}
+
+	[TestMethod]
+	public void Save_FragmentedMovieWithChapterTrack_TagEditStillSavesAndKeepsChapters ()
+	{
+		var options = FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.Moof);
+		options.Title = "Old";
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+		var chapters = file.Chapters.ToArray ();
+
+		file.Title = "A longer new title";
+		file.Chapters = [.. chapters.Select (c => new Mp4Chapter (c.StartTime, c.Title))];
+		var saved = Save (file, data);
+
+		var reread = Mp4ChapterTestBuilder.ReadFile (saved);
+		Assert.AreEqual ("A longer new title", reread.Title);
+		CollectionAssert.AreEqual (chapters, reread.Chapters.ToArray (), "the fragment data offsets moved with the moof");
+	}
+
+	[TestMethod]
+	public void Save_FragmentedMovieWithChapterSamplesInMoov_ReplacesWithoutGrowing ()
+	{
+		// mvex, but the chapter track's samples are all in moov and no traf names it: moov is the whole list.
+		var options = ThreeChapterTrack ();
+		options.Mvex = true;
+		var first = EditChapters (Mp4ChapterTestBuilder.Build (options), 1);
+		var current = first;
+		for (var round = 2; round <= 5; round++)
+			current = EditChapters (current, round);
+
+		Assert.AreEqual (first.Length, current.Length);
+		AssertChapters (Mp4ChapterTestBuilder.ReadFile (current).Chapters, (0, "Opening 5"), (3, "Middle 5"), (8, "Closing 5"));
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (current, 1));
+	}
+
+	[TestMethod]
+	public void Save_ClearChaptersInFragmentedMovieWithoutChapterFragments_DropsTheTrex ()
+	{
+		var options = ThreeChapterTrack ();
+		options.Mvex = true;
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+
+		file.Chapters = [];
+		var mvex = Mp4ChapterTestBuilder.Moov (Save (file, data)).FindChild ("mvex")!;
+
+		var trexTracks = mvex.Children.Select (t => BinaryPrimitives.ReadUInt32BigEndian (t.Data.Span.Slice (4))).ToArray ();
+		CollectionAssert.AreEqual (new uint[] { Mp4ChapterTestBuilder.AudioTrackId }, trexTracks);
+	}
+
+	[TestMethod]
+	public void Save_ChapterMdatNextToFragmentData_IsKeptWhenATrafPointsIntoIt ()
+	{
+		// A traf whose explicit base_data_offset lands in the chapter mdat after moov: that mdat is not chapter-only.
+		var options = ThreeChapterTrack ();
+		options.Mvex = true;
+		var edited = EditChapters (Mp4ChapterTestBuilder.Build (options), 1);
+		var chapterPayload = edited.AsSpan ().LastIndexOf ("mdat"u8) + 4;
+		var baseOffset = new byte[8];
+		BinaryPrimitives.WriteUInt64BigEndian (baseOffset, (ulong)chapterPayload);
+		byte[] tfhd = [0, 0, 0, 24, (byte)'t', (byte)'f', (byte)'h', (byte)'d', 0, 0, 0, 1, 0, 0, 0, (byte)Mp4ChapterTestBuilder.AudioTrackId,
+			.. baseOffset];
+		byte[] trun = [0, 0, 0, 20, (byte)'t', (byte)'r', (byte)'u', (byte)'n', 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 4];
+		var moof = Mp4TestBuilder.CreateBox ("moof", Mp4TestBuilder.CreateBox ("traf", [.. tfhd, .. trun]));
+		byte[] withMoof = [.. edited, .. moof];
+
+		var again = EditChapters (withMoof, 2);
+
+		Assert.AreEqual (3, Mp4ChapterTestBuilder.TopLevelTypes (again).Count (t => t == "mdat"));
+	}
+
+	[TestMethod]
+	[TestCategory ("Security")]
+	public void Read_FragmentedChapterTrack_TruncatedAtEveryByte_DoesNotThrow ()
+	{
+		var data = Mp4ChapterTestBuilder.Build (FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.PreviousTraf));
+
+		for (var length = 0; length <= data.Length; length++) {
+			_ = Mp4File.Read (data.AsSpan (0, length));
+			using var stream = new MemoryStream (data, 0, length);
+			_ = MediaFile.Read (stream, "x.m4a");
+		}
+
+		var moofAt = data.AsSpan ().IndexOf ("moof"u8) - 4;
+		foreach (var value in new byte[] { 0x00, 0xFF, 0x7F }) {
+			for (var at = moofAt; at < data.Length; at++) {
+				var copy = (byte[])data.Clone ();
+				copy[at] = value;
+				_ = Mp4File.Read (copy);
+			}
+		}
 	}
 
 	[TestMethod]

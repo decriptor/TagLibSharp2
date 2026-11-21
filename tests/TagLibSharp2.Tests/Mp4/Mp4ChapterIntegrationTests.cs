@@ -57,6 +57,8 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 		];
 
 		file.Chapters = chapters;
+		if (Refused (file, data))
+			return;
 		var saved = file.Render (data).ToArray ();
 
 		var reread = Mp4File.Read (saved).File!;
@@ -84,6 +86,8 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 				new (TimeSpan.FromSeconds (2 + (round % 2)), $"Middle {round}"),
 				new (TimeSpan.FromSeconds (4.5), $"Closing {round}"),
 			];
+			if (Refused (file, current))
+				return;
 			current = file.Render (current).ToArray ();
 			sizes.Add (current.Length);
 			Assert.AreEqual ($"Middle {round}", Mp4File.Read (current).File!.Chapters[1].Title);
@@ -105,6 +109,8 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 		var (data, file) = Open ();
 
 		file.Chapters = [];
+		if (Refused (file, data))
+			return;
 		var saved = file.Render (data).ToArray ();
 
 		var moov = Mp4ChapterTestBuilder.Moov (saved);
@@ -124,6 +130,23 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 
 		CollectionAssert.AreEqual (chapters, Mp4File.Read (saved).File!.Chapters.ToArray ());
 		CollectionAssert.AreEqual (SampleHashes (data), SampleHashes (saved));
+	}
+
+	/// <summary>
+	/// True when the save is refused because the chapter track has samples in movie fragments (moof/traf).
+	/// The refusal must say so, and must not write a file.
+	/// </summary>
+	static bool Refused (Mp4File file, byte[] data)
+	{
+		var fs = new MockFileSystem ();
+		var write = file.SaveToFile ("/out.m4a", data, fs);
+		if (write.IsSuccess)
+			return false;
+
+		Console.WriteLine ($"refused: {write.Error}");
+		StringAssert.Contains (write.Error, "movie fragments");
+		Assert.IsFalse (fs.FileExists ("/out.m4a"));
+		return true;
 	}
 
 	/// <summary>

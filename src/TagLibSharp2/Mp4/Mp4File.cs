@@ -751,13 +751,20 @@ public sealed class Mp4File : IMediaFile
 	/// The new samples go in their own <c>mdat</c> right after <c>moov</c>, and every chunk offset after it
 	/// moves in the same update that a tag edit makes. That <c>mdat</c> replaces the one an earlier chapter save
 	/// wrote, so repeated edits do not grow the file. Old chapter samples that share an <c>mdat</c> with other
-	/// media stay there unreferenced. No track is added to a fragmented movie or to a file with no track;
-	/// <c>chpl</c> carries the list alone there.
+	/// media stay there unreferenced. A new track follows its brand: an MP4 file gets a null media header and a
+	/// 3GPP <c>tx3g</c> sample entry (Apple TN2174), a QuickTime file a <c>gmhd</c> and the QTFF <c>text</c>
+	/// sample description. A replaced track keeps its language, handler, and track flags.
 	/// </para>
 	/// <para>
-	/// An empty list removes <c>chpl</c>, every text track a <c>chap</c> reference names, and those
-	/// references. A save that leaves the list as read, or sets it to the list the file already holds, keeps
-	/// the chapter bytes unchanged.
+	/// Fragmented movies (<c>moov/mvex</c>): chapter samples in movie fragments are read. No track is added to a
+	/// fragmented movie or to a file with no track; <c>chpl</c> carries the list alone there. When a chapter
+	/// track has samples in movie fragments, its chapters cannot be changed: the save fails with an error that
+	/// says so, because the fragment samples would remain as a second chapter list.
+	/// </para>
+	/// <para>
+	/// An empty list removes <c>chpl</c>, every track a <c>chap</c> reference names (the titles, and Apple chapter
+	/// URL and image tracks), and those references. A save that leaves the list as read, or sets it to the list
+	/// the file already holds, keeps the chapter bytes unchanged.
 	/// </para>
 	/// </remarks>
 	/// <exception cref="ArgumentException">The list contains a null chapter.</exception>
@@ -817,16 +824,18 @@ public sealed class Mp4File : IMediaFile
 
 	/// <summary>
 	/// Reads from <paramref name="data"/>. Chapter samples are read from <paramref name="sampleSource"/>
-	/// when it is set, because <paramref name="data"/> then holds the boxes without <c>mdat</c>;
-	/// otherwise <paramref name="data"/> is the whole file.
+	/// when it is set, because <paramref name="data"/> then holds the boxes without <c>mdat</c>, and
+	/// <paramref name="positions"/> gives each kept box's file offset; otherwise <paramref name="data"/> is the
+	/// whole file.
 	/// </summary>
-	static Mp4FileReadResult Read (ReadOnlySpan<byte> data, Stream? sampleSource)
+	static Mp4FileReadResult Read (ReadOnlySpan<byte> data, Stream? sampleSource, List<long>? positions = null)
 	{
 		if (data.Length < Mp4Box.HeaderSize)
 			return Mp4FileReadResult.Failure ("Invalid MP4 file: data too short");
 
 		// Parse top-level boxes. mdat is the media payload: keep its size, not its bytes.
 		var boxes = new List<Mp4Box> ();
+		var fragments = new List<(Mp4Box Moof, long Start)> ();
 		var offset = 0;
 		while (offset < data.Length) {
 			var remaining = data.Length - offset;
@@ -844,6 +853,12 @@ public sealed class Mp4File : IMediaFile
 			var result = Mp4Box.Parse (data[offset..]);
 			if (!result.IsSuccess)
 				break;
+
+			// Movie fragments can hold chapter samples; their data offsets can be relative to the moof.
+			if (result.Box!.Type == "moof") {
+				var at = positions is not null && boxes.Count < positions.Count ? positions[boxes.Count] : offset;
+				fragments.Add ((result.Box, at));
+			}
 
 			boxes.Add (result.Box!);
 			offset += result.BytesConsumed;
@@ -875,8 +890,8 @@ public sealed class Mp4File : IMediaFile
 			MetaPlacement = placement
 		};
 		file._chapters = sampleSource is null
-			? Mp4ChapterCodec.Read (moov, data, properties.Duration)
-			: Mp4ChapterCodec.Read (moov, sampleSource, properties.Duration);
+			? Mp4ChapterCodec.Read (moov, fragments, data, properties.Duration)
+			: Mp4ChapterCodec.Read (moov, fragments, sampleSource, properties.Duration);
 
 		return Mp4FileReadResult.Success (file, offset);
 	}
@@ -1413,6 +1428,7 @@ public sealed class Mp4File : IMediaFile
 			stream.Position = 0;
 
 		using var kept = new MemoryStream ();
+		var positions = new List<long> ();
 		while (stream.Position + Mp4Box.HeaderSize <= stream.Length) {
 			var start = stream.Position;
 			var probe = StreamBytes.ReadAtMost (stream, Mp4Box.ExtendedHeaderSize);
@@ -1436,11 +1452,12 @@ public sealed class Mp4File : IMediaFile
 			if (box.Length == 0)
 				break;
 			StreamBytes.Append (kept, box);
+			positions.Add (start);
 			if (box.Length < length)
 				break;
 		}
 
-		return WithSource (Read (kept.ToArray (), stream), sourcePath, fileSystem);
+		return WithSource (Read (kept.ToArray (), stream, positions), sourcePath, fileSystem);
 	}
 
 	static Mp4FileReadResult WithSource (Mp4FileReadResult result, string? sourcePath, IFileSystem? fileSystem)
@@ -1568,9 +1585,14 @@ public sealed class Mp4File : IMediaFile
 	/// <remarks>
 	/// The moov.udta.meta.ilst atom is rebuilt with current tag values.
 	/// All other atoms are preserved from the original file.
+	/// Rendering fails when <see cref="Chapters"/> was changed and the chapter track has samples in movie
+	/// fragments (see <see cref="Chapters"/>); <see cref="SaveToFile(string, ReadOnlySpan{byte}, IFileSystem?)"/> reports why.
 	/// </remarks>
-	public BinaryData Render (ReadOnlySpan<byte> originalData)
+	public BinaryData Render (ReadOnlySpan<byte> originalData) => Render (originalData, out _);
+
+	BinaryData Render (ReadOnlySpan<byte> originalData, out string? error)
 	{
+		error = null;
 		if (originalData.Length < Mp4Box.HeaderSize)
 			return BinaryData.Empty;
 
@@ -1609,7 +1631,12 @@ public sealed class Mp4File : IMediaFile
 
 		var oldMoovStart = boxes[moovIndex].Start;
 		var oldMoovLength = boxes[moovIndex].Length;
-		var chapterPlan = PlanChapters (boxes[moovIndex].Box, originalData, boxes.Find (b => b.Box.Type == "ftyp").Box);
+		var chapterPlan = PlanChapters (boxes, moovIndex, originalData);
+		if (chapterPlan?.Error is not null) {
+			error = chapterPlan.Error;
+			return BinaryData.Empty;
+		}
+
 		var newMoov = RebuildMoovWithMetadata (boxes[moovIndex].Box, chapterPlan);
 		// New chapter samples get their own mdat right after moov, so they move the rest of the file too.
 		var chapterData = chapterPlan is null || chapterPlan.TrackId == 0
@@ -2363,23 +2390,39 @@ public sealed class Mp4File : IMediaFile
 		var (box, start, length) = boxes[next];
 		var header = box.UsesExtendedSize ? Mp4Box.ExtendedHeaderSize : Mp4Box.HeaderSize;
 		var moov = boxes[moovIndex].Box;
-		return Mp4ChapterCodec.HoldsOnlyReplacedSamples (moov, plan, start, start + header, start + length) ? next : -1;
+		var fragments = new List<(Mp4Box Moof, long Start)> ();
+		foreach (var (top, at, _) in boxes) {
+			if (top.Type == "moof")
+				fragments.Add ((top, at));
+		}
+
+		return Mp4ChapterCodec.HoldsOnlyReplacedSamples (moov, fragments, plan, start, start + header, start + length) ? next : -1;
 	}
 
 	/// <summary>
 	/// The chapter rewrite for this save, or null when the list was not set or matches the file's.
 	/// </summary>
-	Mp4ChapterCodec.ChapterPlan? PlanChapters (Mp4Box moov, ReadOnlySpan<byte> originalData, Mp4Box? ftyp)
+	Mp4ChapterCodec.ChapterPlan? PlanChapters (List<(Mp4Box Box, int Start, int Length)> boxes, int moovIndex, ReadOnlySpan<byte> originalData)
 	{
 		if (!_chaptersChanged)
 			return null;
 
+		var moov = boxes[moovIndex].Box;
+		var fragments = new List<(Mp4Box Moof, long Start)> ();
+		Mp4Box? ftyp = null;
+		foreach (var (box, start, _) in boxes) {
+			if (box.Type == "moof")
+				fragments.Add ((box, start));
+			else if (box.Type == "ftyp")
+				ftyp ??= box;
+		}
+
 		var duration = Mp4ChapterCodec.MovieDuration (moov);
-		if (SameChapters (Mp4ChapterCodec.Read (moov, originalData, duration), _chapters))
+		if (SameChapters (Mp4ChapterCodec.Read (moov, fragments, originalData, duration), _chapters))
 			return null;
 
 		var quickTime = ftyp is not null && ExtractFileType (ftyp) == "qt";
-		return Mp4ChapterCodec.Plan (moov, _chapters, duration, quickTime);
+		return Mp4ChapterCodec.Plan (moov, fragments, _chapters, duration, quickTime);
 	}
 
 	/// <summary>
@@ -2727,9 +2770,9 @@ public sealed class Mp4File : IMediaFile
 	/// <returns>A result indicating success or failure.</returns>
 	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
-		var rendered = Render (originalData);
+		var rendered = Render (originalData, out var error);
 		if (rendered.IsEmpty)
-			return FileWriteResult.Failure ("Failed to render MP4 file");
+			return FileWriteResult.Failure (error ?? "Failed to render MP4 file");
 
 		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.Write (path, rendered.Span, fileSystem);
@@ -2749,9 +2792,9 @@ public sealed class Mp4File : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		var rendered = Render (originalData.Span);
+		var rendered = Render (originalData.Span, out var error);
 		if (rendered.IsEmpty)
-			return Task.FromResult (FileWriteResult.Failure ("Failed to render MP4 file"));
+			return Task.FromResult (FileWriteResult.Failure (error ?? "Failed to render MP4 file"));
 
 		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fileSystem, cancellationToken);
