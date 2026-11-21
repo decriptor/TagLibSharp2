@@ -2,9 +2,11 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Ape;
+using TagLibSharp2.Asf;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
+using TagLibSharp2.Mp4;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Core;
@@ -321,6 +323,86 @@ public class TagCopyTests
 		Assert.HasCount (2, round.Genres);
 		Assert.AreEqual ("Jazz", round.Genres[0]);
 		Assert.AreEqual ("Soul", round.Genres[1]);
+	}
+
+	[TestMethod]
+	public void CopyTo_ApeToId3_KeepsEveryNameAndBasicKeepsTheFirst ()
+	{
+		var source = new ApeTag {
+			Performers = ["A", "B"],
+			AlbumArtists = ["Ada", "Bea"],
+			Composers = ["Cara", "Dan"],
+			Genres = ["Jazz", "Soul"]
+		};
+
+		Assert.AreEqual ("A", source.Artist);
+		Assert.AreEqual ("Ada", source.AlbumArtist);
+		Assert.AreEqual ("Cara", source.Composer);
+		Assert.AreEqual ("Jazz", source.Genre);
+		Assert.HasCount (2, source.Performers);
+		Assert.AreEqual ("B", source.Performers[1]);
+
+		var target = new Id3v2Tag ();
+		source.CopyTo (target);
+
+		Assert.HasCount (2, target.Performers);
+		Assert.AreEqual ("A", target.Performers[0]);
+		Assert.AreEqual ("B", target.Performers[1]);
+		Assert.AreEqual ("A", target.Artist);
+		Assert.HasCount (2, target.AlbumArtists);
+		Assert.AreEqual ("Ada", target.AlbumArtists[0]);
+		Assert.AreEqual ("Bea", target.AlbumArtists[1]);
+		Assert.HasCount (2, target.Composers);
+		Assert.AreEqual ("Cara", target.Composers[0]);
+		Assert.AreEqual ("Dan", target.Composers[1]);
+		Assert.HasCount (2, target.Genres);
+		Assert.AreEqual ("Jazz", target.Genres[0]);
+		Assert.AreEqual ("Soul", target.Genres[1]);
+		Assert.AreEqual ("Jazz", target.Genre);
+
+		var basic = new Id3v2Tag ();
+		source.CopyTo (basic, TagCopyOptions.Basic);
+		Assert.AreEqual ("A", basic.Artist);
+		Assert.AreEqual ("Jazz", basic.Genre);
+		Assert.HasCount (1, basic.Performers);
+		Assert.AreEqual ("A", basic.Performers[0]);
+		Assert.IsNull (basic.AlbumArtist);
+		Assert.IsNull (basic.Composer);
+	}
+
+	[TestMethod]
+	public void CopyTo_ApeToMp4AndAsf_KeepsOnlyTheFirstName ()
+	{
+		var source = new ApeTag {
+			Performers = ["A", "B"],
+			AlbumArtists = ["Ada", "Bea"],
+			Composers = ["Cara", "Dan"],
+			Genres = ["Jazz", "Soul"]
+		};
+
+		var mp4 = new Mp4Tag ();
+		source.CopyTo (mp4);
+		Assert.AreEqual ("A", mp4.Artist);
+		Assert.HasCount (1, mp4.Performers);
+		Assert.AreEqual ("A", mp4.Performers[0]);
+		Assert.AreEqual ("Ada", mp4.AlbumArtist);
+		Assert.HasCount (1, mp4.AlbumArtists);
+		Assert.AreEqual ("Cara", mp4.Composer);
+		Assert.HasCount (1, mp4.Composers);
+		Assert.AreEqual ("Jazz", mp4.Genre);
+		Assert.HasCount (1, mp4.Genres);
+
+		var asf = new AsfTag ();
+		source.CopyTo (asf);
+		Assert.AreEqual ("A", asf.Artist);
+		Assert.HasCount (1, asf.Performers);
+		Assert.AreEqual ("A", asf.Performers[0]);
+		Assert.AreEqual ("Ada", asf.AlbumArtist);
+		Assert.HasCount (1, asf.AlbumArtists);
+		Assert.AreEqual ("Cara", asf.Composer);
+		Assert.HasCount (1, asf.Composers);
+		Assert.AreEqual ("Jazz", asf.Genre);
+		Assert.HasCount (1, asf.Genres);
 	}
 
 	[TestMethod]
