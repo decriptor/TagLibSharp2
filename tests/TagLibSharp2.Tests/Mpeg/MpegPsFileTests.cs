@@ -502,6 +502,8 @@ public sealed class MpegPsFileTests
 	[DataRow ("clip.mpe")]
 	[DataRow ("clip.mpv")]
 	[DataRow ("clip.m2v")]
+	[DataRow ("clip.vob")]
+	[DataRow ("clip.m1v")]
 	public void DetectFormat_Extension_FallsBackToMpegPs (string name)
 	{
 		Assert.AreEqual (MediaFormat.MpegPs, MediaFile.DetectFormat (new byte[] { 1, 2, 3, 4 }, name));
