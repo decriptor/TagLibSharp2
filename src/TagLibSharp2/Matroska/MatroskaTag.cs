@@ -13,10 +13,17 @@ namespace TagLibSharp2.Matroska;
 /// A value applies from its <c>TargetTypeValue</c> down to more specific levels until a level
 /// sets that name, including an empty string. <c>TITLE</c> at 50 is the album or movie.
 /// <c>TITLE</c> at 30 is the track. Chapter and attachment targets are not the file.
+/// <para>
+/// <see cref="Track"/> is <c>PART_NUMBER</c> at 30 and <see cref="DiscNumber"/> is <c>PART_NUMBER</c> at 50.
+/// <c>TOTAL_PARTS</c> counts the parts of the first lower level, so <see cref="TotalTracks"/> is
+/// <c>TOTAL_PARTS</c> at 50 and <see cref="TotalDiscs"/> is <c>TOTAL_PARTS</c> at 60, as in
+/// https://www.matroska.org/technical/tagging-audio-example.html. TagLib writes these totals at 30 and 50.
+/// </para>
 /// </remarks>
 public sealed class MatroskaTag : Tag
 {
 	const ulong CollectionLevel = 70;
+	const ulong VolumeLevel = 60;
 	const ulong AlbumLevel = 50;
 	const ulong TrackLevel = 30;
 
@@ -658,7 +665,8 @@ public sealed class MatroskaTag : Tag
 		var atTrack = FirstAt (TrackLevel, "PART_NUMBER");
 		if (atTrack is not null)
 			return atTrack;
-		// ffmpeg writes the track as PART_NUMBER and omits TargetTypeValue. Missing is not the disc default.
+		// By the spec an omitted TargetTypeValue is 50, which would make this the disc. ffmpeg writes the
+		// track number here and omits TargetTypeValue, so an untargeted PART_NUMBER is read as the track.
 		return TextWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "PART_NUMBER");
 	}
 
@@ -678,78 +686,74 @@ public sealed class MatroskaTag : Tag
 		RemoveOthers (IsTrackTarget, home, "PART_NUMBER");
 	}
 
-	// TOTAL_PARTS and PART_NUMBER: https://www.matroska.org/technical/tagging.html (Organization Information).
-	// TRACKTOTAL and TOTALTRACKS are Vorbis names that ffmpeg copies from FLAC. The tagging spec names only TOTAL_PARTS.
+	// TOTAL_PARTS is the "total number of parts defined at the first lower level"
+	// (https://www.matroska.org/technical/tagging.html, Organization Information), so the album's
+	// track count is TOTAL_PARTS at 50 and the set's disc count is TOTAL_PARTS at 60
+	// (https://www.matroska.org/technical/tagging-audio-example.html, "Collection of CD sets").
+	// A block that omits TargetTypeValue is 50. TRACKTOTAL and TOTALTRACKS are Vorbis names that ffmpeg
+	// copies from FLAC; the spec does not name them. TOTAL_PARTS at 30 counts a track's own parts, but
+	// TagLib writes the track total there, so it is read last and never written.
 	uint? TrackTotal () =>
-		FirstNumberWhere (block => block.IsFileLevel && block.Level == TrackLevel, "TOTAL_PARTS")
-		?? FirstNumberWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "TOTAL_PARTS")
+		SpecTrackTotal () ?? FirstNumberWhere (IsTrackLevel, "TOTAL_PARTS");
+
+	uint? SpecTrackTotal () =>
+		ParseLeading (AlbumTotalBlock () is { } album ? Text (album, "TOTAL_PARTS") : null)
 		?? ParseEmbeddedTotal (TrackPartNumber ())
 		?? ParseLeading (LowestLevelText ("TRACKTOTAL", "TOTALTRACKS"));
 
 	void SetTrackTotal (uint? value)
 	{
+		// The level 30 fallback goes when it is what the getter shows, and on a clear, which would otherwise expose it.
+		if (value is null || SpecTrackTotal () is null)
+			RemoveWhere (IsTrackLevel, "TOTAL_PARTS");
 		RemoveFileLevel ("TRACKTOTAL");
 		RemoveFileLevel ("TOTALTRACKS");
 		if (value is null) {
-			RemoveWhere (IsTrackTarget, "TOTAL_PARTS");
+			RemoveWhere (IsAlbumTarget, "TOTAL_PARTS");
 			StripEmbeddedTotal (IsTrackTarget, "PART_NUMBER");
 			return;
 		}
 
-		var text = value.Value.ToString (CultureInfo.InvariantCulture);
 		var home = TrackTotalHome ();
-		ReplaceOrAdd (home, "TOTAL_PARTS", text);
-		RemoveOthers (IsTrackTarget, home, "TOTAL_PARTS");
+		ReplaceOrAdd (home, "TOTAL_PARTS", value.Value.ToString (CultureInfo.InvariantCulture));
+		RemoveOthers (IsAlbumTarget, home, "TOTAL_PARTS");
 		StripEmbeddedTotal (IsTrackTarget, "PART_NUMBER");
 	}
 
-	TagBlock TrackTotalHome ()
-	{
-		var atLevel = FirstBlock (block =>
-			block.IsFileLevel && block.Level == TrackLevel && block.HasName ("TOTAL_PARTS"));
-		if (atLevel is not null)
-			return atLevel;
-		var track = FirstBlock (block => block.IsFileLevel && block.Level == TrackLevel);
-		if (track is not null)
-			return track;
-		var bareTotal = FirstBlock (block =>
-			block.IsFileLevel && !block.HasTargetTypeValue && block.HasName ("TOTAL_PARTS"));
-		if (bareTotal is not null)
-			return bareTotal;
-		var bare = FirstBlock (block => block.IsFileLevel && !block.HasTargetTypeValue);
-		if (bare is not null)
-			return bare;
-		return FileBlock (TrackLevel);
-	}
+	// The album the file's disc belongs to first, then any stored 50, then a block that omits TargetTypeValue.
+	TagBlock? AlbumTotalBlock () =>
+		FirstBlock (block => IsExplicitAlbum (block) && Text (block, "PART_NUMBER") is not null && HasNumber (block, "TOTAL_PARTS"))
+		?? FirstBlock (block => IsExplicitAlbum (block) && HasNumber (block, "TOTAL_PARTS"))
+		?? FirstBlock (block => IsUntargeted (block) && HasNumber (block, "TOTAL_PARTS"));
+
+	TagBlock TrackTotalHome () =>
+		AlbumTotalBlock ()
+		?? FirstBlock (block => IsAlbumTarget (block) && block.HasName ("TOTAL_PARTS"))
+		?? FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"))
+		?? FirstBlock (IsExplicitAlbum)
+		?? FirstBlock (IsUntargeted)
+		?? FileBlock (AlbumLevel);
 
 	string? DiscPartNumber () => TextWhere (IsExplicitAlbum, "PART_NUMBER") ?? LowestLevelText ("DISCNUMBER", "DISC");
 
-	// Read from the block the setter writes to: the one holding the disc PART_NUMBER, as DiscHome picks it.
-	uint? DiscTotal ()
-	{
-		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
-		return (withPart is null ? null : ParseLeading (Text (withPart, "TOTAL_PARTS")))
-			?? FirstNumberWhere (IsExplicitAlbum, "TOTAL_PARTS")
-			?? ParseEmbeddedTotal (DiscPartNumber ())
-			?? ParseLeading (LowestLevelText ("DISCTOTAL", "TOTALDISCS"));
-	}
+	uint? DiscTotal () =>
+		FirstNumberWhere (IsVolume, "TOTAL_PARTS")
+		?? ParseEmbeddedTotal (DiscPartNumber ())
+		?? ParseLeading (LowestLevelText ("DISCTOTAL", "TOTALDISCS"));
 
 	void SetDiscTotal (uint? value)
 	{
 		RemoveFileLevel ("DISCTOTAL");
 		RemoveFileLevel ("TOTALDISCS");
 		if (value is null) {
-			RemoveWhere (IsExplicitAlbum, "TOTAL_PARTS");
-			StripEmbeddedTotal (IsExplicitAlbum, "PART_NUMBER");
-			StripEmbeddedTotal (block => block.IsFileLevel, "DISC");
-			StripEmbeddedTotal (block => block.IsFileLevel, "DISCNUMBER");
-			return;
+			RemoveWhere (IsVolume, "TOTAL_PARTS");
+		} else {
+			var home = FirstBlock (block => IsVolume (block) && HasNumber (block, "TOTAL_PARTS"))
+				?? FirstBlock (block => IsVolume (block) && block.HasName ("TOTAL_PARTS"))
+				?? FileBlock (VolumeLevel);
+			ReplaceOrAdd (home, "TOTAL_PARTS", value.Value.ToString (CultureInfo.InvariantCulture));
+			RemoveOthers (IsVolume, home, "TOTAL_PARTS");
 		}
-
-		var text = value.Value.ToString (CultureInfo.InvariantCulture);
-		var home = DiscHome ();
-		ReplaceOrAdd (home, "TOTAL_PARTS", text);
-		RemoveOthers (IsExplicitAlbum, home, "TOTAL_PARTS");
 
 		StripEmbeddedTotal (IsExplicitAlbum, "PART_NUMBER");
 		StripEmbeddedTotal (block => block.IsFileLevel, "DISC");
@@ -780,6 +784,17 @@ public sealed class MatroskaTag : Tag
 
 	static bool IsExplicitAlbum (TagBlock block) =>
 		block.IsFileLevel && block.HasTargetTypeValue && block.Level == AlbumLevel;
+
+	// A missing TargetTypeValue is 50, so this is an explicit or an untargeted album block.
+	static bool IsAlbumTarget (TagBlock block) => block.IsFileLevel && block.Level == AlbumLevel;
+
+	static bool IsUntargeted (TagBlock block) => block.IsFileLevel && !block.HasTargetTypeValue;
+
+	static bool IsTrackLevel (TagBlock block) => block.IsFileLevel && block.Level == TrackLevel;
+
+	static bool IsVolume (TagBlock block) => block.IsFileLevel && block.Level == VolumeLevel;
+
+	static bool HasNumber (TagBlock block, string name) => ParseLeading (Text (block, name)) is not null;
 
 	void RemoveWhere (Func<TagBlock, bool> match, string name)
 	{
