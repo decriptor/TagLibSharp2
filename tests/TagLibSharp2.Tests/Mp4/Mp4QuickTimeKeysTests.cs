@@ -56,6 +56,8 @@ public class Mp4QuickTimeKeysTests
 	[DataRow ("com.apple.quicktime.description", "Description")]
 	[DataRow ("com.apple.quicktime.genre", "Genre")]
 	[DataRow ("com.apple.quicktime.publisher", "Publisher")]
+	[DataRow ("com.apple.quicktime.composer", "Composer")]
+	[DataRow ("com.apple.quicktime.encodedby", "EncodedBy")]
 	[DataRow ("com.apple.quicktime.year", "Year")]
 	[DataRow ("com.apple.quicktime.software", "EncoderSettings")]
 	[DataRow ("com.apple.quicktime.keywords", "PodcastKeywords")]
@@ -530,6 +532,174 @@ public class Mp4QuickTimeKeysTests
 		var rendered = file.Render (data).ToArray ();
 		Assert.AreEqual (0, Count (rendered, stray));
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
+	}
+
+	// An item the reader cannot take as its field's value (vinyl "A1", UTF-16 text, no data, an
+	// empty artwork item) is kept, and a set of that field replaces it at the same key index.
+	[TestMethod]
+	[DataRow ("track", "Track", "A1", 5u, "5")]
+	[DataRow ("disc", "DiscNumber", "Side B", 2u, "2")]
+	[DataRow ("title", "Title", "utf16", "New", "New")]
+	[DataRow ("title", "Title", "nodata", "New", "New")]
+	public void RejectedValue_IsKeptAndASetReplacesIt (string key, string property, string kind, object value, string written)
+	{
+		var rejected = kind switch {
+			"utf16" => TestBuilders.Mp4.CreateMdtaItem (1, 2, Encoding.BigEndianUnicode.GetBytes ("Old")),
+			"nodata" => TestBuilders.Mp4.CreateBox ("\0\0\0\u0001", []),
+			_ => TestBuilders.Mp4.CreateMdtaItem (1, kind)
+		};
+		var data = Keyed ([key, "custom"], rejected, TestBuilders.Mp4.CreateMdtaItem (2, "xyz"));
+		var file = Mp4File.Read (data).File!;
+		Assert.IsNull (Get (file.Tag!, property));
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		Set (file.Tag!, property, value);
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, rejected));
+		CollectionAssert.AreEqual (new uint[] { 1, 2 }, ItemTypes (rendered));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, written)));
+		Assert.AreEqual (value, Get (Mp4File.Read (rendered).File!.Tag!, property));
+	}
+
+	[TestMethod]
+	public void EmptyArtworkItem_IsKeptAndASetReplacesIt ()
+	{
+		var empty = TestBuilders.Mp4.CreateBox ("\0\0\0\u0001", []);
+		var data = Keyed (["com.apple.quicktime.artwork"], empty);
+		var file = Mp4File.Read (data).File!;
+		Assert.IsEmpty (file.Pictures);
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		var jpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+		file.Tag!.Pictures = [new Mp4Picture (jpeg, isJpeg: true)];
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, empty));
+		CollectionAssert.AreEqual (new uint[] { 1 }, ItemTypes (rendered));
+	}
+
+	// mutagen edits an ffmpeg file by adding ©nam beside the keyed title. Readers that read
+	// iTunes atoms (TagLib#, mutagen, AVFoundation's common title) show the ©nam, which is the
+	// newer edit, so it wins; an unedited save keeps both; a set replaces both with one keyed item.
+	[TestMethod]
+	[DataRow (true)]
+	[DataRow (false)]
+	public void ItunesAtomBesideKeyedItem_WinsIsKeptAndASetReplacesBoth (bool itunesFirst)
+	{
+		var keyed = TestBuilders.Mp4.CreateMdtaItem (1, "Keyed");
+		var itunes = TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Edited"));
+		var data = Keyed (["title", "encoder"], itunesFirst ? [itunes, keyed, Other] : [keyed, itunes, Other]);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("Edited", file.Title);
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, keyed));
+		Assert.AreEqual (0, Count (rendered, itunes));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "New")));
+		AssertOnlyKeyedItems (rendered, keyCount: 2);
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
+	}
+
+	// A file saved by an older version has iTunes atoms in its mdta meta. An unedited save keeps them.
+	[TestMethod]
+	public void ItunesAtomsInAnMdtaMeta_AreKeptOnAnUneditedSave ()
+	{
+		var data = Keyed (["custom"], TestBuilders.Mp4.CreateMdtaItem (1, "xyz"),
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("T")),
+			TestBuilders.Mp4.CreateFreeformAtom ("com.apple.iTunes", "MOOD", "Calm"),
+			TestBuilders.Mp4.CreateCovrAtom ([0xFF, 0xD8, 0xFF], Mp4AtomMapping.TypeJpeg));
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("T", file.Title);
+		Assert.AreEqual ("Calm", file.Tag!.Mood);
+		Assert.HasCount (1, file.Pictures);
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+	}
+
+	// Freeform fields round-trip by mean and name. A mean other than the name's own is written as "mean:name".
+	[TestMethod]
+	[DataRow ("com.apple.iTunes", "MYFIELD", "MYFIELD")]
+	[DataRow ("org.example", "MusicBrainz Track Id", "org.example:MusicBrainz Track Id")]
+	[DataRow ("org.example", "CUSTOM", "org.example:CUSTOM")]
+	[DataRow ("com.apple.iTunes", "title", "com.apple.iTunes:title")]
+	[DataRow ("com.apple.iTunes", "a.b:c", "com.apple.iTunes:a.b:c")]
+	[DataRow ("com.apple.iTunes", "UFIDhttp://www.cddb.com/id3/taginfo1.html", "UFIDhttp://www.cddb.com/id3/taginfo1.html")]
+	public void FreeformField_RoundTripsByMeanAndName (string mean, string name, string expectedKey)
+	{
+		var data = Keyed (["title"], TestBuilders.Mp4.CreateMdtaItem (1, "T"));
+		var file = Mp4File.Read (data).File!;
+		file.SetFreeformTag (mean, name, "hello");
+
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (expectedKey, Keys (rendered)[1]);
+		var reread = Mp4File.Read (rendered).File!;
+		Assert.AreEqual ("hello", reread.GetFreeformTag (mean, name));
+		Assert.AreEqual ("T", reread.Title);
+		if (mean != Mp4AtomMapping.MusicBrainzNamespace)
+			Assert.IsNull (reread.Tag!.MusicBrainzTrackId);
+	}
+
+	[TestMethod]
+	public void UnmappedFfmpegKey_IsAnItunesFreeformField ()
+	{
+		var data = Keyed (["custom"], TestBuilders.Mp4.CreateMdtaItem (1, "xyz"));
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("xyz", file.GetFreeformTag (Mp4AtomMapping.AppleNamespace, "custom"));
+
+		file.SetFreeformTag (Mp4AtomMapping.AppleNamespace, "custom", "new");
+		var rendered = file.Render (data).ToArray ();
+		CollectionAssert.AreEqual (new uint[] { 1 }, ItemTypes (rendered));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "new")));
+	}
+
+	// ffmpeg writes udta/meta; Apple writes moov/meta. With both, a field udta/meta lacks is read
+	// from moov/meta, an unedited save keeps both, and a set leaves the value in udta/meta only.
+	[TestMethod]
+	public void BothMetas_MovieMetaFillsFieldsAndASetReplacesIt ()
+	{
+		var encoder = TestBuilders.Mp4.CreateIlstChild ("©too", 1, Encoding.UTF8.GetBytes ("Lavf"));
+		var appleTitle = TestBuilders.Mp4.CreateMdtaItem (1, "AppleT");
+		var appleArtist = TestBuilders.Mp4.CreateMdtaItem (2, "AppleA");
+		var udta = TestBuilders.Mp4.CreateBox ("meta", [
+			0, 0, 0, 0,
+			.. TestBuilders.Mp4.CreateBox ("hdlr", [0, 0, 0, 0, 0, 0, 0, 0, .. "mdirappl"u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+			.. TestBuilders.Mp4.CreateBox ("ilst", encoder)]);
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title", "com.apple.quicktime.artist"),
+			[appleTitle, appleArtist], inMovie: true, udtaExtra: udta);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("AppleT", file.Title);
+		Assert.AreEqual ("AppleA", file.Tag!.Artist);
+		Assert.AreEqual ("Lavf", file.Tag.EncoderSettings);
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, appleTitle));
+		Assert.AreEqual (1, Count (rendered, appleArtist));
+		Assert.AreEqual (1, Count (rendered, encoder));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("New"))));
+		var reread = Mp4File.Read (rendered).File!;
+		Assert.AreEqual ("New", reread.Title);
+		Assert.AreEqual ("AppleA", reread.Tag!.Artist);
+
+		file.Tag.Artist = null;
+		Assert.AreEqual (0, Count (file.Render (data).ToArray (), appleArtist));
+	}
+
+	// The types of the first ilst's items.
+	static uint[] ItemTypes (byte[] file)
+	{
+		var ilst = Find (file, "ilst"u8);
+		var types = new List<uint> ();
+		var offset = 0;
+		while (offset + 8 <= ilst.Length) {
+			types.Add (BinaryPrimitives.ReadUInt32BigEndian (ilst.Slice (offset + 4, 4)));
+			offset += (int)BinaryPrimitives.ReadUInt32BigEndian (ilst.Slice (offset, 4));
+		}
+
+		return [.. types];
 	}
 
 	static byte[] Keyed (string[] keys, params byte[][] items) =>
