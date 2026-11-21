@@ -494,6 +494,30 @@ public class Id3v2TagExtendedMetadataTests
 	}
 
 	[TestMethod]
+	public void OriginalReleaseDate_SetAndClear_RemovesTheOtherVersionFrame ()
+	{
+		var v24 = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("TORY", "1999", TestConstants.Id3v2.Version4));
+		Assert.IsTrue (v24.IsSuccess, v24.Error);
+		v24.Tag!.OriginalReleaseDate = "2001-01-01";
+		Assert.AreEqual ("2001-01-01", v24.Tag.OriginalReleaseDate);
+		Assert.AreEqual ("2001-01-01", v24.Tag.GetTextFrame ("TDOR"));
+		Assert.IsNull (v24.Tag.GetTextFrame ("TORY"));
+
+		v24.Tag.SetTextFrameValues ("TORY", ["1999"]);
+		v24.Tag.OriginalReleaseDate = null;
+		Assert.IsNull (v24.Tag.OriginalReleaseDate);
+		Assert.IsNull (v24.Tag.GetTextFrame ("TDOR"));
+		Assert.IsNull (v24.Tag.GetTextFrame ("TORY"));
+
+		var v23 = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("TDOR", "1999-05-01", TestConstants.Id3v2.Version3));
+		Assert.IsTrue (v23.IsSuccess, v23.Error);
+		v23.Tag!.OriginalReleaseDate = null;
+		Assert.IsNull (v23.Tag.OriginalReleaseDate);
+		Assert.IsNull (v23.Tag.GetTextFrame ("TDOR"));
+		Assert.IsNull (v23.Tag.GetTextFrame ("TORY"));
+	}
+
+	[TestMethod]
 	public void OriginalReleaseDate_SetNull_ClearsField ()
 	{
 		var tag = new Id3v2Tag (Id3v2Version.V24);
