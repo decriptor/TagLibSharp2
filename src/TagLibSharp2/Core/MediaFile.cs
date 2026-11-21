@@ -712,7 +712,7 @@ public static class MediaFile
 				".WMA" or ".WMV" or ".ASF" => MediaFormat.Asf,
 				".MPC" or ".MP+" or ".MPP" => MediaFormat.Musepack,
 				".MKV" or ".MKA" or ".MKS" or ".MK3D" or ".WEBM" => MediaFormat.Matroska,
-				".MPG" or ".MPEG" or ".MPE" or ".MPV" or ".M2V" => MediaFormat.MpegPs,
+				".MPG" or ".MPEG" or ".MPE" or ".VOB" or ".MPV" or ".M1V" or ".M2V" => MediaFormat.MpegPs,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -1060,7 +1060,7 @@ public enum MediaFormat
 
 	/// <summary>
 	/// MPEG-1 and MPEG-2 program streams (.mpg, .mpeg, .mpe, .vob) and MPEG video elementary
-	/// streams (.mpv, .m2v).
+	/// streams (.mpv, .m1v, .m2v).
 	/// </summary>
 	MpegPs
 }
