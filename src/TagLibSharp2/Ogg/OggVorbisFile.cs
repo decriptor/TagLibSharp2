@@ -332,19 +332,27 @@ public sealed class OggVorbisFile : IMediaFile
 		if (!IsVorbisCommentHeader (packet))
 			return VorbisCommentReadResult.Failure ("Not a Vorbis comment header");
 
-		// Validate framing bit (last byte must be 1)
+		// https://xiph.org/vorbis/doc/v-comment.html: after the declared comments, "[framing_bit] = read a
+		// single bit as boolean"; "if ( [framing_bit] unset or end of packet ) then ERROR". Vorbis I spec
+		// 2.1.4 packs bits from the least significant bit, so that bit is the low bit of the next byte.
+		// Bytes after it are padding.
 		if (packet.Length < MinVorbisHeaderSize + 1)
 			return VorbisCommentReadResult.Failure ("Comment header too short for framing bit");
 
-		var framingBit = packet[packet.Length - 1];
-		if (framingBit != 1)
-			return VorbisCommentReadResult.Failure ($"Invalid framing bit (expected 1, got {framingBit})");
+		var body = packet.Slice (MinVorbisHeaderSize);
+		var commentResult = VorbisComment.Read (body);
+		if (!commentResult.IsSuccess)
+			return commentResult;
 
-		// Parse the Vorbis comment
-		// Skip packet type (1) + "vorbis" (6) = 7 bytes
-		// Also skip framing bit at the end (1 byte)
-		var commentSpan = packet.Slice (MinVorbisHeaderSize, packet.Length - MinVorbisHeaderSize - 1);
-		return VorbisComment.Read (commentSpan);
+		var consumed = commentResult.BytesConsumed;
+		if (consumed >= body.Length)
+			return VorbisCommentReadResult.Failure ("No framing byte after the comment list");
+
+		var framing = body[consumed];
+		if ((framing & 1) == 0)
+			return VorbisCommentReadResult.Failure ($"Framing bit unset (byte after the comment list is 0x{framing:X2})");
+
+		return commentResult;
 	}
 
 	static VorbisCommentReadResult TryParseCommentPacket (byte[] packet) =>

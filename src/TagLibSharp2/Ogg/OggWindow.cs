@@ -87,13 +87,35 @@ internal static class OggWindow
 		for (var i = tail.Length - 27; i >= 0; i--) {
 			if (tail[i] != (byte)'O' || tail[i + 1] != (byte)'g' || tail[i + 2] != (byte)'g' || tail[i + 3] != (byte)'S')
 				continue;
-			if (!TryPageLength (tail, i, out var length))
+			if (!TryDeclaredPageLength (tail, i, out var length, out var complete))
 				continue;
-			if (i + length == tail.Length)
-				return tail.AsSpan (i, length).ToArray ();
+
+			// The rightmost header is the last page. A cut-off body still has its granule.
+			if (!complete)
+				return tail.AsSpan (i).ToArray ();
+			return tail.AsSpan (i, length).ToArray ();
 		}
 
 		return [];
+	}
+
+	static bool TryDeclaredPageLength (byte[] data, int offset, out int length, out bool complete)
+	{
+		length = 0;
+		complete = false;
+		if (offset + 27 > data.Length || data[offset + 4] != 0)
+			return false;
+
+		var segments = data[offset + 26];
+		if (offset + 27 + segments > data.Length)
+			return false;
+
+		var body = 0;
+		for (var i = 0; i < segments; i++)
+			body += data[offset + 27 + i];
+		length = 27 + segments + body;
+		complete = offset + length <= data.Length;
+		return true;
 	}
 
 	static bool ShouldStop (Stream stream, PageHeader header, OggHeaderKind kind, int complete, bool open)
@@ -128,6 +150,7 @@ internal static class OggWindow
 
 			index = 1;
 		} else if (open) {
+			// Only an empty segment table keeps this clear. Lacing below sets it again.
 			open = false;
 		}
 
@@ -167,22 +190,5 @@ internal static class OggWindow
 		table.CopyTo (prefix, 27);
 		header = new PageHeader (prefix, body, (head[5] & 0x01) != 0, table);
 		return true;
-	}
-
-	static bool TryPageLength (byte[] data, int offset, out int length)
-	{
-		length = 0;
-		if (offset + 27 > data.Length)
-			return false;
-
-		var segments = data[offset + 26];
-		if (offset + 27 + segments > data.Length)
-			return false;
-
-		var body = 0;
-		for (var i = 0; i < segments; i++)
-			body += data[offset + 27 + i];
-		length = 27 + segments + body;
-		return offset + length <= data.Length;
 	}
 }

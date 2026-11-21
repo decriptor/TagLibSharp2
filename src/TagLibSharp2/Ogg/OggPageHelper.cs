@@ -683,10 +683,12 @@ internal static class OggPageHelper
 						packets.Add (segment);
 					}
 				} else {
-					if (segment.Length > maxPacketSize)
+					// A lacing value of 255 continues this packet. A later segment on the
+					// same page is more of that packet, even when the next page forgot
+					// the continuation flag.
+					if (ExceedsPacketSize (packetBuffer.Count, segment.Length, maxPacketSize))
 						return PacketTooLarge (stopAtFlacAudio, packets, serialNumber, offset, maxPacketSize);
 
-					packetBuffer.Clear ();
 					packetBuffer.AddRange (segment);
 				}
 			}
