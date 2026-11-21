@@ -4,6 +4,7 @@
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
+using TagLibSharp2.Tests.Core;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Id3.Id3v2;
@@ -600,6 +601,24 @@ public class Id3v2TagTests
 		var tag = new Id3v2Tag (Id3v2Version.V24);
 
 		Assert.IsTrue (tag.IsEmpty);
+	}
+
+	[TestMethod]
+	public void IsEmpty_IsFalseForEverySettableMember_AndTrueAfterClear ()
+	{
+		// IsEmpty decides whether WAV and AIFF write the ID3 chunk at all, so it must see
+		// every frame kind, not only the basic fields the Tag base class checks.
+		foreach (var p in TagMemberSamples.Settable) {
+			var tag = new Id3v2Tag (Id3v2Version.V24);
+			p.SetValue (tag, TagMemberSamples.Sample (p));
+			Assert.IsFalse (tag.IsEmpty, p.Name);
+			tag.Clear ();
+			Assert.IsTrue (tag.IsEmpty, p.Name + " after Clear");
+		}
+
+		var rated = new Id3v2Tag (Id3v2Version.V24);
+		rated.SetPopularimeter ("user@example.com", 196, 3);
+		Assert.IsFalse (rated.IsEmpty, "POPM");
 	}
 
 	[TestMethod]
