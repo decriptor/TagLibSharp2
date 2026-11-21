@@ -729,6 +729,69 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads the freeform <c>----</c> atom whose <c>mean</c> is <c>com.apple.iTunes</c> and whose
+	/// <c>name</c> equals <paramref name="name"/> exactly. Each <c>data</c> atom with text (type 1, UTF-8)
+	/// is one value. The name is the whole name: <c>"a:b"</c> is a name with a colon, not a mean and a
+	/// name. Use <see cref="Mp4File.GetFreeformTag"/> for another mean.
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name) ||
+			!_atoms.TryGetValue (FreeformKey (name), out var dataAtoms))
+			return CustomFieldValues.None;
+
+		var values = new List<string> (dataAtoms.Count);
+		foreach (var dataAtom in dataAtoms) {
+			if (dataAtom.TypeIndicator != Mp4AtomMapping.TypeUtf8)
+				continue;
+			var text = dataAtom.ToUtf8String ();
+			if (!string.IsNullOrEmpty (text))
+				values.Add (text!);
+		}
+		return values;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes one freeform <c>----</c> atom with <c>mean</c> <c>com.apple.iTunes</c>, <c>name</c>
+	/// <paramref name="name"/>, and one UTF-8 <c>data</c> atom per value, the layout iTunes uses for its own
+	/// <c>com.apple.iTunes</c> names.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+
+		var key = FreeformKey (name);
+		if (kept.Count == 0) {
+			RemoveAtom (key);
+			return true;
+		}
+
+		var dataAtoms = new List<Mp4DataAtom> (kept.Count);
+		foreach (var value in kept)
+			dataAtoms.Add (new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value)));
+		_atoms[key] = dataAtoms;
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return CustomFieldValues.IsUsableName (name) && _atoms.Remove (FreeformKey (name));
+	}
+
+	static string FreeformKey (string name) =>
+		$"{Mp4AtomMapping.FreeformAtom}:{Mp4AtomMapping.AppleNamespace}:{name}";
+
+	/// <inheritdoc/>
 	public override void Clear ()
 	{
 		_atoms.Clear ();
@@ -797,12 +860,15 @@ public sealed class Mp4Tag : Tag
 
 	static void RenderFreeformAtom (BinaryDataBuilder builder, string key, List<Mp4DataAtom> dataAtoms)
 	{
-		var parts = key.Split (':');
-		if (parts.Length != 3)
+		// The key is "----:mean:name". The name is everything after the second colon, so a name that
+		// contains a colon still renders.
+		var meanStart = Mp4AtomMapping.FreeformAtom.Length + 1;
+		var meanEnd = key.IndexOf (':', meanStart);
+		if (meanEnd < 0)
 			return;
 
-		var mean = parts[1];
-		var name = parts[2];
+		var mean = key.Substring (meanStart, meanEnd - meanStart);
+		var name = key.Substring (meanEnd + 1);
 
 		var meanBytes = System.Text.Encoding.UTF8.GetBytes (mean);
 		var nameBytes = System.Text.Encoding.UTF8.GetBytes (name);

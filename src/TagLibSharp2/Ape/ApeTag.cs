@@ -749,6 +749,62 @@ public sealed class ApeTag : Tag
 	/// </summary>
 	public bool Remove (string key) => _items.Remove (key);
 
+	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads a text or external locator item. Keys compare case-insensitively, and a zero byte separates
+	/// values (https://wiki.hydrogenaud.io/index.php?title=APE_key and
+	/// https://wiki.hydrogenaud.io/index.php?title=APE_Item_Value). A binary item has no text and returns
+	/// no values.
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldKey (name) || !_items.TryGetValue (name, out var item))
+			return CustomFieldValues.None;
+		if (item.ItemType is not (ApeItemType.Text or ApeItemType.ExternalLocator))
+			return CustomFieldValues.None;
+
+		var values = new List<string> ();
+		CustomFieldValues.AddSplit (System.Text.Encoding.UTF8.GetString (item.RawValue), values);
+		return values;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes one UTF-8 text item with the values separated by a zero byte
+	/// (https://wiki.hydrogenaud.io/index.php?title=APE_Item_Value). The key replaces any item whose key
+	/// differs only in case, because APEv2 does not allow two such keys
+	/// (https://wiki.hydrogenaud.io/index.php?title=APE_key).
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldKey (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+
+		_items.Remove (name);
+		if (kept.Count > 0)
+			_items[name] = ApeTagItem.CreateText (name, string.Join ("\0", kept));
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return IsCustomFieldKey (name) && _items.Remove (name);
+	}
+
+	/// <summary>
+	/// A valid APEv2 key that is not one of the <c>Cover Art</c> keys <see cref="Pictures"/> owns.
+	/// </summary>
+	static bool IsCustomFieldKey (string name) =>
+		ApeTagItem.IsValidKey (name) &&
+		!name.StartsWith ("Cover Art", StringComparison.OrdinalIgnoreCase);
+
 	private void SetOrRemove (string key, string? value)
 	{
 		if (string.IsNullOrEmpty (value)) {

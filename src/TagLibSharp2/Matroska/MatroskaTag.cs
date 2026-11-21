@@ -331,6 +331,64 @@ public sealed class MatroskaTag : Tag
 		_pictures.Clear ();
 	}
 
+	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads the file-level <c>SimpleTag</c> elements whose <c>TagName</c> equals <paramref name="name"/>
+	/// exactly, the way <see cref="Comment"/> reads <c>COMMENT</c>: the nearest level at or above the item
+	/// level that sets the name wins (RFC 9559 §5.1.8.1.1 and https://www.matroska.org/technical/tagging.html).
+	/// A tag with only <c>TagBinary</c> has no text and is skipped.
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return CustomFieldValues.IsUsableName (name) ? All (name) : CustomFieldValues.None;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes one <c>SimpleTag</c> per value at the item level, the level <see cref="Comment"/> and
+	/// <see cref="Genre"/> write. Matroska allows a name to repeat (https://www.matroska.org/technical/tagging.html).
+	/// The same name at a broader level stays and is shadowed, as the format defines.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+
+		if (kept.Count == 0) {
+			RemoveCustomField (name);
+			return true;
+		}
+
+		SetItemValues (name, [.. kept]);
+		return true;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Removes the name at every file level the getter can climb to, so a broader value does not show
+	/// through afterwards.
+	/// </remarks>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name))
+			return false;
+
+		var item = ItemLevel;
+		var removed = false;
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || block.Level < item)
+				continue;
+			removed |= block.Tags.RemoveAll (tag => tag.Name == name) > 0;
+		}
+		return removed;
+	}
+
 	internal void AddPicture (IPicture picture) => _pictures.Add (picture);
 
 	/// <summary>

@@ -2103,6 +2103,82 @@ public sealed class Id3v2Tag : Tag
 			string.Equals (f.Description, description, StringComparison.OrdinalIgnoreCase));
 	}
 
+	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads every <c>TXXX</c> frame whose description equals <paramref name="name"/> exactly. The spec
+	/// allows one <c>TXXX</c> per description (https://id3.org/id3v2.4.0-frames §4.2.6) and does not fold
+	/// case, so <c>"MOOD"</c> and <c>"Mood"</c> are different fields. The value is split at U+0000, the
+	/// ID3v2.4 separator for multiple strings (https://id3.org/id3v2.4.0-structure §4).
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name))
+			return CustomFieldValues.None;
+
+		var values = new List<string> ();
+		for (var i = 0; i < _userTextFrames.Count; i++) {
+			if (string.Equals (_userTextFrames[i].Description, name, StringComparison.Ordinal))
+				CustomFieldValues.AddSplit (_userTextFrames[i].Value, values);
+		}
+		return values;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <para>
+	/// Replaces every <c>TXXX</c> frame with exactly this description by one frame, kept at the position of
+	/// the first (https://id3.org/id3v2.4.0-frames §4.2.6). The values are joined with U+0000
+	/// (https://id3.org/id3v2.4.0-structure §4).
+	/// </para>
+	/// <para>
+	/// An ID3v2.4 tag writes UTF-8. An older tag writes UTF-16 with a byte order mark, because ID3v2.3
+	/// defines only ISO-8859-1 and UCS-2 text (https://id3.org/id3v2.3.0 §3.3). ID3v2.3 has no multiple-value
+	/// text: a reader that follows it strictly shows only the first value.
+	/// </para>
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+
+		var at = _userTextFrames.FindIndex (f => string.Equals (f.Description, name, StringComparison.Ordinal));
+		_userTextFrames.RemoveAll (f => string.Equals (f.Description, name, StringComparison.Ordinal));
+		if (kept.Count == 0)
+			return true;
+
+		var encoding = Version >= 4 ? TextEncodingType.Utf8 : TextEncodingType.Utf16WithBom;
+		var frame = new UserTextFrame (name, string.Join ("\0", kept), encoding);
+		_userTextFrames.Insert (at < 0 ? _userTextFrames.Count : at, frame);
+		return true;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>Removes every <c>TXXX</c> frame whose description equals <paramref name="name"/> exactly.</remarks>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name))
+			return false;
+		return _userTextFrames.RemoveAll (f => string.Equals (f.Description, name, StringComparison.Ordinal)) > 0;
+	}
+
+	/// <summary>
+	/// True when the tag holds at least one frame of any kind. A tag that holds only frames outside the
+	/// mapped properties (a <c>TXXX</c>, a <c>PRIV</c>) is not empty to a container that decides whether to
+	/// write it.
+	/// </summary>
+	internal bool HasFrames =>
+		_frames.Count > 0 || _pictures.Count > 0 || _comments.Count > 0 || _userTextFrames.Count > 0 ||
+		_lyricsFrames.Count > 0 || _uniqueFileIdFrames.Count > 0 || _involvedPeopleFrames.Count > 0 ||
+		_popularimeterFrames.Count > 0 || _urlFrames.Count > 0 || _userUrlFrames.Count > 0 ||
+		_syncLyricsFrames.Count > 0 || _generalObjectFrames.Count > 0 || _privateFrames.Count > 0 ||
+		_chapterFrames.Count > 0 || _tableOfContentsFrames.Count > 0;
+
 	/// <summary>
 	/// Gets the first lyrics with an empty description, or the first lyrics if none have empty description.
 	/// </summary>

@@ -608,6 +608,63 @@ public class CombinedTag : Tag
 #pragma warning restore CA1819
 
 	/// <inheritdoc/>
+	/// <remarks>True when any underlying tag supports custom fields.</remarks>
+	public override bool SupportsCustomFields {
+		get {
+			foreach (var tag in _tags) {
+				if (tag is { SupportsCustomFields: true })
+					return true;
+			}
+			return false;
+		}
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>Returns the values of the first tag in priority order that holds any.</remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		foreach (var tag in _tags) {
+			if (tag is null)
+				continue;
+			var values = tag.GetCustomField (name);
+			if (values.Count > 0)
+				return values;
+		}
+		return CustomFieldValues.None;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes every underlying tag that supports custom fields, as the property setters write every tag.
+	/// Returns true when at least one of them stored the values. A tag without custom fields, such as
+	/// ID3v1, is left as it is.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		var stored = false;
+		foreach (var tag in _tags) {
+			if (tag is { SupportsCustomFields: true })
+				stored |= tag.SetCustomField (name, values);
+		}
+		return stored;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>Removes the field from every underlying tag. Returns true when any of them held it.</remarks>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		var removed = false;
+		foreach (var tag in _tags) {
+			if (tag is not null)
+				removed |= tag.RemoveCustomField (name);
+		}
+		return removed;
+	}
+
+	/// <inheritdoc/>
 	/// <exception cref="NotSupportedException">
 	/// <see cref="CombinedTag"/> is a view over multiple tags and does not produce its
 	/// own serialized representation. Render the owning file or a specific underlying

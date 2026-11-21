@@ -512,7 +512,7 @@ public sealed class WavFile : IMediaFile
 		}
 
 		// Add ID3v2 tag if present
-		if (Id3v2Tag is not null && !Id3v2Tag.IsEmpty) {
+		if (Id3v2Tag is not null && Id3v2Tag.HasFrames) {
 			var id3Data = Id3v2Tag.Render ();
 			if (id3Data.Length > 0)
 				riff.SetChunk (new RiffChunk (Id3ChunkId, id3Data));

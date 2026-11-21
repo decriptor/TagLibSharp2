@@ -225,6 +225,64 @@ public class RiffInfoTag : Tag
 		}
 	}
 
+	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// The name is the four-character code of an INFO subchunk, such as <c>IENG</c> or a code of your own.
+	/// Codes compare case-insensitively, as <see cref="GetField"/> compares them. An INFO subchunk holds one
+	/// ZSTR (Microsoft RIFF specification, "INFO List Chunk"), so there is at most one value.
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsFourCC (name))
+			return CustomFieldValues.None;
+		var value = GetField (name);
+		return string.IsNullOrEmpty (value) ? CustomFieldValues.None : [value!];
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Returns false for a name that is not four ASCII characters from 0x20 to 0x7E (a FOURCC, Microsoft
+	/// RIFF specification, "Chunks"), for more than one value, and for text outside ISO-8859-1, which the
+	/// INFO list stores one byte per character.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsFourCC (name) || !CustomFieldValues.TryNormalize (values, out var kept) || kept.Count > 1)
+			return false;
+		if (kept.Count == 1) {
+			foreach (var c in kept[0]) {
+				if (c > 0xFF)
+					return false;
+			}
+		}
+
+		SetField (name, kept.Count == 0 ? null : kept[0]);
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return IsFourCC (name) && _fields.Remove (name);
+	}
+
+	static bool IsFourCC (string name)
+	{
+		if (name.Length != 4)
+			return false;
+		foreach (var c in name) {
+			if (c < 0x20 || c > 0x7E)
+				return false;
+		}
+		return true;
+	}
+
 	/// <summary>
 	/// Gets all field identifiers present in this tag.
 	/// </summary>

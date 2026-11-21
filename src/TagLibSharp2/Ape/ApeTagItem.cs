@@ -357,6 +357,29 @@ public sealed class ApeTagItem
 		return data;
 	}
 
+	/// <summary>
+	/// True when <paramref name="key"/> follows the APEv2 item key rules: 2 to 255 characters from
+	/// 0x20 to 0x7E, and not ID3, TAG, OggS, or MP+ in any case
+	/// (https://wiki.hydrogenaud.io/index.php?title=APE_key).
+	/// </summary>
+	internal static bool IsValidKey (string key)
+	{
+		if (key.Length < MinKeyLength || key.Length > MaxKeyLength)
+			return false;
+
+		foreach (var c in key) {
+			if (c < 0x20 || c > 0x7E)
+				return false;
+		}
+
+		foreach (var reserved in ReservedKeys) {
+			if (key.Equals (reserved, StringComparison.OrdinalIgnoreCase))
+				return false;
+		}
+
+		return true;
+	}
+
 	private static void ValidateKey (string key)
 	{
 		if (key.Length < MinKeyLength)

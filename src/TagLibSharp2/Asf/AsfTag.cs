@@ -645,6 +645,152 @@ public sealed class AsfTag : Tag
 	public AsfExtendedContentDescription ExtendedContentDescription => new (_descriptors);
 
 	// ═══════════════════════════════════════════════════════════════
+	// Custom Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	// ASF spec rev. 01.20.03 §3.10 and §3.11: names and values carry 16-bit byte lengths, and
+	// strings are UTF-16LE with a two-byte terminator.
+	const int MaxLengthField = ushort.MaxValue;
+
+	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <para>
+	/// Reads every Extended Content Description attribute named <paramref name="name"/>, compared
+	/// case-insensitively as the mapped properties compare them (ASF spec rev. 01.20.03 §3.11). A string
+	/// attribute is its text. A WORD, DWORD, or QWORD attribute is its decimal value. BOOL and binary
+	/// attributes have no text and are skipped.
+	/// </para>
+	/// <para>
+	/// <c>Title</c>, <c>Author</c>, <c>Copyright</c>, <c>Description</c>, and <c>Rating</c> are the Content
+	/// Description Object's fields (§3.10), the same ones the Windows Media Format SDK exposes under those
+	/// attribute names.
+	/// </para>
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name))
+			return CustomFieldValues.None;
+
+		if (TryGetContentDescriptionField (name, out var fixedValue))
+			return string.IsNullOrEmpty (fixedValue) ? CustomFieldValues.None : [fixedValue];
+
+		var values = new List<string> ();
+		foreach (var desc in _descriptors) {
+			if (!string.Equals (desc.Name, name, StringComparison.OrdinalIgnoreCase))
+				continue;
+			var text = desc.Type switch {
+				AsfAttributeType.UnicodeString => desc.StringValue,
+				AsfAttributeType.Word => desc.WordValue?.ToString (CultureInfo.InvariantCulture),
+				AsfAttributeType.Dword => desc.DwordValue?.ToString (CultureInfo.InvariantCulture),
+				AsfAttributeType.Qword => desc.QwordValue?.ToString (CultureInfo.InvariantCulture),
+				_ => null
+			};
+			if (!string.IsNullOrEmpty (text))
+				values.Add (text!);
+		}
+		return values;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes one Unicode string attribute per value in the Extended Content Description Object
+	/// (ASF spec rev. 01.20.03 §3.11), at the position of the first attribute it replaces. A Content
+	/// Description field (§3.10) holds one value, so more than one returns false.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+		foreach (var value in kept) {
+			if (Utf16Length (value) > MaxLengthField)
+				return false;
+		}
+
+		if (TryGetContentDescriptionField (name, out _)) {
+			if (kept.Count > 1)
+				return false;
+			SetContentDescriptionField (name, kept.Count == 0 ? "" : kept[0]);
+			return true;
+		}
+
+		var at = _descriptors.FindIndex (d => string.Equals (d.Name, name, StringComparison.OrdinalIgnoreCase));
+		RemoveDescriptor (name);
+		if (at < 0)
+			at = _descriptors.Count;
+		for (var i = 0; i < kept.Count; i++)
+			_descriptors.Insert (at + i, AsfDescriptor.CreateString (name, kept[i]));
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name))
+			return false;
+
+		if (TryGetContentDescriptionField (name, out var fixedValue)) {
+			if (string.IsNullOrEmpty (fixedValue))
+				return false;
+			SetContentDescriptionField (name, "");
+			return true;
+		}
+
+		var before = _descriptors.Count;
+		RemoveDescriptor (name);
+		return _descriptors.Count != before;
+	}
+
+	/// <summary>
+	/// A name that fits its 16-bit length field and is not <c>WM/Picture</c>, which <see cref="Pictures"/> owns.
+	/// </summary>
+	static bool IsCustomFieldName (string name) =>
+		CustomFieldValues.IsUsableName (name) &&
+		Utf16Length (name) <= MaxLengthField &&
+		!string.Equals (name, AsfPicture.AttributeName, StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// Bytes of UTF-16LE text plus its two-byte terminator.
+	/// </summary>
+	static long Utf16Length (string text) => ((long)text.Length + 1) * 2;
+
+	bool TryGetContentDescriptionField (string name, out string value)
+	{
+		if (string.Equals (name, "Title", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Title;
+		else if (string.Equals (name, "Author", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Author;
+		else if (string.Equals (name, "Copyright", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Copyright;
+		else if (string.Equals (name, "Description", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Description;
+		else if (string.Equals (name, "Rating", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Rating;
+		else {
+			value = "";
+			return false;
+		}
+		return true;
+	}
+
+	void SetContentDescriptionField (string name, string value)
+	{
+		var cd = _contentDescription;
+		_contentDescription = name.ToUpperInvariant () switch {
+			"TITLE" => new AsfContentDescription (value, cd.Author, cd.Copyright, cd.Description, cd.Rating),
+			"AUTHOR" => new AsfContentDescription (cd.Title, value, cd.Copyright, cd.Description, cd.Rating),
+			"COPYRIGHT" => new AsfContentDescription (cd.Title, cd.Author, value, cd.Description, cd.Rating),
+			"DESCRIPTION" => new AsfContentDescription (cd.Title, cd.Author, cd.Copyright, value, cd.Rating),
+			_ => new AsfContentDescription (cd.Title, cd.Author, cd.Copyright, cd.Description, value)
+		};
+	}
+
+	// ═══════════════════════════════════════════════════════════════
 	// Helper Methods
 	// ═══════════════════════════════════════════════════════════════
 

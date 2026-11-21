@@ -168,6 +168,7 @@ namespace TagLibSharp2.Ape
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override string? TitleSort { get; set; }
@@ -178,11 +179,14 @@ namespace TagLibSharp2.Ape
         public override string? Year { get; set; }
         public override void Clear() { }
         public TagLibSharp2.Ape.ApeBinaryData? GetBinaryItem(string key) { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
         public string? GetValue(string key) { }
         public bool Remove(string key) { }
+        public override bool RemoveCustomField(string name) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
         public TagLibSharp2.Core.BinaryData RenderWithOptions(bool includeHeader = false) { }
         public void SetBinaryItem(string key, string filename, byte[] data) { }
+        public override bool SetCustomField(string name, params string[] values) { }
         public void SetValue(string key, string value) { }
         public static TagLibSharp2.Ape.ApeTagParseResult Parse(System.ReadOnlySpan<byte> data) { }
     }
@@ -645,6 +649,7 @@ namespace TagLibSharp2.Asf
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override string? TitleSort { get; set; }
@@ -654,8 +659,11 @@ namespace TagLibSharp2.Asf
         public override string? Work { get; set; }
         public override string? Year { get; set; }
         public override void Clear() { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
+        public override bool RemoveCustomField(string name) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
         public TagLibSharp2.Core.BinaryData RenderContentDescription() { }
+        public override bool SetCustomField(string name, params string[] values) { }
     }
 }
 namespace TagLibSharp2.Core
@@ -944,6 +952,7 @@ namespace TagLibSharp2.Core
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         protected System.Collections.Generic.IReadOnlyList<TagLibSharp2.Core.Tag?> Tags { get; }
         public override string? Title { get; set; }
@@ -954,7 +963,10 @@ namespace TagLibSharp2.Core
         public override string? Work { get; set; }
         public override string? Year { get; set; }
         public override void Clear() { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
+        public override bool RemoveCustomField(string name) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
+        public override bool SetCustomField(string name, params string[] values) { }
     }
     public sealed class DefaultFileSystem : TagLibSharp2.Core.IFileSystem
     {
@@ -1218,6 +1230,7 @@ namespace TagLibSharp2.Core
         public virtual string? ReplayGainTrackGain { get; set; }
         public virtual string? ReplayGainTrackPeak { get; set; }
         public virtual string? Subtitle { get; set; }
+        public virtual bool SupportsCustomFields { get; }
         public abstract TagLibSharp2.Core.TagTypes TagType { get; }
         public abstract string? Title { get; set; }
         public virtual string? TitleSort { get; set; }
@@ -1228,7 +1241,10 @@ namespace TagLibSharp2.Core
         public abstract string? Year { get; set; }
         public abstract void Clear();
         public void CopyTo(TagLibSharp2.Core.Tag target, TagLibSharp2.Core.TagCopyOptions options = 63) { }
+        public virtual System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
+        public virtual bool RemoveCustomField(string name) { }
         public abstract TagLibSharp2.Core.BinaryData Render();
+        public virtual bool SetCustomField(string name, params string[] values) { }
         public virtual TagLibSharp2.Core.ValidationResult Validate() { }
     }
     [System.Flags]
@@ -2141,6 +2157,7 @@ namespace TagLibSharp2.Id3.Id3v2
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Id3.Id3v2.Frames.SyncLyricsFrame> SyncLyricsFrames { get; }
         public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Id3.Id3v2.Frames.TableOfContentsFrame> TableOfContentsFrames { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
@@ -2170,6 +2187,7 @@ namespace TagLibSharp2.Id3.Id3v2
         public override void Clear() { }
         public TagLibSharp2.Id3.Id3v2.Frames.ChapterFrame? GetChapter(string? elementId = null) { }
         public TagLibSharp2.Id3.Id3v2.Frames.CommentFrame? GetCommentFrame(string? language = null, string? description = null) { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
         public TagLibSharp2.Id3.Id3v2.Frames.GeneralObjectFrame? GetGeneralObject(string? description = null) { }
         public TagLibSharp2.Id3.Id3v2.Frames.InvolvedPeopleFrame? GetInvolvedPeopleFrame(string frameId) { }
         public TagLibSharp2.Id3.Id3v2.Frames.LyricsFrame? GetLyricsFrame(string? language = null, string? description = null) { }
@@ -2188,6 +2206,7 @@ namespace TagLibSharp2.Id3.Id3v2
         public void RemoveAllPictures() { }
         public void RemoveChapters(string? elementId = null) { }
         public void RemoveComments(string? language = null, string? description = null) { }
+        public override bool RemoveCustomField(string name) { }
         public void RemoveGeneralObjects(string? description = null) { }
         public void RemoveInvolvedPeopleFrames(string? frameId = null) { }
         public void RemoveLyrics(string? language = null, string? description = null) { }
@@ -2199,6 +2218,7 @@ namespace TagLibSharp2.Id3.Id3v2
         public void RemoveUserTextFrames(string description) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
         public TagLibSharp2.Core.BinaryData Render(int paddingSize, bool withFooter = false) { }
+        public override bool SetCustomField(string name, params string[] values) { }
         public void SetPicture(TagLibSharp2.Core.PictureType pictureType, TagLibSharp2.Id3.Id3v2.Frames.PictureFrame? picture) { }
         public void SetPopularimeter(string email, byte rating, ulong playCount = 0) { }
         public void SetTextFrameValues(string frameId, System.Collections.Generic.IEnumerable<string>? values) { }
@@ -2299,6 +2319,7 @@ namespace TagLibSharp2.Matroska
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override string? TitleSort { get; set; }
@@ -2306,7 +2327,10 @@ namespace TagLibSharp2.Matroska
         public override uint? Track { get; set; }
         public override string? Year { get; set; }
         public override void Clear() { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
+        public override bool RemoveCustomField(string name) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
+        public override bool SetCustomField(string name, params string[] values) { }
     }
 }
 namespace TagLibSharp2.Mp4
@@ -2547,6 +2571,7 @@ namespace TagLibSharp2.Mp4
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override string? TitleSort { get; set; }
@@ -2556,7 +2581,10 @@ namespace TagLibSharp2.Mp4
         public override string? Work { get; set; }
         public override string? Year { get; set; }
         public override void Clear() { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
+        public override bool RemoveCustomField(string name) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
+        public override bool SetCustomField(string name, params string[] values) { }
     }
 }
 namespace TagLibSharp2.Mpeg
@@ -3002,13 +3030,17 @@ namespace TagLibSharp2.Riff
         public override bool IsEmpty { get; }
         public override string[] Performers { get; set; }
         public string? Software { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override uint? Track { get; set; }
         public override string? Year { get; set; }
         public override void Clear() { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
         public string? GetField(string fourCC) { }
+        public override bool RemoveCustomField(string name) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
+        public override bool SetCustomField(string name, params string[] values) { }
         public void SetField(string fourCC, string? value) { }
         public static TagLibSharp2.Riff.RiffInfoTag? Parse(TagLibSharp2.Core.BinaryData data) { }
     }
@@ -3414,6 +3446,7 @@ namespace TagLibSharp2.Xiph
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override string? TitleSort { get; set; }
@@ -3423,7 +3456,10 @@ namespace TagLibSharp2.Xiph
         public override string? Work { get; set; }
         public override string? Year { get; set; }
         public override void Clear() { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
+        public override bool RemoveCustomField(string name) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
+        public override bool SetCustomField(string name, params string[] values) { }
     }
     public sealed class VorbisComment : TagLibSharp2.Core.Tag
     {
@@ -3497,6 +3533,7 @@ namespace TagLibSharp2.Xiph
         public override string? ReplayGainTrackGain { get; set; }
         public override string? ReplayGainTrackPeak { get; set; }
         public override string? Subtitle { get; set; }
+        public override bool SupportsCustomFields { get; }
         public override TagLibSharp2.Core.TagTypes TagType { get; }
         public override string? Title { get; set; }
         public override string? TitleSort { get; set; }
@@ -3509,12 +3546,15 @@ namespace TagLibSharp2.Xiph
         public void AddField(string name, string value) { }
         public void AddPicture(TagLibSharp2.Xiph.FlacPicture picture) { }
         public override void Clear() { }
+        public override System.Collections.Generic.IReadOnlyList<string> GetCustomField(string name) { }
         public string? GetValue(string name) { }
         public System.Collections.Generic.IReadOnlyList<string> GetValues(string name) { }
         public void RemoveAll(string name) { }
         public void RemoveAllPictures() { }
+        public override bool RemoveCustomField(string name) { }
         public void RemovePictures(TagLibSharp2.Core.PictureType pictureType) { }
         public override TagLibSharp2.Core.BinaryData Render() { }
+        public override bool SetCustomField(string name, params string[] values) { }
         public void SetValue(string name, string? value) { }
         public static TagLibSharp2.Xiph.VorbisCommentReadResult Read(System.ReadOnlySpan<byte> data) { }
     }

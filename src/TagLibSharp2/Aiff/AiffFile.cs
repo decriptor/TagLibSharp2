@@ -474,7 +474,7 @@ public sealed class AiffFile : IMediaFile
 
 		// Add ID3 tag if present
 		BinaryData id3Data = BinaryData.Empty;
-		if (Tag is not null && !Tag.IsEmpty) {
+		if (Tag is not null && Tag.HasFrames) {
 			id3Data = Tag.Render ();
 			if (id3Data.Length > 0) {
 				// ID3 chunk: header (8) + data + padding if odd
