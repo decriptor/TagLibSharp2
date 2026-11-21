@@ -66,37 +66,41 @@ public sealed class Mp4Tag : Tag
 	// Preserved freeform boxes that carry a mean and a name, so a set drops its twin directly.
 	readonly Dictionary<(string Mean, string Name), List<int>> _preservedFreeformByKey = new ();
 
+	// Items of a QuickTime "mdta" meta that a property reads, by key (without the
+	// com.apple.quicktime. prefix). The boxes themselves are preserved; a set drops them.
+	readonly Dictionary<string, QuickTimeItem> _quickTimeItems = new (StringComparer.Ordinal);
+
 	/// <inheritdoc/>
 	public override TagTypes TagType => TagTypes.Apple;
 
 	/// <inheritdoc/>
 	public override string? Title {
-		get => GetText (Mp4AtomMapping.Title);
-		set => SetText (Mp4AtomMapping.Title, value);
+		get => GetText (Mp4AtomMapping.Title) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeTitle);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Title, Mp4AtomMapping.QuickTimeTitle, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Artist {
-		get => GetText (Mp4AtomMapping.Artist);
-		set => SetText (Mp4AtomMapping.Artist, value);
+		get => GetText (Mp4AtomMapping.Artist) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeArtist);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Artist, Mp4AtomMapping.QuickTimeArtist, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Album {
-		get => GetText (Mp4AtomMapping.Album);
-		set => SetText (Mp4AtomMapping.Album, value);
+		get => GetText (Mp4AtomMapping.Album) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeAlbum);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Album, Mp4AtomMapping.QuickTimeAlbum, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Year {
-		get => GetText (Mp4AtomMapping.Year);
-		set => SetText (Mp4AtomMapping.Year, value);
+		get => GetText (Mp4AtomMapping.Year) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeYear);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Year, Mp4AtomMapping.QuickTimeYear, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Comment {
-		get => GetText (Mp4AtomMapping.Comment);
-		set => SetText (Mp4AtomMapping.Comment, value);
+		get => GetText (Mp4AtomMapping.Comment) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeComment);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Comment, Mp4AtomMapping.QuickTimeComment, value);
 	}
 
 	/// <inheritdoc/>
@@ -107,10 +111,10 @@ public sealed class Mp4Tag : Tag
 				return text;
 
 			// gnre is a 1-based ID3v1 code. A non-empty ©gen wins over it.
-			return GetGnreName ();
+			return GetGnreName () ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeGenre);
 		}
 		set {
-			SetText (Mp4AtomMapping.Genre, value);
+			SetTextReplacingQuickTime (Mp4AtomMapping.Genre, Mp4AtomMapping.QuickTimeGenre, value);
 			// A leftover gnre would still be returned after ©gen is cleared.
 			RemoveAtom (Mp4AtomMapping.GenreId3);
 		}
@@ -206,10 +210,10 @@ public sealed class Mp4Tag : Tag
 				return text;
 
 			// ©cpy is an alias. A non-empty cprt wins over it.
-			return GetText (Mp4AtomMapping.CopyrightAlias);
+			return GetText (Mp4AtomMapping.CopyrightAlias) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeCopyright);
 		}
 		set {
-			SetText (Mp4AtomMapping.Copyright, value);
+			SetTextReplacingQuickTime (Mp4AtomMapping.Copyright, Mp4AtomMapping.QuickTimeCopyright, value);
 			// A leftover ©cpy would still be returned after cprt is cleared.
 			RemoveAtom (Mp4AtomMapping.CopyrightAlias);
 		}
@@ -284,8 +288,8 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Publisher {
-		get => GetText (Mp4AtomMapping.Publisher);
-		set => SetText (Mp4AtomMapping.Publisher, value);
+		get => GetText (Mp4AtomMapping.Publisher) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimePublisher);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Publisher, Mp4AtomMapping.QuickTimePublisher, value);
 	}
 
 	/// <inheritdoc/>
@@ -296,8 +300,8 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Description {
-		get => GetText (Mp4AtomMapping.Description);
-		set => SetText (Mp4AtomMapping.Description, value);
+		get => GetText (Mp4AtomMapping.Description) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeDescription);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Description, Mp4AtomMapping.QuickTimeDescription, value);
 	}
 
 	/// <inheritdoc/>
@@ -681,6 +685,40 @@ public sealed class Mp4Tag : Tag
 		return values;
 	}
 
+	string? GetQuickTimeText (string key) =>
+		_quickTimeItems.TryGetValue (key, out var item) ? item.Text : null;
+
+	// The setter replaces every item the getter reads, so readers that list them all see one value.
+	void SetTextReplacingQuickTime (string atomId, string quickTimeKey, string? value)
+	{
+		SetText (atomId, value);
+		if (!_quickTimeItems.TryGetValue (quickTimeKey, out var item))
+			return;
+
+		foreach (var type in item.Types)
+			DropPreserved (type);
+
+		_quickTimeItems.Remove (quickTimeKey);
+	}
+
+	/// <summary>
+	/// Keeps an item of an "mdta" meta whose key a property reads. The box is written back
+	/// unchanged unless that property is set.
+	/// </summary>
+	internal void AddQuickTimeItem (string key, BinaryData box, string? text)
+	{
+		PreserveIlstAtom (box);
+		var type = TypeKey (box.Span);
+		if (!_quickTimeItems.TryGetValue (key, out var item)) {
+			item = new QuickTimeItem ();
+			_quickTimeItems.Add (key, item);
+		}
+
+		item.Types.Add (type);
+		if (string.IsNullOrEmpty (item.Text))
+			item.Text = text;
+	}
+
 	void SetText (string atomId, string? value)
 	{
 		if (string.IsNullOrEmpty (value)) {
@@ -807,6 +845,7 @@ public sealed class Mp4Tag : Tag
 		_preservedAtoms.Clear ();
 		_preservedByType.Clear ();
 		_preservedFreeformByKey.Clear ();
+		_quickTimeItems.Clear ();
 	}
 
 	/// <inheritdoc/>
@@ -965,7 +1004,11 @@ public sealed class Mp4Tag : Tag
 		if (atomId.Length != 4)
 			return;
 
-		var typeKey = TypeKey (atomId);
+		DropPreserved (TypeKey (atomId));
+	}
+
+	void DropPreserved (uint typeKey)
+	{
 		if (!_preservedByType.TryGetValue (typeKey, out var indexes))
 			return;
 
@@ -1017,6 +1060,14 @@ public sealed class Mp4Tag : Tag
 		public string Name { get; }
 
 		public List<Mp4DataAtom> Atoms { get; }
+	}
+
+	sealed class QuickTimeItem
+	{
+		// May repeat a type; dropping a type twice is harmless, and no lookup is needed per item.
+		public List<uint> Types { get; } = new ();
+
+		public string? Text { get; set; }
 	}
 
 	sealed class PreservedBox
