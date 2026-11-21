@@ -101,7 +101,8 @@ public abstract class Tag
 	/// Gets or sets the primary artist/performer.
 	/// </summary>
 	/// <remarks>
-	/// <para>This returns the first performer. For multiple performers, use <see cref="Performers"/>.</para>
+	/// <para>This returns the first performer. For multiple performers, use <see cref="Performers"/>.
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.</para>
 	/// <para>Format-specific limitations:</para>
 	/// <list type="bullet">
 	/// <item><description>ID3v1: Truncated to 30 bytes. Latin-1 encoding only (Unicode characters are lost).</description></item>
@@ -197,7 +198,8 @@ public abstract class Tag
 	/// Gets or sets the genre name.
 	/// </summary>
 	/// <remarks>
-	/// <para>This returns the first genre. For multiple genres, use <see cref="Genres"/>.</para>
+	/// <para>This returns the first genre. For multiple genres, use <see cref="Genres"/>.
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.</para>
 	/// <para>Format-specific limitations:</para>
 	/// <list type="bullet">
 	/// <item><description>ID3v1: Single genre only, must match one of 192 predefined genres. Custom genres not supported.</description></item>
@@ -244,6 +246,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// This returns the first album artist. For multiple album artists, use <see cref="AlbumArtists"/>.
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </remarks>
 	public virtual string? AlbumArtist { get => null; set { } }
@@ -282,6 +285,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// This returns the first composer. For multiple composers, use <see cref="Composers"/>.
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </remarks>
 	public virtual string? Composer { get => null; set { } }
