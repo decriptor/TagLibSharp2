@@ -18,6 +18,7 @@ internal static class Mp4ChapterTestBuilder
 	internal const uint TextTrackId = 2;
 	internal const uint ImageTrackId = 3;
 	internal const uint UrlTrackId = 4;
+	internal const uint SoundTrackId = 5;
 	internal const uint MovieTimescale = 1000;
 	internal const uint MovieDuration = 10_000;
 	internal const int AudioSampleCount = 8;
@@ -71,6 +72,9 @@ internal static class Mp4ChapterTestBuilder
 		/// <summary>Add a second text track (id 4) that the audio track's chap names, as Apple chapter URLs are.</summary>
 		public bool UrlTrack { get; set; }
 
+		/// <summary>Add a sound track (id 5) that the audio track's chap names.</summary>
+		public bool ChapSoundTrack { get; set; }
+
 		/// <summary>The ftyp major brand.</summary>
 		public string MajorBrand { get; set; } = "M4A ";
 
@@ -104,6 +108,12 @@ internal static class Mp4ChapterTestBuilder
 
 		/// <summary>No base flags, after an audio traf: the base is the end of the previous traf's data.</summary>
 		PreviousTraf,
+
+		/// <summary>
+		/// default-base-is-moof plus tfhd sample_description_index (0x2), default duration (0x8) and size (0x10);
+		/// the trun has only a data_offset. Every sample takes the first sample's size and duration.
+		/// </summary>
+		TfhdDefaults,
 	}
 
 	internal static byte[] AudioPayload ()
@@ -178,12 +188,13 @@ internal static class Mp4ChapterTestBuilder
 		}
 
 		var entries = new List<byte> ();
-		for (var i = 0; i < sizes.Length; i++)
+		for (var i = 0; mode != FragmentBase.TfhdDefaults && i < sizes.Length; i++)
 			entries.AddRange ([.. U32 (durations[i]), .. U32 (sizes[i])]);
 
 		var (tfhdFlags, tfhdBody, trunFlags, trunOffset) = mode switch {
 			FragmentBase.Moof => (0x020000u, U32 (TextTrackId), 0x301u, U32 ((uint)(textStart - moofStart))),
 			FragmentBase.Explicit => (0x1u, [.. U32 (TextTrackId), .. U64 ((ulong)textStart)], 0x300u, Array.Empty<byte> ()),
+			FragmentBase.TfhdDefaults => (0x02001Au, [.. U32 (TextTrackId), .. U32 (1), .. U32 (durations[0]), .. U32 (sizes[0])], 0x1u, U32 ((uint)(textStart - moofStart))),
 			_ => (0u, U32 (TextTrackId), 0x300u, Array.Empty<byte> ()),
 		};
 		trafs.AddRange (Mp4TestBuilder.CreateBox ("traf", [
@@ -240,11 +251,13 @@ internal static class Mp4ChapterTestBuilder
 	static byte[] Moov (Options options, uint audioAt, uint textAt, uint[] textSizes)
 	{
 		var hasTrack = options.Track is not null || options.RawSamples is not null;
-		var children = new List<byte[]> { Mvhd (options.UrlTrack ? 5u : options.ImageTrack ? 4u : hasTrack ? 3u : 2u, options.Fragment is null ? MovieDuration : 0) };
+		var nextId = options.ChapSoundTrack ? 6u : options.UrlTrack ? 5u : options.ImageTrack ? 4u : hasTrack ? 3u : 2u;
+		var children = new List<byte[]> { Mvhd (nextId, options.Fragment is null ? MovieDuration : 0) };
 		uint[] extra = [
 			.. options.ExtraChapReferences,
 			.. options.ImageTrack ? [ImageTrackId] : Array.Empty<uint> (),
 			.. options.UrlTrack ? [UrlTrackId] : Array.Empty<uint> (),
+			.. options.ChapSoundTrack ? [SoundTrackId] : Array.Empty<uint> (),
 		];
 		uint[] chap = hasTrack ? [TextTrackId, .. extra] : extra;
 		children.Add (AudioTrak (audioAt, chap));
@@ -258,6 +271,8 @@ internal static class Mp4ChapterTestBuilder
 			children.Add (EmptyTrak (ImageTrackId, "vide"));
 		if (options.UrlTrack)
 			children.Add (EmptyTrak (UrlTrackId, "text"));
+		if (options.ChapSoundTrack)
+			children.Add (EmptyTrak (SoundTrackId, "soun"));
 
 		if (options.Fragment is not null) {
 			byte[] Trex (uint id) => Mp4TestBuilder.CreateFullBox ("trex", 0, 0, [.. U32 (id), .. U32 (1), .. new byte[12]]);
