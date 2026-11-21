@@ -67,6 +67,20 @@ public sealed class MpegPsTinyStreamTests
 	}
 
 	[TestMethod]
+	public async Task Read_PackHeaderThatEndsTheStream_IsNotAStreamOnAnyPath ()
+	{
+		// A lone pack header before ID3v1: no start code follows it inside the stream, and the
+		// reader, which sees the stream cut at ID3v1, must agree with detection, which sees "TAG".
+		var data = Concat (Id3v2 ("Front"), PackHeader2 (0), Id3v1 ("Footer"));
+
+		Assert.IsFalse (MpegPsFile.Read (data).IsSuccess);
+		Assert.IsFalse (MpegPsFile.IsValidFormat (data));
+		Assert.AreNotEqual (MediaFormat.MpegPs, MediaFile.ReadFromData (data, "clip.mpg").Format);
+		Assert.AreNotEqual (MediaFormat.MpegPs, MediaFile.Read (new MemoryStream (data), "clip.mpg").Format);
+		Assert.AreNotEqual (MediaFormat.MpegPs, (await MediaFile.ReadAsync (new MemoryStream (data), "clip.mpg")).Format);
+	}
+
+	[TestMethod]
 	public void Read_TinyStreamWithARealId3v1_ReadsIt ()
 	{
 		var data = Concat (Id3v2 ("Front"), TinyStream (), Id3v1 ("Footer"));
@@ -108,6 +122,7 @@ public sealed class MpegPsTinyStreamTests
 		var fixtures = new[] {
 			OverlappingId3v1 (),
 			Concat (Id3v2 ("Front"), TinyStream (), Id3v1 ("Footer")),
+			Concat (Id3v2 ("Front"), PackHeader2 (0), [0x00, 0x00, 0x01, 0xB9], Id3v1 ("Footer")),
 			Concat (Id3v2 ("Front"), TinyStream (), Appended ("Back"), Id3v1 ("Footer")),
 			Concat (TinyStream (), Appended ("Back"), ape),
 			Concat (Id3v2 ("Front"), TinyStream (), ape, Appended ("Back"), Id3v1 ("Footer")),
@@ -143,6 +158,15 @@ public sealed class MpegPsTinyStreamTests
 			} catch (Exception ex) {
 				Assert.Fail ($"{ex.GetType ().Name} on {data.Length} bytes: {ex.Message}");
 				return;
+			}
+
+			// Detection and the readers see the same bytes, so they agree on the format.
+			var format = span.IsSuccess ? MediaFormat.MpegPs : (MediaFormat?)null;
+			foreach (var other in new[] { streamed, asyncRead }) {
+				if (format is { } mpeg)
+					Assert.AreEqual (mpeg, other.Format, $"{data.Length} bytes");
+				else
+					Assert.AreNotEqual (MediaFormat.MpegPs, other.Format, $"{data.Length} bytes");
 			}
 
 			if (!span.IsSuccess)
