@@ -99,8 +99,12 @@ public partial class MatroskaFileTests
 
 		Assert.IsTrue (edition.Chapters.Count < count);
 		edition.Chapters[0].Title = "First";
+		edition.AddChapter (TimeSpan.FromSeconds (5), null, "ADDED");
 		var bytes = Save (file, data);
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (last) >= 0);
+		// File order holds: the kept atoms stay after the parsed ones, and an added atom comes last.
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (last) < bytes.AsSpan ().IndexOf ("ADDED"u8));
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Master (0xB6, UInt (0x73C4, (ulong)count))) > bytes.AsSpan ().IndexOf ("First"u8));
 		Assert.AreEqual ("First", MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters[0].Title);
 	}
 
