@@ -964,7 +964,7 @@ public sealed class Mp4File : IMediaFile
 
 		// Calculate duration from movie header
 		var durationSeconds = movieTimescale > 0 ? (double)movieDuration / movieTimescale : 0;
-		var audioDuration = TimeSpan.FromSeconds (durationSeconds);
+		var audioDuration = Mp4AudioPropertiesParser.FromSeconds (durationSeconds);
 
 		var codecName = codec switch {
 			Mp4AudioCodec.Aac => "AAC",
