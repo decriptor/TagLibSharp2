@@ -95,7 +95,8 @@ public sealed class WavPackFile : IMediaFile
 	private const int LegacyV3HeaderBytes = 20;
 
 	// Chunks before "data" are skipped up to this size. The audio payload is not loaded.
-	private const int MaxRiffChunkSkip = 1024 * 1024;
+	// MediaFile's RIFF probe uses the same cap and seeks over the payloads.
+	internal const int MaxRiffChunkSkip = 1024 * 1024;
 
 	private static readonly byte[] Magic = "wvpk"u8.ToArray ();
 
@@ -528,7 +529,8 @@ public sealed class WavPackFile : IMediaFile
 		}
 
 		ApplyWaveFormat (file, fmt);
-		if (file.Version is 1 or 2 && sawDataChunk && file.Channels > 0)
+		// Bit 31 is an unknown length (0x80000000 or 0xFFFFFFFF), not a sample count.
+		if (file.Version is 1 or 2 && sawDataChunk && file.Channels > 0 && (dataChunkSize & 0x80000000) == 0)
 			file.TotalSamples = dataChunkSize / (uint)file.Channels / 2u;
 
 		return true;

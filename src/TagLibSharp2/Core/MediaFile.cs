@@ -269,9 +269,10 @@ public static class MediaFile
 			stream.Position = 0;
 
 		var peek = ReadPeek (stream, pathHint);
+		var format = DetectOpenFormat (stream, peek, pathHint);
 		stream.Position = 0;
 		return RememberMatroskaSource (
-			OpenDetected (DetectFormat (peek, pathHint), stream, sourcePath, fileSystem, pathHint),
+			OpenDetected (format, stream, sourcePath, fileSystem, pathHint),
 			sourcePath,
 			fileSystem);
 	}
@@ -280,9 +281,6 @@ public static class MediaFile
 	// reuses it. Ogg and unrecognized files still get a longer prefix.
 	const int ShortPeekBytes = 32;
 	const int LongPeekBytes = 4095;
-
-	// A normal fmt fits in this. WAVE is not given the 4095-byte peek.
-	const int RiffProbeCap = 512;
 
 	static byte[] ReadPeek (Stream stream, string? pathHint)
 	{
@@ -306,60 +304,53 @@ public static class MediaFile
 		return await StreamBytes.ReadAtMostAsync (stream, want, cancellationToken).ConfigureAwait (false);
 	}
 
-	// RIFF/WAVE can be told from legacy WavPack once the data-chunk magic is visible.
+	// WAVE stays on the short peek. Legacy WavPack is decided by seeking chunk headers,
+	// not by assuming the data chunk follows fmt.
 	static int PeekLength (ReadOnlySpan<byte> peek, string? pathHint)
 	{
 		if (IsOgg (peek) || (!IsRiffWave (peek) && DetectFormat (peek, pathHint) == MediaFormat.Unknown))
 			return LongPeekBytes;
 
+		return peek.Length;
+	}
+
+	static MediaFormat DetectOpenFormat (Stream stream, ReadOnlySpan<byte> peek, string? pathHint)
+	{
 		if (!IsRiffWave (peek))
-			return peek.Length;
+			return DetectFormat (peek, pathHint);
 
-		return RiffProbeLength (peek);
+		return RiffDataStartsWithWavPack (stream) ? MediaFormat.WavPack : MediaFormat.Wav;
 	}
 
-	// When fmt's size is in the prefix, the next chunk is the data chunk on a normal WAVE file.
-	// Read through its first four payload bytes, and no further than RiffProbeCap.
-	static int RiffProbeLength (ReadOnlySpan<byte> peek)
+	// Walk RIFF chunk headers until "data". Payloads are skipped, not copied.
+	// The data chunk has to start within MaxRiffChunkSkip, and no chunk before it
+	// may be larger than that. "wvpk" at the start of the data payload is legacy WavPack.
+	static bool RiffDataStartsWithWavPack (Stream stream)
 	{
-		var need = RiffDataMagicEnd (peek);
-		if (need < peek.Length)
-			need = peek.Length;
-		if (need > RiffProbeCap)
-			need = RiffProbeCap;
-		return need;
-	}
+		if (stream.Length < 12)
+			return false;
 
-	static int RiffDataMagicEnd (ReadOnlySpan<byte> peek)
-	{
-		if (peek.Length < 20)
-			return RiffProbeCap;
+		var cap = (long)WavPackFile.MaxRiffChunkSkip;
+		stream.Position = 12;
+		while (stream.Position + 8 <= stream.Length && stream.Position < cap) {
+			var header = StreamBytes.ReadAtMost (stream, 8);
+			if (header.Length < 8)
+				return false;
 
-		var offset = 12;
-		while (offset + 8 <= peek.Length) {
-			var size = BinaryPrimitives.ReadUInt32LittleEndian (peek.Slice (offset + 4, 4));
-			var payload = offset + 8;
-			if (IsChunkId (peek, offset, (byte)'d', (byte)'a', (byte)'t', (byte)'a')) {
-				var end = (long)payload + 4;
-				return end > int.MaxValue ? RiffProbeCap : (int)end;
+			var size = BinaryPrimitives.ReadUInt32LittleEndian (header.AsSpan (4, 4));
+			if (IsChunkId (header, 0, (byte)'d', (byte)'a', (byte)'t', (byte)'a')) {
+				var magic = StreamBytes.ReadAtMost (stream, WavPackMagic.Length);
+				return magic.Length == WavPackMagic.Length && magic.AsSpan ().SequenceEqual (WavPackMagic);
 			}
 
-			if (IsChunkId (peek, offset, (byte)'f', (byte)'m', (byte)'t', (byte)' ')) {
-				var pad = (size & 1) == 1 ? 1L : 0L;
-				var end = (long)payload + size + pad + 12;
-				if (end < 0 || end > int.MaxValue)
-					return RiffProbeCap;
-				return (int)end;
-			}
+			var padded = (long)size + ((size & 1) == 1 ? 1L : 0L);
+			if (padded > cap || padded > stream.Length - stream.Position)
+				return false;
 
-			var step = 8L + size + ((size & 1) == 1 ? 1L : 0L);
-			if (step < 8 || offset + step > peek.Length || offset + step > int.MaxValue)
-				break;
-
-			offset += (int)step;
+			stream.Position += padded;
 		}
 
-		return RiffProbeCap;
+		return false;
 	}
 
 	static bool IsChunkId (ReadOnlySpan<byte> data, int offset, byte a, byte b, byte c, byte d) =>
@@ -401,8 +392,8 @@ public static class MediaFile
 			stream.Position = 0;
 
 		var peek = await ReadPeekAsync (stream, pathHint, cancellationToken).ConfigureAwait (false);
+		var format = DetectOpenFormat (stream, peek, pathHint);
 		stream.Position = 0;
-		var format = DetectFormat (peek, pathHint);
 		var result = format switch {
 			MediaFormat.Mp3 => FromMp3 (await Mp3File.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Flac => FromFlac (await FlacFile.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),

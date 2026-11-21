@@ -864,6 +864,138 @@ public class WavPackFileTests
 	}
 
 	[TestMethod]
+	[DataRow ((ushort)1)]
+	[DataRow ((ushort)2)]
+	public void Read_LegacyMono_SamplesAreDataSizeOverOneChannelOverTwo (ushort version)
+	{
+		// One channel, 16-bit: samples = data ckSize / 1 / 2, not the stereo divisor.
+		const uint declared = 2000;
+		var data = CreateLegacyRiffWavPack (
+			version,
+			samplesAtOffset16: 0,
+			payloadBytes: 16,
+			declaredDataSize: declared,
+			channels: 1);
+
+		var result = WavPackFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (1, result.File!.Channels);
+		Assert.AreEqual (declared / 1u / 2u, result.File.TotalSamples);
+		Assert.AreNotEqual (declared / 2u / 2u, result.File.TotalSamples);
+	}
+
+	[TestMethod]
+	[DataRow ((ushort)1, 0x80000000u)]
+	[DataRow ((ushort)1, 0xFFFFFFFFu)]
+	[DataRow ((ushort)2, 0x80000000u)]
+	[DataRow ((ushort)2, 0xFFFFFFFFu)]
+	public void Read_LegacyDataSizeWithHighBit_DurationIsUnavailable (ushort version, uint declared)
+	{
+		var data = CreateLegacyRiffWavPack (
+			version,
+			samplesAtOffset16: 0,
+			payloadBytes: 16,
+			declaredDataSize: declared);
+		var name = "sentinel.wv";
+
+		AssertDurationUnavailable (MediaFile.ReadFromData (data, name));
+		AssertDurationUnavailable (MediaFile.Read (new MemoryStream (data), name));
+	}
+
+	[TestMethod]
+	public async Task Read_ChunkBetweenFmtAndData_PathAndStreamsOpenAsWavPack ()
+	{
+		// bext before fmt, then a fact chunk before data. A fixed peek that assumes
+		// data follows fmt never sees wvpk. 1255050 frames at 44100 Hz is 28.459 s.
+		var data = CreateLegacyRiffWavPack (
+			version: 3,
+			samplesAtOffset16: 1255050,
+			payloadBytes: 32,
+			chunkBeforeFmt: 700,
+			chunkBeforeData: 100 * 1024,
+			chunkBeforeDataId: "fact");
+		var path = Path.Combine (Path.GetTempPath (), "tls-wv-" + Guid.NewGuid ().ToString ("N") + ".wv");
+		try {
+			File.WriteAllBytes (path, data);
+
+			AssertLegacyDuration (MediaFile.ReadFromData (data, "legacy.wv"));
+			AssertLegacyDuration (MediaFile.Read (new MemoryStream (data), "legacy.wv"));
+			AssertLegacyDuration (await MediaFile.ReadAsync (new MemoryStream (data), "legacy.wv"));
+			AssertLegacyDuration (MediaFile.Read (path));
+			AssertLegacyDuration (await MediaFile.ReadAsync (path));
+
+			using (var stream = File.OpenRead (path))
+				AssertLegacyDuration (MediaFile.Read (stream, "legacy.wv"));
+			using (var stream = File.OpenRead (path))
+				AssertLegacyDuration (await MediaFile.ReadAsync (stream, "legacy.wv"));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public void Read_WavWithFactChunk_StaysWav ()
+	{
+		var data = WavWithFactChunk ();
+		var path = Path.Combine (Path.GetTempPath (), "tls-wav-" + Guid.NewGuid ().ToString ("N") + ".wav");
+		try {
+			File.WriteAllBytes (path, data);
+
+			AssertStaysWav (MediaFile.ReadFromData (data, "clip.wav"));
+			AssertStaysWav (MediaFile.Read (new MemoryStream (data), "clip.wav"));
+			AssertStaysWav (MediaFile.Read (path));
+			using var stream = File.OpenRead (path);
+			AssertStaysWav (MediaFile.Read (stream, "clip.wav"));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	static void AssertDurationUnavailable (MediaFileResult result)
+	{
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.WavPack, result.Format);
+		var file = result.GetFileAs<WavPackFile> ()!;
+		Assert.AreEqual (0u, file.TotalSamples);
+		Assert.IsFalse (file.Properties.IsValid);
+		Assert.AreEqual (TimeSpan.Zero, file.Properties.Duration);
+	}
+
+	static void AssertStaysWav (MediaFileResult result)
+	{
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.Wav, result.Format);
+	}
+
+	static byte[] WavWithFactChunk ()
+	{
+		using var ms = new MemoryStream ();
+		ms.Write ("RIFF"u8);
+		WriteUInt32LE (ms, 0);
+		ms.Write ("WAVE"u8);
+		ms.Write ("fmt "u8);
+		WriteUInt32LE (ms, 16);
+		WriteUInt16LE (ms, 1);
+		WriteUInt16LE (ms, 1);
+		WriteUInt32LE (ms, 44100);
+		WriteUInt32LE (ms, 88200);
+		WriteUInt16LE (ms, 2);
+		WriteUInt16LE (ms, 16);
+		ms.Write ("fact"u8);
+		WriteUInt32LE (ms, 4);
+		WriteUInt32LE (ms, 4);
+		ms.Write ("data"u8);
+		WriteUInt32LE (ms, 8);
+		ms.Write (new byte[8]);
+		var bytes = ms.ToArray ();
+		WriteUInt32LE (bytes, 4, (uint)(bytes.Length - 8));
+		return bytes;
+	}
+
+	[TestMethod]
 	public void Read_ChunkBeforeData_Skips100KbAndKeepsDuration ()
 	{
 		var data = CreateLegacyRiffWavPack (
@@ -1136,7 +1268,10 @@ public class WavPackFileTests
 		uint samplesAtOffset16,
 		int payloadBytes,
 		uint? declaredDataSize = null,
-		int chunkBeforeData = 0)
+		int chunkBeforeData = 0,
+		int chunkBeforeFmt = 0,
+		int channels = 2,
+		string chunkBeforeDataId = "JUNK")
 	{
 		var headerLength = version switch {
 			1 => 10,
@@ -1160,19 +1295,29 @@ public class WavPackFileTests
 		var dataSize = declaredDataSize ?? (uint)block.Length;
 		using var ms = new MemoryStream ();
 		const int fmtBody = 16;
+		var channelCount = (ushort)channels;
 		ms.Write ("RIFF"u8);
 		WriteUInt32LE (ms, 0);
 		ms.Write ("WAVE"u8);
+		if (chunkBeforeFmt > 0) {
+			ms.Write ("bext"u8);
+			WriteUInt32LE (ms, (uint)chunkBeforeFmt);
+			ms.Write (new byte[chunkBeforeFmt]);
+		}
+
 		ms.Write ("fmt "u8);
 		WriteUInt32LE (ms, fmtBody);
 		WriteUInt16LE (ms, 1);
-		WriteUInt16LE (ms, 2);
+		WriteUInt16LE (ms, channelCount);
 		WriteUInt32LE (ms, 44100);
-		WriteUInt32LE (ms, 44100 * 2 * 2);
-		WriteUInt16LE (ms, 4);
+		WriteUInt32LE (ms, (uint)(44100 * channelCount * 2));
+		WriteUInt16LE (ms, (ushort)(channelCount * 2));
 		WriteUInt16LE (ms, 16);
 		if (chunkBeforeData > 0) {
-			ms.Write ("JUNK"u8);
+			if (chunkBeforeDataId == "fact")
+				ms.Write ("fact"u8);
+			else
+				ms.Write ("JUNK"u8);
 			WriteUInt32LE (ms, (uint)chunkBeforeData);
 			ms.Write (new byte[chunkBeforeData]);
 		}
