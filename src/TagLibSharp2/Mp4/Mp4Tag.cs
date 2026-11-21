@@ -53,12 +53,18 @@ public sealed class Mp4Tag : Tag
 	readonly List<Mp4Picture> _pictures = new ();
 
 	// mean and name stay separate so a colon in either field is not a delimiter.
-	readonly List<FreeformField> _freeform = new ();
+	// The list keeps render order; the index finds a field without scanning, so a file
+	// with many freeform atoms reads in linear time.
+	readonly LinkedList<FreeformField> _freeform = new ();
+	readonly Dictionary<(string Mean, string Name), LinkedListNode<FreeformField>> _freeformByKey = new ();
 
 	// ilst children that are not rebuilt from parsed fields, such as "orch".
 	// Indexed by 4-byte type so one edit does not scan every child.
 	readonly List<PreservedBox?> _preservedAtoms = new ();
 	readonly Dictionary<uint, List<int>> _preservedByType = new ();
+
+	// Preserved freeform boxes that carry a mean and a name, so a set drops its twin directly.
+	readonly Dictionary<(string Mean, string Name), List<int>> _preservedFreeformByKey = new ();
 
 	/// <inheritdoc/>
 	public override TagTypes TagType => TagTypes.Apple;
@@ -769,32 +775,21 @@ public sealed class Mp4Tag : Tag
 
 	internal void SetFreeformAtoms (string mean, string name, List<Mp4DataAtom> dataAtoms)
 	{
-		RemoveFreeform (mean, name);
+		var key = (mean, name);
+		if (_freeformByKey.TryGetValue (key, out var existing)) {
+			_freeform.Remove (existing);
+			_freeformByKey.Remove (key);
+		}
+
 		DropPreservedFreeform (mean, name);
 		if (dataAtoms is null || dataAtoms.Count == 0)
 			return;
 
-		_freeform.Add (new FreeformField (mean, name, dataAtoms));
+		_freeformByKey.Add (key, _freeform.AddLast (new FreeformField (mean, name, dataAtoms)));
 	}
 
-	FreeformField? FindFreeform (string mean, string name)
-	{
-		for (var i = 0; i < _freeform.Count; i++) {
-			var field = _freeform[i];
-			if (string.Equals (field.Mean, mean, StringComparison.Ordinal) &&
-				string.Equals (field.Name, name, StringComparison.Ordinal))
-				return field;
-		}
-
-		return null;
-	}
-
-	void RemoveFreeform (string mean, string name)
-	{
-		_freeform.RemoveAll (field =>
-			string.Equals (field.Mean, mean, StringComparison.Ordinal) &&
-			string.Equals (field.Name, name, StringComparison.Ordinal));
-	}
+	FreeformField? FindFreeform (string mean, string name) =>
+		_freeformByKey.TryGetValue ((mean, name), out var node) ? node.Value : null;
 
 	void RemoveAtom (string atomId)
 	{
@@ -808,8 +803,10 @@ public sealed class Mp4Tag : Tag
 		_atoms.Clear ();
 		_pictures.Clear ();
 		_freeform.Clear ();
+		_freeformByKey.Clear ();
 		_preservedAtoms.Clear ();
 		_preservedByType.Clear ();
+		_preservedFreeformByKey.Clear ();
 	}
 
 	/// <inheritdoc/>
@@ -943,13 +940,23 @@ public sealed class Mp4Tag : Tag
 
 		var typeKey = TypeKey (box.Span);
 		var index = _preservedAtoms.Count;
-		_preservedAtoms.Add (new PreservedBox (box, mean, name));
+		_preservedAtoms.Add (new PreservedBox (box));
 		if (!_preservedByType.TryGetValue (typeKey, out var indexes)) {
 			indexes = new List<int> ();
 			_preservedByType.Add (typeKey, indexes);
 		}
 
 		indexes.Add (index);
+
+		if (mean is null || name is null)
+			return;
+
+		if (!_preservedFreeformByKey.TryGetValue ((mean, name), out var twins)) {
+			twins = new List<int> ();
+			_preservedFreeformByKey.Add ((mean, name), twins);
+		}
+
+		twins.Add (index);
 	}
 
 	void DropPreserved (string atomId)
@@ -970,23 +977,14 @@ public sealed class Mp4Tag : Tag
 
 	void DropPreservedFreeform (string mean, string name)
 	{
-		var typeKey = TypeKey (Mp4AtomMapping.FreeformAtom);
-		if (!_preservedByType.TryGetValue (typeKey, out var indexes))
+		// The ---- entries in _preservedByType keep these indexes; nulled slots are skipped on render.
+		if (!_preservedFreeformByKey.TryGetValue ((mean, name), out var twins))
 			return;
 
-		for (var i = indexes.Count - 1; i >= 0; i--) {
-			var preserved = _preservedAtoms[indexes[i]];
-			if (preserved is null ||
-				!string.Equals (preserved.Mean, mean, StringComparison.Ordinal) ||
-				!string.Equals (preserved.Name, name, StringComparison.Ordinal))
-				continue;
+		foreach (var index in twins)
+			_preservedAtoms[index] = null;
 
-			_preservedAtoms[indexes[i]] = null;
-			indexes.RemoveAt (i);
-		}
-
-		if (indexes.Count == 0)
-			_preservedByType.Remove (typeKey);
+		_preservedFreeformByKey.Remove ((mean, name));
 	}
 
 	static uint TypeKey (string atomId) =>
@@ -1023,17 +1021,11 @@ public sealed class Mp4Tag : Tag
 
 	sealed class PreservedBox
 	{
-		public PreservedBox (BinaryData box, string? mean, string? name)
+		public PreservedBox (BinaryData box)
 		{
 			Box = box;
-			Mean = mean;
-			Name = name;
 		}
 
 		public BinaryData Box { get; }
-
-		public string? Mean { get; }
-
-		public string? Name { get; }
 	}
 }
