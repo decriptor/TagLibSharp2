@@ -30,6 +30,7 @@ TagLibSharp2 currently supports **16 formats** with read and write. The library 
 | Musepack | P1 | ✅ | ✅ | ✅ | - | SV7 and SV8 support |
 | Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values are saved. Attachments and chapters are preserved, not rewritten |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
+| AAC (ADTS/ADIF) | P1 | ✅ | ✅ | ✅ | - | ID3v2, APEv2, ID3v1 tags |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |
 | TrueAudio | P2 | ❌ | ❌ | ❌ | LOW | Uses ID3v2 |
 | Monkey's Audio | P2 | ✅ | ✅ | ✅ | - | Recently added |
