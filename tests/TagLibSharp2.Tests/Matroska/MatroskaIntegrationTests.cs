@@ -127,6 +127,83 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 		}
 	}
 
+	[TestMethod]
+	public void Save_RealMatroska_LargeCover_IsListedAndEveryOffsetLands ()
+	{
+		// A 70 KB cover is common album art. On a file whose CueClusterPosition has two bytes the move
+		// pushes the Clusters past 0xFFFF, so the Cues must widen (RFC 9559 sections 6.1 and 16).
+		var path = SkipIfNoTestFile (TestFileEnvVar, "Matroska");
+		var original = File.ReadAllBytes (path);
+		var copy = Copy (path);
+		try {
+			var file = MatroskaFile.ReadFromFile (copy).File!;
+			var cover = new byte[70000];
+			cover[0] = 0xFF;
+			cover[1] = 0xD8;
+			file.Tag.Pictures = [.. file.Tag.Pictures, new LargePicture (cover)];
+			var saved = file.SaveToFile ();
+			if (!saved.IsSuccess && saved.Error!.Contains ("WebM", StringComparison.Ordinal))
+				Assert.Inconclusive ("This file refuses a new attachment: " + saved.Error);
+			Assert.IsTrue (saved.IsSuccess, saved.Error);
+
+			var after = File.ReadAllBytes (copy);
+			CollectionAssert.AreEqual (ClusterPayloads (original), ClusterPayloads (after));
+			var seeks = FirstSeekHead (after);
+			if (FirstSeekHead (original).Count > 0)
+				Assert.IsTrue (seeks.Exists (entry => entry.Id == MatroskaIds.Attachments), "The SeekHead does not list the Attachments");
+			var children = SegmentChildren (after);
+			var bodyAt = SegmentBodyAt (after);
+			foreach (var (id, position) in seeks)
+				Assert.IsTrue (children.Exists (child => child.Id == id && child.Start - bodyAt == (int)position), id.ToString ("X", System.Globalization.CultureInfo.InvariantCulture));
+			// Every CueClusterPosition that named a Cluster still does. A broken one in the source stays as it was.
+			Assert.AreEqual (LandingCues (original), LandingCues (after));
+			Assert.IsTrue (MatroskaFile.Read (after).File!.Tag.Pictures.Any (p => p.PictureData.Length == cover.Length));
+		} finally {
+			File.Delete (copy);
+		}
+	}
+
+	static int LandingCues (byte[] file)
+	{
+		var bodyAt = SegmentBodyAt (file);
+		var children = SegmentChildren (file);
+		return CueClusterPositions (file).Count (position => children.Exists (child => child.Id == MatroskaIds.Cluster && child.Start - bodyAt == (int)position));
+	}
+
+	/// <summary>Every CueClusterPosition in the first Segment's Cues.</summary>
+	static List<ulong> CueClusterPositions (byte[] file)
+	{
+		var found = new List<ulong> ();
+		foreach (var (id, start, end) in SegmentChildren (file)) {
+			if (id == MatroskaIds.Cues && EbmlReader.TryRead (file, start, end, out var cues) && !cues.UnknownSize)
+				CollectCues (file, cues.DataOffset, cues.End, found);
+		}
+
+		return found;
+	}
+
+	static void CollectCues (byte[] file, int offset, int end, List<ulong> found)
+	{
+		while (offset < end && EbmlReader.TryRead (file, offset, end, out var element) && !element.UnknownSize) {
+			if (element.Id == MatroskaIds.CueClusterPosition)
+				found.Add (EbmlReader.ReadUInt (file.AsSpan (element.DataOffset, (int)element.DataLength)));
+			else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions)
+				CollectCues (file, element.DataOffset, element.End, found);
+			offset = element.End;
+		}
+	}
+
+	sealed class LargePicture (byte[] data) : IPicture
+	{
+		public string MimeType => "image/jpeg";
+
+		public PictureType PictureType => PictureType.FrontCover;
+
+		public string Description => "";
+
+		public BinaryData PictureData => new (data);
+	}
+
 	/// <summary>The Seek entries of the first SeekHead, positions relative to the Segment payload.</summary>
 	static List<(ulong Id, ulong Position)> FirstSeekHead (byte[] file)
 	{
@@ -191,7 +268,8 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 				continue;
 			var offset = cluster.DataOffset;
 			while (offset < end && EbmlReader.TryRead (file, offset, end, out var child) && !child.UnknownSize) {
-				if (child.Id is not MatroskaIds.ClusterPosition and not MatroskaIds.Crc32)
+				// Position moves with the Cluster and is voided when it cannot widen in place; the blocks do not change.
+				if (child.Id is not MatroskaIds.ClusterPosition and not MatroskaIds.Crc32 and not MatroskaIds.Void)
 					kept.Write (file, child.Position, child.End - child.Position);
 				offset = child.End;
 			}
