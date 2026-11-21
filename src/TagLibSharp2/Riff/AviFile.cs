@@ -60,8 +60,15 @@ public sealed class AviFile : IMediaFile
 	/// Gets the RIFF INFO tag. It is empty, not null, when the file has no <c>LIST INFO</c>.
 	/// </summary>
 	/// <remarks>
+	/// <para>
 	/// Every INFO list in the first RIFF form is merged into this tag. Save writes one INFO list
-	/// before <c>movi</c> and turns the others into <c>JUNK</c>. Clearing the tag removes the list.
+	/// between <c>hdrl</c> and <c>movi</c> and turns the others into <c>JUNK</c>. Clearing the tag removes the list.
+	/// </para>
+	/// <para>
+	/// RIFF INFO names no encoding for AVI. A value is read as UTF-8 when its bytes are valid UTF-8
+	/// (ffmpeg writes UTF-8), otherwise as Latin-1, and a changed value is written as UTF-8. A value
+	/// that is not changed is written back with its original bytes.
+	/// </para>
 	/// </remarks>
 	public RiffInfoTag InfoTag { get; }
 
@@ -122,18 +129,45 @@ public sealed class AviFile : IMediaFile
 		if (!IsValidFormat (data))
 			return AviFileReadResult.Failure ("Not an AVI file: missing RIFF 'AVI ' header");
 
-		var chunks = AviChunks.Walk (data);
-		var hdrlIndex = AviChunks.HeaderList (chunks);
-		if (hdrlIndex < 0)
+		RiffInfoTag? info = null;
+		Id3v2Tag? id3 = null;
+		var sawHeaders = false;
+		var sawId3 = false;
+		AviHeaders? headers = null;
+		var reader = new AviChunkReader (data);
+		while (reader.TryNext (out var chunk)) {
+			if (!AviChunks.IsReadable (chunk))
+				continue;
+			if (!sawHeaders && chunk.IsList (AviChunks.Hdrl)) {
+				sawHeaders = true;
+				headers = AviHeaders.Parse (AviChunks.Body (data, chunk).Slice (4));
+			} else if (chunk.IsList (AviChunks.Info)) {
+				var parsed = RiffInfoTag.Parse (new BinaryData (AviChunks.Body (data, chunk)), utf8: true);
+				if (parsed is null)
+					continue;
+				if (info is null)
+					info = parsed;
+				else
+					info.FillMissingFrom (parsed);
+			} else if (!sawId3 && chunk.IsId3) {
+				sawId3 = true;
+				var result = Id3v2Tag.Read (AviChunks.Body (data, chunk));
+				if (result.IsSuccess)
+					id3 = result.Tag;
+			}
+		}
+
+		if (headers is null)
 			return AviFileReadResult.Failure ("Invalid AVI file: no hdrl list");
 
-		var info = AviChunks.MergeInfo (data, chunks);
-		AviChunks.FirstId3 (data, chunks, out var id3);
-		var hdrl = chunks[hdrlIndex];
-		var headers = AviHeaders.Parse (AviChunks.Body (data, hdrl).Slice (4));
+		// A streaming writer that never finalized the file leaves RIFF size 0xFFFFFFFF and
+		// placeholder frame counts in avih and strh, so the header lengths are not durations.
+		if (AviChunks.IsUnfinalized (data))
+			headers.ForgetLengths ();
+
 		var duration = AviProperties.Duration (headers);
 		return AviFileReadResult.Success (new AviFile (
-			info ?? new RiffInfoTag (),
+			info ?? new RiffInfoTag (utf8: true),
 			id3,
 			duration,
 			AviProperties.Audio (headers, duration),
@@ -160,16 +194,17 @@ public sealed class AviFile : IMediaFile
 		using var kept = new MemoryStream ();
 		StreamBytes.Append (kept, header);
 		var limit = AviChunks.FormEnd (BinaryPrimitives.ReadUInt32LittleEndian (header.AsSpan (4)), stream.Length);
+		var probe = new byte[12];
 		long position = RiffFile.HeaderSize;
 		while (position + RiffChunk.HeaderSize <= limit) {
 			stream.Position = position;
-			var probe = StreamBytes.ReadAtMost (stream, 12);
-			if (probe.Length < RiffChunk.HeaderSize)
+			var probed = StreamBytes.Read (stream, probe, 0, probe.Length);
+			if (probed < RiffChunk.HeaderSize)
 				break;
 
 			var size = BinaryPrimitives.ReadUInt32LittleEndian (probe.AsSpan (4));
 			var next = position + RiffChunk.HeaderSize + size + (size & 1);
-			if (IsKept (probe) && size <= MaxTagChunkBytes) {
+			if (IsKept (probe, probed) && size <= MaxTagChunkBytes) {
 				var length = Math.Min (next, limit) - position;
 				stream.Position = position;
 				var bytes = StreamBytes.ReadAtMost (stream, (int)length);
@@ -186,16 +221,67 @@ public sealed class AviFile : IMediaFile
 		return WithSource (Read (kept.GetBuffer ().AsSpan (0, (int)kept.Length)), sourcePath, fileSystem);
 	}
 
-	/// <summary>The chunks <see cref="Read(ReadOnlySpan{byte})"/> uses: <c>LIST hdrl</c>, <c>LIST INFO</c>, and an ID3v2 chunk.</summary>
-	static bool IsKept (byte[] probe)
+	/// <summary>
+	/// The asynchronous twin of <see cref="Read(Stream, string, IFileSystem)"/>: the same chunks are
+	/// copied, with asynchronous reads.
+	/// </summary>
+	internal static async Task<AviFileReadResult> ReadAsync (
+		Stream stream,
+		string? sourcePath,
+		IFileSystem? fileSystem,
+		CancellationToken cancellationToken)
 	{
-		var fourCC = AviHeaders.FourCC (probe);
-		if (fourCC is "ID32" or "id3 ")
+		cancellationToken.ThrowIfCancellationRequested ();
+		if (!stream.CanSeek)
+			return WithSource (Read (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false)), sourcePath, fileSystem);
+
+		if (stream.Position != 0)
+			stream.Position = 0;
+
+		var header = await StreamBytes.ReadAtMostAsync (stream, RiffFile.HeaderSize, cancellationToken).ConfigureAwait (false);
+		if (!IsValidFormat (header))
+			return AviFileReadResult.Failure ("Not an AVI file: missing RIFF 'AVI ' header");
+
+		using var kept = new MemoryStream ();
+		StreamBytes.Append (kept, header);
+		var limit = AviChunks.FormEnd (BinaryPrimitives.ReadUInt32LittleEndian (header.AsSpan (4)), stream.Length);
+		var probe = new byte[12];
+		long position = RiffFile.HeaderSize;
+		while (position + RiffChunk.HeaderSize <= limit) {
+			stream.Position = position;
+			var probed = await StreamBytes.ReadAsync (stream, probe, 0, probe.Length, cancellationToken).ConfigureAwait (false);
+			if (probed < RiffChunk.HeaderSize)
+				break;
+
+			var size = BinaryPrimitives.ReadUInt32LittleEndian (probe.AsSpan (4));
+			var next = position + RiffChunk.HeaderSize + size + (size & 1);
+			if (IsKept (probe, probed) && size <= MaxTagChunkBytes) {
+				var length = Math.Min (next, limit) - position;
+				stream.Position = position;
+				var bytes = await StreamBytes.ReadAtMostAsync (stream, (int)length, cancellationToken).ConfigureAwait (false);
+				StreamBytes.Append (kept, bytes);
+				if (bytes.Length < length)
+					break;
+			}
+
+			if (next >= limit)
+				break;
+			position = next;
+		}
+
+		return WithSource (Read (kept.GetBuffer ().AsSpan (0, (int)kept.Length)), sourcePath, fileSystem);
+	}
+
+	/// <summary>The chunks <see cref="Read(ReadOnlySpan{byte})"/> uses: <c>LIST hdrl</c>, <c>LIST INFO</c>, and an ID3v2 chunk.</summary>
+	static bool IsKept (byte[] probe, int length)
+	{
+		var id = BinaryPrimitives.ReadUInt32LittleEndian (probe);
+		if (id == AviChunks.Id32 || id == AviChunks.Id3Lower)
 			return true;
-		if (fourCC != "LIST" || probe.Length < 12)
+		if (id != AviChunks.List || length < 12)
 			return false;
-		var listType = AviHeaders.FourCC (probe.AsSpan (8));
-		return listType is "hdrl" or "INFO";
+		var listType = BinaryPrimitives.ReadUInt32LittleEndian (probe.AsSpan (8));
+		return listType == AviChunks.Hdrl || listType == AviChunks.Info;
 	}
 
 	static AviFileReadResult WithSource (AviFileReadResult result, string? sourcePath, IFileSystem? fileSystem)
@@ -223,13 +309,21 @@ public sealed class AviFile : IMediaFile
 	/// <param name="path">The file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <returns>The parsed file, or a failure.</returns>
+	/// <remarks>Only the header list and the tag chunks are read; <c>movi</c> stays on disk.</remarks>
 	public static AviFileReadResult ReadFromFile (string path, IFileSystem? fileSystem = null)
 	{
-		var readResult = FileHelper.SafeReadAllBytes (path, fileSystem);
-		if (!readResult.IsSuccess)
-			return AviFileReadResult.Failure (readResult.Error!);
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		if (OpenFailure (path, fs) is { } missing)
+			return missing;
 
-		return WithSource (Read (readResult.Data!.Value.Span), path, fileSystem);
+		try {
+			using var stream = fs.OpenRead (path);
+			return Read (stream, path, fileSystem);
+		} catch (IOException ex) {
+			return AviFileReadResult.Failure ($"Failed to read file: {ex.Message}");
+		} catch (UnauthorizedAccessException ex) {
+			return AviFileReadResult.Failure ($"Access denied: {ex.Message}");
+		}
 	}
 
 	/// <summary>Reads an AVI file from disk asynchronously.</summary>
@@ -237,16 +331,37 @@ public sealed class AviFile : IMediaFile
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The parsed file, or a failure.</returns>
+	/// <remarks>Only the header list and the tag chunks are read; <c>movi</c> stays on disk.</remarks>
 	public static async Task<AviFileReadResult> ReadFromFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		var readResult = await FileHelper.SafeReadAllBytesAsync (path, fileSystem, cancellationToken).ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return AviFileReadResult.Failure (readResult.Error!);
+		var fs = fileSystem ?? DefaultFileSystem.Instance;
+		if (OpenFailure (path, fs) is { } missing)
+			return missing;
 
-		return WithSource (Read (readResult.Data!.Value.Span), path, fileSystem);
+		try {
+			using var stream = fs.OpenRead (path);
+			return await ReadAsync (stream, path, fileSystem, cancellationToken).ConfigureAwait (false);
+		} catch (IOException ex) {
+			return AviFileReadResult.Failure ($"Failed to read file: {ex.Message}");
+		} catch (UnauthorizedAccessException ex) {
+			return AviFileReadResult.Failure ($"Access denied: {ex.Message}");
+		} catch (OperationCanceledException) {
+			return AviFileReadResult.Failure ("Operation was cancelled");
+		}
+	}
+
+	static AviFileReadResult? OpenFailure (string path, IFileSystem fileSystem)
+	{
+#if NETSTANDARD2_0 || NETSTANDARD2_1
+		if (path is null)
+			throw new ArgumentNullException (nameof (path));
+#else
+		ArgumentNullException.ThrowIfNull (path);
+#endif
+		return fileSystem.FileExists (path) ? null : AviFileReadResult.Failure ($"File not found: {path}");
 	}
 
 	/// <summary>
@@ -256,7 +371,7 @@ public sealed class AviFile : IMediaFile
 	/// <returns>The rewritten file, or empty when the tags cannot be written (see <see cref="SaveToFile(string, ReadOnlySpan{byte}, IFileSystem)"/>).</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
 		AviRewrite.TryRewrite (originalData, InfoTag, Id3v2Tag, out var rewritten, out _)
-			? new BinaryData (rewritten)
+			? BinaryData.WrapUnsafe (rewritten)
 			: BinaryData.Empty;
 
 	/// <summary>Saves the tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
@@ -267,6 +382,11 @@ public sealed class AviFile : IMediaFile
 	/// The write result. Fails without writing when the data is not an AVI file, has no <c>movi</c>
 	/// list, or the tags need more room and an index cannot be verified before the data is moved.
 	/// </returns>
+	/// <remarks>
+	/// The rewritten file is built in memory: one copy of the file when nothing moves, a second when
+	/// the data has to move. The save overloads that re-read <see cref="SourcePath"/> load the whole
+	/// file first, so a file of 2 GiB or more cannot be saved.
+	/// </remarks>
 	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
 		if (!AviRewrite.TryRewrite (originalData, InfoTag, Id3v2Tag, out var rewritten, out var error))
@@ -289,8 +409,26 @@ public sealed class AviFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fs);
+		return WriteOwned (path, readResult.Data!.Value, fs);
 	}
+
+	/// <summary>
+	/// Saves into bytes this instance just read. A save that moves nothing writes the tags into that
+	/// buffer instead of copying the file.
+	/// </summary>
+	FileWriteResult WriteOwned (string path, ReadOnlyMemory<byte> data, IFileSystem? fileSystem)
+	{
+		if (!AviRewrite.TryRewrite (data.Span, Owned (data), InfoTag, Id3v2Tag, out var rewritten, out var error))
+			return FileWriteResult.Failure (error);
+
+		return AtomicFileWriter.Write (path, rewritten, fileSystem);
+	}
+
+	static byte[]? Owned (ReadOnlyMemory<byte> data) =>
+		System.Runtime.InteropServices.MemoryMarshal.TryGetArray (data, out var segment)
+			&& segment.Offset == 0 && segment.Array is { } array && segment.Count == array.Length
+			? array
+			: null;
 
 	/// <summary>Saves the tags back to <see cref="SourcePath"/>.</summary>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
@@ -339,7 +477,11 @@ public sealed class AviFile : IMediaFile
 		if (!readResult.IsSuccess)
 			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+		var data = readResult.Data!.Value;
+		if (!AviRewrite.TryRewrite (data.Span, Owned (data), InfoTag, Id3v2Tag, out var rewritten, out var error))
+			return FileWriteResult.Failure (error);
+
+		return await AtomicFileWriter.WriteAsync (path, rewritten, fs, cancellationToken).ConfigureAwait (false);
 	}
 
 	/// <summary>Saves the tags back to <see cref="SourcePath"/> asynchronously.</summary>

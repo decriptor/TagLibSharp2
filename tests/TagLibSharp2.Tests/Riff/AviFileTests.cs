@@ -358,6 +358,52 @@ public class AviFileTests
 	}
 
 	[TestMethod]
+	public async Task ReadAsync_EveryTruncation_MatchesTheSyncRead ()
+	{
+		var builder = new AviTestBuilder { OpenDml = true, AvixFrames = 2, Id3 = Id3 ("T", "A") };
+		builder.Info.Add (("INAM", "Cut"));
+		var bytes = builder.Build ();
+
+		for (var length = 0; length <= bytes.Length; length += 3) {
+			var prefix = bytes.AsSpan (0, length).ToArray ();
+			var sync = AviFile.Read (new MemoryStream (prefix), null, null);
+			var async = await AviFile.ReadAsync (new MemoryStream (prefix), null, null, CancellationToken.None);
+			Assert.AreEqual (sync.IsSuccess, async.IsSuccess, $"length {length}");
+			Assert.AreEqual (sync.File?.InfoTag.Title, async.File?.InfoTag.Title, $"length {length}");
+			Assert.AreEqual (sync.File?.Duration, async.File?.Duration, $"length {length}");
+		}
+	}
+
+	[TestMethod]
+	public async Task ReadAsync_NonSeekableStream_ReadsTheCopy ()
+	{
+		var builder = new AviTestBuilder ();
+		builder.Info.Add (("INAM", "Pipe"));
+
+		var result = await AviFile.ReadAsync (new NonSeekableStream (builder.Build ()) { Position = 0 }, "/p.avi", null, CancellationToken.None);
+		var seekable = await AviFile.ReadAsync (new MemoryStream (builder.Build ()) { Position = 5 }, null, null, CancellationToken.None);
+
+		Assert.AreEqual ("Pipe", result.File!.InfoTag.Title);
+		Assert.AreEqual ("/p.avi", result.File.SourcePath);
+		Assert.AreEqual ("Pipe", seekable.File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public async Task ReadFromFile_UnreadableFile_Fails ()
+	{
+		var fs = new WholeFileCountingFileSystem ();
+		fs.AddFile ("/a.avi", new AviTestBuilder ().Build ());
+
+		fs.OpenFailure = new UnauthorizedAccessException ("denied");
+		StringAssert.Contains (AviFile.ReadFromFile ("/a.avi", fs).Error, "Access denied");
+		StringAssert.Contains ((await AviFile.ReadFromFileAsync ("/a.avi", fs)).Error, "Access denied");
+		fs.OpenFailure = new IOException ("disk");
+		StringAssert.Contains (AviFile.ReadFromFile ("/a.avi", fs).Error, "Failed to read file");
+		StringAssert.Contains ((await AviFile.ReadFromFileAsync ("/a.avi", fs)).Error, "Failed to read file");
+		Assert.ThrowsExactly<ArgumentNullException> (() => AviFile.ReadFromFile (null!, fs));
+	}
+
+	[TestMethod]
 	public void Read_EveryTruncation_DoesNotThrow ()
 	{
 		var builder = new AviTestBuilder { OpenDml = true, AvixFrames = 2, Id3 = Id3 ("T", "A") };
@@ -419,6 +465,176 @@ public class AviFileTests
 		Assert.IsTrue (failure != AviFileReadResult.Failure ("y"));
 		Assert.IsFalse (failure.Equals ((object)"x"));
 		Assert.AreEqual (failure.GetHashCode (), AviFileReadResult.Failure ("x").GetHashCode ());
+	}
+
+	[TestMethod]
+	public void Read_UnfinalizedRiff_ReportsNoDuration ()
+	{
+		// A piped writer leaves RIFF size 0xFFFFFFFF and placeholder stream lengths it never patches.
+		var bytes = new AviTestBuilder { VideoLength = 0x40000000 }.Build ();
+		BinaryPrimitives.WriteUInt32LittleEndian (bytes.AsSpan (4), 0xFFFFFFFF);
+
+		var file = AviFile.Read (bytes).File!;
+		var streamed = MediaFile.Read (new MemoryStream (bytes)).GetFileAs<AviFile> ()!;
+
+		Assert.AreEqual (TimeSpan.Zero, file.Duration);
+		Assert.AreEqual (TimeSpan.Zero, file.VideoProperties!.Value.Duration);
+		Assert.AreEqual (TimeSpan.Zero, file.AudioProperties!.Value.Duration);
+		Assert.AreEqual (4, file.VideoProperties.Value.Width);
+		Assert.AreEqual (TimeSpan.Zero, streamed.Duration);
+	}
+
+	[TestMethod]
+	public void Read_Utf8InfoText_DecodesAsUtf8 ()
+	{
+		var builder = new AviTestBuilder { InfoEncoding = System.Text.Encoding.UTF8 };
+		builder.Info.AddRange ([("INAM", "Café ☕"), ("IART", "Björk")]);
+
+		var info = AviFile.Read (builder.Build ()).File!.InfoTag;
+
+		Assert.AreEqual ("Café ☕", info.Title);
+		Assert.AreEqual ("Björk", info.Artist);
+	}
+
+	[TestMethod]
+	public void Read_Latin1InfoText_FallsBackToLatin1 ()
+	{
+		var builder = new AviTestBuilder ();
+		builder.Info.Add (("INAM", "Café"));
+
+		Assert.AreEqual ("Café", AviFile.Read (builder.Build ()).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public void Read_ManyTinyChunks_AllocatesLessThanTheFile ()
+	{
+		var file = WithTinyChunks (100_000);
+
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		var read = AviFile.Read (file);
+		var spanAllocated = GC.GetAllocatedBytesForCurrentThread () - before;
+		before = GC.GetAllocatedBytesForCurrentThread ();
+		var streamed = MediaFile.Read (new MemoryStream (file), "x.avi");
+		var streamAllocated = GC.GetAllocatedBytesForCurrentThread () - before;
+
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsTrue (streamed.IsSuccess, streamed.Error);
+		Assert.IsLessThan ((long)file.Length, spanAllocated, $"span read allocated {spanAllocated} for {file.Length}");
+		Assert.IsLessThan ((long)file.Length, streamAllocated, $"stream read allocated {streamAllocated} for {file.Length}");
+	}
+
+	[TestMethod]
+	public async Task ReadFromFile_DoesNotLoadTheWholeFile ()
+	{
+		var builder = new AviTestBuilder { Frames = 200, Width = 64, Height = 64 };
+		builder.Info.Add (("INAM", "Window"));
+		var bytes = builder.Build ();
+		var fs = new WholeFileCountingFileSystem ();
+		fs.AddFile ("/clip.avi", bytes);
+
+		var sync = AviFile.ReadFromFile ("/clip.avi", fs);
+		var async = await AviFile.ReadFromFileAsync ("/clip.avi", fs);
+
+		Assert.AreEqual ("Window", sync.File!.InfoTag.Title);
+		Assert.AreEqual ("Window", async.File!.InfoTag.Title);
+		Assert.AreEqual ("/clip.avi", async.File.SourcePath);
+		Assert.AreEqual (0, fs.WholeFileReads);
+		Assert.IsLessThan (bytes.Length / 4L, fs.BytesRead);
+		Assert.IsFalse ((await AviFile.ReadFromFileAsync ("/clip.avi", fs, new CancellationToken (true))).IsSuccess);
+	}
+
+	internal static byte[] WithTinyChunks (int count)
+	{
+		var builder = new AviTestBuilder { JunkBeforeMovi = -1 };
+		builder.Info.Add (("INAM", "x"));
+		var b = builder.Build ();
+		var movi = b.AsSpan ().IndexOf ("movi"u8) - 8;
+		var filler = new byte[count * 8];
+		for (var i = 0; i < count; i++)
+			"JUNK"u8.CopyTo (filler.AsSpan (i * 8));
+		var file = b.AsSpan (0, movi).ToArray ().Concat (filler).Concat (b.AsSpan (movi).ToArray ()).ToArray ();
+		BinaryPrimitives.WriteUInt32LittleEndian (file.AsSpan (4), (uint)(file.Length - 8));
+		return file;
+	}
+
+	internal static byte[] AppendChunk (byte[] file, string id, byte[] data)
+	{
+		var full = file.Concat (Chunk (id, data)).ToArray ();
+		BinaryPrimitives.WriteUInt32LittleEndian (full.AsSpan (4), (uint)(full.Length - 8));
+		return full;
+	}
+
+	sealed class WholeFileCountingFileSystem : IFileSystem
+	{
+		readonly MockFileSystem _inner = new ();
+
+		public int WholeFileReads { get; private set; }
+
+		public long BytesRead { get; private set; }
+
+		public void AddFile (string path, byte[] data) => _inner.AddFile (path, data);
+
+		public bool FileExists (string path) => _inner.FileExists (path);
+
+		public Exception? OpenFailure { get; set; }
+
+		public Stream OpenRead (string path) => OpenFailure is { } failure ? throw failure : new Counting (_inner.OpenRead (path), this);
+
+		public Stream OpenReadWrite (string path) => _inner.OpenReadWrite (path);
+
+		public Stream Create (string path) => _inner.Create (path);
+
+		public byte[] ReadAllBytes (string path)
+		{
+			WholeFileReads++;
+			return _inner.ReadAllBytes (path);
+		}
+
+		public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default)
+		{
+			WholeFileReads++;
+			return _inner.ReadAllBytesAsync (path, cancellationToken);
+		}
+
+		public void WriteAllBytes (string path, ReadOnlySpan<byte> data) => _inner.WriteAllBytes (path, data);
+
+		public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default) =>
+			_inner.WriteAllBytesAsync (path, data, cancellationToken);
+
+		public void Delete (string path) => _inner.Delete (path);
+
+		public void Move (string sourcePath, string destinationPath) => _inner.Move (sourcePath, destinationPath);
+
+		public string? GetDirectoryName (string path) => _inner.GetDirectoryName (path);
+
+		public string GetFileName (string path) => _inner.GetFileName (path);
+
+		public string CombinePath (string path1, string path2) => _inner.CombinePath (path1, path2);
+
+		sealed class Counting (Stream inner, WholeFileCountingFileSystem owner) : Stream
+		{
+			public override bool CanRead => true;
+			public override bool CanSeek => inner.CanSeek;
+			public override bool CanWrite => false;
+			public override long Length => inner.Length;
+			public override long Position { get => inner.Position; set => inner.Position = value; }
+			public override void Flush () { }
+			public override int Read (byte[] buffer, int offset, int count)
+			{
+				var read = inner.Read (buffer, offset, count);
+				owner.BytesRead += read;
+				return read;
+			}
+			public override long Seek (long offset, SeekOrigin origin) => inner.Seek (offset, origin);
+			public override void SetLength (long value) => throw new NotSupportedException ();
+			public override void Write (byte[] buffer, int offset, int count) => throw new NotSupportedException ();
+			protected override void Dispose (bool disposing)
+			{
+				if (disposing)
+					inner.Dispose ();
+				base.Dispose (disposing);
+			}
+		}
 	}
 
 	internal static byte[] Id3 (string title, string album)

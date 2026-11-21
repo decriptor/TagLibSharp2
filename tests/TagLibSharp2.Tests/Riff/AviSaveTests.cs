@@ -532,6 +532,229 @@ public class AviSaveTests
 		}
 	}
 
+	[TestMethod]
+	public void Save_StandardIndexWithBaseZero_ShiftsEachEntryPastTheSlot ()
+	{
+		// AVISTDINDEX: qwBaseOffset + dwOffset is the data's file offset, for any base. With base 0
+		// the dwOffsets are absolute, so the move has to shift the entries, not the base.
+		var original = new AviTestBuilder { OpenDml = true, AvixFrames = 2, StandardIndexBaseZero = true }.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = LongText;
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsGreaterThan (original.Length, saved.Length);
+		AssertSamplesKept (original, saved);
+	}
+
+	[TestMethod]
+	public void Save_FieldIndexWithAnEarlyBase_RefusesToMove ()
+	{
+		// A field index's entries hold a second offset this writer does not shift, so a base
+		// that does not move with the data cannot be verified.
+		var original = new AviTestBuilder { OpenDml = true, StandardIndexBaseZero = true, StandardIndexSubType = 1 }.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = LongText;
+
+		var saved = file.SaveToFile ("/x.avi", original, new MockFileSystem ());
+
+		Assert.IsFalse (saved.IsSuccess);
+		StringAssert.Contains (saved.Error, "OpenDML index");
+	}
+
+	[TestMethod]
+	public void Save_StandardIndexEntryPastItsChunk_RefusesToMove ()
+	{
+		var original = new AviTestBuilder { OpenDml = true, StandardIndexBaseZero = true }.Build ();
+		// Three entries more than the chunk holds; the bytes after it are still in the file.
+		var ix = AviFileTests.IndexOf (original, "ix00"u8);
+		var size = BinaryPrimitives.ReadUInt32LittleEndian (original.AsSpan (ix + 4));
+		BinaryPrimitives.WriteUInt32LittleEndian (original.AsSpan (ix + 8 + 4), (size - 24) / 8 + 3);
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = LongText;
+
+		Assert.AreEqual (0, file.Render (original).Length);
+	}
+
+	[TestMethod]
+	public void Save_SuperIndexEntryBeforeTheSlot_KeepsItsOffset ()
+	{
+		// A standard index stored before the moved data: the super index entry that names it must
+		// not shift, and its base, which points into movi, must.
+		var probe = new AviTestBuilder { OpenDml = true }.Build ();
+		var ixSize = (int)BinaryPrimitives.ReadUInt32LittleEndian (probe.AsSpan (AviFileTests.IndexOf (probe, "ix00"u8) + 4));
+		var original = new AviTestBuilder { OpenDml = true, ChunkBeforeJunk = ("ix00", new byte[ixSize]) }.Build ();
+		var copy = AviFileTests.IndexOf (original, "ix00"u8);
+		var real = AviFileTests.LastIndexOf (original, "ix00"u8);
+		original.AsSpan (real + 8, ixSize).CopyTo (original.AsSpan (copy + 8));
+		var indx = AviFileTests.IndexOf (original, "indx"u8) + 8;
+		BinaryPrimitives.WriteUInt64LittleEndian (original.AsSpan (indx + 24), (ulong)copy);
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = LongText;
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsGreaterThan (original.Length, saved.Length);
+		Assert.AreEqual ((ulong)copy, BinaryPrimitives.ReadUInt64LittleEndian (saved.AsSpan (indx + 24)));
+		AssertSamplesKept (original, saved);
+	}
+
+	[TestMethod]
+	public void Save_AbsoluteIdx1OffsetNearTheLimit_RefusesToMove ()
+	{
+		var original = new AviTestBuilder { OldIndex = AviOldIndex.Absolute }.Build ();
+		var idx1 = (int)Offset (original, "idx1");
+		var size = (int)BinaryPrimitives.ReadUInt32LittleEndian (original.AsSpan (idx1 + 4));
+		BinaryPrimitives.WriteUInt32LittleEndian (original.AsSpan (idx1 + 8 + size - 16 + 8), 0xFFFFFFF0);
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = LongText;
+
+		var saved = file.SaveToFile ("/x.avi", original, new MockFileSystem ());
+
+		Assert.IsFalse (saved.IsSuccess);
+		StringAssert.Contains (saved.Error, "overflow");
+	}
+
+	[TestMethod]
+	public void Save_AbsoluteIdx1EntryBeforeTheSlot_KeepsItsOffset ()
+	{
+		// An idx1 entry may name any chunk; one before the moved data must not shift.
+		var original = new AviTestBuilder { OldIndex = AviOldIndex.Absolute, ChunkBeforeJunk = ("IDVX", new byte[128]) }.Build ();
+		var idvx = (uint)Offset (original, "IDVX");
+		var idx1 = (int)Offset (original, "idx1");
+		var size = (int)BinaryPrimitives.ReadUInt32LittleEndian (original.AsSpan (idx1 + 4));
+		var last = idx1 + 8 + size - 16;
+		"IDVX"u8.CopyTo (original.AsSpan (last));
+		BinaryPrimitives.WriteUInt32LittleEndian (original.AsSpan (last + 8), idvx);
+		BinaryPrimitives.WriteUInt32LittleEndian (original.AsSpan (last + 12), 128);
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = LongText;
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsGreaterThan (original.Length, saved.Length);
+		Assert.AreEqual (idvx, OldIndexOffsets (saved)[^1]);
+		AssertSamplesKept (original, saved);
+	}
+
+	[TestMethod]
+	public void Save_RiffSizePastTheFile_SavesInPlaceButRefusesToMove ()
+	{
+		var original = new AviTestBuilder ().Build ();
+		BinaryPrimitives.WriteUInt32LittleEndian (original.AsSpan (4), (uint)(original.Length + 2 - 8));
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "fits";
+		Assert.HasCount (original.Length, file.Render (original).ToArray ());
+
+		file.InfoTag.Comment = LongText;
+		var moved = file.SaveToFile ("/x.avi", original, new MockFileSystem ());
+
+		Assert.IsFalse (moved.IsSuccess);
+		StringAssert.Contains (moved.Error, "RIFF size");
+	}
+
+	[TestMethod]
+	public void Save_TruncatedInfoAfterMovi_ClearedFieldStaysCleared ()
+	{
+		var builder = new AviTestBuilder ();
+		builder.InfoAfterMovi.AddRange ([("INAM", "Old Title"), ("IART", "Some artist that is long")]);
+		var full = builder.Build ();
+		var cut = full.AsSpan (0, full.Length - 6).ToArray ();
+		var file = AviFile.Read (cut).File!;
+		Assert.AreEqual ("Old Title", file.InfoTag.Title);
+		var artist = file.InfoTag.Artist;
+		file.InfoTag.Title = null;
+		file.InfoTag.Comment = "new";
+
+		var saved = file.Render (cut).ToArray ();
+
+		var again = AviFile.Read (saved).File!.InfoTag;
+		Assert.IsNull (again.Title);
+		Assert.AreEqual ("new", again.Comment);
+		Assert.AreEqual (artist, again.Artist, "A field read from the cut-off list is carried into the new list.");
+		AssertSamplesKept (cut, saved);
+	}
+
+	[TestMethod]
+	public void Save_TruncatedId3AfterMovi_RemovedTagStaysRemoved ()
+	{
+		var id3 = AviFileTests.Id3 ("Old Id3", "Album");
+		var full = AviFileTests.AppendChunk (new AviTestBuilder ().Build (), "ID32", [.. id3, .. new byte[64]]);
+		var cut = full.AsSpan (0, full.Length - 40).ToArray ();
+		var file = AviFile.Read (cut).File!;
+		Assert.AreEqual ("Old Id3", file.Id3v2Tag!.Title);
+		file.Id3v2Tag = null;
+
+		var saved = file.Render (cut).ToArray ();
+
+		Assert.HasCount (cut.Length, saved);
+		Assert.IsNull (AviFile.Read (saved).File!.Id3v2Tag);
+	}
+
+	[TestMethod]
+	public void Save_JunkBeforeHdrl_IsNotUsedForTags ()
+	{
+		// The AVI RIFF reference requires hdrl to be the first LIST; a tag in leading JUNK would precede it.
+		var builder = new AviTestBuilder { JunkBeforeMovi = -1, ChunkBeforeHeaders = ("JUNK", new byte[1016]) };
+		builder.Info.Add (("INAM", "Old"));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "New title";
+
+		var saved = file.Render (original).ToArray ();
+
+		var names = Names (saved);
+		Assert.AreEqual ("JUNK", names[0]);
+		Assert.AreEqual ("LIST hdrl", names[1]);
+		Assert.IsGreaterThan (names.IndexOf ("LIST hdrl"), names.IndexOf ("LIST INFO"));
+		Assert.AreEqual ("New title", AviFile.Read (saved).File!.InfoTag.Title);
+		AssertSamplesKept (original, saved);
+	}
+
+	[TestMethod]
+	public void Save_NonLatin1Text_RoundTripsAsUtf8 ()
+	{
+		var original = new AviTestBuilder ().Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "Café ☕ 日本";
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.AreEqual ("Café ☕ 日本", AviFile.Read (saved).File!.InfoTag.Title);
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes ("Café ☕ 日本\0")));
+	}
+
+	[TestMethod]
+	public void Save_UnchangedLatin1Field_KeepsItsBytes ()
+	{
+		var builder = new AviTestBuilder ();
+		builder.Info.AddRange ([("INAM", "Old"), ("IART", "Björk")]);
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		Assert.AreEqual ("Björk", file.InfoTag.Artist);
+		file.InfoTag.Title = "New";
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.Latin1.GetBytes ("Björk\0")));
+		Assert.AreEqual ("Björk", AviFile.Read (saved).File!.InfoTag.Artist);
+	}
+
+	[TestMethod]
+	public void Save_ManyTinyChunks_AllocatesAboutOneCopy ()
+	{
+		var file = AviFileTests.WithTinyChunks (100_000);
+		var avi = AviFile.Read (file).File!;
+		avi.InfoTag.Title = "y";
+
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		var saved = avi.Render (file);
+		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+
+		Assert.HasCount (file.Length, saved.ToArray ());
+		Assert.IsLessThan (file.Length * 3L, allocated, $"allocated {allocated} for {file.Length}");
+	}
+
 	static byte[] Untagged (int junk) => new AviTestBuilder { JunkBeforeMovi = junk, OldIndex = AviOldIndex.Relative }.Build ();
 
 	static void AssertSamplesKept (byte[] original, byte[] saved)

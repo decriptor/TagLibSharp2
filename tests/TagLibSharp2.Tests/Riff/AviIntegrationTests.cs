@@ -36,7 +36,10 @@ public class AviIntegrationTests : FileFormatTestBase
 		Console.WriteLine ($"Duration {file.Duration}, video {file.VideoProperties}, audio {file.AudioProperties}");
 		foreach (var id in file.InfoTag.FieldIds)
 			Console.WriteLine ($"  {id} = {file.InfoTag.GetField (id)}");
-		Assert.IsGreaterThan (TimeSpan.Zero, file.Duration);
+		if (Unfinalized (path))
+			Assert.AreEqual (TimeSpan.Zero, file.Duration, "An unfinalized file's lengths are placeholders.");
+		else
+			Assert.IsGreaterThan (TimeSpan.Zero, file.Duration);
 		Assert.IsTrue (file.VideoProperties is { IsValid: true } || file.AudioProperties is not null);
 		var loaded = AviFile.Read (File.ReadAllBytes (path)).File!;
 		Assert.AreEqual (loaded.Duration, file.Duration, "A stream read matches a byte read.");
@@ -76,11 +79,26 @@ public class AviIntegrationTests : FileFormatTestBase
 
 		var saved = file.Render (original).ToArray ();
 
+		if (Unfinalized (original)) {
+			Assert.IsEmpty (saved, "A move needs a RIFF size that matches the file.");
+			return;
+		}
+
 		Assert.IsNotEmpty (saved, "The save was refused.");
 		Assert.IsGreaterThan (original.Length, saved.Length);
 		Assert.AreEqual (file.InfoTag.Comment, AviFile.Read (saved).File!.InfoTag.Comment);
 		var before = AviTestBuilder.ResolveIndexes (original);
 		Console.WriteLine ($"{before.Count} index entries, moved by {saved.Length - original.Length} bytes.");
 		CollectionAssert.AreEqual (before, AviTestBuilder.ResolveIndexes (saved));
+	}
+
+	/// <summary>A streaming writer that never finalized the file leaves RIFF size 0xFFFFFFFF.</summary>
+	static bool Unfinalized (byte[] file) => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian (file.AsSpan (4)) == 0xFFFFFFFF;
+
+	static bool Unfinalized (string path)
+	{
+		using var stream = File.OpenRead (path);
+		var header = new byte[8];
+		return stream.Read (header, 0, 8) == 8 && Unfinalized (header);
 	}
 }

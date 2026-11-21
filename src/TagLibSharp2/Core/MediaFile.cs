@@ -415,6 +415,7 @@ public static class MediaFile
 			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.MpegPs => FromMpegPs (await MpegPsFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Audible => FromAudible (await AudibleFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
+			MediaFormat.Avi => FromAvi (await AviFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
 			_ => OpenDetected (format, stream, sourcePath, fileSystem, pathHint)
 		};
 		return RememberMatroskaSource (result, sourcePath, fileSystem);
