@@ -879,6 +879,10 @@ public sealed class Mp4Tag : Tag
 	internal bool SetKeyedAtoms (string atomId, List<Mp4DataAtom> dataAtoms, uint keyIndex, bool textKey, BinaryData item)
 	{
 		var atoms = textKey ? FromKeyedText (atomId, dataAtoms) : dataAtoms;
+
+		// A text key's value is UTF-8 (value type 1). Other data under it is not this field's value.
+		if (textKey && !IsTextKeyedNumber (atomId))
+			atoms = atoms.FindAll (atom => atom.TypeIndicator == Mp4AtomMapping.TypeUtf8);
 		if (atoms.Count == 0)
 			return false;
 

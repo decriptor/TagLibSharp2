@@ -343,6 +343,120 @@ public class Mp4SetterReplacementTests
 		Assert.AreEqual (0, Count (file.Render (data).ToArray (), "rtng"u8));
 	}
 
+	// Every property that stores one ilst atom, found by setting it on an empty tag. A file holding that
+	// atom plus a malformed one of the same code must read the value and keep one atom after a set,
+	// whether or not the box parser lists the code as a container.
+	[TestMethod]
+	public void EveryMappedAtom_IsReadAndReplacedWithItsTwin ()
+	{
+		var checkedCodes = new List<string> ();
+		foreach (var property in typeof (Mp4Tag).GetProperties ()) {
+			if (property.GetSetMethod () is null || property.GetIndexParameters ().Length > 0)
+				continue;
+
+			var (first, second) = SampleValues (property.PropertyType, property.Name);
+			if (first is null)
+				continue;
+
+			var probe = new Mp4Tag ();
+			property.SetValue (probe, first);
+			var children = IlstChildren (probe.Render ().ToArray ());
+			if (children.Count != 1)
+				continue;
+
+			var code = Encoding.Latin1.GetString (children[0], 4, 4);
+			if (code == "----" || code == "covr")
+				continue;
+
+			var data = TestBuilders.Mp4.CreateWithIlstAtoms (children[0], TestBuilders.Mp4.CreateBox (code, [0x01, 0x02, 0x03, 0x04]));
+			var file = Mp4File.Read (data).File!;
+			Assert.AreEqual (first, property.GetValue (file.Tag), $"{property.Name} does not read {code}");
+
+			property.SetValue (file.Tag, second);
+			var rendered = file.Render (data).ToArray ();
+			var expected = second is false || second is Mp4ContentRating.None ? 0 : 1;
+			Assert.AreEqual (expected, Count (rendered, Type (code)), $"{property.Name} leaves {code} beside the new value");
+			var reread = Mp4File.Read (rendered).File!.Tag;
+			if (expected == 1)
+				Assert.AreEqual (second, property.GetValue (reread), property.Name);
+
+			checkedCodes.Add (code);
+		}
+
+		Assert.IsGreaterThan (35, checkedCodes.Count, string.Join (",", checkedCodes));
+	}
+
+	static (object? First, object? Second) SampleValues (Type type, string name)
+	{
+		if (type == typeof (string))
+			return ("v1-" + name, "v2-" + name);
+		if (type == typeof (uint?))
+			return (3u, 5u);
+		if (type == typeof (bool))
+			return (true, false);
+		if (type == typeof (Mp4ContentRating))
+			return (Mp4ContentRating.Explicit, Mp4ContentRating.Clean);
+		return (null, null);
+	}
+
+	static List<byte[]> IlstChildren (byte[] ilst)
+	{
+		var children = new List<byte[]> ();
+		var offset = 0;
+		while (offset + 8 <= ilst.Length) {
+			var size = (ilst[offset] << 24) | (ilst[offset + 1] << 16) | (ilst[offset + 2] << 8) | ilst[offset + 3];
+			children.Add (ilst.AsSpan (offset, size).ToArray ());
+			offset += size;
+		}
+
+		return children;
+	}
+
+	[TestMethod]
+	public void RemovePictures_KeepsEveryOtherAtom ()
+	{
+		byte[][] others = [
+			Text ("©nam", "Title"),
+			TestBuilders.Mp4.CreateIlstChild ("gnre", 0, [0x00, 0x4A]),
+			TestBuilders.Mp4.CreateFreeformAtom ("com.apple.iTunes", "MOOD", "Calm"),
+			TestBuilders.Mp4.CreateBox ("orch", [0x0A, 0x0B])];
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms ([
+			.. others,
+			TestBuilders.Mp4.CreateCovrAtom ([0xFF, 0xD8, 0xFF], Mp4AtomMapping.TypeJpeg),
+			TestBuilders.Mp4.CreateBox ("covr", [0x01, 0x02, 0x03, 0x04])]);
+
+		var file = Mp4File.Read (data).File!;
+		file.RemovePictures ();
+
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, "covr"u8));
+		foreach (var atom in others)
+			Assert.AreEqual (1, Count (rendered, atom));
+		var reread = Mp4File.Read (rendered).File!;
+		Assert.IsEmpty (reread.Pictures);
+		Assert.AreEqual ("Title", reread.Title);
+		Assert.AreEqual ("Acid Punk", reread.Tag!.Genre);
+	}
+
+	[TestMethod]
+	public void RemovePictures_InAnMdtaMeta_KeepsEveryOtherItem ()
+	{
+		var title = TestBuilders.Mp4.CreateMdtaItem (1, "T");
+		var custom = TestBuilders.Mp4.CreateMdtaItem (3, "xyz");
+		var data = TestBuilders.Mp4.CreateWithMdtaIlst (["title", "com.apple.quicktime.artwork", "custom"],
+			title, TestBuilders.Mp4.CreateMdtaItem (2, Mp4AtomMapping.TypeJpeg, [0xFF, 0xD8, 0xFF]), custom);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.HasCount (1, file.Pictures);
+		file.RemovePictures ();
+
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (1, Count (rendered, title));
+		Assert.AreEqual (1, Count (rendered, custom));
+		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf (new byte[] { 0xFF, 0xD8, 0xFF }));
+		Assert.IsEmpty (Mp4File.Read (rendered).File!.Pictures);
+	}
+
 	static object? Get (Mp4Tag tag, string property) => typeof (Mp4Tag).GetProperty (property)!.GetValue (tag);
 
 	static void Set (Mp4Tag tag, string property, object? value) => typeof (Mp4Tag).GetProperty (property)!.SetValue (tag, value);

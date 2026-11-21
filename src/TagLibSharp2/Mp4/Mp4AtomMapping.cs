@@ -53,19 +53,12 @@ internal static class Mp4AtomMapping
 		"purl", "egid", "catg", "keyw", "pcst", "©pub", "©enc", "desc", "ldes",
 	};
 
-	static readonly HashSet<string> AliasAtoms = new (StringComparer.Ordinal) {
-		ComposerAlias, EncoderAlias, SubtitleAlias, TitleAlias, AlbumAlias, DescriptionAlias,
-	};
-
 	/// <summary>
-	/// True for an ilst atom type the tag reads into a property (not freeform ----).
+	/// True for an ilst atom type the tag reads into a property (not freeform ----). Such an atom
+	/// is parsed whatever the box parser's container list says.
 	/// </summary>
 	public static bool IsTagAtom (string atomId) => TagAtoms.Contains (atomId);
 
-	/// <summary>
-	/// True for an alias atom that is read like a text atom although the box parser leaves it unparsed.
-	/// </summary>
-	public static bool IsAliasAtom (string atomId) => AliasAtoms.Contains (atomId);
 
 	// Album artist (not © prefixed)
 	public const string AlbumArtist = "aART";
