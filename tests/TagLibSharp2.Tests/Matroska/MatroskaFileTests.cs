@@ -749,6 +749,27 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_TwoAlbumTargets_TotalDiscsComesFromTheDiscBlock ()
+	{
+		// The setter writes beside the disc PART_NUMBER, so the getter reads from there too.
+		var original = FileWith (
+			Tags (
+				Tag (50, Simple ("TOTAL_PARTS", "12")),
+				Tag (50, Simple ("PART_NUMBER", "1"), Simple ("TOTAL_PARTS", "2"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (1u, parsed.Tag.DiscNumber);
+		Assert.AreEqual (2u, parsed.Tag.TotalDiscs);
+
+		parsed.Tag.TotalDiscs = 3;
+		var again = SaveAndReread (parsed, original, out var bytes);
+		Assert.AreEqual (1u, again.DiscNumber);
+		Assert.AreEqual (3u, again.TotalDiscs);
+		Assert.IsFalse (HasTagString (bytes, "12"));
+		Assert.IsFalse (HasTagString (bytes, "2"));
+	}
+
+	[TestMethod]
 	public void DiscNumber_Set_LeavesOneExplicitAlbumPart ()
 	{
 		var original = FileWith (
