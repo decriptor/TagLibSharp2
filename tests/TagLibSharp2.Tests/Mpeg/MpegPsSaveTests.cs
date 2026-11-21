@@ -75,6 +75,22 @@ public sealed class MpegPsSaveTests
 	}
 
 	[TestMethod]
+	public void Render_TagAddedOverAnUnparsedId3v2_ReplacesIt ()
+	{
+		byte[] odd = [0x49, 0x44, 0x33, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04];
+		var stream = ProgramStream ();
+		var data = Concat (odd, stream);
+		var file = MpegPsFile.Read (data).File!;
+
+		file.EnsureId3v2Tag ().Title = "Readable";
+		var rendered = file.Render (data).ToArray ();
+
+		var reread = MpegPsFile.Read (rendered).File!;
+		Assert.AreEqual ("Readable", reread.Tag!.Title);
+		CollectionAssert.AreEqual (stream, rendered.AsSpan (reread.Id3v2Size).ToArray ());
+	}
+
+	[TestMethod]
 	public void Render_UnchangedUntagged_IsByteIdentical ()
 	{
 		var data = ProgramStream (new Options { Mpeg2 = true });
