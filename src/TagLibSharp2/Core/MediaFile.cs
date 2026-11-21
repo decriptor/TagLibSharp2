@@ -38,6 +38,7 @@ namespace TagLibSharp2.Core;
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
 /// <item>Matroska/WebM (Matroska tags)</item>
+/// <item>AVI (RIFF INFO, ID3v2; OpenDML)</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -420,6 +421,7 @@ public static class MediaFile
 			MediaFormat.Dsf => FromDsf (DsfFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Dff => FromDff (DffFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Asf => FromAsf (AsfFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Avi => FromAvi (AviFile.Read (stream, sourcePath, fileSystem)),
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
@@ -529,6 +531,13 @@ public static class MediaFile
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Asf);
 	}
 
+	static MediaFileResult FromAvi (AviFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse AVI file");
+		return MediaFileResult.Success (result.File, result.File.UnifiedTag, MediaFormat.Avi);
+	}
+
 	static MediaFileResult FromWav (WavFileReadResult result)
 	{
 		if (!result.IsSuccess || result.File is null)
@@ -569,6 +578,7 @@ public static class MediaFile
 			MediaFormat.Asf => OpenAsf (data),
 			MediaFormat.Musepack => OpenMusepack (data),
 			MediaFormat.Matroska => OpenMatroska (data),
+			MediaFormat.Avi => FromAvi (AviFile.Read (data.Span)),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 
@@ -598,6 +608,10 @@ public static class MediaFile
 			// RIFF/WAVE. Legacy WavPack keeps "wvpk" at the start of the data chunk.
 			if (IsRiffWave (data))
 				return WavPackFile.IsValidFormat (data) ? MediaFormat.WavPack : MediaFormat.Wav;
+
+			// RIFF/AVI. The form type, not the extension, tells AVI from WAVE.
+			if (AviFile.IsValidFormat (data))
+				return MediaFormat.Avi;
 
 			// AIFF/AIFC: starts with "FORM" + 4 bytes size + "AIFF" or "AIFC"
 			if (data.Length >= 12 &&
@@ -687,6 +701,7 @@ public static class MediaFile
 				".WMA" or ".WMV" or ".ASF" => MediaFormat.Asf,
 				".MPC" or ".MP+" or ".MPP" => MediaFormat.Musepack,
 				".MKV" or ".MKA" or ".MKS" or ".MK3D" or ".WEBM" => MediaFormat.Matroska,
+				".AVI" => MediaFormat.Avi,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -1030,5 +1045,10 @@ public enum MediaFormat
 	/// <summary>
 	/// Matroska and WebM (.mkv, .mka, .mks, .mk3d, .webm).
 	/// </summary>
-	Matroska
+	Matroska,
+
+	/// <summary>
+	/// AVI (RIFF <c>AVI </c> form, including OpenDML).
+	/// </summary>
+	Avi
 }
