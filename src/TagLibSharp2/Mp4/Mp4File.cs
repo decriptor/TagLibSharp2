@@ -2359,7 +2359,9 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
-			children.Add (child);
+			// Other children (hdlr, keys, free padding) go back as their original bytes. A parsed
+			// container such as free would otherwise be rebuilt from whatever its padding parsed as.
+			children.Add (child.IsContainer ? new Mp4Box (child.Type, child.Data, usesExtendedSize: child.UsesExtendedSize) : child);
 		}
 
 		if (!sawHandler && !ilstContent.IsEmpty)

@@ -688,6 +688,23 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual (0, Count (file.Render (data).ToArray (), appleArtist));
 	}
 
+	// mutagen pads the meta with a free box of zeros. It goes back as it was, not rebuilt from what
+	// its zeros parse as.
+	[TestMethod]
+	[DataRow ("mdta")]
+	[DataRow ("mdir")]
+	public void FreePaddingInMeta_IsKeptByteForByte (string handler)
+	{
+		var padding = TestBuilders.Mp4.CreateBox ("free", new byte[64]);
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta (handler, TestBuilders.Mp4.KeysPayload ("title"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "T")], inMovie: false, udtaExtra: null, metaTail: padding);
+		var file = Mp4File.Read (data).File!;
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Tag!.Artist = "A";
+		Assert.AreEqual (1, Count (file.Render (data).ToArray (), padding));
+	}
+
 	// The types of the first ilst's items.
 	static uint[] ItemTypes (byte[] file)
 	{
