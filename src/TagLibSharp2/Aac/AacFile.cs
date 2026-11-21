@@ -281,16 +281,23 @@ public sealed class AacFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Checks whether an AAC stream starts at the beginning of the data or right after a leading ID3v2 tag.
+	/// Checks whether the data is a raw AAC file, by the rule <see cref="Read(ReadOnlySpan{byte})"/> uses
+	/// to find the stream.
 	/// </summary>
 	/// <param name="data">The data to check.</param>
 	/// <returns>
-	/// True when that position holds "ADIF" or an ADTS header (sync 0xFFF, layer '00') whose next frame
-	/// header, when the data reaches it, names the same stream. An MPEG audio frame has layer bits other
-	/// than '00' and is not AAC.
+	/// Without a leading ID3v2 tag: true when offset 0 holds "ADIF" or an ADTS header (sync 0xFFF, layer '00')
+	/// whose next frame header, when the data reaches it, names the same stream. After an ID3v2 tag: "ADIF"
+	/// right after the tag, or the first such ADTS header in the next 8 KB, unless an MPEG audio frame comes
+	/// first. An MPEG audio frame has layer bits other than '00', so an ID3-tagged MP3 stays MP3.
 	/// </returns>
-	public static bool IsValidFormat (ReadOnlySpan<byte> data) =>
-		AacStream.StartsAt (data, StreamStart (data));
+	public static bool IsValidFormat (ReadOnlySpan<byte> data)
+	{
+		var start = StreamStart (data);
+		if (start >= data.Length)
+			return false;
+		return AacStream.FindStart (data[start..], data.Length - start, SearchBytes (start)) >= 0;
+	}
 
 	/// <summary>
 	/// The stream twin of <see cref="IsValidFormat(ReadOnlySpan{byte})"/>. The stream position moves.
@@ -299,8 +306,13 @@ public sealed class AacFile : IMediaFile
 	{
 		stream.Position = 0;
 		var prefix = StreamBytes.ReadAtMost (stream, Id3v2Header.HeaderSize);
-		return AacStream.StartsAt (stream, StreamStart (prefix));
+		var start = StreamStart (prefix);
+		return AacStream.FindStart (stream, start, stream.Length, SearchBytes (start)) >= 0;
 	}
+
+	// A leading ID3v2 tag says this is an audio file, so the first frame may sit after padding, as
+	// AacFile.Read allows. Without a tag only offset 0 counts; the .aac extension covers the rest.
+	static int SearchBytes (int start) => start > 0 ? AacStream.FirstFrameSearchBytes : 1;
 
 	// The byte after a leading ID3v2 tag (header, body, and v2.4 footer), or 0 without one.
 	static int StreamStart (ReadOnlySpan<byte> data)
