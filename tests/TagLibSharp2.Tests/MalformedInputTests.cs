@@ -1029,13 +1029,9 @@ public class MalformedInputTests
 	[TestMethod]
 	public void MpegPsFile_TagOnlyCutShortWithTagNearTheEnd_DoesNotThrow ()
 	{
-		// An ID3v2 tag that declares more bytes than the file holds, whose text puts "TAG"
-		// 128 bytes from the end: neither a stream nor an ID3v1 tag follows it.
-		var tag = new Id3v2Tag (Id3v2Version.V23) { Title = "Cut" };
-		tag.SetUserText ("PAD", "TAG" + new string ('q', 600));
-		var bytes = tag.Render (2048).ToArray ();
-		for (var length = 0; length <= bytes.Length - 1024; length += 7) {
-			var data = bytes.AsSpan (0, length).ToArray ();
+		// An ID3v2 tag that declares more bytes than the file holds, cut so that "TAG" in its
+		// text sits 128 bytes from the end: neither a stream nor an ID3v1 tag follows it.
+		foreach (var data in MpegPsTinyStreamTests.CutTags ()) {
 			Assert.IsFalse (MpegPsFile.Read (data).IsSuccess);
 			_ = MediaFile.ReadFromData (data, "clip.mpg");
 			_ = MediaFile.Read (new MemoryStream (data), "clip.mpg");

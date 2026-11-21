@@ -94,18 +94,24 @@ public sealed class MpegPsTinyStreamTests
 	[TestMethod]
 	public void Read_TagOnlyCutShort_FailsWithoutThrowing ()
 	{
-		// A tag that declares more bytes than the file has, with "TAG" 128 bytes from the end.
-		var tag = new Id3v2Tag (Id3v2Version.V23) { Title = "Cut" };
-		tag.SetUserText ("PAD", "TAG" + new string ('q', 400));
-		var bytes = tag.Render (4096).ToArray ();
-		var cut = bytes.AsSpan (0, bytes.Length - 2048).ToArray ();
+		// A tag that declares more bytes than the file holds (an MP3 cut inside its cover art),
+		// cut so that "TAG" in its text sits 128 bytes from the end.
+		foreach (var data in CutTags ()) {
+			Assert.IsTrue (data.AsSpan (data.Length - 128, 3).SequenceEqual ("TAG"u8));
+			Assert.IsFalse (MpegPsFile.Read (data).IsSuccess);
+			Assert.AreNotEqual (MediaFormat.MpegPs, MediaFile.ReadFromData (data, "clip.mpg").Format);
+			Assert.AreNotEqual (MediaFormat.MpegPs, MediaFile.Read (new MemoryStream (data), "clip.mpg").Format);
+		}
+	}
 
-		foreach (var length in new[] { cut.Length, cut.Length - 1, 300, 140, 128, 20, 10 }) {
-			var data = cut.AsSpan (0, length).ToArray ();
-			var result = MpegPsFile.Read (data);
-			Assert.IsFalse (result.IsSuccess, length.ToString (System.Globalization.CultureInfo.InvariantCulture));
-			_ = MediaFile.ReadFromData (data, "clip.mpg");
-			_ = MediaFile.Read (new MemoryStream (data), "clip.mpg");
+	internal static IEnumerable<byte[]> CutTags ()
+	{
+		foreach (var version in new[] { Id3v2Version.V23, Id3v2Version.V24 }) {
+			var tag = new Id3v2Tag (version) { Title = "Cut" };
+			tag.SetUserText ("PAD", "TAG" + new string ('q', 600));
+			var bytes = tag.Render (4096).ToArray ();
+			var at = bytes.AsSpan ().IndexOf ("TAG"u8);
+			yield return bytes.AsSpan (0, at + 128).ToArray ();
 		}
 	}
 
