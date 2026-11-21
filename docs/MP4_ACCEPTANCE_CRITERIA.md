@@ -512,8 +512,10 @@ And chpl start times are used when both forms hold the same titles (100 ns preci
 Given an MP4 file with or without chapters
 When I set Chapters and save
 Then chpl holds the first 255 chapters, titles cut to 255 UTF-8 bytes on a character boundary
-And the chapter track holds every chapter: an existing track keeps its track_ID, otherwise a new one is added
-  and every sound and video track gets a chap reference to it
+And the chapter track holds every chapter: an existing track keeps its track_ID, language, handler, and flags;
+  otherwise a new one is added and every sound and video track gets a chap reference to it
+And a new MP4 chapter track uses nmhd and a tx3g sample entry (Apple TN2174); a QuickTime one uses gmhd and the
+  QTFF text sample description
 And the new samples sit in their own mdat right after moov
 And that mdat replaces the one an earlier chapter save wrote, so repeated edits do not grow the file
 And old chapter samples that share an mdat with other media stay there unreferenced
@@ -525,8 +527,20 @@ And ffprobe, MediaInfo, and TagLibSharp2 read the same list back
 ```gherkin
 Given an MP4 file with chapters
 When I set Chapters to an empty list and save
-Then chpl, every text track a chap reference names (titles, and Apple chapter URLs), and those references are removed
-And chap references to chapter image tracks are kept
+Then chpl, every track a chap reference names (titles, and Apple chapter URL and image tracks), and those
+  references are removed, so Apple players list no chapters either
+```
+
+#### Scenario: Fragmented movie
+```gherkin
+Given a fragmented MP4 (moov/mvex) whose chapter track keeps samples in movie fragments
+When I read the file
+Then Chapters lists the fragment samples (tfhd/tfdt/trun, ISO 14496-12 §8.8)
+When I change Chapters and save
+Then the save fails with an error and the file is not written,
+  because a track rebuilt in moov would leave the fragment samples as a second chapter list
+When the fragmented movie has no chapter track
+Then a save writes chpl only
 ```
 
 #### Scenario: Leave chapters alone
@@ -679,8 +693,9 @@ The following features are explicitly **NOT** included in v0.4.0:
 ### Chapter Support (Delivered after v0.4.0)
 Chapter support was deferred from v0.4.0 and is now delivered: see
 [Feature: Chapters](#feature-chapters). Still out of scope: chapter images (an Apple video track that a
-`chap` reference names) and chapter URLs are kept as they are but are not edited, and no chapter track is
-added to a fragmented movie (`mvex` needs a `trex` per track) or to a file with no track.
+`chap` reference names) and chapter URLs are kept as they are on a replace but are not edited; no chapter
+track is added to a fragmented movie (`mvex` needs a `trex` per track) or to a file with no track; and the
+chapters of a fragmented movie that has a chapter track cannot be changed (the save fails when that track has samples in movie fragments).
 
 ### Advanced Metadata
 - TV show metadata (tvsh, tven, tvnn)
