@@ -766,13 +766,13 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_HundredThousandClusters_UpdatesTheLastPositionInLinearTime ()
+	public void Save_TwentyThousandClusters_SumsPieceOffsetsLinearly ()
 	{
 		// Each cluster's segment offset is piece.Offset minus the segment payload start, which is O(1).
-		// Summing the piece lengths before every cluster instead takes seconds at this size, so the bound fails.
+		// Summing the preceding pieces once per cluster instead visits about count^2 / 2 = 200 million pieces.
 		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
 		var small = Master (0x1F43B675, new byte[] { 0x11 });
-		const int count = 100_000;
+		const int count = 20_000;
 		var children = new List<byte[]> (count + 2) { info };
 		for (var i = 0; i < count; i++)
 			children.Add (small);
@@ -783,7 +783,7 @@ public partial class MatroskaFileTests
 		var position = Element (MatroskaIds.Position, UIntBytes ((ulong)lastPos));
 		var last = UnknownWithCrc (0x1F43B675, Concat (position, Element (0xEC, marker)));
 		children.Add (last);
-		// The segment payload is far past the 14-bit size the shared Element helper writes.
+		// The segment payload is past the 14-bit size the shared Element helper writes.
 		var original = Matroska (WideElement (0x18538067, Concat (children.ToArray ())));
 		Assert.IsTrue (IsElementAt (original, (ulong)lastPos, MatroskaIds.Cluster));
 		Assert.IsTrue (TryReadUnknownClusterPosition (original, out var originalPosition, out var originalCrc, out _));
@@ -794,12 +794,13 @@ public partial class MatroskaFileTests
 		parsed.Tag.Title = "Moved";
 		var fs = new MockFileSystem ();
 		fs.AddFile ("/many-fast.mkv", original);
-		var watch = System.Diagnostics.Stopwatch.StartNew ();
+		MatroskaRewrite.OffsetSteps = 0;
 		var saved = parsed.SaveToFile ("/many-fast.mkv", original, fs);
-		watch.Stop ();
+		var steps = MatroskaRewrite.OffsetSteps;
 
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
-		Assert.IsTrue (watch.Elapsed < TimeSpan.FromSeconds (2), $"cluster offsets are O(1); the save took {watch.Elapsed}");
+		// The linear walk sums the segment about twice (2 * pieces). The quadratic one is about 10,000 * pieces.
+		Assert.IsTrue (steps <= 8L * children.Count, $"summed {steps} pieces for {children.Count}; the offset walk is not linear");
 		var bytes = fs.ReadAllBytes ("/many-fast.mkv");
 		Assert.AreEqual ("Moved", MatroskaFile.Read (bytes).File!.Tag.Title);
 		Assert.AreEqual (1, CountOf (bytes, marker));
