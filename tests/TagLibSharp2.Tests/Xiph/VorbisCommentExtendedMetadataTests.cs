@@ -484,6 +484,51 @@ public class VorbisCommentExtendedMetadataTests
 	}
 
 	[TestMethod]
+	[DataRow ("MOVEMENT", "MOVEMENTNAME", "Allegro")]
+	[DataRow ("ORIGINALDATE", "ORIGINALYEAR", "1969")]
+	public void EmptyPrimary_UnchangedWriteBack_KeepsBothFields (string primary, string fallback, string fallbackValue)
+	{
+		// An empty field is a valid comment (xiph.org/vorbis/doc/v-comment.html: NAME=value, any length),
+		// but it must not hide the filled fallback, and writing back what was read must not clear it.
+		var comment = new VorbisComment ("test");
+		comment.AddField (primary, "");
+		comment.AddField (fallback, fallbackValue);
+		var property = primary == "MOVEMENT" ? nameof (VorbisComment.Movement) : nameof (VorbisComment.OriginalReleaseDate);
+		var info = typeof (VorbisComment).GetProperty (property)!;
+		Assert.AreEqual (fallbackValue, info.GetValue (comment));
+
+		info.SetValue (comment, info.GetValue (comment));
+
+		var reparsed = VorbisComment.Read (comment.Render ().Span);
+		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
+		AssertSingle (reparsed.Tag!, primary, "");
+		AssertSingle (reparsed.Tag!, fallback, fallbackValue);
+
+		// An explicit empty value is not what the getter returned, so it is still a clear.
+		info.SetValue (comment, "");
+		AssertSingle (comment, primary, "");
+		Assert.HasCount (0, comment.GetValues (fallback));
+	}
+
+	[TestMethod]
+	[DataRow ("MOVEMENT", "MOVEMENTNAME")]
+	[DataRow ("ORIGINALDATE", "ORIGINALYEAR")]
+	public void EmptyFieldsOnly_ReadEmptyAndWriteBackKeepsThem (string primary, string fallback)
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField (primary, "");
+		comment.AddField (fallback, "");
+		var property = primary == "MOVEMENT" ? nameof (VorbisComment.Movement) : nameof (VorbisComment.OriginalReleaseDate);
+		var info = typeof (VorbisComment).GetProperty (property)!;
+		Assert.AreEqual ("", info.GetValue (comment));
+
+		info.SetValue (comment, info.GetValue (comment));
+
+		AssertSingle (comment, primary, "");
+		AssertSingle (comment, fallback, "");
+	}
+
+	[TestMethod]
 	public void FallbackOnly_UnchangedWriteBack_KeepsFallbackField ()
 	{
 		var comment = new VorbisComment ("test");

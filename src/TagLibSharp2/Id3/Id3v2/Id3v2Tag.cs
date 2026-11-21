@@ -202,19 +202,19 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Title {
 		get => GetTextFrame ("TIT2");
-		set => SetTextFrame ("TIT2", value);
+		set => SetTextFrameProperty ("TIT2", value, Title);
 	}
 
 	/// <inheritdoc/>
 	public override string? Artist {
 		get => GetTextFrame ("TPE1");
-		set => SetTextFrame ("TPE1", value);
+		set => SetTextFrameProperty ("TPE1", value, Artist);
 	}
 
 	/// <inheritdoc/>
 	public override string? Album {
 		get => GetTextFrame ("TALB");
-		set => SetTextFrame ("TALB", value);
+		set => SetTextFrameProperty ("TALB", value, Album);
 	}
 
 	/// <inheritdoc/>
@@ -247,30 +247,30 @@ public sealed class Id3v2Tag : Tag
 	/// <remarks>
 	/// In ID3v2.4, uses the TDOR (Original Release Time) frame.
 	/// In ID3v2.3, uses the TORY (Original Release Year) frame.
-	/// When reading, falls back to the other version's frame if the primary is not found.
-	/// Setting or clearing removes both frames, then writes the frame for this version.
+	/// When reading, falls back to the other version's frame if the primary is missing or holds no date.
+	/// Writing back the value already read changes nothing. Any other set, or a clear, removes both
+	/// frames, then writes the frame for this version.
 	/// </remarks>
 	public override string? OriginalReleaseDate {
 		get {
 			// TDOR is an ID3v2.4 timestamp. TORY uses the four-digit TYER form.
-			if (Version == 4) {
-				var tdor = GetTextFrame ("TDOR");
-				if (tdor is not null)
-					return NormalizeReleaseTimestamp (tdor);
-				return NormalizeYear (GetTextFrame ("TORY"));
-			}
+			// A primary frame that holds no date (empty or invalid) does not hide the other one,
+			// so a write-back of the value read cannot clear a date that is still there.
+			if (Version == 4)
+				return NormalizeReleaseTimestamp (GetTextFrame ("TDOR")) ?? NormalizeYear (GetTextFrame ("TORY"));
 
-			var tory = GetTextFrame ("TORY");
-			if (tory is not null)
-				return NormalizeYear (tory);
-			return NormalizeReleaseTimestamp (GetTextFrame ("TDOR"));
+			return NormalizeYear (GetTextFrame ("TORY")) ?? NormalizeReleaseTimestamp (GetTextFrame ("TDOR"));
 		}
-		set => SetDateFrame (
-			Version == 4 ? "TDOR" : "TORY",
-			value,
-			Version == 4,
-			keepMatchingYear: false,
-			alsoClear: Version == 4 ? "TORY" : "TDOR");
+		set {
+			if (IsUnchanged (value, OriginalReleaseDate))
+				return;
+			SetDateFrame (
+				Version == 4 ? "TDOR" : "TORY",
+				value,
+				Version == 4,
+				keepMatchingYear: false,
+				alsoClear: Version == 4 ? "TORY" : "TDOR");
+		}
 	}
 
 	/// <inheritdoc/>
@@ -500,8 +500,12 @@ public sealed class Id3v2Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Genre {
-		get => ResolveGenreDisplay (GetTextFrame ("TCON"), Version);
-		set => SetTextFrame ("TCON", value);
+		get {
+			// An empty first value reads "", like every other text frame, so writing it back keeps the frame.
+			var raw = GetTextFrame ("TCON");
+			return raw is { Length: 0 } ? raw : ResolveGenreDisplay (raw, Version);
+		}
+		set => SetTextFrameProperty ("TCON", value, Genre);
 	}
 
 	/// <inheritdoc/>
@@ -538,7 +542,7 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? AlbumArtist {
 		get => GetTextFrame ("TPE2");
-		set => SetTextFrame ("TPE2", value);
+		set => SetTextFrameProperty ("TPE2", value, AlbumArtist);
 	}
 
 	/// <inheritdoc/>
@@ -575,7 +579,7 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Composer {
 		get => GetTextFrame ("TCOM");
-		set => SetTextFrame ("TCOM", value);
+		set => SetTextFrameProperty ("TCOM", value, Composer);
 	}
 
 	/// <inheritdoc/>
@@ -592,13 +596,13 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Conductor {
 		get => GetTextFrame ("TPE3");
-		set => SetTextFrame ("TPE3", value);
+		set => SetTextFrameProperty ("TPE3", value, Conductor);
 	}
 
 	/// <inheritdoc/>
 	public override string? Copyright {
 		get => GetTextFrame ("TCOP");
-		set => SetTextFrame ("TCOP", value);
+		set => SetTextFrameProperty ("TCOP", value, Copyright);
 	}
 
 	/// <inheritdoc/>
@@ -624,109 +628,109 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Isrc {
 		get => GetTextFrame ("TSRC");
-		set => SetTextFrame ("TSRC", value);
+		set => SetTextFrameProperty ("TSRC", value, Isrc);
 	}
 
 	/// <inheritdoc/>
 	public override string? Publisher {
 		get => GetTextFrame ("TPUB");
-		set => SetTextFrame ("TPUB", value);
+		set => SetTextFrameProperty ("TPUB", value, Publisher);
 	}
 
 	/// <inheritdoc/>
 	public override string? EncodedBy {
 		get => GetTextFrame ("TENC");
-		set => SetTextFrame ("TENC", value);
+		set => SetTextFrameProperty ("TENC", value, EncodedBy);
 	}
 
 	/// <inheritdoc/>
 	public override string? EncoderSettings {
 		get => GetTextFrame ("TSSE");
-		set => SetTextFrame ("TSSE", value);
+		set => SetTextFrameProperty ("TSSE", value, EncoderSettings);
 	}
 
 	/// <inheritdoc/>
 	public override string? Grouping {
 		get => GetTextFrame ("TIT1");
-		set => SetTextFrame ("TIT1", value);
+		set => SetTextFrameProperty ("TIT1", value, Grouping);
 	}
 
 	/// <inheritdoc/>
 	public override string? Subtitle {
 		get => GetTextFrame ("TIT3");
-		set => SetTextFrame ("TIT3", value);
+		set => SetTextFrameProperty ("TIT3", value, Subtitle);
 	}
 
 	/// <inheritdoc/>
 	public override string? DiscSubtitle {
 		get => GetTextFrame ("TSST");
-		set => SetTextFrame ("TSST", value);
+		set => SetTextFrameProperty ("TSST", value, DiscSubtitle);
 	}
 
 	/// <inheritdoc/>
 	public override string? Remixer {
 		get => GetTextFrame ("TPE4");
-		set => SetTextFrame ("TPE4", value);
+		set => SetTextFrameProperty ("TPE4", value, Remixer);
 	}
 
 	/// <inheritdoc/>
 	public override string? InitialKey {
 		get => GetTextFrame ("TKEY");
-		set => SetTextFrame ("TKEY", value);
+		set => SetTextFrameProperty ("TKEY", value, InitialKey);
 	}
 
 	/// <inheritdoc/>
 	public override string? Mood {
 		get => GetTextFrame ("TMOO");
-		set => SetTextFrame ("TMOO", value);
+		set => SetTextFrameProperty ("TMOO", value, Mood);
 	}
 
 	/// <inheritdoc/>
 	public override string? MediaType {
 		get => GetTextFrame ("TMED");
-		set => SetTextFrame ("TMED", value);
+		set => SetTextFrameProperty ("TMED", value, MediaType);
 	}
 
 	/// <inheritdoc/>
 	public override string? Language {
 		get => GetTextFrame ("TLAN");
-		set => SetTextFrame ("TLAN", value);
+		set => SetTextFrameProperty ("TLAN", value, Language);
 	}
 
 	/// <inheritdoc/>
 	public override string? Barcode {
 		get => GetUserText ("BARCODE");
-		set => SetUserText ("BARCODE", value);
+		set => SetUserTextProperty ("BARCODE", value, Barcode);
 	}
 
 	/// <inheritdoc/>
 	public override string? CatalogNumber {
 		get => GetUserText ("CATALOGNUMBER");
-		set => SetUserText ("CATALOGNUMBER", value);
+		set => SetUserTextProperty ("CATALOGNUMBER", value, CatalogNumber);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumSort {
 		get => GetTextFrame ("TSOA");
-		set => SetTextFrame ("TSOA", value);
+		set => SetTextFrameProperty ("TSOA", value, AlbumSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? ArtistSort {
 		get => GetTextFrame ("TSOP");
-		set => SetTextFrame ("TSOP", value);
+		set => SetTextFrameProperty ("TSOP", value, ArtistSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? TitleSort {
 		get => GetTextFrame ("TSOT");
-		set => SetTextFrame ("TSOT", value);
+		set => SetTextFrameProperty ("TSOT", value, TitleSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumArtistSort {
 		get => GetTextFrame ("TSO2");
-		set => SetTextFrame ("TSO2", value);
+		set => SetTextFrameProperty ("TSO2", value, AlbumArtistSort);
 	}
 
 	/// <inheritdoc/>
@@ -856,103 +860,103 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackGain {
 		get => GetUserText ("REPLAYGAIN_TRACK_GAIN");
-		set => SetUserText ("REPLAYGAIN_TRACK_GAIN", value);
+		set => SetUserTextProperty ("REPLAYGAIN_TRACK_GAIN", value, ReplayGainTrackGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackPeak {
 		get => GetUserText ("REPLAYGAIN_TRACK_PEAK");
-		set => SetUserText ("REPLAYGAIN_TRACK_PEAK", value);
+		set => SetUserTextProperty ("REPLAYGAIN_TRACK_PEAK", value, ReplayGainTrackPeak);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainAlbumGain {
 		get => GetUserText ("REPLAYGAIN_ALBUM_GAIN");
-		set => SetUserText ("REPLAYGAIN_ALBUM_GAIN", value);
+		set => SetUserTextProperty ("REPLAYGAIN_ALBUM_GAIN", value, ReplayGainAlbumGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainAlbumPeak {
 		get => GetUserText ("REPLAYGAIN_ALBUM_PEAK");
-		set => SetUserText ("REPLAYGAIN_ALBUM_PEAK", value);
+		set => SetUserTextProperty ("REPLAYGAIN_ALBUM_PEAK", value, ReplayGainAlbumPeak);
 	}
 
 	/// <inheritdoc/>
 	public override string? R128TrackGain {
 		get => GetUserText ("R128_TRACK_GAIN");
-		set => SetUserText ("R128_TRACK_GAIN", value);
+		set => SetUserTextProperty ("R128_TRACK_GAIN", value, R128TrackGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? R128AlbumGain {
 		get => GetUserText ("R128_ALBUM_GAIN");
-		set => SetUserText ("R128_ALBUM_GAIN", value);
+		set => SetUserTextProperty ("R128_ALBUM_GAIN", value, R128AlbumGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzTrackId {
 		get => GetUserText ("MUSICBRAINZ_TRACKID");
-		set => SetUserText ("MUSICBRAINZ_TRACKID", value);
+		set => SetUserTextProperty ("MUSICBRAINZ_TRACKID", value, MusicBrainzTrackId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseId {
 		get => GetUserText ("MUSICBRAINZ_ALBUMID");
-		set => SetUserText ("MUSICBRAINZ_ALBUMID", value);
+		set => SetUserTextProperty ("MUSICBRAINZ_ALBUMID", value, MusicBrainzReleaseId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzArtistId {
 		get => GetUserText ("MUSICBRAINZ_ARTISTID");
-		set => SetUserText ("MUSICBRAINZ_ARTISTID", value);
+		set => SetUserTextProperty ("MUSICBRAINZ_ARTISTID", value, MusicBrainzArtistId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseGroupId {
 		get => GetUserText ("MUSICBRAINZ_RELEASEGROUPID");
-		set => SetUserText ("MUSICBRAINZ_RELEASEGROUPID", value);
+		set => SetUserTextProperty ("MUSICBRAINZ_RELEASEGROUPID", value, MusicBrainzReleaseGroupId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzAlbumArtistId {
 		get => GetUserText ("MUSICBRAINZ_ALBUMARTISTID");
-		set => SetUserText ("MUSICBRAINZ_ALBUMARTISTID", value);
+		set => SetUserTextProperty ("MUSICBRAINZ_ALBUMARTISTID", value, MusicBrainzAlbumArtistId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzWorkId {
 		get => GetUserText ("MusicBrainz Work Id");
-		set => SetUserText ("MusicBrainz Work Id", value);
+		set => SetUserTextProperty ("MusicBrainz Work Id", value, MusicBrainzWorkId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzDiscId {
 		get => GetUserText ("MusicBrainz Disc Id");
-		set => SetUserText ("MusicBrainz Disc Id", value);
+		set => SetUserTextProperty ("MusicBrainz Disc Id", value, MusicBrainzDiscId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseStatus {
 		get => GetUserText ("MusicBrainz Album Status");
-		set => SetUserText ("MusicBrainz Album Status", value);
+		set => SetUserTextProperty ("MusicBrainz Album Status", value, MusicBrainzReleaseStatus);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseType {
 		get => GetUserText ("MusicBrainz Album Type");
-		set => SetUserText ("MusicBrainz Album Type", value);
+		set => SetUserTextProperty ("MusicBrainz Album Type", value, MusicBrainzReleaseType);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseCountry {
 		get => GetUserText ("MusicBrainz Album Release Country");
-		set => SetUserText ("MusicBrainz Album Release Country", value);
+		set => SetUserTextProperty ("MusicBrainz Album Release Country", value, MusicBrainzReleaseCountry);
 	}
 
 	/// <inheritdoc/>
 	public override string? ComposerSort {
 		get => GetTextFrame ("TSOC");
-		set => SetTextFrame ("TSOC", value);
+		set => SetTextFrameProperty ("TSOC", value, ComposerSort);
 	}
 
 	/// <inheritdoc/>
@@ -961,47 +965,56 @@ public sealed class Id3v2Tag : Tag
 	/// </remarks>
 	public override string? DateTagged {
 		get => GetTextFrame ("TDTG");
-		set => SetTextFrame ("TDTG", value);
+		set => SetTextFrameProperty ("TDTG", value, DateTagged);
 	}
 
 	/// <inheritdoc/>
 	public override string? Description {
 		get => GetUserText ("DESCRIPTION");
-		set => SetUserText ("DESCRIPTION", value);
+		set => SetUserTextProperty ("DESCRIPTION", value, Description);
 	}
 
 	/// <inheritdoc/>
 	public override string? AmazonId {
 		get => GetUserText ("ASIN");
-		set => SetUserText ("ASIN", value);
+		set => SetUserTextProperty ("ASIN", value, AmazonId);
 	}
 
 	/// <inheritdoc/>
 	public override string? AcoustIdId {
 		get => GetUserText ("ACOUSTID_ID");
-		set => SetUserText ("ACOUSTID_ID", value);
+		set => SetUserTextProperty ("ACOUSTID_ID", value, AcoustIdId);
 	}
 
 	/// <inheritdoc/>
 	public override string? AcoustIdFingerprint {
 		get => GetUserText ("ACOUSTID_FINGERPRINT");
-		set => SetUserText ("ACOUSTID_FINGERPRINT", value);
+		set => SetUserTextProperty ("ACOUSTID_FINGERPRINT", value, AcoustIdFingerprint);
 	}
 
 	/// <inheritdoc/>
 	public override string? Work {
 		get => GetUserText ("WORK");
-		set => SetUserText ("WORK", value);
+		set => SetUserTextProperty ("WORK", value, Work);
 	}
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Reads from Apple's MVNM frame first, then falls back to TXXX:MOVEMENT.
-	/// A write stores the same value in both, and a clear removes both.
+	/// Reads from Apple's MVNM frame first, then falls back to TXXX:MOVEMENT when MVNM is missing or empty.
+	/// Writing back the value already read changes nothing. Any other write stores the same value in both,
+	/// and a clear removes both.
 	/// </remarks>
 	public override string? Movement {
-		get => GetTextFrame ("MVNM") ?? GetUserText ("MOVEMENT");
+		get {
+			var apple = GetTextFrame ("MVNM");
+			if (!string.IsNullOrEmpty (apple))
+				return apple;
+			var user = GetUserText ("MOVEMENT");
+			return string.IsNullOrEmpty (user) ? apple ?? user : user;
+		}
 		set {
+			if (IsUnchanged (value, Movement))
+				return;
 			SetTextFrame ("MVNM", value);
 			SetUserText ("MOVEMENT", value);
 		}
@@ -1010,7 +1023,8 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Reads from Apple's MVIN frame first (index part), then falls back to TXXX:MOVEMENTNUMBER.
-	/// A write updates MVIN and the TXXX field together so the other half of MVIN is kept.
+	/// Writing back the value already read changes nothing. Any other write updates MVIN and the
+	/// TXXX field together so the other half of MVIN is kept.
 	/// </remarks>
 	public override uint? MovementNumber {
 		get {
@@ -1026,6 +1040,8 @@ public sealed class Id3v2Tag : Tag
 			return uint.TryParse (value, out var result) ? result : null;
 		}
 		set {
+			if (value is not null && value == MovementNumber)
+				return;
 			var total = MovementTotal;
 			SetUserText ("MOVEMENTNUMBER", value?.ToString (CultureInfo.InvariantCulture));
 			if (total is not null)
@@ -1037,7 +1053,8 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Reads from Apple's MVIN frame first (total part), then falls back to TXXX:MOVEMENTTOTAL.
-	/// A write updates MVIN and the TXXX field together so the index half of MVIN is kept.
+	/// Writing back the value already read changes nothing. Any other write updates MVIN and the
+	/// TXXX field together so the index half of MVIN is kept.
 	/// </remarks>
 	public override uint? MovementTotal {
 		get {
@@ -1053,6 +1070,8 @@ public sealed class Id3v2Tag : Tag
 			return uint.TryParse (value, out var result) ? result : null;
 		}
 		set {
+			if (value is not null && value == MovementTotal)
+				return;
 			var number = MovementNumber;
 			SetUserText ("MOVEMENTTOTAL", value?.ToString (CultureInfo.InvariantCulture));
 			if (number is not null)
@@ -1725,6 +1744,33 @@ public sealed class Id3v2Tag : Tag
 			SetTextFrame (alsoClear, null);
 		SetTextFrame (frameId, normalized);
 	}
+
+	/// <summary>
+	/// Writes a single-value text property. Writing back the value its getter returned is a no-op,
+	/// so the other values of a multi-value frame (ID3v2.4 §4.2, NUL-separated) and an empty
+	/// first value stay as they are. Any other value replaces the frame; null or empty removes it.
+	/// </summary>
+	void SetTextFrameProperty (string frameId, string? value, string? current)
+	{
+		if (!IsUnchanged (value, current))
+			SetTextFrame (frameId, value);
+	}
+
+	/// <summary>
+	/// Writes a single-value TXXX property, with the same write-back rule as <see cref="SetTextFrameProperty"/>.
+	/// </summary>
+	void SetUserTextProperty (string description, string? value, string? current)
+	{
+		if (!IsUnchanged (value, current))
+			SetUserText (description, value);
+	}
+
+	/// <summary>
+	/// True when <paramref name="value"/> is exactly what the getter returned, including an empty string.
+	/// A null value is always a clear.
+	/// </summary>
+	static bool IsUnchanged (string? value, string? current) =>
+		value is not null && string.Equals (value, current, StringComparison.Ordinal);
 
 	/// <summary>
 	/// Sets or creates a text frame.
