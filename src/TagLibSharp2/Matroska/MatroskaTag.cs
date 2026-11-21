@@ -243,6 +243,29 @@ public sealed class MatroskaTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// <c>SORT_WITH</c> nested in the <c>ARTIST</c> that <see cref="AlbumArtists"/> reads (the album
+	/// level, <c>TargetTypeValue</c> 50), else a flat <c>ALBUM_ARTIST_SORT</c> at that level.
+	/// See https://www.matroska.org/technical/tagging.html and RFC 9559 section 5.1.8.
+	/// </remarks>
+	public override string? AlbumArtistSort {
+		get => ItemLevel >= AlbumLevel
+			? NestedSort ("ARTIST") ?? First ("ALBUM_ARTIST_SORT")
+			: NestedSortAt (AlbumLevel, "ARTIST") ?? FirstAt (AlbumLevel, "ALBUM_ARTIST_SORT");
+		set => SetSort ("ARTIST", "ALBUM_ARTIST_SORT", value, ItemLevel >= AlbumLevel ? null : AlbumLevel);
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <c>SORT_WITH</c> nested in the <c>COMPOSER</c> that <see cref="Composers"/> reads, else a flat
+	/// <c>COMPOSER_SORT</c>. See https://www.matroska.org/technical/tagging.html.
+	/// </remarks>
+	public override string? ComposerSort {
+		get => NestedSort ("COMPOSER") ?? First ("COMPOSER_SORT");
+		set => SetSort ("COMPOSER", "COMPOSER_SORT", value, null);
+	}
+
+	/// <inheritdoc/>
 	public override string? ReplayGainTrackGain {
 		get => First ("REPLAYGAIN_TRACK_GAIN") ?? First ("REPLAYGAIN_GAIN");
 		set => SetItem ("REPLAYGAIN_TRACK_GAIN", value);

@@ -5,6 +5,12 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Matroska `AlbumArtistSort` and `ComposerSort`: `SORT_WITH` nested in the album-level `ARTIST` (`TargetTypeValue` 50) and in `COMPOSER`, with flat `ALBUM_ARTIST_SORT` / `COMPOSER_SORT` as the fallback. Clearing removes both forms at every level the getter reads (#116)
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes
