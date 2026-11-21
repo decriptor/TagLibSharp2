@@ -2223,8 +2223,56 @@ namespace TagLibSharp2.Id3.Id3v2
 }
 namespace TagLibSharp2.Matroska
 {
+    public sealed class MatroskaChapter
+    {
+        public MatroskaChapter() { }
+        public System.Collections.Generic.IList<TagLibSharp2.Matroska.MatroskaChapter> Chapters { get; }
+        public System.Collections.Generic.IList<TagLibSharp2.Matroska.MatroskaChapterDisplay> Displays { get; }
+        public System.TimeSpan? End { get; set; }
+        public ulong? EndNanoseconds { get; set; }
+        public bool IsEnabled { get; set; }
+        public bool IsHidden { get; set; }
+        public System.TimeSpan Start { get; set; }
+        public ulong StartNanoseconds { get; set; }
+        public string? StringUid { get; set; }
+        public string? Title { get; set; }
+        public ulong Uid { get; set; }
+        public TagLibSharp2.Matroska.MatroskaChapter AddChapter(System.TimeSpan start, System.TimeSpan? end = default, string? title = null, string language = "eng") { }
+        public bool RemoveChapter(TagLibSharp2.Matroska.MatroskaChapter chapter) { }
+    }
+    public sealed class MatroskaChapterDisplay
+    {
+        public MatroskaChapterDisplay(string text, string? language = "eng") { }
+        public System.Collections.Generic.IList<string> Countries { get; }
+        public System.Collections.Generic.IList<string> Languages { get; }
+        public System.Collections.Generic.IList<string> LanguagesBcp47 { get; }
+        public string Text { get; set; }
+    }
+    public sealed class MatroskaChapters
+    {
+        public TagLibSharp2.Matroska.MatroskaEdition? DefaultEdition { get; }
+        public System.Collections.Generic.IList<TagLibSharp2.Matroska.MatroskaEdition> Editions { get; }
+        public bool IsEmpty { get; }
+        public bool IsWebM { get; }
+        public TagLibSharp2.Matroska.MatroskaChapter AddChapter(System.TimeSpan start, System.TimeSpan? end = default, string? title = null, string language = "eng") { }
+        public TagLibSharp2.Matroska.MatroskaEdition AddEdition() { }
+        public void Clear() { }
+        public bool RemoveEdition(TagLibSharp2.Matroska.MatroskaEdition edition) { }
+    }
+    public sealed class MatroskaEdition
+    {
+        public MatroskaEdition() { }
+        public System.Collections.Generic.IList<TagLibSharp2.Matroska.MatroskaChapter> Chapters { get; }
+        public bool IsDefault { get; set; }
+        public bool IsHidden { get; set; }
+        public bool IsOrdered { get; set; }
+        public ulong Uid { get; set; }
+        public TagLibSharp2.Matroska.MatroskaChapter AddChapter(System.TimeSpan start, System.TimeSpan? end = default, string? title = null, string language = "eng") { }
+        public bool RemoveChapter(TagLibSharp2.Matroska.MatroskaChapter chapter) { }
+    }
     public sealed class MatroskaFile : System.IDisposable, TagLibSharp2.Core.IMediaFile
     {
+        public TagLibSharp2.Matroska.MatroskaChapters Chapters { get; }
         public System.TimeSpan? Duration { get; }
         public TagLibSharp2.Core.MediaFormat Format { get; }
         public TagLibSharp2.Core.MediaTypes MediaTypes { get; }

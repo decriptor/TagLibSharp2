@@ -12,8 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Matroska: setting `Pictures` writes image attachments (RFC 9559 sections 5.1.6 and 21.1). A new front cover is `cover.jpg` or `cover.png` and goes first; other picture types get names such as `back.jpg` or `artist.png`, which read back as their type. The description goes in `FileDescription`. An attachment that matches a picture keeps its `FileName`, `FileUID` and bytes. Fonts and other non-image attachments are kept. Removing a picture removes only its attachment and any tag that targeted only that attachment.
 - Matroska: a new or moved `Attachments` element goes after the last Cluster or in a Void, and gets an entry in the first SeekHead. The SeekHead can widen its size field to grow into the Void after it.
 
+- Matroska/WebM chapters (#114): `MatroskaFile.Chapters` reads and writes editions (`MatroskaEdition`) and nested chapter atoms (`MatroskaChapter`) with UID, string UID, start and end time, display strings with languages and countries (`MatroskaChapterDisplay`), and the enabled and hidden flags (RFC 9559 section 5.1.7). New UIDs are random and nonzero. Chapter titles never become `Tag.Title`. WebM saves keep to the WebM chapter subset. Atom nesting and entry counts are bounded; deeper atoms are kept as bytes.
+
 ### Changed
 
+- Matroska: a save keeps the original `Tags` and `Chapters` bytes when those elements were not edited, and a save with no edits returns the file unchanged.
 - Matroska: a save fails when a picture is not an `image/` media type, has no data, or would be added to a WebM file. A save that does not set `Pictures` keeps the `Attachments` element byte for byte.
 - Matroska: an attachment named `back.jpg`, `artist.png` and so on reads with that picture type instead of `Other`.
 - Matroska: a new SeekHead entry is added only to the first SeekHead (RFC 9559 section 6.3).

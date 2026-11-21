@@ -13,29 +13,55 @@ namespace TagLibSharp2.Matroska;
 /// </summary>
 static class MatroskaRewrite
 {
-	public static bool TryRewrite (ReadOnlySpan<byte> data, MatroskaTag tag, out byte[] rewritten, out string error)
+	public static bool TryRewrite (ReadOnlySpan<byte> data, MatroskaTag tag, out byte[] rewritten, out string error) =>
+		TryRewrite (data, tag, null, out rewritten, out error);
+
+	/// <summary>
+	/// Writes the edited Attachments, then edited Chapters, then edited Tags. Each pass parses the layout the
+	/// one before produced, so SeekHead, Cues, and Cluster offsets stay in step. An element that renders the
+	/// same as it was read keeps its bytes, and a save with no edits returns the container unchanged.
+	/// </summary>
+	public static bool TryRewrite (ReadOnlySpan<byte> data, MatroskaTag tag, MatroskaChapters? chapters, out byte[] rewritten, out string error)
 	{
 		rewritten = [];
 		if (!TryParse (data, out var layout, out error) || layout is null)
 			return false;
 
+		byte[]? staged = null;
 		HashSet<ulong>? removed = null;
+		var attachmentsChanged = false;
 		if (tag.PicturesChanged) {
-			if (!MatroskaAttachments.TryBuild (data, RangesOf (layout, MatroskaIds.Attachments), tag.Pictures, layout.IsWebM, out var attachments, out var changed, out removed, out error))
+			if (!MatroskaAttachments.TryBuild (data, RangesOf (layout, MatroskaIds.Attachments), tag.Pictures, layout.IsWebM, out var attachments, out attachmentsChanged, out removed, out error))
 				return false;
 
-			// Attachments goes in first, so the tags pass sees the final layout.
 			// RFC 9559 section 6.7: an edited Attachments element SHOULD follow the last Cluster.
-			if (changed) {
-				if (!TryReplace (data, layout, MatroskaIds.Attachments, attachments, out var staged, out error))
-					return false;
-				if (!TryParse (staged, out layout, out error) || layout is null)
-					return false;
-				return TryReplace (staged, layout, MatroskaIds.Tags, tag.RenderWithout (removed).ToArray (), out rewritten, out error);
-			}
+			if (attachmentsChanged && !TryStage (data, ref staged, ref layout, MatroskaIds.Attachments, attachments, out error))
+				return false;
 		}
 
-		return TryReplace (data, layout, MatroskaIds.Tags, tag.Render ().ToArray (), out rewritten, out error);
+		if (chapters is not null && chapters.IsModified && !TryStage (data, ref staged, ref layout, MatroskaIds.Chapters, chapters.Render ().ToArray (), out error))
+			return false;
+
+		// Removed attachments also drop the tags that targeted only them.
+		var tags = (attachmentsChanged ? tag.RenderWithout (removed) : tag.Render ()).ToArray ();
+		if (!tag.IsAsRead (tags) && !TryStage (data, ref staged, ref layout, MatroskaIds.Tags, tags, out error))
+			return false;
+
+		rewritten = staged ?? data.ToArray ();
+		return true;
+	}
+
+	/// <summary>Writes one element into the latest staged copy and parses the result for the next pass.</summary>
+	static bool TryStage (ReadOnlySpan<byte> data, ref byte[]? staged, ref Layout layout, ulong id, byte[] element, out string error)
+	{
+		var source = staged is null ? data : staged;
+		if (!TryReplace (source, layout, id, element, out var next, out error))
+			return false;
+		if (!TryParse (next, out var parsed, out error) || parsed is null)
+			return false;
+		staged = next;
+		layout = parsed;
+		return true;
 	}
 
 	/// <summary>Returns true when the first SeekHead has a Seek for <paramref name="id"/>.</summary>
@@ -483,14 +509,16 @@ static class MatroskaRewrite
 			Element = element;
 		}
 
-		/// <summary>Gets the element being written: <c>Tags</c> or <c>Attachments</c>.</summary>
+		/// <summary>Gets the element being written: <c>Tags</c>, <c>Attachments</c>, or <c>Chapters</c>.</summary>
 		public ulong Id { get; }
 
 		public byte[] Element { get; }
 
-		public string PlaceError => Id == MatroskaIds.Attachments
-			? "Matroska attachments could not be placed"
-			: "Matroska tags could not be placed";
+		public string PlaceError => Id switch {
+			MatroskaIds.Attachments => "Matroska attachments could not be placed",
+			MatroskaIds.Chapters => "Matroska chapters could not be placed",
+			_ => "Matroska tags could not be placed"
+		};
 
 		public int ReplaceStart { get; set; } = -1;
 
