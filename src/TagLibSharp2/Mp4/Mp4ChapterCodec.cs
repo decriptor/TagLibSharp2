@@ -319,9 +319,11 @@ internal static class Mp4ChapterCodec
 	/// 0x100 duration, 0x200 size, 0x400 flags, 0x800 composition offset. A run without data_offset continues
 	/// where the previous run of the traf ended. A run's sample count is bounded by its bytes when it has
 	/// per-sample fields; otherwise its length is count times the default size, with no loop.
+	/// Returns false when it stops early: a traf or trun it cannot read, an unread box tail, or the read
+	/// budget or sample cap. A null <paramref name="trackId"/> only measures the runs into <paramref name="runs"/>.
 	/// </remarks>
-	static void AppendFragmentSamples (
-		uint trackId,
+	static bool AppendFragmentSamples (
+		uint? trackId,
 		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
 		Mp4Box moov,
 		List<TextSample> samples,
@@ -331,6 +333,10 @@ internal static class Mp4ChapterCodec
 	{
 		var defaults = new Dictionary<uint, (uint Duration, uint Size)> ();
 		foreach (var (moof, moofStart) in fragments) {
+			// Children past a box that did not parse are unread; a traf could be among them.
+			if (moof.UnparsedTail.Length > 0)
+				return false;
+
 			var previousEnd = moofStart;
 			var firstTraf = true;
 			foreach (var traf in moof.Children) {
@@ -338,8 +344,8 @@ internal static class Mp4ChapterCodec
 					continue;
 
 				var tfhd = Payload (traf.FindChild ("tfhd"));
-				if (tfhd.Length < 8)
-					return;
+				if (tfhd.Length < 8 || traf.UnparsedTail.Length > 0)
+					return false;
 
 				var flags = BinaryPrimitives.ReadUInt32BigEndian (tfhd) & 0xFFFFFF;
 				var id = BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4));
@@ -347,7 +353,7 @@ internal static class Mp4ChapterCodec
 				long baseOffset = firstTraf || (flags & 0x020000) != 0 ? moofStart : previousEnd;
 				if ((flags & 0x1) != 0) {
 					if (!TryRead64 (tfhd, ref pos, out var explicitBase))
-						return;
+						return false;
 					baseOffset = explicitBase > long.MaxValue / 2 ? long.MaxValue / 2 : (long)explicitBase;
 				}
 
@@ -361,9 +367,9 @@ internal static class Mp4ChapterCodec
 				var defaultDuration = trex.Duration;
 				var defaultSize = trex.Size;
 				if ((flags & 0x8) != 0 && !TryRead32 (tfhd, ref pos, out defaultDuration))
-					return;
+					return false;
 				if ((flags & 0x10) != 0 && !TryRead32 (tfhd, ref pos, out defaultSize))
-					return;
+					return false;
 
 				var mine = id == trackId;
 				if (mine) {
@@ -380,13 +386,15 @@ internal static class Mp4ChapterCodec
 					var ok = ReadRun (trun.Data.Span, baseOffset, ref runStart, ref runEnd, defaultDuration, defaultSize, mine, samples, ref time, ref budget);
 					runs?.Add ((runStart, runEnd));
 					if (!ok)
-						return;
+						return false;
 				}
 
 				previousEnd = runEnd;
 				firstTraf = false;
 			}
 		}
+
+		return true;
 	}
 
 	static bool ReadRun (
@@ -458,15 +466,15 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// The file ranges every traf run of every track covers (the data offsets of §8.8.7 and §8.8.8).
+	/// The file ranges every traf run of every track covers (the data offsets of §8.8.7 and §8.8.8), or null
+	/// when a fragment cannot be read to the end.
 	/// </summary>
-	static List<(long Start, long End)> FragmentRuns (IReadOnlyList<(Mp4Box Moof, long Start)> fragments, Mp4Box moov)
+	static List<(long Start, long End)>? FragmentRuns (IReadOnlyList<(Mp4Box Moof, long Start)> fragments, Mp4Box moov)
 	{
 		var runs = new List<(long Start, long End)> ();
 		ulong time = 0;
 		var budget = 0L;
-		AppendFragmentSamples (0, fragments, moov, [], ref time, ref budget, runs);
-		return runs;
+		return AppendFragmentSamples (null, fragments, moov, [], ref time, ref budget, runs) ? runs : null;
 	}
 
 	/// <summary>
@@ -509,34 +517,60 @@ internal static class Mp4ChapterCodec
 	/// Decodes one chapter sample: a 16-bit length, then UTF-16 when a byte order mark leads, otherwise UTF-8.
 	/// A length past the sample stops at the sample end. Modifier boxes after the text are ignored.
 	/// </summary>
-	public static string DecodeSample (ReadOnlySpan<byte> sample)
+	public static string DecodeSample (ReadOnlySpan<byte> sample) => Decode (sample).Text;
+
+	static readonly UTF8Encoding StrictUtf8 = new (false, true);
+	static readonly UnicodeEncoding StrictUtf16BigEndian = new (true, false, true);
+	static readonly UnicodeEncoding StrictUtf16LittleEndian = new (false, false, true);
+
+	/// <summary>
+	/// <see cref="DecodeSample"/>, and whether the text was valid UTF-8, or valid UTF-16 after its byte order
+	/// mark (TN2174: "a series of Unicode characters, either in UTF-16 or UTF-8"). Bytes that are not valid
+	/// text are not a title: a stale fragment offset can land on media data (ffmpeg +global_sidx output).
+	/// The text is then the lossy decoding.
+	/// </summary>
+	public static SampleText Decode (ReadOnlySpan<byte> sample)
 	{
 		if (sample.Length < 2)
-			return string.Empty;
+			return new SampleText (string.Empty, true);
 
 		var length = Math.Min (BinaryPrimitives.ReadUInt16BigEndian (sample), sample.Length - 2);
 		var text = sample.Slice (2, length);
-		string value;
-		if (text.Length >= 2 && text[0] == 0xFE && text[1] == 0xFF)
-			value = Encoding.BigEndianUnicode.GetString (text.Slice (2));
-		else if (text.Length >= 2 && text[0] == 0xFF && text[1] == 0xFE)
-			value = Encoding.Unicode.GetString (text.Slice (2));
-		else
-			value = DecodeUtf8 (text);
+		Encoding strict;
+		Encoding lossy;
+		if (text.Length >= 2 && text[0] == 0xFE && text[1] == 0xFF) {
+			text = text.Slice (2);
+			(strict, lossy) = (StrictUtf16BigEndian, Encoding.BigEndianUnicode);
+		} else if (text.Length >= 2 && text[0] == 0xFF && text[1] == 0xFE) {
+			text = text.Slice (2);
+			(strict, lossy) = (StrictUtf16LittleEndian, Encoding.Unicode);
+		} else {
+			(strict, lossy) = (StrictUtf8, Encoding.UTF8);
+		}
 
-		return value.TrimEnd ('\0');
+		try {
+			return new SampleText (strict.GetString (text).TrimEnd ('\0'), true);
+		} catch (DecoderFallbackException) {
+			return new SampleText (lossy.GetString (text).TrimEnd ('\0'), false);
+		}
 	}
 
 	/// <summary>
+	/// A decoded chapter sample. <see cref="Valid"/> is false when the bytes were not valid text.
+	/// </summary>
+	internal readonly record struct SampleText (string Text, bool Valid);
+
+	/// <summary>
 	/// Builds the chapter list. The chapter track wins over chpl, as ffprobe reads it. A null title is a
-	/// sample outside the file: chpl wins then, and without chpl that chapter's title is empty.
+	/// sample outside the file, and an invalid one is not text: chpl wins then. Without chpl, an outside
+	/// sample's title is empty and an invalid one keeps its lossy decoding.
 	/// When chpl has the same titles in the same order, its 100 ns start times are used: the track starts its
-	/// first sample at zero and rounds to its timescale. End times follow the next start, the track end, or
-	/// <paramref name="duration"/>.
+	/// first sample at zero and rounds to its timescale. End times follow the next start, then the track end
+	/// (also when chpl supplied the titles), then <paramref name="duration"/>.
 	/// </summary>
 	public static List<Mp4Chapter> Merge (
 		TrackLayout? layout,
-		IReadOnlyList<string?>? titles,
+		IReadOnlyList<SampleText?>? titles,
 		List<Mp4Chapter>? chpl,
 		TimeSpan duration)
 	{
@@ -544,23 +578,27 @@ internal static class Mp4ChapterCodec
 		TimeSpan? trackEnd = null;
 		var hasChpl = chpl is not null && chpl.Count > 0;
 		if (layout is not null && titles is not null && titles.Count == layout.Samples.Count && titles.Count > 0
-			&& !(hasChpl && titles.Contains (null))) {
+			&& !(hasChpl && titles.Any (t => t is null || !t.Value.Valid))) {
 			var useChpl = chpl is not null && chpl.Count == titles.Count;
 			for (var i = 0; useChpl && i < titles.Count; i++) {
-				if (!string.Equals (chpl![i].Title, ChplTitle (titles[i]!), StringComparison.Ordinal))
+				if (!string.Equals (chpl![i].Title, ChplTitle (titles[i]!.Value.Text), StringComparison.Ordinal))
 					useChpl = false;
 			}
 
 			for (var i = 0; i < titles.Count; i++) {
 				var start = useChpl ? chpl![i].StartTime : layout.StartOf (i);
-				chapters.Add (new Mp4Chapter (start, titles[i] ?? string.Empty));
+				chapters.Add (new Mp4Chapter (start, titles[i]?.Text ?? string.Empty));
 			}
 
+		} else if (chpl is not null) {
+			chapters.AddRange (chpl);
+		}
+
+		// The track's timing holds even when its text does not, so its end still bounds the last chapter.
+		if (layout is not null && chapters.Count > 0) {
 			var last = layout.Samples[layout.Samples.Count - 1];
 			if (last.Duration > 0)
 				trackEnd = layout.TimeOf (last.Start + last.Duration);
-		} else if (chpl is not null) {
-			chapters.AddRange (chpl);
 		}
 
 		return WithEndTimes (SortByStart (chapters), trackEnd ?? duration);
@@ -603,12 +641,12 @@ internal static class Mp4ChapterCodec
 		var chpl = ReadChpl (moov);
 		var track = FindChapterTrack (moov);
 		var layout = track is null ? null : ReadLayout (track, ReadMovieTimescale (moov), file.Length, fragments, moov);
-		List<string?>? titles = null;
+		List<SampleText?>? titles = null;
 		if (layout is not null) {
-			titles = new List<string?> (layout.Samples.Count);
+			titles = new List<SampleText?> (layout.Samples.Count);
 			foreach (var sample in layout.Samples) {
 				var inFile = sample.Offset >= 0 && sample.Offset <= file.Length - sample.ReadLength;
-				titles.Add (inFile ? DecodeSample (file.Slice ((int)sample.Offset, sample.ReadLength)) : null);
+				titles.Add (inFile ? Decode (file.Slice ((int)sample.Offset, sample.ReadLength)) : null);
 			}
 		}
 
@@ -628,16 +666,16 @@ internal static class Mp4ChapterCodec
 		var track = FindChapterTrack (moov);
 		var length = stream.Length;
 		var layout = track is null ? null : ReadLayout (track, ReadMovieTimescale (moov), length, fragments, moov);
-		List<string?>? titles = null;
+		List<SampleText?>? titles = null;
 		if (layout is not null) {
-			titles = new List<string?> (layout.Samples.Count);
+			titles = new List<SampleText?> (layout.Samples.Count);
 			foreach (var sample in layout.Samples) {
-				string? title = null;
+				SampleText? title = null;
 				if (sample.Offset >= 0 && sample.Offset <= length - sample.ReadLength) {
 					stream.Position = sample.Offset;
 					var bytes = StreamBytes.ReadAtMost (stream, sample.ReadLength);
 					if (bytes.Length == sample.ReadLength)
-						title = DecodeSample (bytes);
+						title = Decode (bytes);
 				}
 
 				titles.Add (title);
@@ -765,7 +803,8 @@ internal static class Mp4ChapterCodec
 	/// samples of the tracks <paramref name="plan"/> replaces: those samples tile its payload exactly, with no gap
 	/// and no overlap, and no other track has a chunk offset inside the box. Such an mdat is the one a previous
 	/// chapter save wrote; once its tracks are rebuilt nothing references it, so it can be dropped.
-	/// In a fragmented movie, no traf run of any track may reach into the box either (§8.8.7, §8.8.8).
+	/// In a fragmented movie, no traf run of any track may reach into the box either (§8.8.7, §8.8.8), and
+	/// every traf must be readable.
 	/// </summary>
 	public static bool HoldsOnlyReplacedSamples (
 		Mp4Box moov,
@@ -778,7 +817,12 @@ internal static class Mp4ChapterCodec
 		if (plan.ReplacedTrackIds.Count == 0)
 			return false;
 
-		foreach (var (start, end) in FragmentRuns (fragments, moov)) {
+		// Fail closed: a fragment that cannot be read could point into the box.
+		var runs = FragmentRuns (fragments, moov);
+		if (runs is null)
+			return false;
+
+		foreach (var (start, end) in runs) {
 			if (start < boxEnd && end > boxStart)
 				return false;
 		}
@@ -1169,8 +1213,8 @@ internal static class Mp4ChapterCodec
 	/// display flags (32), text justification (32, 0 = left), background color (48), default text box (64),
 	/// reserved (64), font number (16), font face (16), reserved (8), reserved (16), foreground color (48), and
 	/// the text name as a Pascal string. Every field is zero and the name is empty: chapter text is not drawn.
-	/// AVFoundation and MediaInfo stop listing the chapters when the foreground colour is non-zero (white was
-	/// tried), so it stays black.
+	/// AVFoundation and MediaInfo stop listing the chapters when the foreground colour is white
+	/// (FFFF FFFF FFFF); red and near-black still list them. Black is used.
 	/// </summary>
 	static BinaryData QuickTimeStsd ()
 	{

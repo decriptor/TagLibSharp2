@@ -349,6 +349,22 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	public void Save_NewChapters_NoFtypWritesTheQuickTimeLayout ()
+	{
+		// ISO files must start with ftyp (ISO 14496-12 §4.3); a QuickTime movie may not have one. The ftyp is
+		// turned into a free box of the same size, so every offset stays valid.
+		var data = Mp4ChapterTestBuilder.Build (new ());
+		"free"u8.CopyTo (data.AsSpan (4));
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "A")];
+
+		var minf = Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (Save (file, data)), 2)!.FindDescendant ("mdia", "minf")!;
+
+		Assert.IsNotNull (minf.FindChild ("gmhd"));
+		Assert.AreEqual ("text", Encoding.ASCII.GetString (minf.FindDescendant ("stbl", "stsd")!.Data.Span.Slice (12, 4)));
+	}
+
+	[TestMethod]
 	public void Save_NewChapters_QuickTimeBrandWritesGmhdAndQtffTextDescription ()
 	{
 		var original = Mp4ChapterTestBuilder.Build (new () { MajorBrand = "qt  " });
@@ -508,6 +524,21 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	public void Save_ClearChapters_KeepsASoundTrackThatChapNames ()
+	{
+		// chap naming a sound track is not chapter media: clearing must not delete audio.
+		var options = ThreeChapterTrack ();
+		options.ChapSoundTrack = true;
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+
+		file.Chapters = [];
+		var moov = Mp4ChapterTestBuilder.Moov (Save (file, data));
+
+		CollectionAssert.AreEqual (new uint[] { 1, Mp4ChapterTestBuilder.SoundTrackId }, Mp4ChapterTestBuilder.TrackIds (moov));
+	}
+
+	[TestMethod]
 	public void Save_ClearChapters_KeepsATrackThatHoldsItsOwnChapReference ()
 	{
 		// chap names track 3, which itself references the chapter text track: it is a presentation track.
@@ -653,6 +684,52 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	public void Read_FragmentedChapterTrack_TfhdDefaultsAfterSampleDescriptionIndex ()
+	{
+		// tfhd flags 0x2|0x8|0x10 (§8.8.7): sample_description_index comes first, then the default duration and
+		// size. The trun lists no per-sample fields, so every sample takes those defaults.
+		var options = new Mp4ChapterTestBuilder.Options {
+			Track = [("Ch A", 900), ("Ch B", 900), ("Ch C", 900)],
+			Fragment = Mp4ChapterTestBuilder.FragmentBase.TfhdDefaults,
+		};
+
+		var file = Mp4ChapterTestBuilder.ReadFile (Mp4ChapterTestBuilder.Build (options));
+
+		AssertChapters (file.Chapters, (0, "Ch A"), (1.5, "Ch B"), (3, "Ch C"));
+		Assert.AreEqual (TimeSpan.FromSeconds (4.5), file.Chapters[2].EndTime);
+	}
+
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Read_ChapterSampleThatIsNotText_FallsBackToChpl (bool fragmented)
+	{
+		// 0xC3 0x28 is not UTF-8; FE FF D8 00 is a lone UTF-16 surrogate. A stale fragment offset reads such bytes.
+		var options = new Mp4ChapterTestBuilder.Options {
+			RawSamples = [[0, 2, 0xC3, 0x28], [0, 4, 0xFE, 0xFF, 0xD8, 0x00], [0, 1, (byte)'x']],
+			Chpl = [(TimeSpan.Zero, "Intro"), (TimeSpan.FromSeconds (1), "Middle"), (TimeSpan.FromSeconds (2), "End")],
+			Fragment = fragmented ? Mp4ChapterTestBuilder.FragmentBase.Moof : null,
+		};
+
+		var file = Mp4ChapterTestBuilder.ReadFile (Mp4ChapterTestBuilder.Build (options));
+
+		AssertChapters (file.Chapters, (0, "Intro"), (1, "Middle"), (2, "End"));
+		Assert.AreEqual (TimeSpan.FromSeconds (3), file.Chapters[2].EndTime, "the track's three 600-unit samples end at 3 s");
+	}
+
+	[TestMethod]
+	public void Read_ChapterSampleThatIsNotTextWithoutChpl_KeepsTheTrack ()
+	{
+		var options = new Mp4ChapterTestBuilder.Options { RawSamples = [[0, 2, 0xC3, 0x28], [0, 1, (byte)'x']] };
+
+		var file = Mp4ChapterTestBuilder.ReadFile (Mp4ChapterTestBuilder.Build (options));
+
+		Assert.AreEqual (2, file.Chapters.Count);
+		Assert.AreEqual ("\uFFFD(", file.Chapters[0].Title, "the lossy decoding");
+		Assert.AreEqual ("x", file.Chapters[1].Title);
+	}
+
+	[TestMethod]
 	public void Read_FragmentedChapterTrack_TfdtSetsTheDecodeTime ()
 	{
 		// tfdt baseMediaDecodeTime 600 in a 600 Hz track (§8.8.12): the fragment's samples start at 1 s.
@@ -760,9 +837,20 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
-	public void Save_ChapterMdatNextToFragmentData_IsKeptWhenATrafPointsIntoIt ()
+	[DataRow (0)]
+	[DataRow (1)]
+	[DataRow (2)]
+	[DataRow (3)]
+	[DataRow (4)]
+	[DataRow (5)]
+	[DataRow (6)]
+	public void Save_ChapterMdatNextToFragmentData_IsKeptWhenATrafPointsIntoIt (int before)
 	{
 		// A traf whose explicit base_data_offset lands in the chapter mdat after moov: that mdat is not chapter-only.
+		// The guard fails closed: a traf it cannot read first (1: a 4-byte tfhd, 3: a traf with no tfhd) keeps the
+		// mdat too, and a traf for track_ID 0 (2) does not hide the later run. A moof child that does not parse
+		// (4) leaves the traf unread, and so does an unreadable top-level box in front of the moof (5) or a traf
+		// child that does not parse in front of the trun (6).
 		var options = ThreeChapterTrack ();
 		options.Mvex = true;
 		var edited = EditChapters (Mp4ChapterTestBuilder.Build (options), 1);
@@ -772,12 +860,36 @@ public class Mp4ChapterTests
 		byte[] tfhd = [0, 0, 0, 24, (byte)'t', (byte)'f', (byte)'h', (byte)'d', 0, 0, 0, 1, 0, 0, 0, (byte)Mp4ChapterTestBuilder.AudioTrackId,
 			.. baseOffset];
 		byte[] trun = [0, 0, 0, 20, (byte)'t', (byte)'r', (byte)'u', (byte)'n', 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 4];
-		var moof = Mp4TestBuilder.CreateBox ("moof", Mp4TestBuilder.CreateBox ("traf", [.. tfhd, .. trun]));
-		byte[] withMoof = [.. edited, .. moof];
+		byte[] first = before switch {
+			1 => Mp4TestBuilder.CreateBox ("traf", [0, 0, 0, 12, (byte)'t', (byte)'f', (byte)'h', (byte)'d', 0, 0, 0, 0]),
+			2 => Mp4TestBuilder.CreateBox ("traf", [0, 0, 0, 16, (byte)'t', (byte)'f', (byte)'h', (byte)'d', 0, 0, 0, 0, 0, 0, 0, 0, .. trun]),
+			3 => Mp4TestBuilder.CreateBox ("traf", Mp4TestBuilder.CreateBox ("free", [])),
+			4 => [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'],
+			_ => [],
+		};
+		byte[] badChild = before == 6 ? [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'] : [];
+		var moof = Mp4TestBuilder.CreateBox ("moof", [.. first, .. Mp4TestBuilder.CreateBox ("traf", [.. tfhd, .. badChild, .. trun])]);
+		byte[] unreadable = before == 5 ? [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'] : [];
+		byte[] withMoof = [.. edited, .. unreadable, .. moof];
 
 		var again = EditChapters (withMoof, 2);
 
-		Assert.AreEqual (3, Mp4ChapterTestBuilder.TopLevelTypes (again).Count (t => t == "mdat"));
+		Assert.AreEqual (3, ReadableTopLevelTypes (again).Count (t => t == "mdat"));
+	}
+
+	/// <summary>Top-level box types up to the first box that does not parse.</summary>
+	static List<string> ReadableTopLevelTypes (byte[] file)
+	{
+		var types = new List<string> ();
+		for (var offset = 0; offset < file.Length;) {
+			var result = Mp4Box.Parse (file.AsSpan (offset));
+			if (!result.IsSuccess)
+				break;
+			types.Add (result.Box!.Type);
+			offset += result.BytesConsumed;
+		}
+
+		return types;
 	}
 
 	[TestMethod]

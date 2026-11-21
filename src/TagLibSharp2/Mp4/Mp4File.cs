@@ -734,7 +734,8 @@ public sealed class Mp4File : IMediaFile
 	/// <remarks>
 	/// <para>
 	/// Reading takes the QuickTime chapter track (the text track a <c>tref</c>/<c>chap</c> reference names),
-	/// then the Nero <c>chpl</c> box when there is no readable chapter track. When both hold the same titles,
+	/// then the Nero <c>chpl</c> box when there is no readable chapter track, or when a chapter sample lies
+	/// outside the file or is not valid UTF-8 or UTF-16 text. When both hold the same titles,
 	/// the start times come from <c>chpl</c>, which keeps 100 ns precision and a first chapter that starts
 	/// after zero. Each chapter's <see cref="Mp4Chapter.EndTime"/> is the next start, or the end of the
 	/// chapter track or file for the last one.
@@ -752,8 +753,8 @@ public sealed class Mp4File : IMediaFile
 	/// moves in the same update that a tag edit makes. That <c>mdat</c> replaces the one an earlier chapter save
 	/// wrote, so repeated edits do not grow the file. Old chapter samples that share an <c>mdat</c> with other
 	/// media stay there unreferenced. A new track follows its brand: an MP4 file gets a null media header and a
-	/// 3GPP <c>tx3g</c> sample entry (Apple TN2174), a QuickTime file a <c>gmhd</c> and the QTFF <c>text</c>
-	/// sample description. A replaced track keeps its language, handler, and track flags.
+	/// 3GPP <c>tx3g</c> sample entry (Apple TN2174), a QuickTime file (major brand <c>qt  </c>, or no
+	/// <c>ftyp</c>) a <c>gmhd</c> and the QTFF <c>text</c> sample description. A replaced track keeps its language, handler, and track flags.
 	/// </para>
 	/// <para>
 	/// Fragmented movies (<c>moov/mvex</c>): chapter samples in movie fragments are read. No track is added to a
@@ -1644,7 +1645,7 @@ public sealed class Mp4File : IMediaFile
 			: WrapBox ("mdat", new BinaryData (chapterPlan.SampleData));
 		// The mdat an earlier chapter save wrote sits right after moov and holds only the samples this save
 		// replaces. It goes, so repeated chapter edits do not leave a dead copy each time.
-		var droppedIndex = FindReplacedChapterData (boxes, moovIndex, chapterPlan);
+		var droppedIndex = FindReplacedChapterData (boxes, moovIndex, chapterPlan, tailStart >= 0);
 		var replacedLength = oldMoovLength + (droppedIndex < 0 ? 0 : boxes[droppedIndex].Length);
 		var delta = newMoov.Length + chapterData.Length - replacedLength;
 		var oldMoovEnd = oldMoovStart + replacedLength;
@@ -2381,10 +2382,15 @@ public sealed class Mp4File : IMediaFile
 	static int FindReplacedChapterData (
 		List<(Mp4Box Box, int Start, int Length)> boxes,
 		int moovIndex,
-		Mp4ChapterCodec.ChapterPlan? plan)
+		Mp4ChapterCodec.ChapterPlan? plan,
+		bool unreadTail)
 	{
 		var next = moovIndex + 1;
 		if (plan is null || next >= boxes.Count || boxes[next].Box.Type != "mdat")
+			return -1;
+
+		// Unread bytes after the last box could hold a movie fragment that points into the mdat. Fail closed.
+		if (unreadTail && boxes[moovIndex].Box.FindChild ("mvex") is not null)
 			return -1;
 
 		var (box, start, length) = boxes[next];
@@ -2421,7 +2427,9 @@ public sealed class Mp4File : IMediaFile
 		if (SameChapters (Mp4ChapterCodec.Read (moov, fragments, originalData, duration), _chapters))
 			return null;
 
-		var quickTime = ftyp is not null && ExtractFileType (ftyp) == "qt";
+		// QuickTime evidence: the "qt  " major brand, or no ftyp at all. ISO 14496-12 §4.3 requires ftyp in
+		// an ISO file; QuickTime movies may omit it (QTFF, "File type compatibility atom").
+		var quickTime = ftyp is null || ExtractFileType (ftyp) == "qt";
 		return Mp4ChapterCodec.Plan (moov, fragments, _chapters, duration, quickTime);
 	}
 
