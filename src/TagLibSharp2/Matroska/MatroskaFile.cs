@@ -782,7 +782,7 @@ public sealed class MatroskaFile : IMediaFile
 
 	static TagBlock ReadTag (ReadOnlySpan<byte> body)
 	{
-		var block = new TagBlock (50);
+		var block = new TagBlock (50, hasTargetTypeValue: false);
 		var offset = 0;
 		while (offset < body.Length) {
 			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
@@ -813,9 +813,10 @@ public sealed class MatroskaFile : IMediaFile
 			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
 				break;
 			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
-			if (element.Id == MatroskaIds.TargetTypeValue && payload.Length > 0)
-				block.Level = EbmlReader.ReadUInt (payload);
-			else {
+			if (element.Id == MatroskaIds.TargetTypeValue) {
+				block.HasTargetTypeValue = true;
+				block.Level = payload.Length == 0 ? 0 : EbmlReader.ReadUInt (payload);
+			} else {
 				block.KeepTarget (body.Slice (element.Position, element.End - element.Position).ToArray ());
 				if (element.Id == MatroskaIds.TagChapterUid)
 					NoteTargetUid (payload, ref chapterAll, ref chapterSpecific);
