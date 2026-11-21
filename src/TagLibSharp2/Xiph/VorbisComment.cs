@@ -83,13 +83,13 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Title {
 		get => GetValue ("TITLE");
-		set => SetValue ("TITLE", value);
+		set => SetValueProperty ("TITLE", value, Title);
 	}
 
 	/// <inheritdoc/>
 	public override string? Artist {
 		get => GetValue ("ARTIST");
-		set => SetValue ("ARTIST", value);
+		set => SetValueProperty ("ARTIST", value, Artist);
 	}
 
 	/// <inheritdoc/>
@@ -115,32 +115,32 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Album {
 		get => GetValue ("ALBUM");
-		set => SetValue ("ALBUM", value);
+		set => SetValueProperty ("ALBUM", value, Album);
 	}
 
 	/// <inheritdoc/>
 	public override string? Year {
 		get => GetValue ("DATE");
-		set => SetValue ("DATE", value);
+		set => SetValueProperty ("DATE", value, Year);
 	}
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Uses ORIGINALDATE field. Falls back to ORIGINALYEAR if ORIGINALDATE is not found.
+	/// Uses ORIGINALDATE field. Falls back to ORIGINALYEAR if ORIGINALDATE is missing or empty.
 	/// Writing back the value already read changes nothing. A new value is written to ORIGINALDATE,
 	/// and an existing ORIGINALYEAR is rewritten to its four-digit year (MusicBrainz Picard keeps
 	/// both: https://picard-docs.musicbrainz.org/en/v3.0/appendices/tag_mapping.html).
 	/// Clearing removes both.
 	/// </remarks>
 	public override string? OriginalReleaseDate {
-		get => GetValue ("ORIGINALDATE") ?? GetValue ("ORIGINALYEAR");
+		get => GetValueOrFallback ("ORIGINALDATE", "ORIGINALYEAR");
 		set => SetValueWithFallback ("ORIGINALDATE", value, "ORIGINALYEAR", LeadingYear);
 	}
 
 	/// <inheritdoc/>
 	public override string? Genre {
 		get => GetValue ("GENRE");
-		set => SetValue ("GENRE", value);
+		set => SetValueProperty ("GENRE", value, Genre);
 	}
 
 	/// <inheritdoc/>
@@ -179,13 +179,13 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Comment {
 		get => GetValue ("COMMENT");
-		set => SetValue ("COMMENT", value);
+		set => SetValueProperty ("COMMENT", value, Comment);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumArtist {
 		get => GetValue ("ALBUMARTIST");
-		set => SetValue ("ALBUMARTIST", value);
+		set => SetValueProperty ("ALBUMARTIST", value, AlbumArtist);
 	}
 
 	/// <inheritdoc/>
@@ -224,7 +224,7 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Composer {
 		get => GetValue ("COMPOSER");
-		set => SetValue ("COMPOSER", value);
+		set => SetValueProperty ("COMPOSER", value, Composer);
 	}
 
 	/// <inheritdoc/>
@@ -261,24 +261,24 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Conductor {
 		get => GetValue ("CONDUCTOR");
-		set => SetValue ("CONDUCTOR", value);
+		set => SetValueProperty ("CONDUCTOR", value, Conductor);
 	}
 
 	/// <inheritdoc/>
 	public override string? Work {
 		get => GetValue ("WORK");
-		set => SetValue ("WORK", value);
+		set => SetValueProperty ("WORK", value, Work);
 	}
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Uses the MOVEMENT field. Falls back to MOVEMENTNAME for compatibility.
+	/// Uses the MOVEMENT field. Falls back to MOVEMENTNAME when MOVEMENT is missing or empty.
 	/// Writing back the value already read changes nothing, so a MOVEMENTNAME that Picard or Mp3tag
 	/// wrote beside a MOVEMENT number is kept. A new value is written to MOVEMENT and to an existing
 	/// MOVEMENTNAME. Clearing removes both.
 	/// </remarks>
 	public override string? Movement {
-		get => GetValue ("MOVEMENT") ?? GetValue ("MOVEMENTNAME");
+		get => GetValueOrFallback ("MOVEMENT", "MOVEMENTNAME");
 		set => SetValueWithFallback ("MOVEMENT", value, "MOVEMENTNAME", static v => v);
 	}
 
@@ -307,7 +307,7 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Copyright {
 		get => GetValue ("COPYRIGHT");
-		set => SetValue ("COPYRIGHT", value);
+		set => SetValueProperty ("COPYRIGHT", value, Copyright);
 	}
 
 	/// <inheritdoc/>
@@ -324,103 +324,103 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Isrc {
 		get => GetValue ("ISRC");
-		set => SetValue ("ISRC", value);
+		set => SetValueProperty ("ISRC", value, Isrc);
 	}
 
 	/// <inheritdoc/>
 	public override string? Publisher {
 		get => GetValue ("LABEL");
-		set => SetValue ("LABEL", value);
+		set => SetValueProperty ("LABEL", value, Publisher);
 	}
 
 	/// <inheritdoc/>
 	public override string? EncodedBy {
 		get => GetValue ("ENCODED-BY");
-		set => SetValue ("ENCODED-BY", value);
+		set => SetValueProperty ("ENCODED-BY", value, EncodedBy);
 	}
 
 	/// <inheritdoc/>
 	public override string? EncoderSettings {
 		get => GetValue ("ENCODER");
-		set => SetValue ("ENCODER", value);
+		set => SetValueProperty ("ENCODER", value, EncoderSettings);
 	}
 
 	/// <inheritdoc/>
 	public override string? Grouping {
 		get => GetValue ("GROUPING");
-		set => SetValue ("GROUPING", value);
+		set => SetValueProperty ("GROUPING", value, Grouping);
 	}
 
 	/// <inheritdoc/>
 	public override string? Subtitle {
 		get => GetValue ("SUBTITLE");
-		set => SetValue ("SUBTITLE", value);
+		set => SetValueProperty ("SUBTITLE", value, Subtitle);
 	}
 
 	/// <inheritdoc/>
 	public override string? Remixer {
 		get => GetValue ("REMIXER");
-		set => SetValue ("REMIXER", value);
+		set => SetValueProperty ("REMIXER", value, Remixer);
 	}
 
 	/// <inheritdoc/>
 	public override string? InitialKey {
 		get => GetValue ("KEY");
-		set => SetValue ("KEY", value);
+		set => SetValueProperty ("KEY", value, InitialKey);
 	}
 
 	/// <inheritdoc/>
 	public override string? Mood {
 		get => GetValue ("MOOD");
-		set => SetValue ("MOOD", value);
+		set => SetValueProperty ("MOOD", value, Mood);
 	}
 
 	/// <inheritdoc/>
 	public override string? MediaType {
 		get => GetValue ("MEDIA");
-		set => SetValue ("MEDIA", value);
+		set => SetValueProperty ("MEDIA", value, MediaType);
 	}
 
 	/// <inheritdoc/>
 	public override string? Language {
 		get => GetValue ("LANGUAGE");
-		set => SetValue ("LANGUAGE", value);
+		set => SetValueProperty ("LANGUAGE", value, Language);
 	}
 
 	/// <inheritdoc/>
 	public override string? Barcode {
 		get => GetValue ("BARCODE");
-		set => SetValue ("BARCODE", value);
+		set => SetValueProperty ("BARCODE", value, Barcode);
 	}
 
 	/// <inheritdoc/>
 	public override string? CatalogNumber {
 		get => GetValue ("CATALOGNUMBER");
-		set => SetValue ("CATALOGNUMBER", value);
+		set => SetValueProperty ("CATALOGNUMBER", value, CatalogNumber);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumSort {
 		get => GetValue ("ALBUMSORT");
-		set => SetValue ("ALBUMSORT", value);
+		set => SetValueProperty ("ALBUMSORT", value, AlbumSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? ArtistSort {
 		get => GetValue ("ARTISTSORT");
-		set => SetValue ("ARTISTSORT", value);
+		set => SetValueProperty ("ARTISTSORT", value, ArtistSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? TitleSort {
 		get => GetValue ("TITLESORT");
-		set => SetValue ("TITLESORT", value);
+		set => SetValueProperty ("TITLESORT", value, TitleSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumArtistSort {
 		get => GetValue ("ALBUMARTISTSORT");
-		set => SetValue ("ALBUMARTISTSORT", value);
+		set => SetValueProperty ("ALBUMARTISTSORT", value, AlbumArtistSort);
 	}
 
 	/// <inheritdoc/>
@@ -488,49 +488,49 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? Lyrics {
 		get => GetValue ("LYRICS");
-		set => SetValue ("LYRICS", value);
+		set => SetValueProperty ("LYRICS", value, Lyrics);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackGain {
 		get => GetValue ("REPLAYGAIN_TRACK_GAIN");
-		set => SetValue ("REPLAYGAIN_TRACK_GAIN", value);
+		set => SetValueProperty ("REPLAYGAIN_TRACK_GAIN", value, ReplayGainTrackGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackPeak {
 		get => GetValue ("REPLAYGAIN_TRACK_PEAK");
-		set => SetValue ("REPLAYGAIN_TRACK_PEAK", value);
+		set => SetValueProperty ("REPLAYGAIN_TRACK_PEAK", value, ReplayGainTrackPeak);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainAlbumGain {
 		get => GetValue ("REPLAYGAIN_ALBUM_GAIN");
-		set => SetValue ("REPLAYGAIN_ALBUM_GAIN", value);
+		set => SetValueProperty ("REPLAYGAIN_ALBUM_GAIN", value, ReplayGainAlbumGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainAlbumPeak {
 		get => GetValue ("REPLAYGAIN_ALBUM_PEAK");
-		set => SetValue ("REPLAYGAIN_ALBUM_PEAK", value);
+		set => SetValueProperty ("REPLAYGAIN_ALBUM_PEAK", value, ReplayGainAlbumPeak);
 	}
 
 	/// <inheritdoc/>
 	public override string? R128TrackGain {
 		get => GetValue ("R128_TRACK_GAIN");
-		set => SetValue ("R128_TRACK_GAIN", value);
+		set => SetValueProperty ("R128_TRACK_GAIN", value, R128TrackGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? R128AlbumGain {
 		get => GetValue ("R128_ALBUM_GAIN");
-		set => SetValue ("R128_ALBUM_GAIN", value);
+		set => SetValueProperty ("R128_ALBUM_GAIN", value, R128AlbumGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzTrackId {
 		get => GetValue ("MUSICBRAINZ_TRACKID");
-		set => SetValue ("MUSICBRAINZ_TRACKID", value);
+		set => SetValueProperty ("MUSICBRAINZ_TRACKID", value, MusicBrainzTrackId);
 	}
 
 	/// <inheritdoc/>
@@ -540,103 +540,103 @@ public sealed class VorbisComment : Tag
 	/// </remarks>
 	public override string? MusicBrainzRecordingId {
 		get => GetValue ("MUSICBRAINZ_TRACKID");
-		set => SetValue ("MUSICBRAINZ_TRACKID", value);
+		set => SetValueProperty ("MUSICBRAINZ_TRACKID", value, MusicBrainzRecordingId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseId {
 		get => GetValue ("MUSICBRAINZ_ALBUMID");
-		set => SetValue ("MUSICBRAINZ_ALBUMID", value);
+		set => SetValueProperty ("MUSICBRAINZ_ALBUMID", value, MusicBrainzReleaseId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzArtistId {
 		get => GetValue ("MUSICBRAINZ_ARTISTID");
-		set => SetValue ("MUSICBRAINZ_ARTISTID", value);
+		set => SetValueProperty ("MUSICBRAINZ_ARTISTID", value, MusicBrainzArtistId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseGroupId {
 		get => GetValue ("MUSICBRAINZ_RELEASEGROUPID");
-		set => SetValue ("MUSICBRAINZ_RELEASEGROUPID", value);
+		set => SetValueProperty ("MUSICBRAINZ_RELEASEGROUPID", value, MusicBrainzReleaseGroupId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzAlbumArtistId {
 		get => GetValue ("MUSICBRAINZ_ALBUMARTISTID");
-		set => SetValue ("MUSICBRAINZ_ALBUMARTISTID", value);
+		set => SetValueProperty ("MUSICBRAINZ_ALBUMARTISTID", value, MusicBrainzAlbumArtistId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzWorkId {
 		get => GetValue ("MUSICBRAINZ_WORKID");
-		set => SetValue ("MUSICBRAINZ_WORKID", value);
+		set => SetValueProperty ("MUSICBRAINZ_WORKID", value, MusicBrainzWorkId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzDiscId {
 		get => GetValue ("MUSICBRAINZ_DISCID");
-		set => SetValue ("MUSICBRAINZ_DISCID", value);
+		set => SetValueProperty ("MUSICBRAINZ_DISCID", value, MusicBrainzDiscId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseStatus {
 		get => GetValue ("RELEASESTATUS");
-		set => SetValue ("RELEASESTATUS", value);
+		set => SetValueProperty ("RELEASESTATUS", value, MusicBrainzReleaseStatus);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseType {
 		get => GetValue ("RELEASETYPE");
-		set => SetValue ("RELEASETYPE", value);
+		set => SetValueProperty ("RELEASETYPE", value, MusicBrainzReleaseType);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseCountry {
 		get => GetValue ("RELEASECOUNTRY");
-		set => SetValue ("RELEASECOUNTRY", value);
+		set => SetValueProperty ("RELEASECOUNTRY", value, MusicBrainzReleaseCountry);
 	}
 
 	/// <inheritdoc/>
 	public override string? ComposerSort {
 		get => GetValue ("COMPOSERSORT");
-		set => SetValue ("COMPOSERSORT", value);
+		set => SetValueProperty ("COMPOSERSORT", value, ComposerSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? DateTagged {
 		get => GetValue ("DATETAGGED");
-		set => SetValue ("DATETAGGED", value);
+		set => SetValueProperty ("DATETAGGED", value, DateTagged);
 	}
 
 	/// <inheritdoc/>
 	public override string? Description {
 		get => GetValue ("DESCRIPTION");
-		set => SetValue ("DESCRIPTION", value);
+		set => SetValueProperty ("DESCRIPTION", value, Description);
 	}
 
 	/// <inheritdoc/>
 	public override string? AmazonId {
 		get => GetValue ("ASIN");
-		set => SetValue ("ASIN", value);
+		set => SetValueProperty ("ASIN", value, AmazonId);
 	}
 
 	/// <inheritdoc/>
 	public override string? AcoustIdId {
 		get => GetValue ("ACOUSTID_ID");
-		set => SetValue ("ACOUSTID_ID", value);
+		set => SetValueProperty ("ACOUSTID_ID", value, AcoustIdId);
 	}
 
 	/// <inheritdoc/>
 	public override string? AcoustIdFingerprint {
 		get => GetValue ("ACOUSTID_FINGERPRINT");
-		set => SetValue ("ACOUSTID_FINGERPRINT", value);
+		set => SetValueProperty ("ACOUSTID_FINGERPRINT", value, AcoustIdFingerprint);
 	}
 
 	/// <inheritdoc/>
 	public override string? PodcastFeedUrl {
 		get => GetValue ("PODCASTFEEDURL");
-		set => SetValue ("PODCASTFEEDURL", value);
+		set => SetValueProperty ("PODCASTFEEDURL", value, PodcastFeedUrl);
 	}
 
 	/// <inheritdoc/>
@@ -712,7 +712,7 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	public override string? DiscSubtitle {
 		get => GetValue ("DISCSUBTITLE");
-		set => SetValue ("DISCSUBTITLE", value);
+		set => SetValueProperty ("DISCSUBTITLE", value, DiscSubtitle);
 	}
 
 	/// <summary>
@@ -920,23 +920,51 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <summary>
+	/// Writes a single-value property. Writing back the value its getter returned is a no-op, so
+	/// a field that appears more than once (https://xiph.org/vorbis/doc/v-comment.html allows
+	/// repeated names) keeps every value. Any other value replaces them all; null removes them.
+	/// </summary>
+	void SetValueProperty (string name, string? value, string? current)
+	{
+		if (value is not null && string.Equals (value, current, StringComparison.Ordinal))
+			return;
+		SetValue (name, value);
+	}
+
+	/// <summary>
+	/// The first value of <paramref name="name"/>, or of <paramref name="fallback"/> when the first is
+	/// missing or empty. An empty field is a valid comment (https://xiph.org/vorbis/doc/v-comment.html),
+	/// but it must not hide a filled fallback. Returns "" when the only fields present are empty.
+	/// </summary>
+	string? GetValueOrFallback (string name, string fallback)
+	{
+		var primary = GetValue (name);
+		if (!string.IsNullOrEmpty (primary))
+			return primary;
+
+		var secondary = GetValue (fallback);
+		return string.IsNullOrEmpty (secondary) ? primary ?? secondary : secondary;
+	}
+
+	/// <summary>
 	/// Sets a field whose getter falls back to <paramref name="fallback"/>.
-	/// A null or empty value clears the fallback too, so it cannot come back.
-	/// The value the getter already returns is a no-op, so neither field is lost.
+	/// The value the getter already returns is a no-op, so neither field is lost; that includes "",
+	/// which the getter returns only when every field present is empty.
+	/// Otherwise a null or empty value clears the fallback too, so it cannot come back.
 	/// Any other value goes to <paramref name="name"/>, and to <paramref name="fallback"/>
 	/// when that field exists and <paramref name="toFallback"/> gives a value for it.
 	/// </summary>
 	void SetValueWithFallback (string name, string? value, string fallback, Func<string, string?> toFallback)
 	{
+		var current = GetValueOrFallback (name, fallback);
+		if (value is not null && string.Equals (current, value, StringComparison.Ordinal))
+			return;
+
 		if (string.IsNullOrEmpty (value)) {
 			RemoveAll (fallback);
 			SetValue (name, value);
 			return;
 		}
-
-		var current = GetValue (name) ?? GetValue (fallback);
-		if (string.Equals (current, value, StringComparison.Ordinal))
-			return;
 
 		SetValue (name, value);
 		if (GetValue (fallback) is null)

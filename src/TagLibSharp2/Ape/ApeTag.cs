@@ -174,7 +174,7 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? Title {
 		get => GetValue (Keys.Title);
-		set => SetOrRemove (Keys.Title, value);
+		set => SetOrRemoveProperty (Keys.Title, value, Title);
 	}
 
 	/// <inheritdoc/>
@@ -183,7 +183,7 @@ public sealed class ApeTag : Tag
 	/// </remarks>
 	public override string? Artist {
 		get => ReadFirstName (Keys.Artist);
-		set => SetOrRemove (Keys.Artist, value);
+		set => SetOrRemoveProperty (Keys.Artist, value, Artist);
 	}
 
 	/// <inheritdoc/>
@@ -200,7 +200,7 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? Album {
 		get => GetValue (Keys.Album);
-		set => SetOrRemove (Keys.Album, value);
+		set => SetOrRemoveProperty (Keys.Album, value, Album);
 	}
 
 	/// <summary>
@@ -213,7 +213,7 @@ public sealed class ApeTag : Tag
 	/// </remarks>
 	public override string? AlbumArtist {
 		get => ReadFirstName (Keys.AlbumArtist, Keys.AlbumArtistAlias);
-		set => SetOrRemove (Keys.AlbumArtist, value, Keys.AlbumArtistAlias);
+		set => SetOrRemoveProperty (Keys.AlbumArtist, value, AlbumArtist, Keys.AlbumArtistAlias);
 	}
 
 	/// <inheritdoc/>
@@ -233,20 +233,26 @@ public sealed class ApeTag : Tag
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Reads "Year", then "Date". Writing back the value already read changes nothing.
+	/// Reads "Year", then "Date" when "Year" is missing or empty. Writing back the value already read changes nothing.
 	/// A new value is written to "Year" and to an existing "Date". Clearing removes both.
 	/// </remarks>
 	public override string? Year {
-		get => GetValue (Keys.Year) ?? GetValue (Keys.Date);
+		get {
+			var year = GetValue (Keys.Year);
+			if (!string.IsNullOrEmpty (year))
+				return year;
+			var date = GetValue (Keys.Date);
+			return string.IsNullOrEmpty (date) ? year ?? date : date;
+		}
 		set {
+			if (IsUnchanged (value, Year))
+				return;
+
 			if (string.IsNullOrEmpty (value)) {
 				_items.Remove (Keys.Year);
 				_items.Remove (Keys.Date);
 				return;
 			}
-
-			if (string.Equals (Year, value, StringComparison.Ordinal))
-				return;
 
 			SetValue (Keys.Year, value!);
 			if (_items.ContainsKey (Keys.Date))
@@ -257,7 +263,7 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? Comment {
 		get => GetValue (Keys.Comment);
-		set => SetOrRemove (Keys.Comment, value);
+		set => SetOrRemoveProperty (Keys.Comment, value, Comment);
 	}
 
 	/// <inheritdoc/>
@@ -266,7 +272,7 @@ public sealed class ApeTag : Tag
 	/// </remarks>
 	public override string? Genre {
 		get => ReadFirstName (Keys.Genre);
-		set => SetOrRemove (Keys.Genre, value);
+		set => SetOrRemoveProperty (Keys.Genre, value, Genre);
 	}
 
 	/// <inheritdoc/>
@@ -351,7 +357,7 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? DiscSubtitle {
 		get => GetValue ("DiscSubtitle");
-		set => SetOrRemove ("DiscSubtitle", value);
+		set => SetOrRemoveProperty ("DiscSubtitle", value, DiscSubtitle);
 	}
 
 	/// <inheritdoc/>
@@ -360,7 +366,7 @@ public sealed class ApeTag : Tag
 	/// </remarks>
 	public override string? Composer {
 		get => ReadFirstName (Keys.Composer);
-		set => SetOrRemove (Keys.Composer, value);
+		set => SetOrRemoveProperty (Keys.Composer, value, Composer);
 	}
 
 	/// <inheritdoc/>
@@ -377,133 +383,133 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? Conductor {
 		get => GetValue (Keys.Conductor);
-		set => SetOrRemove (Keys.Conductor, value);
+		set => SetOrRemoveProperty (Keys.Conductor, value, Conductor);
 	}
 
 	/// <inheritdoc/>
 	public override string? Copyright {
 		get => GetValue (Keys.Copyright);
-		set => SetOrRemove (Keys.Copyright, value);
+		set => SetOrRemoveProperty (Keys.Copyright, value, Copyright);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzTrackId {
 		get => GetValue (Keys.MusicBrainzTrackId);
-		set => SetOrRemove (Keys.MusicBrainzTrackId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzTrackId, value, MusicBrainzTrackId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseId {
 		get => GetValue (Keys.MusicBrainzAlbumId);
-		set => SetOrRemove (Keys.MusicBrainzAlbumId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzAlbumId, value, MusicBrainzReleaseId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzArtistId {
 		get => GetValue (Keys.MusicBrainzArtistId);
-		set => SetOrRemove (Keys.MusicBrainzArtistId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzArtistId, value, MusicBrainzArtistId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzAlbumArtistId {
 		get => GetValue (Keys.MusicBrainzAlbumArtistId);
-		set => SetOrRemove (Keys.MusicBrainzAlbumArtistId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzAlbumArtistId, value, MusicBrainzAlbumArtistId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseGroupId {
 		get => GetValue (Keys.MusicBrainzReleaseGroupId);
-		set => SetOrRemove (Keys.MusicBrainzReleaseGroupId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzReleaseGroupId, value, MusicBrainzReleaseGroupId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzWorkId {
 		get => GetValue (Keys.MusicBrainzWorkId);
-		set => SetOrRemove (Keys.MusicBrainzWorkId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzWorkId, value, MusicBrainzWorkId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzDiscId {
 		get => GetValue (Keys.MusicBrainzDiscId);
-		set => SetOrRemove (Keys.MusicBrainzDiscId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzDiscId, value, MusicBrainzDiscId);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackGain {
 		get => GetValue (Keys.ReplayGainTrackGain);
-		set => SetOrRemove (Keys.ReplayGainTrackGain, value);
+		set => SetOrRemoveProperty (Keys.ReplayGainTrackGain, value, ReplayGainTrackGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackPeak {
 		get => GetValue (Keys.ReplayGainTrackPeak);
-		set => SetOrRemove (Keys.ReplayGainTrackPeak, value);
+		set => SetOrRemoveProperty (Keys.ReplayGainTrackPeak, value, ReplayGainTrackPeak);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainAlbumGain {
 		get => GetValue (Keys.ReplayGainAlbumGain);
-		set => SetOrRemove (Keys.ReplayGainAlbumGain, value);
+		set => SetOrRemoveProperty (Keys.ReplayGainAlbumGain, value, ReplayGainAlbumGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainAlbumPeak {
 		get => GetValue (Keys.ReplayGainAlbumPeak);
-		set => SetOrRemove (Keys.ReplayGainAlbumPeak, value);
+		set => SetOrRemoveProperty (Keys.ReplayGainAlbumPeak, value, ReplayGainAlbumPeak);
 	}
 
 	/// <inheritdoc/>
 	public override string? R128TrackGain {
 		get => GetValue ("R128_TRACK_GAIN");
-		set => SetOrRemove ("R128_TRACK_GAIN", value);
+		set => SetOrRemoveProperty ("R128_TRACK_GAIN", value, R128TrackGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? R128AlbumGain {
 		get => GetValue ("R128_ALBUM_GAIN");
-		set => SetOrRemove ("R128_ALBUM_GAIN", value);
+		set => SetOrRemoveProperty ("R128_ALBUM_GAIN", value, R128AlbumGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? Subtitle {
 		get => GetValue (Keys.Subtitle);
-		set => SetOrRemove (Keys.Subtitle, value);
+		set => SetOrRemoveProperty (Keys.Subtitle, value, Subtitle);
 	}
 
 	/// <inheritdoc/>
 	public override string? Publisher {
 		get => GetValue (Keys.Publisher);
-		set => SetOrRemove (Keys.Publisher, value);
+		set => SetOrRemoveProperty (Keys.Publisher, value, Publisher);
 	}
 
 	/// <inheritdoc/>
 	public override string? Isrc {
 		get => GetValue (Keys.Isrc);
-		set => SetOrRemove (Keys.Isrc, value);
+		set => SetOrRemoveProperty (Keys.Isrc, value, Isrc);
 	}
 
 	/// <inheritdoc/>
 	public override string? Barcode {
 		get => GetValue (Keys.Barcode);
-		set => SetOrRemove (Keys.Barcode, value);
+		set => SetOrRemoveProperty (Keys.Barcode, value, Barcode);
 	}
 
 	/// <inheritdoc/>
 	public override string? CatalogNumber {
 		get => GetValue (Keys.CatalogNumber);
-		set => SetOrRemove (Keys.CatalogNumber, value);
+		set => SetOrRemoveProperty (Keys.CatalogNumber, value, CatalogNumber);
 	}
 
 	/// <inheritdoc/>
 	public override string? Language {
 		get => GetValue (Keys.Language);
-		set => SetOrRemove (Keys.Language, value);
+		set => SetOrRemoveProperty (Keys.Language, value, Language);
 	}
 
 	/// <inheritdoc/>
 	public override string? Lyrics {
 		get => GetValue ("Lyrics");
-		set => SetOrRemove ("Lyrics", value);
+		set => SetOrRemoveProperty ("Lyrics", value, Lyrics);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -543,67 +549,67 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? OriginalReleaseDate {
 		get => GetValue (Keys.OriginalDate);
-		set => SetOrRemove (Keys.OriginalDate, value);
+		set => SetOrRemoveProperty (Keys.OriginalDate, value, OriginalReleaseDate);
 	}
 
 	/// <inheritdoc/>
 	public override string? Grouping {
 		get => GetValue (Keys.Grouping);
-		set => SetOrRemove (Keys.Grouping, value);
+		set => SetOrRemoveProperty (Keys.Grouping, value, Grouping);
 	}
 
 	/// <inheritdoc/>
 	public override string? Remixer {
 		get => GetValue (Keys.Remixer);
-		set => SetOrRemove (Keys.Remixer, value);
+		set => SetOrRemoveProperty (Keys.Remixer, value, Remixer);
 	}
 
 	/// <inheritdoc/>
 	public override string? InitialKey {
 		get => GetValue (Keys.InitialKey);
-		set => SetOrRemove (Keys.InitialKey, value);
+		set => SetOrRemoveProperty (Keys.InitialKey, value, InitialKey);
 	}
 
 	/// <inheritdoc/>
 	public override string? Mood {
 		get => GetValue (Keys.Mood);
-		set => SetOrRemove (Keys.Mood, value);
+		set => SetOrRemoveProperty (Keys.Mood, value, Mood);
 	}
 
 	/// <inheritdoc/>
 	public override string? MediaType {
 		get => GetValue (Keys.MediaType);
-		set => SetOrRemove (Keys.MediaType, value);
+		set => SetOrRemoveProperty (Keys.MediaType, value, MediaType);
 	}
 
 	/// <inheritdoc/>
 	public override string? EncodedBy {
 		get => GetValue (Keys.EncodedBy);
-		set => SetOrRemove (Keys.EncodedBy, value);
+		set => SetOrRemoveProperty (Keys.EncodedBy, value, EncodedBy);
 	}
 
 	/// <inheritdoc/>
 	public override string? EncoderSettings {
 		get => GetValue (Keys.EncoderSettings);
-		set => SetOrRemove (Keys.EncoderSettings, value);
+		set => SetOrRemoveProperty (Keys.EncoderSettings, value, EncoderSettings);
 	}
 
 	/// <inheritdoc/>
 	public override string? Description {
 		get => GetValue (Keys.Description);
-		set => SetOrRemove (Keys.Description, value);
+		set => SetOrRemoveProperty (Keys.Description, value, Description);
 	}
 
 	/// <inheritdoc/>
 	public override string? DateTagged {
 		get => GetValue (Keys.DateTagged);
-		set => SetOrRemove (Keys.DateTagged, value);
+		set => SetOrRemoveProperty (Keys.DateTagged, value, DateTagged);
 	}
 
 	/// <inheritdoc/>
 	public override string? AmazonId {
 		get => GetValue (Keys.AmazonId);
-		set => SetOrRemove (Keys.AmazonId, value);
+		set => SetOrRemoveProperty (Keys.AmazonId, value, AmazonId);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -613,25 +619,25 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? MusicBrainzRecordingId {
 		get => GetValue (Keys.MusicBrainzRecordingId);
-		set => SetOrRemove (Keys.MusicBrainzRecordingId, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzRecordingId, value, MusicBrainzRecordingId);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseStatus {
 		get => GetValue (Keys.MusicBrainzReleaseStatus);
-		set => SetOrRemove (Keys.MusicBrainzReleaseStatus, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzReleaseStatus, value, MusicBrainzReleaseStatus);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseType {
 		get => GetValue (Keys.MusicBrainzReleaseType);
-		set => SetOrRemove (Keys.MusicBrainzReleaseType, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzReleaseType, value, MusicBrainzReleaseType);
 	}
 
 	/// <inheritdoc/>
 	public override string? MusicBrainzReleaseCountry {
 		get => GetValue (Keys.MusicBrainzReleaseCountry);
-		set => SetOrRemove (Keys.MusicBrainzReleaseCountry, value);
+		set => SetOrRemoveProperty (Keys.MusicBrainzReleaseCountry, value, MusicBrainzReleaseCountry);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -641,19 +647,19 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? AcoustIdId {
 		get => GetValue (Keys.AcoustIdId);
-		set => SetOrRemove (Keys.AcoustIdId, value);
+		set => SetOrRemoveProperty (Keys.AcoustIdId, value, AcoustIdId);
 	}
 
 	/// <inheritdoc/>
 	public override string? AcoustIdFingerprint {
 		get => GetValue (Keys.AcoustIdFingerprint);
-		set => SetOrRemove (Keys.AcoustIdFingerprint, value);
+		set => SetOrRemoveProperty (Keys.AcoustIdFingerprint, value, AcoustIdFingerprint);
 	}
 
 	/// <inheritdoc/>
 	public override string? PodcastFeedUrl {
 		get => GetValue (Keys.PodcastFeedUrl);
-		set => SetOrRemove (Keys.PodcastFeedUrl, value);
+		set => SetOrRemoveProperty (Keys.PodcastFeedUrl, value, PodcastFeedUrl);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -663,13 +669,13 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? Work {
 		get => GetValue (Keys.Work);
-		set => SetOrRemove (Keys.Work, value);
+		set => SetOrRemoveProperty (Keys.Work, value, Work);
 	}
 
 	/// <inheritdoc/>
 	public override string? Movement {
 		get => GetValue (Keys.Movement);
-		set => SetOrRemove (Keys.Movement, value);
+		set => SetOrRemoveProperty (Keys.Movement, value, Movement);
 	}
 
 	/// <inheritdoc/>
@@ -711,31 +717,31 @@ public sealed class ApeTag : Tag
 	/// <inheritdoc/>
 	public override string? TitleSort {
 		get => GetValue ("TitleSort") ?? GetValue ("TITLESORT");
-		set => SetOrRemove ("TitleSort", value);
+		set => SetOrRemoveProperty ("TitleSort", value, TitleSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? ArtistSort {
 		get => GetValue ("ArtistSort") ?? GetValue ("ARTISTSORT");
-		set => SetOrRemove ("ArtistSort", value);
+		set => SetOrRemoveProperty ("ArtistSort", value, ArtistSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumSort {
 		get => GetValue ("AlbumSort") ?? GetValue ("ALBUMSORT");
-		set => SetOrRemove ("AlbumSort", value);
+		set => SetOrRemoveProperty ("AlbumSort", value, AlbumSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumArtistSort {
 		get => GetValue ("AlbumArtistSort") ?? GetValue ("ALBUMARTISTSORT");
-		set => SetOrRemove ("AlbumArtistSort", value);
+		set => SetOrRemoveProperty ("AlbumArtistSort", value, AlbumArtistSort);
 	}
 
 	/// <inheritdoc/>
 	public override string? ComposerSort {
 		get => GetValue ("ComposerSort") ?? GetValue ("COMPOSERSORT");
-		set => SetOrRemove ("ComposerSort", value);
+		set => SetOrRemoveProperty ("ComposerSort", value, ComposerSort);
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -910,6 +916,24 @@ public sealed class ApeTag : Tag
 	{
 		_items[key] = ApeTagItem.CreateBinary (key, filename, data);
 	}
+
+	/// <summary>
+	/// Writes a single-value property. Writing back the value its getter returned is a no-op, so a
+	/// text item that holds several values (APEv2 items separate them with a zero byte), an empty item,
+	/// or the alias item the getter read stays as it is. Any other value goes through <see cref="SetOrRemove"/>.
+	/// </summary>
+	void SetOrRemoveProperty (string key, string? value, string? current, string? alias = null)
+	{
+		if (!IsUnchanged (value, current))
+			SetOrRemove (key, value, alias);
+	}
+
+	/// <summary>
+	/// True when <paramref name="value"/> is exactly what the getter returned, including an empty string.
+	/// A null value is always a clear.
+	/// </summary>
+	static bool IsUnchanged (string? value, string? current) =>
+		value is not null && string.Equals (value, current, StringComparison.Ordinal);
 
 	/// <summary>
 	/// Removes an item by key.
