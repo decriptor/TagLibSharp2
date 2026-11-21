@@ -39,6 +39,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
 | **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
 | **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
+| **Custom fields** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹⁰ | ✅¹ | ✅¹¹ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
 | **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
 | **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — | — | — |
 | **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | — | ✅⁷ | ✅⁷ | — | — | — |
@@ -53,6 +54,8 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 ⁷ Via channel type in fmt chunk (Mono, Stereo, 5.1 surround)
 ⁸ Via APE tag
 ⁹ Via ASF Extended Content Description
+¹⁰ Via ID3v2 `TXXX`, or a four-character RIFF INFO chunk when the file has no ID3v2 tag
+¹¹ Via ----:com.apple.iTunes freeform atoms
 
 ### Tag Format by Container
 
@@ -145,6 +148,11 @@ AiffFile.TryRead(new BinaryData(File.ReadAllBytes("song.aiff")), out var aiff);
 Console.WriteLine($"AIFF: {aiff.AudioProperties?.SampleRate}Hz");
 aiff.Tag = new Id3v2Tag { Title = "Updated Title" };
 aiff.SaveToFile("song.aiff");
+
+// Custom fields on any tag (Vorbis field, APE item, TXXX, MP4 freeform, ASF attribute, Matroska SimpleTag)
+var tagged = MediaFile.Read("song.flac").Tag!;
+tagged.SetCustomField("MY_APP_DATA", "first", "second");
+IReadOnlyList<string> custom = tagged.GetCustomField("MY_APP_DATA");
 
 // Async support for high-throughput scenarios
 var asyncResult = await Mp4File.ReadFromFileAsync("song.m4a");

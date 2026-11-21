@@ -43,33 +43,25 @@ public sealed class AsfTag : Tag
 	/// <inheritdoc/>
 	public override string? Title {
 		get => _contentDescription.Title;
-		set => _contentDescription = new AsfContentDescription (
-			value ?? "", _contentDescription.Author, _contentDescription.Copyright,
-			_contentDescription.Description, _contentDescription.Rating);
+		set => ReplaceContentDescriptionField ("Title", value ?? "");
 	}
 
 	/// <inheritdoc/>
 	public override string? Artist {
 		get => _contentDescription.Author;
-		set => _contentDescription = new AsfContentDescription (
-			_contentDescription.Title, value ?? "", _contentDescription.Copyright,
-			_contentDescription.Description, _contentDescription.Rating);
+		set => ReplaceContentDescriptionField ("Author", value ?? "");
 	}
 
 	/// <inheritdoc/>
 	public override string? Copyright {
 		get => _contentDescription.Copyright;
-		set => _contentDescription = new AsfContentDescription (
-			_contentDescription.Title, _contentDescription.Author, value ?? "",
-			_contentDescription.Description, _contentDescription.Rating);
+		set => ReplaceContentDescriptionField ("Copyright", value ?? "");
 	}
 
 	/// <inheritdoc/>
 	public override string? Comment {
 		get => _contentDescription.Description;
-		set => _contentDescription = new AsfContentDescription (
-			_contentDescription.Title, _contentDescription.Author, _contentDescription.Copyright,
-			value ?? "", _contentDescription.Rating);
+		set => ReplaceContentDescriptionField ("Description", value ?? "");
 	}
 
 	/// <summary>
@@ -77,9 +69,7 @@ public sealed class AsfTag : Tag
 	/// </summary>
 	public string Rating {
 		get => _contentDescription.Rating;
-		set => _contentDescription = new AsfContentDescription (
-			_contentDescription.Title, _contentDescription.Author, _contentDescription.Copyright,
-			_contentDescription.Description, value ?? "");
+		set => ReplaceContentDescriptionField ("Rating", value ?? "");
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -614,10 +604,15 @@ public sealed class AsfTag : Tag
 		_descriptors.Count == 0;
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Also removes the file-level records of the Metadata and Metadata Library objects, which hold the extra
+	/// values of multi-valued attributes. Records about one stream stay.
+	/// </remarks>
 	public override void Clear ()
 	{
 		_contentDescription = new AsfContentDescription ("", "", "", "", "");
 		_descriptors.Clear ();
+		DropExtraValues (null);
 	}
 
 	/// <inheritdoc/>
@@ -643,6 +638,261 @@ public sealed class AsfTag : Tag
 	/// Gets the Extended Content Description object.
 	/// </summary>
 	public AsfExtendedContentDescription ExtendedContentDescription => new (_descriptors);
+
+	// ═══════════════════════════════════════════════════════════════
+	// Custom Fields
+	// ═══════════════════════════════════════════════════════════════
+
+	// ASF spec rev. 01.20.03 §3.10 and §3.11: names and values carry 16-bit byte lengths, and
+	// strings are UTF-16LE with a two-byte terminator.
+	const int MaxLengthField = ushort.MaxValue;
+
+	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <para>
+	/// Reads every Extended Content Description attribute named <paramref name="name"/>, compared
+	/// case-insensitively as the mapped properties compare them (ASF spec rev. 01.20.03 §3.11). A string
+	/// attribute is its text. A WORD, DWORD, or QWORD attribute is its decimal value. BOOL and binary
+	/// attributes have no text and are skipped.
+	/// </para>
+	/// <para>
+	/// <c>Title</c>, <c>Author</c>, <c>Copyright</c>, <c>Description</c>, and <c>Rating</c> are the Content
+	/// Description Object's fields (§3.10), the same ones the Windows Media Format SDK exposes under those
+	/// attribute names.
+	/// </para>
+	/// <para>
+	/// The file-level records with that name in the Metadata Object and the Metadata Library Object (§4.7 and
+	/// §4.8, inside the Header Extension Object §3.4) follow, in any language. Windows writes the first value of
+	/// a multi-valued attribute to the Content Description or Extended Content Description and the rest there
+	/// (https://mutagen-specs.readthedocs.io/en/latest/asf/index.html, "Multiple Values").
+	/// </para>
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name))
+			return CustomFieldValues.None;
+
+		var values = new List<string> ();
+		if (TryGetContentDescriptionField (name, out var fixedValue)) {
+			if (!string.IsNullOrEmpty (fixedValue))
+				values.Add (fixedValue);
+			AddExtraValues (name, values);
+			return values;
+		}
+
+		foreach (var desc in _descriptors) {
+			if (!string.Equals (desc.Name, name, StringComparison.OrdinalIgnoreCase))
+				continue;
+			var text = desc.Type switch {
+				AsfAttributeType.UnicodeString => desc.StringValue,
+				AsfAttributeType.Word => desc.WordValue?.ToString (CultureInfo.InvariantCulture),
+				AsfAttributeType.Dword => desc.DwordValue?.ToString (CultureInfo.InvariantCulture),
+				AsfAttributeType.Qword => desc.QwordValue?.ToString (CultureInfo.InvariantCulture),
+				_ => null
+			};
+			if (!string.IsNullOrEmpty (text))
+				values.Add (text!);
+		}
+		AddExtraValues (name, values);
+		return values;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <para>
+	/// Writes the first value as a Unicode string attribute in the Extended Content Description Object (ASF spec
+	/// rev. 01.20.03 §3.11), at the position of the first attribute it replaces, or in the Content Description
+	/// field (§3.10) for its five names. The other values become file-level records of the Metadata Library
+	/// Object (§4.8), the layout Windows writes; a Header Extension Object (§3.4) is added when the file has
+	/// none. Every earlier value of the name is removed from all four places.
+	/// </para>
+	/// <para>
+	/// Returns false when the Metadata or Metadata Library Object in the file could not be parsed, because a
+	/// value stored there would survive the write.
+	/// </para>
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+		foreach (var value in kept) {
+			if (Utf16Length (value) > MaxLengthField)
+				return false;
+		}
+
+		if (_extensionUnreadable || ExtraRecordCount () + kept.Count > ushort.MaxValue)
+			return false;
+
+		if (TryGetContentDescriptionField (name, out _)) {
+			ReplaceContentDescriptionField (name, kept.Count == 0 ? "" : kept[0]);
+		} else {
+			var at = _descriptors.FindIndex (d => string.Equals (d.Name, name, StringComparison.OrdinalIgnoreCase));
+			RemoveDescriptor (name);
+			if (kept.Count > 0)
+				_descriptors.Insert (at < 0 ? _descriptors.Count : at, AsfDescriptor.CreateString (name, kept[0]));
+		}
+
+		if (kept.Count > 1) {
+			_library ??= [];
+			for (var i = 1; i < kept.Count; i++)
+				_library.Add (AsfMetadataRecord.CreateString (name, kept[i]));
+			HeaderExtensionChanged = true;
+		}
+		return true;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Removes the name from the Content Description or Extended Content Description and its file-level
+	/// records from the Metadata and Metadata Library objects. Returns false, and changes nothing, when one of
+	/// those objects could not be parsed.
+	/// </remarks>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name) || _extensionUnreadable)
+			return false;
+
+		if (TryGetContentDescriptionField (name, out var fixedValue)) {
+			var dropped = DropExtraValues (name);
+			SetContentDescriptionField (name, "");
+			return !string.IsNullOrEmpty (fixedValue) || dropped;
+		}
+
+		var before = _descriptors.Count;
+		var droppedExtra = DropExtraValues (name);
+		RemoveDescriptorOnly (name);
+		return _descriptors.Count != before || droppedExtra;
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// Metadata Object and Metadata Library Object (Header Extension)
+	// ═══════════════════════════════════════════════════════════════
+
+	List<AsfMetadataRecord>? _metadata;
+	List<AsfMetadataRecord>? _library;
+	bool _extensionUnreadable;
+
+	/// <summary>
+	/// Records of the Metadata Object (§4.7), or null when the file has none or it could not be parsed.
+	/// </summary>
+	internal IReadOnlyList<AsfMetadataRecord>? MetadataRecords => _metadata;
+
+	/// <summary>
+	/// Records of the Metadata Library Object (§4.8), or null when the file has none or it could not be parsed.
+	/// </summary>
+	internal IReadOnlyList<AsfMetadataRecord>? LibraryRecords => _library;
+
+	/// <summary>
+	/// True after a write changed the records, so the Header Extension Object must be rebuilt on save.
+	/// An unchanged tag keeps the object's bytes.
+	/// </summary>
+	internal bool HeaderExtensionChanged { get; private set; }
+
+	/// <summary>
+	/// Attaches the records read from the file's Header Extension Object.
+	/// </summary>
+	/// <param name="metadata">Metadata Object records, or null when absent.</param>
+	/// <param name="library">Metadata Library Object records, or null when absent.</param>
+	/// <param name="unreadable">True when one of the objects was present but could not be parsed.</param>
+	internal void AttachHeaderExtension (List<AsfMetadataRecord>? metadata, List<AsfMetadataRecord>? library, bool unreadable)
+	{
+		_metadata = unreadable ? null : metadata;
+		_library = unreadable ? null : library;
+		_extensionUnreadable = unreadable;
+		HeaderExtensionChanged = false;
+	}
+
+	int ExtraRecordCount () => (_library?.Count ?? 0);
+
+	void AddExtraValues (string name, List<string> values)
+	{
+		foreach (var records in new[] { _metadata, _library }) {
+			if (records is null)
+				continue;
+			foreach (var record in records) {
+				if (!record.IsFileLevel || !string.Equals (record.Name, name, StringComparison.OrdinalIgnoreCase))
+					continue;
+				var text = record.Text;
+				if (!string.IsNullOrEmpty (text))
+					values.Add (text!);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Removes the file-level records named <paramref name="name"/>, or every file-level record when it is null.
+	/// </summary>
+	bool DropExtraValues (string? name)
+	{
+		var removed = 0;
+		foreach (var records in new[] { _metadata, _library }) {
+			removed += records?.RemoveAll (r => r.IsFileLevel &&
+				(name is null || string.Equals (r.Name, name, StringComparison.OrdinalIgnoreCase))) ?? 0;
+		}
+		if (removed > 0)
+			HeaderExtensionChanged = true;
+		return removed > 0;
+	}
+
+	/// <summary>
+	/// Sets a Content Description field and removes the extra values stored under its name, so the name holds
+	/// one value afterwards.
+	/// </summary>
+	void ReplaceContentDescriptionField (string name, string value)
+	{
+		DropExtraValues (name);
+		SetContentDescriptionField (name, value);
+	}
+
+	/// <summary>
+	/// A name that fits its 16-bit length field and is not <c>WM/Picture</c>, which <see cref="Pictures"/> owns.
+	/// </summary>
+	static bool IsCustomFieldName (string name) =>
+		CustomFieldValues.IsUsableName (name) &&
+		Utf16Length (name) <= MaxLengthField &&
+		!string.Equals (name, AsfPicture.AttributeName, StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// Bytes of UTF-16LE text plus its two-byte terminator.
+	/// </summary>
+	static long Utf16Length (string text) => ((long)text.Length + 1) * 2;
+
+	bool TryGetContentDescriptionField (string name, out string value)
+	{
+		if (string.Equals (name, "Title", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Title;
+		else if (string.Equals (name, "Author", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Author;
+		else if (string.Equals (name, "Copyright", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Copyright;
+		else if (string.Equals (name, "Description", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Description;
+		else if (string.Equals (name, "Rating", StringComparison.OrdinalIgnoreCase))
+			value = _contentDescription.Rating;
+		else {
+			value = "";
+			return false;
+		}
+		return true;
+	}
+
+	void SetContentDescriptionField (string name, string value)
+	{
+		var cd = _contentDescription;
+		_contentDescription = name.ToUpperInvariant () switch {
+			"TITLE" => new AsfContentDescription (value, cd.Author, cd.Copyright, cd.Description, cd.Rating),
+			"AUTHOR" => new AsfContentDescription (cd.Title, value, cd.Copyright, cd.Description, cd.Rating),
+			"COPYRIGHT" => new AsfContentDescription (cd.Title, cd.Author, value, cd.Description, cd.Rating),
+			"DESCRIPTION" => new AsfContentDescription (cd.Title, cd.Author, cd.Copyright, value, cd.Rating),
+			_ => new AsfContentDescription (cd.Title, cd.Author, cd.Copyright, cd.Description, value)
+		};
+	}
 
 	// ═══════════════════════════════════════════════════════════════
 	// Helper Methods
@@ -678,7 +928,17 @@ public sealed class AsfTag : Tag
 		_descriptors.Add (AsfDescriptor.CreateBool (name, value));
 	}
 
+	/// <summary>
+	/// Removes every value of an attribute: its Extended Content Description descriptors and its file-level
+	/// Metadata and Metadata Library records. Every mapped setter goes through here.
+	/// </summary>
 	void RemoveDescriptor (string name)
+	{
+		DropExtraValues (name);
+		RemoveDescriptorOnly (name);
+	}
+
+	void RemoveDescriptorOnly (string name)
 	{
 		for (int i = _descriptors.Count - 1; i >= 0; i--) {
 			if (string.Equals (_descriptors[i].Name, name, StringComparison.OrdinalIgnoreCase))

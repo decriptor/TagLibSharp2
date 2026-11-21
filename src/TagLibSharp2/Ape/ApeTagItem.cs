@@ -248,37 +248,11 @@ public sealed class ApeTagItem
 			return ApeTagItemParseResult.Failure ("APE item key not null-terminated");
 		}
 
-		var keyLength = keyEnd - keyStart;
-
-		// Validate key length
-		if (keyLength < MinKeyLength) {
-			return ApeTagItemParseResult.Failure (
-				$"APE item key too short: {keyLength} chars, minimum is {MinKeyLength}");
-		}
-
-		if (keyLength > MaxKeyLength) {
-			return ApeTagItemParseResult.Failure (
-				$"APE item key too long: {keyLength} chars, maximum is {MaxKeyLength}");
-		}
-
-		// Validate key characters (ASCII 0x20-0x7E)
-		var keySpan = data.Slice (keyStart, keyLength);
-		foreach (var b in keySpan) {
-			if (b < 0x20 || b > 0x7E) {
-				return ApeTagItemParseResult.Failure (
-					$"APE item key contains invalid character: 0x{b:X2}");
-			}
-		}
-
-		var key = Encoding.ASCII.GetString (keySpan.ToArray ());
-
-		// Check for reserved keys
-		foreach (var reserved in ReservedKeys) {
-			if (key.Equals (reserved, StringComparison.OrdinalIgnoreCase)) {
-				return ApeTagItemParseResult.Failure (
-					$"APE item key '{key}' is reserved and cannot be used");
-			}
-		}
+		// Latin-1 maps each byte to one char, so a byte outside 0x20-0x7E is still rejected by the rules.
+		var key = Core.Polyfills.Latin1.GetString (data.Slice (keyStart, keyEnd - keyStart).ToArray ());
+		var keyError = KeyError (key);
+		if (keyError is not null)
+			return ApeTagItemParseResult.Failure (keyError);
 
 		// Value length is a uint32. Compare it with the bytes still left before any int add or Slice:
 		// 0x80000000 and 0xFFFFFFF0 cast negative, and int.MaxValue overflows the end offset.
@@ -357,22 +331,42 @@ public sealed class ApeTagItem
 		return data;
 	}
 
-	private static void ValidateKey (string key)
+	/// <summary>
+	/// True when <paramref name="key"/> follows the APEv2 item key rules
+	/// (https://wiki.hydrogenaud.io/index.php?title=APE_key).
+	/// </summary>
+	internal static bool IsValidKey (string key) => KeyError (key) is null;
+
+	/// <summary>
+	/// The one copy of the APEv2 key rules: 2 to 255 characters from 0x20 to 0x7E, and not ID3, TAG, OggS, or
+	/// MP+ in any case (https://wiki.hydrogenaud.io/index.php?title=APE_key).
+	/// </summary>
+	/// <returns>Why the key is invalid, or null when it is valid.</returns>
+	static string? KeyError (string key)
 	{
 		if (key.Length < MinKeyLength)
-			throw new ArgumentException ($"Key too short: minimum is {MinKeyLength} characters", nameof (key));
+			return $"APE item key too short: {key.Length} chars, minimum is {MinKeyLength}";
 
 		if (key.Length > MaxKeyLength)
-			throw new ArgumentException ($"Key too long: maximum is {MaxKeyLength} characters", nameof (key));
+			return $"APE item key too long: {key.Length} chars, maximum is {MaxKeyLength}";
 
 		foreach (var c in key) {
 			if (c < 0x20 || c > 0x7E)
-				throw new ArgumentException ($"Key contains invalid character: '{c}'", nameof (key));
+				return $"APE item key contains invalid character: 0x{(int)c:X2}";
 		}
 
 		foreach (var reserved in ReservedKeys) {
 			if (key.Equals (reserved, StringComparison.OrdinalIgnoreCase))
-				throw new ArgumentException ($"Key '{key}' is reserved", nameof (key));
+				return $"APE item key '{key}' is reserved and cannot be used";
 		}
+
+		return null;
+	}
+
+	private static void ValidateKey (string key)
+	{
+		var error = KeyError (key);
+		if (error is not null)
+			throw new ArgumentException (error, nameof (key));
 	}
 }

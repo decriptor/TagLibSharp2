@@ -48,6 +48,13 @@ public sealed class TextFrame
 	}
 
 	/// <summary>
+	/// True to write a BOM before every string of UTF-16 text, as ID3v2.3 §3.3 asks
+	/// (https://id3.org/id3v2.3.0). Set on read from the frame's own layout, so an unchanged frame renders the
+	/// bytes it was read from.
+	/// </summary>
+	internal bool BomPerString { get; set; }
+
+	/// <summary>
 	/// Attempts to read a text frame from the provided data.
 	/// </summary>
 	/// <param name="frameId">The frame ID.</param>
@@ -66,9 +73,12 @@ public sealed class TextFrame
 		var encoding = (TextEncodingType)encodingByte;
 		var textData = data.Slice (1);
 
-		var text = DecodeText (textData, encoding);
+		var bomPerString = false;
+		var text = encoding == TextEncodingType.Utf16WithBom
+			? DecodeTextUtf16WithBom (textData, out bomPerString)
+			: DecodeText (textData, encoding);
 
-		var frame = new TextFrame (frameId, text, encoding);
+		var frame = new TextFrame (frameId, text, encoding) { BomPerString = bomPerString };
 		return TextFrameReadResult.Success (frame, data.Length);
 	}
 
@@ -78,7 +88,9 @@ public sealed class TextFrame
 	/// <returns>The frame content including encoding byte.</returns>
 	public BinaryData RenderContent ()
 	{
-		var textBytes = EncodeText (Text, Encoding);
+		var textBytes = Encoding == TextEncodingType.Utf16WithBom
+			? Utf16Text.Encode (Text, BomPerString)
+			: EncodeText (Text, Encoding);
 
 		using var builder = new BinaryDataBuilder (1 + textBytes.Length);
 		builder.Add ((byte)Encoding);
@@ -121,25 +133,16 @@ public sealed class TextFrame
 		return System.Text.Encoding.UTF8.GetString (data);
 	}
 
-	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data)
+	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data) => DecodeTextUtf16WithBom (data, out _);
+
+	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data, out bool bomPerString)
 	{
-		if (data.Length < 2)
-			return string.Empty;
+		// Strip trailing double-null bytes only (preserve internal nulls for multi-value support)
+		while (data.Length >= 2 && data[data.Length - 2] == 0 && data[data.Length - 1] == 0)
+			data = data.Slice (0, data.Length - 2);
 
-		// Check BOM to determine endianness
-		var isLittleEndian = data[0] == 0xFF && data[1] == 0xFE;
-		var isBigEndian = data[0] == 0xFE && data[1] == 0xFF;
-
-		if (!isLittleEndian && !isBigEndian) {
-			// No BOM found - fall back to little-endian (Windows default)
-			// This handles buggy taggers that don't write BOM
-			return DecodeTextUtf16 (data, isLittleEndian: true);
-		}
-
-		// Skip BOM
-		data = data.Slice (2);
-
-		return DecodeTextUtf16 (data, isLittleEndian);
+		// Each string may lead with its own BOM; none is part of the text.
+		return Utf16Text.Decode (data, out bomPerString);
 	}
 
 	static string DecodeTextUtf16BE (ReadOnlySpan<byte> data)
@@ -168,7 +171,7 @@ public sealed class TextFrame
 		return encoding switch {
 			TextEncodingType.Latin1 => BinaryData.FromStringLatin1 (text),
 			TextEncodingType.Utf8 => BinaryData.FromStringUtf8 (text),
-			TextEncodingType.Utf16WithBom => BinaryData.FromStringUtf16 (text, includeBom: true),
+			TextEncodingType.Utf16WithBom => Utf16Text.Encode (text, bomPerString: false),
 			TextEncodingType.Utf16BE => EncodeTextUtf16BE (text),
 			_ => BinaryData.Empty
 		};

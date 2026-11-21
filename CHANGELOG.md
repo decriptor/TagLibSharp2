@@ -5,6 +5,27 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Tag.GetCustomField`, `Tag.SetCustomField`, `Tag.RemoveCustomField`, and `Tag.SupportsCustomFields` read,
+  write, and remove a named field with one or more values on any tag (#112). The field lives in the format's
+  own storage: a Vorbis comment field, an APE text item, an ID3v2 `TXXX` frame, an MP4
+  `----:com.apple.iTunes` freeform atom, an ASF attribute, a file-level Matroska `SimpleTag`, or a RIFF INFO
+  chunk. ID3v1 reports no support. `CombinedTag` (MP3) and `FlacTag` forward the members. On ASF the first
+  value goes to the Content Description or Extended Content Description and the others to the Metadata Library
+  Object, as Windows writes them; reads, writes, removes, and the mapped setters see all of them.
+
+### Fixed
+
+- A WAV or AIFF ID3 chunk that holds only frames outside Title, Artist, Album, Year, Comment, Genre, and
+  Track (for example only `TXXX` or album artist) is written on save instead of dropped.
+- An MP4 freeform atom whose name contains a colon is written on save instead of dropped, and a mean that
+  contains a colon keeps it.
+- ID3v2 UTF-16 text with a byte order mark on each string (ID3v2.3 §3.3) reads without a U+FEFF at the start
+  of every value after the first, and UTF-16 frames are written with a BOM on each string.
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes
