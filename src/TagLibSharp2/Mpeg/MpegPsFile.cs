@@ -143,16 +143,17 @@ public sealed class MpegPsFile : IMediaFile
 	bool _disposed;
 
 	// Layout of the file that was read. Render checks the original bytes against it:
-	// [prepended ID3v2][stream][appended ID3v2][APEv2 or other][ID3v1].
-	// Without an appended tag, _streamEnd == _appendedEnd.
+	// [prepended ID3v2][stream][APEv2?][appended ID3v2][APEv2?][ID3v1].
+	// The stream ends at the first tag after it. Without an appended tag,
+	// _appendedStart == _appendedEnd == _footerStart and everything before ID3v1 is copied.
 	long _fileLength;
 	long _streamEnd;
+	long _appendedStart;
 	long _appendedEnd;
 	long _footerStart;
 	Id3v2Tag? _readId3v2;
 	Id3v2Tag? _readAppended;
 	Id3v2Tag? _earlierId3v2;
-	bool _appendedIsUpdate;
 	Id3v1Tag? _readId3v1;
 
 	MpegPsFile ()
@@ -296,29 +297,20 @@ public sealed class MpegPsFile : IMediaFile
 	{
 		var length = data.Length;
 		var tagLength = TagLength (data, length);
-		var footer = length - tagLength >= Id3v1Size ? data.Slice (length - Id3v1Size) : [];
-		var footerStart = FooterStart (footer, length);
+		var trailer = new TrailerLocator (length, tagLength);
+		while (trailer.Next (out var offset, out var count))
+			trailer.Supply (count > 0 ? data.Slice ((int)offset, count) : []);
 
-		// Section 5 of ID3v2.4: an appended tag ends just before ID3v1, or before an APEv2 tag
-		// ("before tags from other tagging systems"); its footer is found from the back.
-		var appendedEnd = footerStart;
-		var appendedLength = AppendedLength (Before (data, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
-		if (appendedLength == 0) {
-			var ape = ApeLength (Before (data, footerStart, ApeTagFooter.Size));
-			if (ape > 0) {
-				appendedEnd = footerStart - ape;
-				appendedLength = AppendedLength (Before (data, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
-			}
-		}
-
-		var appended = appendedLength > 0 ? data.Slice ((int)(appendedEnd - appendedLength), appendedLength) : [];
+		var appended = trailer.AppendedLength > 0
+			? data.Slice ((int)(trailer.AppendedEnd - trailer.AppendedLength), trailer.AppendedLength)
+			: [];
+		var streamEnd = trailer.StreamEnd;
 		var window = MpegPsScanner.SmallWindow;
 		while (true) {
-			var head = data.Slice (tagLength, (int)Math.Min (window, length - tagLength));
-			var streamEnd = StreamEnd (appended, appendedEnd, footerStart);
+			var head = data.Slice (tagLength, (int)Math.Min (window, streamEnd - tagLength));
 			var tailStart = TailStart (tagLength, streamEnd, window);
 			var tail = data.Slice ((int)tailStart, (int)(streamEnd - tailStart));
-			var result = Build (data.Slice (0, tagLength), head, footer, appended, appendedEnd, tail, length, tailStart, window, out var again);
+			var result = Build (data.Slice (0, tagLength), head, trailer, appended, tail, length, tailStart, window, out var again);
 			if (!again)
 				return result;
 			window = MpegPsScanner.LargeWindow;
@@ -340,27 +332,20 @@ public sealed class MpegPsFile : IMediaFile
 		var tag = tagLength > 0 ? ReadAt (stream, 0, tagLength) : [];
 		if (tag.Length != tagLength)
 			return MpegPsFileReadResult.Failure ("The stream ended inside the ID3v2 tag");
-		var footer = length - tagLength >= Id3v1Size ? ReadAt (stream, length - Id3v1Size, Id3v1Size) : [];
-		var footerStart = FooterStart (footer, length);
+		var trailer = new TrailerLocator (length, tagLength);
+		while (trailer.Next (out var offset, out var count))
+			trailer.Supply (ReadAt (stream, offset, count));
 
-		var appendedEnd = footerStart;
-		var appendedLength = AppendedLength (ReadBefore (stream, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
-		if (appendedLength == 0) {
-			var ape = ApeLength (ReadBefore (stream, footerStart, ApeTagFooter.Size));
-			if (ape > 0) {
-				appendedEnd = footerStart - ape;
-				appendedLength = AppendedLength (ReadBefore (stream, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
-			}
-		}
-
-		var appended = appendedLength > 0 ? ReadAt (stream, appendedEnd - appendedLength, appendedLength) : [];
-		var streamEnd = StreamEnd (appended, appendedEnd, footerStart);
+		var appended = trailer.AppendedLength > 0
+			? ReadAt (stream, trailer.AppendedEnd - trailer.AppendedLength, trailer.AppendedLength)
+			: [];
+		var streamEnd = trailer.StreamEnd;
 		var window = MpegPsScanner.SmallWindow;
 		while (true) {
-			var head = ReadAt (stream, tagLength, (int)Math.Min (window, length - tagLength));
+			var head = ReadAt (stream, tagLength, (int)Math.Min (window, streamEnd - tagLength));
 			var tailStart = TailStart (tagLength, streamEnd, window);
 			var tail = ReadAt (stream, tailStart, (int)(streamEnd - tailStart));
-			var result = Build (tag, head, footer, appended, appendedEnd, tail, length, tailStart, window, out var again);
+			var result = Build (tag, head, trailer, appended, tail, length, tailStart, window, out var again);
 			if (!again)
 				return WithSource (result, sourcePath, fileSystem);
 			window = MpegPsScanner.LargeWindow;
@@ -388,34 +373,20 @@ public sealed class MpegPsFile : IMediaFile
 		var tag = tagLength > 0 ? await ReadAtAsync (stream, 0, tagLength, cancellationToken).ConfigureAwait (false) : [];
 		if (tag.Length != tagLength)
 			return MpegPsFileReadResult.Failure ("The stream ended inside the ID3v2 tag");
-		var footer = length - tagLength >= Id3v1Size
-			? await ReadAtAsync (stream, length - Id3v1Size, Id3v1Size, cancellationToken).ConfigureAwait (false)
-			: [];
-		var footerStart = FooterStart (footer, length);
+		var trailer = new TrailerLocator (length, tagLength);
+		while (trailer.Next (out var offset, out var count))
+			trailer.Supply (await ReadAtAsync (stream, offset, count, cancellationToken).ConfigureAwait (false));
 
-		var appendedEnd = footerStart;
-		var probe = await ReadBeforeAsync (stream, appendedEnd, Id3v2Header.FooterSize, cancellationToken).ConfigureAwait (false);
-		var appendedLength = AppendedLength (probe, appendedEnd, tagLength);
-		if (appendedLength == 0) {
-			var apeFooter = await ReadBeforeAsync (stream, footerStart, ApeTagFooter.Size, cancellationToken).ConfigureAwait (false);
-			var ape = ApeLength (apeFooter);
-			if (ape > 0) {
-				appendedEnd = footerStart - ape;
-				probe = await ReadBeforeAsync (stream, appendedEnd, Id3v2Header.FooterSize, cancellationToken).ConfigureAwait (false);
-				appendedLength = AppendedLength (probe, appendedEnd, tagLength);
-			}
-		}
-
-		var appended = appendedLength > 0
-			? await ReadAtAsync (stream, appendedEnd - appendedLength, appendedLength, cancellationToken).ConfigureAwait (false)
+		var appended = trailer.AppendedLength > 0
+			? await ReadAtAsync (stream, trailer.AppendedEnd - trailer.AppendedLength, trailer.AppendedLength, cancellationToken).ConfigureAwait (false)
 			: [];
-		var streamEnd = StreamEnd (appended, appendedEnd, footerStart);
+		var streamEnd = trailer.StreamEnd;
 		var window = MpegPsScanner.SmallWindow;
 		while (true) {
-			var head = await ReadAtAsync (stream, tagLength, (int)Math.Min (window, length - tagLength), cancellationToken).ConfigureAwait (false);
+			var head = await ReadAtAsync (stream, tagLength, (int)Math.Min (window, streamEnd - tagLength), cancellationToken).ConfigureAwait (false);
 			var tailStart = TailStart (tagLength, streamEnd, window);
 			var tail = await ReadAtAsync (stream, tailStart, (int)(streamEnd - tailStart), cancellationToken).ConfigureAwait (false);
-			var result = Build (tag, head, footer, appended, appendedEnd, tail, length, tailStart, window, out var again);
+			var result = Build (tag, head, trailer, appended, tail, length, tailStart, window, out var again);
 			if (!again)
 				return WithSource (result, sourcePath, fileSystem);
 			window = MpegPsScanner.LargeWindow;
@@ -537,14 +508,6 @@ public sealed class MpegPsFile : IMediaFile
 		return (int)Math.Min (Id3v2Header.HeaderSize + size + footer, length);
 	}
 
-	/// <summary>Where a trailing ID3v1 tag starts, or the file length when there is none.</summary>
-	static long FooterStart (ReadOnlySpan<byte> footer, long length) =>
-		footer.Length == Id3v1Size && Id3v1Tag.Read (footer).IsSuccess ? length - Id3v1Size : length;
-
-	/// <summary>The stream ends where an appended ID3v2 tag starts, or at the trailing ID3v1 tag.</summary>
-	static long StreamEnd (ReadOnlySpan<byte> appended, long appendedEnd, long footerStart) =>
-		appended.IsEmpty ? footerStart : appendedEnd - appended.Length;
-
 	/// <summary>
 	/// The length of an appended ID3v2 tag whose footer is <paramref name="footer"/>, the 10 bytes
 	/// before <paramref name="end"/>, or 0. The tag may not reach back past <paramref name="floor"/>.
@@ -587,30 +550,20 @@ public sealed class MpegPsFile : IMediaFile
 	}
 
 	/// <summary>
-	/// True when <paramref name="tag"/> starts with an "ID3" header that matches its "3DI" footer.
+	/// True when <paramref name="header"/> is an "ID3" header that matches <paramref name="footer"/>,
+	/// its "3DI" copy (3.4): the same version, flags and size.
 	/// </summary>
-	static bool IsAppendedTag (ReadOnlySpan<byte> tag)
-	{
-		if (tag.Length < Id3v2Header.HeaderSize + Id3v2Header.FooterSize || tag[0] != 'I' || tag[1] != 'D' || tag[2] != '3')
-			return false;
-		return tag.Slice (3, 7).SequenceEqual (tag.Slice (tag.Length - 7, 7));
-	}
+	static bool HeaderMatches (ReadOnlySpan<byte> header, ReadOnlySpan<byte> footer) =>
+		header.Length == Id3v2Header.HeaderSize && footer.Length == Id3v2Header.FooterSize
+		&& header[0] == 'I' && header[1] == 'D' && header[2] == '3'
+		&& header.Slice (3).SequenceEqual (footer.Slice (3));
 
 	/// <summary>
 	/// ID3v2.4 structure 3.2: the extended header (flag b of the header) holds its size, the number
 	/// of flag bytes, and the flags; flag b there marks the tag as an update of an earlier one.
 	/// </summary>
 	static bool IsUpdate (ReadOnlySpan<byte> tag) =>
-		tag.Length >= 16 && tag[3] == 4 && (tag[5] & 0x40) != 0 && tag[14] >= 1 && (tag[15] & 0x40) != 0;
-
-	static ReadOnlySpan<byte> Before (ReadOnlySpan<byte> data, long end, int count) =>
-		end >= count ? data.Slice ((int)(end - count), count) : [];
-
-	static byte[] ReadBefore (Stream stream, long end, int count) =>
-		end >= count ? ReadAt (stream, end - count, count) : [];
-
-	static Task<byte[]> ReadBeforeAsync (Stream stream, long end, int count, CancellationToken cancellationToken) =>
-		end >= count ? ReadAtAsync (stream, end - count, count, cancellationToken) : Task.FromResult (Array.Empty<byte> ());
+		tag.Length >= 16 && (tag[5] & 0x40) != 0 && tag[14] == 1 && (tag[15] & 0x40) != 0;
 
 	static long TailStart (long streamStart, long streamEnd, int window) =>
 		Math.Max (streamStart, streamEnd - window);
@@ -638,9 +591,8 @@ public sealed class MpegPsFile : IMediaFile
 	static MpegPsFileReadResult Build (
 		ReadOnlySpan<byte> tag,
 		ReadOnlySpan<byte> head,
-		ReadOnlySpan<byte> footer,
+		TrailerLocator trailer,
 		ReadOnlySpan<byte> appended,
-		long appendedEnd,
 		ReadOnlySpan<byte> tail,
 		long length,
 		long tailStart,
@@ -653,17 +605,15 @@ public sealed class MpegPsFile : IMediaFile
 			return MpegPsFileReadResult.Failure ("Not an MPEG program stream or video elementary stream: no pack or sequence header");
 
 		var streamStart = tag.Length + zeros;
-		var footerStart = FooterStart (footer, length);
-		if (!appended.IsEmpty && !IsAppendedTag (appended))
-			appended = [];
-		var streamEnd = StreamEnd (appended, appendedEnd, footerStart);
+		var footerStart = trailer.FooterStart;
+		var streamEnd = trailer.StreamEnd;
 		var analysis = MpegPsScanner.Analyze (
 			head.Slice (zeros),
 			tail,
 			Math.Max (0, streamEnd - streamStart),
 			tailStart - streamStart);
 
-		var headIsAll = tag.Length + head.Length >= length;
+		var headIsAll = tag.Length + head.Length >= streamEnd;
 		var tailIsAll = tailStart <= tag.Length;
 		if (window < MpegPsScanner.LargeWindow
 			&& ((analysis.NeedsLargerHead && !headIsAll) || (analysis.NeedsLargerTail && !tailIsAll))) {
@@ -678,7 +628,8 @@ public sealed class MpegPsFile : IMediaFile
 			Id3v2Size = tag.Length,
 			_fileLength = length,
 			_streamEnd = streamEnd,
-			_appendedEnd = appended.IsEmpty ? streamEnd : appendedEnd,
+			_appendedStart = appended.IsEmpty ? footerStart : trailer.AppendedEnd - appended.Length,
+			_appendedEnd = appended.IsEmpty ? footerStart : trailer.AppendedEnd,
 			_footerStart = footerStart
 		};
 
@@ -695,15 +646,14 @@ public sealed class MpegPsFile : IMediaFile
 			var parsed = Id3v2Tag.Read (appended);
 			if (parsed.IsSuccess) {
 				file._readAppended = parsed.Tag;
-				file._appendedIsUpdate = IsUpdate (appended);
-				if (file._appendedIsUpdate)
+				if (IsUpdate (appended))
 					file._earlierId3v2 = file._readId3v2;
 				file.Id3v2Tag = parsed.Tag;
 			}
 		}
 
 		if (footerStart < length) {
-			var parsed = Id3v1Tag.Read (footer);
+			var parsed = Id3v1Tag.Read (trailer.Footer);
 			if (parsed.IsSuccess)
 				file.Id3v1Tag = file._readId3v1 = parsed.Tag;
 		}
@@ -756,8 +706,8 @@ public sealed class MpegPsFile : IMediaFile
 	/// <returns>The new file bytes, or empty when <paramref name="originalData"/> is not that file.</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData)
 	{
-		if (originalData.Length != _fileLength || _footerStart > originalData.Length
-			|| _appendedEnd > _footerStart || _streamEnd > _appendedEnd || Id3v2Size > _streamEnd)
+		if (originalData.Length != _fileLength || _footerStart > originalData.Length || _appendedEnd > _footerStart
+			|| _appendedStart > _appendedEnd || _streamEnd > _appendedStart || Id3v2Size > _streamEnd)
 			return BinaryData.Empty;
 		if (MpegPsScanner.StreamStart (originalData.Slice (Id3v2Size, (int)Math.Min (64, _streamEnd - Id3v2Size))) < 0)
 			return BinaryData.Empty;
@@ -765,7 +715,7 @@ public sealed class MpegPsFile : IMediaFile
 		var appended = RenderAppendedId3v2 (originalData, out var appendedUnchanged);
 		var head = RenderPrependedId3v2 (originalData, appendedUnchanged);
 		var foot = RenderId3v1 (originalData);
-		var stream = originalData.Slice (Id3v2Size, (int)(_streamEnd - Id3v2Size));
+		var stream = originalData.Slice (Id3v2Size, (int)(_appendedStart - Id3v2Size));
 		var between = originalData.Slice ((int)_appendedEnd, (int)(_footerStart - _appendedEnd));
 		using var builder = new BinaryDataBuilder (head.Length + stream.Length + appended.Length + between.Length + foot.Length);
 		builder.Add (head);
@@ -806,7 +756,7 @@ public sealed class MpegPsFile : IMediaFile
 
 	ReadOnlySpan<byte> RenderAppendedId3v2 (ReadOnlySpan<byte> originalData, out bool unchanged)
 	{
-		var original = originalData.Slice ((int)_streamEnd, (int)(_appendedEnd - _streamEnd));
+		var original = originalData.Slice ((int)_appendedStart, (int)(_appendedEnd - _appendedStart));
 		unchanged = true;
 		if (original.IsEmpty || _readAppended is null)
 			return original;
@@ -992,6 +942,180 @@ public sealed class MpegPsFile : IMediaFile
 			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
 		return SaveToFileAsync (SourcePath!, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
+	/// Finds the tags after the stream from the back of the file (ID3v2.4 section 5: "Look for a
+	/// tag footer, scanning from the back of the file"). A tag whose footer ends the file comes
+	/// first: an ID3v2 "3DI" footer whose "ID3" header matches, or an APEv2 footer. Only when
+	/// neither ends the file are the last 128 bytes ID3v1, so a "TAG" inside the last 128 bytes of
+	/// an appended or APEv2 tag is not taken for one. An appended ID3v2 tag then ends just before
+	/// ID3v1, or before an APEv2 tag ("before tags from other tagging systems").
+	/// </summary>
+	/// <remarks>
+	/// The reads are small (10, 32 and 128 bytes) and come one at a time, so the span, stream and
+	/// async readers share this one sequence: <see cref="Next"/> names a range and
+	/// <see cref="Supply"/> takes its bytes.
+	/// </remarks>
+	internal sealed class TrailerLocator
+	{
+		readonly long _length;
+		readonly long _floor;
+		Step _step;
+		long _candidateEnd;
+		int _candidateLength;
+		byte[] _candidateFooter = [];
+		Step _afterCandidate;
+		long _boundary = -1;
+
+		public TrailerLocator (long length, long floor)
+		{
+			_length = length;
+			_floor = floor;
+			FooterStart = length;
+			AppendedEnd = length;
+			_candidateEnd = length;
+			_afterCandidate = Step.EofApe;
+			_step = Step.CandidateFooter;
+		}
+
+		enum Step
+		{
+			CandidateFooter,
+			CandidateHeader,
+			EofApe,
+			Id3v1,
+			Id3v1Ape,
+			StreamApe,
+			Done
+		}
+
+		/// <summary>Where a trailing ID3v1 tag starts, or the file length.</summary>
+		public long FooterStart { get; private set; }
+
+		/// <summary>The last 128 bytes when they are the ID3v1 tag, otherwise empty.</summary>
+		public byte[] Footer { get; private set; } = [];
+
+		/// <summary>Where the appended ID3v2 tag ends, when <see cref="AppendedLength"/> is not 0.</summary>
+		public long AppendedEnd { get; private set; }
+
+		/// <summary>The bytes of the appended ID3v2 tag, or 0 when there is none.</summary>
+		public int AppendedLength { get; private set; }
+
+		/// <summary>
+		/// The stream ends at the first tag after it: the appended tag, an APEv2 tag, ID3v1, or the
+		/// end of the file. An APEv2 tag just before the appended tag (TagLib# writes one there) counts.
+		/// </summary>
+		public long StreamEnd { get; private set; } = -1;
+
+		public bool Next (out long offset, out int count)
+		{
+			offset = 0;
+			count = 0;
+			switch (_step) {
+				case Step.CandidateFooter:
+					return Before (_candidateEnd, Id3v2Header.FooterSize, out offset, out count);
+				case Step.CandidateHeader:
+					offset = _candidateEnd - _candidateLength;
+					count = Id3v2Header.HeaderSize;
+					return true;
+				case Step.EofApe:
+					return Before (_length, ApeTagFooter.Size, out offset, out count);
+				case Step.Id3v1:
+					return Before (_length, Id3v1Size, out offset, out count);
+				case Step.Id3v1Ape:
+					return Before (FooterStart, ApeTagFooter.Size, out offset, out count);
+				case Step.StreamApe:
+					return Before (_boundary, ApeTagFooter.Size, out offset, out count);
+				default:
+					if (StreamEnd < 0) {
+						// Every search is over. Before the innermost tag found, one more APEv2 tag may end the stream.
+						_boundary = AppendedLength > 0 ? AppendedEnd - AppendedLength : _boundary >= 0 ? _boundary : FooterStart;
+						_step = Step.StreamApe;
+						return Before (_boundary, ApeTagFooter.Size, out offset, out count);
+					}
+
+					return false;
+			}
+		}
+
+		public void Supply (ReadOnlySpan<byte> bytes)
+		{
+			switch (_step) {
+				case Step.CandidateFooter:
+					_candidateLength = AppendedLength (bytes, _candidateEnd, _floor);
+					if (_candidateLength > 0) {
+						_candidateFooter = bytes.ToArray ();
+						_step = Step.CandidateHeader;
+					} else {
+						_step = _afterCandidate;
+					}
+
+					break;
+				case Step.CandidateHeader:
+					if (HeaderMatches (bytes, _candidateFooter)) {
+						AppendedEnd = _candidateEnd;
+						AppendedLength = _candidateLength;
+						_step = Step.Done;
+					} else {
+						_step = _afterCandidate;
+					}
+
+					break;
+				case Step.EofApe:
+					// An APEv2 tag ends the file: there is no ID3v1, and an appended tag may sit before it.
+					_step = Step.Id3v1;
+					if (ApeLength (bytes) is var eofApe and > 0 && eofApe <= _length - _floor) {
+						_boundary = _length - eofApe;
+						Probe (_boundary, Step.Done);
+					}
+
+					break;
+				case Step.Id3v1:
+					if (bytes.Length == Id3v1Size && Id3v1Tag.Read (bytes).IsSuccess) {
+						FooterStart = _length - Id3v1Size;
+						Footer = bytes.ToArray ();
+						Probe (FooterStart, Step.Id3v1Ape);
+					} else {
+						_step = Step.Done;
+					}
+
+					break;
+				case Step.Id3v1Ape:
+					_step = Step.Done;
+					if (ApeLength (bytes) is var ape and > 0 && ape <= FooterStart - _floor) {
+						_boundary = FooterStart - ape;
+						Probe (_boundary, Step.Done);
+					}
+
+					break;
+				case Step.StreamApe:
+					_step = Step.Done;
+					StreamEnd = ApeLength (bytes) is var before and > 0 && before <= _boundary - _floor
+						? _boundary - before
+						: _boundary;
+					break;
+			}
+		}
+
+		void Probe (long end, Step after)
+		{
+			_candidateEnd = end;
+			_afterCandidate = after;
+			_step = Step.CandidateFooter;
+		}
+
+		static bool Before (long end, int count, out long offset, out int length)
+		{
+			offset = end - count;
+			length = count;
+			if (offset < 0) {
+				offset = 0;
+				length = 0;
+			}
+
+			return true;
+		}
 	}
 
 	/// <summary>
