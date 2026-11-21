@@ -110,34 +110,6 @@ static partial class MatroskaRewrite
 		public bool MustRetarget { get; set; }
 
 		public bool ShouldAdd { get; set; }
-
-		/// <summary>
-		/// Gets or sets a value indicating whether every Tags seek is pointed at <see cref="TagsOffset"/>.
-		/// A track edit leaves the Tags where they are and moves their seek like any other.
-		/// </summary>
-		public bool RetargetTags { get; set; } = true;
-
-		/// <summary>Gets or sets where each source piece landed, when pieces moved by different amounts.</summary>
-		public PieceMap? Moves { get; set; }
-
-		/// <summary>Gets a value indicating whether any element after the edit has a new segment position.</summary>
-		public bool Shifts => Delta != 0 || Moves is not null;
-
-		/// <summary>
-		/// Maps a segment position in the source to the rewritten segment. RFC 9559 §16.
-		/// Returns false when the new position does not fit an unsigned integer.
-		/// </summary>
-		public bool TryMove (ulong position, out ulong moved)
-		{
-			if (Moves is not null)
-				return Moves.TryMove (position, out moved);
-
-			moved = position;
-			if (Delta == 0 || position < (ulong)ShiftFrom)
-				return true;
-			moved = position + (ulong)Delta;
-			return moved >= position;
-		}
 	}
 
 	static Plan PlanEdit (List<Piece> pieces, byte[] tags)
@@ -281,7 +253,7 @@ static partial class MatroskaRewrite
 		out string error)
 	{
 		error = "";
-		var strict = plan.MustRetarget || plan.Shifts;
+		var strict = plan.MustRetarget || plan.Delta != 0;
 		if (strict || plan.ShouldAdd) {
 			foreach (var seekHead in seekHeads) {
 				if (!TryPatchSeekHead (body, seekHead.Start, seekHead.End, plan, strict, out error))
@@ -289,7 +261,7 @@ static partial class MatroskaRewrite
 			}
 		}
 
-		if (!plan.Shifts)
+		if (plan.Delta == 0)
 			return true;
 
 		foreach (var cue in cues) {
@@ -350,22 +322,22 @@ static partial class MatroskaRewrite
 
 	static bool TryPatchSeek (byte[] body, EbmlElement seek, Plan plan, ref bool changed, ref bool referenced)
 	{
-		var strict = plan.MustRetarget || plan.Shifts;
+		var strict = plan.MustRetarget || plan.Delta != 0;
 		if (!TryReadSeek (body, seek, out var id, out var position, out var positionElement))
 			return strict ? TryDropSeek (body, seek, ref changed) : true;
 
-		var isTags = plan.RetargetTags && id == MatroskaIds.Tags;
+		var isTags = id == MatroskaIds.Tags;
 		ulong desired;
 		if (isTags) {
 			if (plan.TagsOffset < 0)
 				return TryDropSeek (body, seek, ref changed);
 			desired = (ulong)plan.TagsOffset;
-		} else {
-			if (!plan.TryMove (position, out desired))
+		} else if (plan.Delta != 0 && position >= (ulong)plan.ShiftFrom) {
+			desired = position + (ulong)plan.Delta;
+			if (desired < position)
 				return false;
-			if (desired == position)
-				return true;
-		}
+		} else
+			return true;
 
 		if (desired == position) {
 			if (isTags)
@@ -511,12 +483,12 @@ static partial class MatroskaRewrite
 				if (element.DataLength is < 1 or > 8)
 					return false;
 				var value = EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength));
-				if (!plan.TryMove (value, out var updated))
-					return false;
-				if (updated != value) {
-					if (!TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, updated))
+				if (value >= (ulong)plan.ShiftFrom) {
+					var updated = value + (ulong)plan.Delta;
+					if (updated < value || !TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, updated))
 						return false;
-					changed = true;
+					if (updated != value)
+						changed = true;
 				}
 			} else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions or MatroskaIds.Cues) {
 				var nested = false;

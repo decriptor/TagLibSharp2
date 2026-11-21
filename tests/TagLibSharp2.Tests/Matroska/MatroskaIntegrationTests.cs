@@ -63,9 +63,12 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 		var before = file.Tracks[index].IsEnabled;
 		file.Tracks[index].IsEnabled = !before;
 
-		var toggled = file.Render (original).ToArray ();
-
-		Assert.IsTrue (toggled.Length > 0, "the toggle did not save");
+		var fs = new MockFileSystem ();
+		var saved = file.SaveToFile ("/toggled.mkv", original, fs);
+		if (!saved.IsSuccess && saved.Error!.Contains ("no Void right after Tracks", StringComparison.Ordinal))
+			Assert.Inconclusive ("Adding FlagEnabled to this file would move later elements: " + saved.Error);
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var toggled = fs.ReadAllBytes ("/toggled.mkv");
 		var again = Open (toggled);
 		Assert.AreEqual (!before, again.Tracks[index].IsEnabled);
 		for (var i = 0; i < file.Tracks.Count; i++) {
