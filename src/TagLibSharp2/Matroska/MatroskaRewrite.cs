@@ -975,8 +975,21 @@ static partial class MatroskaRewrite
 
 	static ulong MaxSize (int width) => (1UL << (7 * width)) - 2;
 
+	[ThreadStatic]
+	static long t_offsetSteps;
+
+	/// <summary>
+	/// Pieces summed by <see cref="OffsetOf"/> on this thread. A save stays linear while this is a small
+	/// multiple of the piece count, so tests bound it instead of a wall-clock time.
+	/// </summary>
+	internal static long OffsetSteps {
+		get => t_offsetSteps;
+		set => t_offsetSteps = value;
+	}
+
 	static int OffsetOf (List<Piece> pieces, int index)
 	{
+		t_offsetSteps += index;
 		var offset = 0;
 		for (var i = 0; i < index; i++)
 			offset += pieces[i].Length;
