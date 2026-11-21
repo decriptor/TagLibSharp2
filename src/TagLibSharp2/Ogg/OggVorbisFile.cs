@@ -332,13 +332,43 @@ public sealed class OggVorbisFile : IMediaFile
 		if (!IsVorbisCommentHeader (packet))
 			return VorbisCommentReadResult.Failure ("Not a Vorbis comment header");
 
-		// The spec requires 1; we accept 0 so the comments are kept.
+		// https://xiph.org/vorbis/doc/v-comment.html places one framing byte after the comment list.
+		// The spec requires 1. A 0 is kept. Bytes after that byte are padding, not the framing byte.
 		if (packet.Length < MinVorbisHeaderSize + 1)
 			return VorbisCommentReadResult.Failure ("Comment header too short for framing bit");
 
-		// Skip packet type (1) + "vorbis" (6) and the framing byte.
-		var commentSpan = packet.Slice (MinVorbisHeaderSize, packet.Length - MinVorbisHeaderSize - 1);
-		return VorbisComment.Read (commentSpan);
+		var body = packet.Slice (MinVorbisHeaderSize);
+		var commentResult = VorbisComment.Read (body);
+		if (!commentResult.IsSuccess)
+			return commentResult;
+
+		if (commentResult.BytesConsumed >= body.Length || SwallowedFramingByte (body, commentResult.BytesConsumed))
+			return VorbisCommentReadResult.Failure ("Comment field length includes the framing byte");
+
+		var framing = body[commentResult.BytesConsumed];
+		if (framing is not (0 or 1))
+			return VorbisCommentReadResult.Failure ($"Invalid framing bit (expected 0 or 1, got {framing})");
+
+		return commentResult;
+	}
+
+	// A 0x01 followed by more than one trailing zero is the framing byte. Padding starts after it.
+	// A field length that continues into those zeros swallowed that byte.
+	static bool SwallowedFramingByte (ReadOnlySpan<byte> body, int consumed)
+	{
+		if (body[consumed] != 0)
+			return false;
+
+		for (var i = consumed + 1; i < body.Length; i++) {
+			if (body[i] != 0)
+				return false;
+		}
+
+		var padding = consumed;
+		while (padding > 0 && body[padding - 1] == 0)
+			padding--;
+
+		return padding > 0 && body[padding - 1] == 1 && body.Length - padding > 1;
 	}
 
 	static VorbisCommentReadResult TryParseCommentPacket (byte[] packet) =>

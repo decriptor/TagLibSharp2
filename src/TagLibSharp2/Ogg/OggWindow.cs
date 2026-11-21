@@ -149,11 +149,10 @@ internal static class OggWindow
 			}
 
 			index = 1;
+		} else if (open) {
+			// Only an empty segment table keeps this clear. Lacing below sets it again.
+			open = false;
 		}
-
-		// A page that follows an unfinished packet continues it. Some files
-		// leave the continuation flag unset. Dropping the open packet here
-		// would copy every later page while waiting for a second header.
 
 		for (; index < header.Lacing.Length; index++) {
 			if (header.Lacing[index] < 255) {
@@ -191,22 +190,5 @@ internal static class OggWindow
 		table.CopyTo (prefix, 27);
 		header = new PageHeader (prefix, body, (head[5] & 0x01) != 0, table);
 		return true;
-	}
-
-	static bool TryPageLength (byte[] data, int offset, out int length)
-	{
-		length = 0;
-		if (offset + 27 > data.Length)
-			return false;
-
-		var segments = data[offset + 26];
-		if (offset + 27 + segments > data.Length)
-			return false;
-
-		var body = 0;
-		for (var i = 0; i < segments; i++)
-			body += data[offset + 27 + i];
-		length = 27 + segments + body;
-		return offset + length <= data.Length;
 	}
 }
