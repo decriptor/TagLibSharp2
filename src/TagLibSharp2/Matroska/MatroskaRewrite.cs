@@ -183,7 +183,10 @@ static class MatroskaRewrite
 		body = [];
 		seekHeadCount = 0;
 		referenced = false;
-		for (var attempt = 0; attempt <= layout.Pieces.Count; attempt++) {
+		// The first attempt patches in place. When any value does not fit, every known-size SeekHead and
+		// Cues is rendered, so a widening that pushes another value over a width boundary is settled
+		// in TrySettle and the body is built at most twice (once more if a piece cannot be rendered).
+		for (var attempt = 0; attempt < 3; attempt++) {
 			if (!TrySettle (data, layout, plan, out error))
 				return false;
 			if (!TryBuild (data, layout, plan, out body, out var seekHeads, out var cues, out var elementOffset, out error))
@@ -207,6 +210,11 @@ static class MatroskaRewrite
 			body = [];
 			foreach (var index in widen)
 				plan.RenderIndexes.Add (index);
+			for (var index = 0; index < layout.Pieces.Count; index++) {
+				var piece = layout.Pieces[index];
+				if ((piece.Id == MatroskaIds.SeekHead || piece.Id == MatroskaIds.Cues) && !piece.UnknownSize)
+					plan.RenderIndexes.Add (index);
+			}
 		}
 
 		error = "Matroska positions could not be updated";
@@ -216,7 +224,10 @@ static class MatroskaRewrite
 	/// <summary>
 	/// Writes every piece in <see cref="Plan.RenderIndexes"/> until no length changes. A rendered piece
 	/// never shrinks below its last length (a Void takes the slack), and positions only grow, so the
-	/// lengths only grow and settle within a few rounds.
+	/// lengths only grow. A file can make each widening cause the next; after
+	/// <see cref="WideAfterRounds"/> rounds every moved value is written at eight octets, which no shift
+	/// can outgrow, so the lengths settle in at most two more rounds. Each round costs one pass over the
+	/// rendered pieces, so the work is linear in their size.
 	/// </summary>
 	static bool TrySettle (ReadOnlySpan<byte> data, Layout layout, Plan plan, out string error)
 	{
@@ -230,10 +241,13 @@ static class MatroskaRewrite
 		foreach (var index in plan.RenderIndexes)
 			lengths[index] = plan.Rendered.TryGetValue (index, out var last) ? last.Length : pieces[index].Length;
 
-		for (var round = 0; round < 64; round++) {
-			plan.Growth.Clear ();
+		for (var round = 0; round < WideAfterRounds + 3; round++) {
+			if (round == WideAfterRounds)
+				plan.WideValues = true;
+			var growth = new List<(int, int)> (plan.RenderIndexes.Count);
 			foreach (var index in plan.RenderIndexes)
-				plan.Growth.Add ((layout.Starts[index + 1], lengths[index] - pieces[index].Length));
+				growth.Add ((layout.Starts[index + 1], lengths[index] - pieces[index].Length));
+			plan.SetGrowth (growth);
 
 			var grew = false;
 			plan.RenderedTarget = false;
@@ -280,6 +294,9 @@ static class MatroskaRewrite
 		error = "Matroska positions could not be updated";
 		return false;
 	}
+
+	/// <summary>Rounds of minimal widths before every moved value is written at eight octets.</summary>
+	const int WideAfterRounds = 4;
 
 	static bool TryFinish (ReadOnlySpan<byte> data, Layout layout, byte[] body, out byte[] rewritten, out string error)
 	{
@@ -394,17 +411,21 @@ static class MatroskaRewrite
 		var listed = false;
 		foreach (var (seekId, position) in seeks) {
 			if (plan.Id == 0 || seekId != plan.Id) {
-				body.Add (MakeSeek (seekId, plan.Map (position)));
+				// A position that would wrap names no element; refuse it as TryPatchSeek does.
+				var moved = plan.Map (position);
+				if (moved < position)
+					return null;
+				body.Add (MakeSeek (seekId, moved, plan.WideValues));
 				continue;
 			}
 
 			if (!listed && target >= 0)
-				body.Add (MakeSeek (seekId, (ulong)target));
+				body.Add (MakeSeek (seekId, (ulong)target, plan.WideValues));
 			listed = true;
 		}
 
 		if (!listed && addTarget && target >= 0 && plan.Id != 0)
-			body.Add (MakeSeek (plan.Id, (ulong)target));
+			body.Add (MakeSeek (plan.Id, (ulong)target, plan.WideValues));
 		foreach (var child in kept)
 			body.Add (child);
 
@@ -419,7 +440,7 @@ static class MatroskaRewrite
 	}
 
 	/// <summary>
-	/// Writes a Cues element with every Segment Position moved: CueClusterPosition, CueCodecState,
+	/// Writes a Cues element with its Segment Positions moved: CueClusterPosition, CueCodecState,
 	/// and the historic CueRefCluster and CueRefCodecState (RFC 9559 sections 5.1.5.1.2.2,
 	/// 5.1.5.1.2.6, A.37, A.39). A value keeps its width when it fits and widens when it does not.
 	/// Every master's CRC-32 is recomputed. Other children are copied as they are.
@@ -452,7 +473,7 @@ static class MatroskaRewrite
 				if (keep)
 					payload.Add (bytes);
 				else {
-					var width = Math.Max ((int)child.DataLength, UnsignedBytes (value).Length);
+					var width = plan.WideValues ? 8 : Math.Max ((int)child.DataLength, UnsignedBytes (value).Length);
 					var field = new byte[width];
 					TryWriteUnsigned (field, 0, width, value);
 					payload.Add (source.Slice (child.Position, child.HeaderLength - SizeWidth (source, child)));
@@ -703,11 +724,33 @@ static class MatroskaRewrite
 		/// <summary>Gets or sets a value indicating whether a rendered first SeekHead lists <see cref="Id"/>.</summary>
 		public bool RenderedTarget { get; set; }
 
-		/// <summary>Gets each rendered piece's old end offset and how many octets it grew.</summary>
+		int[] _growthFrom = [];
+		long[] _growthSum = [0];
+
+		/// <summary>Gets each rendered piece's old end offset and how many octets it grew, in offset order.</summary>
 		public List<(int From, int Delta)> Growth { get; } = new ();
+
+		/// <summary>
+		/// Gets or sets a value indicating whether every moved value in a rendered piece is written at
+		/// eight octets, so its length no longer depends on the shift.
+		/// </summary>
+		public bool WideValues { get; set; }
 
 		/// <summary>Gets a value indicating whether any old offset has a new value.</summary>
 		public bool Shifts => Delta != 0 || Growth.Exists (step => step.Delta != 0);
+
+		/// <summary>Replaces <see cref="Growth"/> (sorted by offset) and its prefix sums.</summary>
+		public void SetGrowth (List<(int From, int Delta)> growth)
+		{
+			Growth.Clear ();
+			Growth.AddRange (growth);
+			_growthFrom = new int[growth.Count];
+			_growthSum = new long[growth.Count + 1];
+			for (var i = 0; i < growth.Count; i++) {
+				_growthFrom[i] = growth[i].From;
+				_growthSum[i + 1] = _growthSum[i] + growth[i].Delta;
+			}
+		}
 
 		/// <summary>
 		/// Maps an old Segment offset to its new one. This is the only place a shift is applied:
@@ -715,15 +758,23 @@ static class MatroskaRewrite
 		/// </summary>
 		public ulong Map (ulong old) => Settle (Delta != 0 && old >= (ulong)ShiftFrom ? old + (ulong)Delta : old, old);
 
-		/// <summary>Adds the growth of every rendered piece that ends at or before <paramref name="old"/>.</summary>
+		/// <summary>
+		/// Adds the growth of every rendered piece that ends at or before <paramref name="old"/>: a binary
+		/// search over the prefix sums.
+		/// </summary>
 		ulong Settle (ulong value, ulong old)
 		{
-			foreach (var (from, delta) in Growth) {
-				if ((ulong)from <= old)
-					value += (ulong)delta;
+			var low = 0;
+			var high = _growthFrom.Length;
+			while (low < high) {
+				var mid = (low + high) >>> 1;
+				if ((ulong)_growthFrom[mid] <= old)
+					low = mid + 1;
+				else
+					high = mid;
 			}
 
-			return value;
+			return value + (ulong)_growthSum[low];
 		}
 
 		/// <summary>
@@ -1570,10 +1621,18 @@ static class MatroskaRewrite
 		return false;
 	}
 
-	static byte[] MakeSeek (ulong elementId, ulong position)
+	/// <summary>A Seek; with <paramref name="wide"/> its SeekPosition always has eight octets.</summary>
+	static byte[] MakeSeek (ulong elementId, ulong position, bool wide = false)
 	{
 		var seekId = EbmlWriter.Master (MatroskaIds.SeekId, IdBytes (elementId));
-		var seekPosition = EbmlWriter.Master (MatroskaIds.SeekPosition, UnsignedBytes (position));
+		var octets = UnsignedBytes (position);
+		if (wide && octets.Length < 8) {
+			var padded = new byte[8];
+			octets.CopyTo (padded, 8 - octets.Length);
+			octets = padded;
+		}
+
+		var seekPosition = EbmlWriter.Master (MatroskaIds.SeekPosition, octets);
 		using var body = new BinaryDataBuilder (seekId.Length + seekPosition.Length);
 		body.Add (seekId);
 		body.Add (seekPosition);

@@ -8,10 +8,11 @@ using TagLibSharp2.Tests.Core;
 namespace TagLibSharp2.Tests.Matroska;
 
 /// <summary>
-/// Invariant: when a save moves elements, every Segment Position (RFC 9559 §16) still names its
-/// element, at whatever width it now needs. No Seek is dropped and no value is truncated.
-/// Positions live in SeekPosition, CueClusterPosition, CueCodecState, CueRefCluster,
-/// CueRefCodecState, and Cluster <c>Position</c>.
+/// Invariant: when a save moves elements, the Segment Positions (RFC 9559 §16) in SeekPosition,
+/// CueClusterPosition, CueCodecState, CueRefCluster and CueRefCodecState still name their element, at
+/// whatever width they now need; no Seek is dropped and no value is truncated. A Cluster
+/// <c>Position</c> follows its Cluster, or is voided when it cannot widen in place. The deprecated
+/// ReferenceVirtual (RFC 9559 Appendix A.4) is not touched.
 /// </summary>
 public partial class MatroskaFileTests
 {
