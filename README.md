@@ -143,7 +143,7 @@ Console.WriteLine($"WAV: {wav.Title} - {wav.AudioProperties?.Duration}");
 // AIFF files (read and write, includes audio properties)
 AiffFile.TryRead(new BinaryData(File.ReadAllBytes("song.aiff")), out var aiff);
 Console.WriteLine($"AIFF: {aiff.AudioProperties?.SampleRate}Hz");
-aiff.Tag = new Id3v2Tag { Title = "Updated Title" };
+aiff.Id3v2Tag = new Id3v2Tag { Title = "Updated Title" };
 aiff.SaveToFile("song.aiff");
 
 // Async support for high-throughput scenarios

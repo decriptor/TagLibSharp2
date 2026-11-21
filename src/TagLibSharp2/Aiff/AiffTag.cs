@@ -8,7 +8,8 @@ namespace TagLibSharp2.Aiff;
 
 /// <summary>
 /// Read view over an AIFF file's ID3 tag and native text chunks.
-/// Comment, Title, Artist, and Copyright prefer ID3. Other fields are ID3 only.
+/// Comment, Title, Artist, Copyright, and Performers prefer ID3 and fall back
+/// to native text. Every other field is forwarded to the ID3 tag.
 /// </summary>
 sealed class AiffTag : Tag
 {
@@ -17,7 +18,18 @@ sealed class AiffTag : Tag
 	internal AiffTag (AiffFile file) => _file = file;
 
 	/// <inheritdoc/>
-	public override TagTypes TagType => _file.Id3v2Tag?.TagType ?? TagTypes.None;
+	public override TagTypes TagType {
+		get {
+			// TagTypes has no AIFF member. Native NAME/AUTH/ANNO/(c)/COMT text is
+			// reported as RiffInfo, the existing INFO-style chunk type.
+			var types = TagTypes.None;
+			if (Id3 is { IsEmpty: false })
+				types |= TagTypes.Id3v2;
+			if (_file.HasNativeSource)
+				types |= TagTypes.RiffInfo;
+			return types;
+		}
+	}
 
 	/// <inheritdoc/>
 	public override string? Title {
@@ -44,6 +56,9 @@ sealed class AiffTag : Tag
 	}
 
 	/// <inheritdoc/>
+	private protected override string? CopyableDate => Id3?.ReadCopyableDate ();
+
+	/// <inheritdoc/>
 	public override string? Comment {
 		get => _file.Comment;
 		set => _file.Comment = value;
@@ -62,9 +77,9 @@ sealed class AiffTag : Tag
 	}
 
 	/// <inheritdoc/>
-	public override string? Copyright {
-		get => _file.Copyright;
-		set => _file.Copyright = value;
+	public override string? OriginalReleaseDate {
+		get => Id3?.OriginalReleaseDate;
+		set => Ensure ().OriginalReleaseDate = value;
 	}
 
 	/// <inheritdoc/>
@@ -98,9 +113,51 @@ sealed class AiffTag : Tag
 	}
 
 	/// <inheritdoc/>
+	public override string? Copyright {
+		get => _file.Copyright;
+		set => _file.Copyright = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? PodcastFeedUrl {
+		get => Id3?.PodcastFeedUrl;
+		set => Ensure ().PodcastFeedUrl = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? DiscSubtitle {
+		get => Id3?.DiscSubtitle;
+		set => Ensure ().DiscSubtitle = value;
+	}
+
+	/// <inheritdoc/>
 	public override string? Lyrics {
 		get => Id3?.Lyrics;
 		set => Ensure ().Lyrics = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? Isrc {
+		get => Id3?.Isrc;
+		set => Ensure ().Isrc = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? Publisher {
+		get => Id3?.Publisher;
+		set => Ensure ().Publisher = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? EncodedBy {
+		get => Id3?.EncodedBy;
+		set => Ensure ().EncodedBy = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? EncoderSettings {
+		get => Id3?.EncoderSettings;
+		set => Ensure ().EncoderSettings = value;
 	}
 
 	/// <inheritdoc/>
@@ -110,39 +167,75 @@ sealed class AiffTag : Tag
 	}
 
 	/// <inheritdoc/>
-	public override uint? DiscNumber {
-		get => Id3?.DiscNumber;
-		set => Ensure ().DiscNumber = value;
+	public override string? Subtitle {
+		get => Id3?.Subtitle;
+		set => Ensure ().Subtitle = value;
 	}
 
 	/// <inheritdoc/>
-	public override uint? TotalTracks {
-		get => Id3?.TotalTracks;
-		set => Ensure ().TotalTracks = value;
+	public override string? Remixer {
+		get => Id3?.Remixer;
+		set => Ensure ().Remixer = value;
 	}
 
 	/// <inheritdoc/>
-	public override uint? TotalDiscs {
-		get => Id3?.TotalDiscs;
-		set => Ensure ().TotalDiscs = value;
+	public override string? InitialKey {
+		get => Id3?.InitialKey;
+		set => Ensure ().InitialKey = value;
 	}
 
 	/// <inheritdoc/>
-	public override uint? BeatsPerMinute {
-		get => Id3?.BeatsPerMinute;
-		set => Ensure ().BeatsPerMinute = value;
+	public override string? Mood {
+		get => Id3?.Mood;
+		set => Ensure ().Mood = value;
 	}
 
 	/// <inheritdoc/>
-	public override uint? MovementNumber {
-		get => Id3?.MovementNumber;
-		set => Ensure ().MovementNumber = value;
+	public override string? MediaType {
+		get => Id3?.MediaType;
+		set => Ensure ().MediaType = value;
 	}
 
 	/// <inheritdoc/>
-	public override uint? MovementTotal {
-		get => Id3?.MovementTotal;
-		set => Ensure ().MovementTotal = value;
+	public override string? Language {
+		get => Id3?.Language;
+		set => Ensure ().Language = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? Barcode {
+		get => Id3?.Barcode;
+		set => Ensure ().Barcode = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? CatalogNumber {
+		get => Id3?.CatalogNumber;
+		set => Ensure ().CatalogNumber = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? AlbumSort {
+		get => Id3?.AlbumSort;
+		set => Ensure ().AlbumSort = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? ArtistSort {
+		get => Id3?.ArtistSort;
+		set => Ensure ().ArtistSort = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? TitleSort {
+		get => Id3?.TitleSort;
+		set => Ensure ().TitleSort = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? AlbumArtistSort {
+		get => Id3?.AlbumArtistSort;
+		set => Ensure ().AlbumArtistSort = value;
 	}
 
 	/// <inheritdoc/>
@@ -167,6 +260,18 @@ sealed class AiffTag : Tag
 	public override string? ReplayGainAlbumPeak {
 		get => Id3?.ReplayGainAlbumPeak;
 		set => Ensure ().ReplayGainAlbumPeak = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? R128TrackGain {
+		get => Id3?.R128TrackGain;
+		set => Ensure ().R128TrackGain = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? R128AlbumGain {
+		get => Id3?.R128AlbumGain;
+		set => Ensure ().R128AlbumGain = value;
 	}
 
 	/// <inheritdoc/>
@@ -200,9 +305,117 @@ sealed class AiffTag : Tag
 	}
 
 	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseArtistId {
+		get => Id3?.MusicBrainzReleaseArtistId;
+		set => Ensure ().MusicBrainzReleaseArtistId = value;
+	}
+
+	/// <inheritdoc/>
 	public override string? MusicBrainzRecordingId {
 		get => Id3?.MusicBrainzRecordingId;
 		set => Ensure ().MusicBrainzRecordingId = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzWorkId {
+		get => Id3?.MusicBrainzWorkId;
+		set => Ensure ().MusicBrainzWorkId = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzDiscId {
+		get => Id3?.MusicBrainzDiscId;
+		set => Ensure ().MusicBrainzDiscId = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseStatus {
+		get => Id3?.MusicBrainzReleaseStatus;
+		set => Ensure ().MusicBrainzReleaseStatus = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseType {
+		get => Id3?.MusicBrainzReleaseType;
+		set => Ensure ().MusicBrainzReleaseType = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? MusicBrainzReleaseCountry {
+		get => Id3?.MusicBrainzReleaseCountry;
+		set => Ensure ().MusicBrainzReleaseCountry = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? AcoustIdId {
+		get => Id3?.AcoustIdId;
+		set => Ensure ().AcoustIdId = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? AcoustIdFingerprint {
+		get => Id3?.AcoustIdFingerprint;
+		set => Ensure ().AcoustIdFingerprint = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? ComposerSort {
+		get => Id3?.ComposerSort;
+		set => Ensure ().ComposerSort = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? DateTagged {
+		get => Id3?.DateTagged;
+		set => Ensure ().DateTagged = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? Description {
+		get => Id3?.Description;
+		set => Ensure ().Description = value;
+	}
+
+	/// <inheritdoc/>
+	public override string? AmazonId {
+		get => Id3?.AmazonId;
+		set => Ensure ().AmazonId = value;
+	}
+
+	/// <inheritdoc/>
+	public override uint? DiscNumber {
+		get => Id3?.DiscNumber;
+		set => Ensure ().DiscNumber = value;
+	}
+
+	/// <inheritdoc/>
+	public override uint? BeatsPerMinute {
+		get => Id3?.BeatsPerMinute;
+		set => Ensure ().BeatsPerMinute = value;
+	}
+
+	/// <inheritdoc/>
+	public override uint? MovementNumber {
+		get => Id3?.MovementNumber;
+		set => Ensure ().MovementNumber = value;
+	}
+
+	/// <inheritdoc/>
+	public override uint? MovementTotal {
+		get => Id3?.MovementTotal;
+		set => Ensure ().MovementTotal = value;
+	}
+
+	/// <inheritdoc/>
+	public override uint? TotalTracks {
+		get => Id3?.TotalTracks;
+		set => Ensure ().TotalTracks = value;
+	}
+
+	/// <inheritdoc/>
+	public override uint? TotalDiscs {
+		get => Id3?.TotalDiscs;
+		set => Ensure ().TotalDiscs = value;
 	}
 
 	/// <inheritdoc/>
@@ -212,7 +425,7 @@ sealed class AiffTag : Tag
 	}
 
 	/// <inheritdoc/>
-#pragma warning disable CA1819
+#pragma warning disable CA1819 // Properties should not return arrays - Tag API contract
 	public override string[] Performers {
 		get {
 			if (Id3?.Performers is { Length: > 0 } people)
@@ -220,13 +433,49 @@ sealed class AiffTag : Tag
 			var artist = _file.Artist;
 			return string.IsNullOrEmpty (artist) ? [] : [artist!];
 		}
-		set => Ensure ().Performers = value;
+		set => _file.SetPerformers (value);
 	}
 
 	/// <inheritdoc/>
 	public override string[] Genres {
 		get => Id3?.Genres ?? [];
 		set => Ensure ().Genres = value;
+	}
+
+	/// <inheritdoc/>
+	public override string[] AlbumArtists {
+		get => Id3?.AlbumArtists ?? [];
+		set => Ensure ().AlbumArtists = value;
+	}
+
+	/// <inheritdoc/>
+	public override string[] Composers {
+		get => Id3?.Composers ?? [];
+		set => Ensure ().Composers = value;
+	}
+
+	/// <inheritdoc/>
+	public override string[]? PerformersSort {
+		get => Id3?.PerformersSort;
+		set => Ensure ().PerformersSort = value;
+	}
+
+	/// <inheritdoc/>
+	public override string[]? AlbumArtistsSort {
+		get => Id3?.AlbumArtistsSort;
+		set => Ensure ().AlbumArtistsSort = value;
+	}
+
+	/// <inheritdoc/>
+	public override string[]? ComposersSort {
+		get => Id3?.ComposersSort;
+		set => Ensure ().ComposersSort = value;
+	}
+
+	/// <inheritdoc/>
+	public override string[]? PerformersRole {
+		get => Id3?.PerformersRole;
+		set => Ensure ().PerformersRole = value;
 	}
 
 	/// <inheritdoc/>
@@ -238,7 +487,7 @@ sealed class AiffTag : Tag
 
 	/// <inheritdoc/>
 	public override bool IsEmpty =>
-		base.IsEmpty && string.IsNullOrEmpty (Copyright);
+		(Id3 is null || Id3.IsEmpty) && !_file.HasNativeFields;
 
 	/// <inheritdoc/>
 	public override BinaryData Render () =>
@@ -246,14 +495,7 @@ sealed class AiffTag : Tag
 			"AiffTag is a view over an AIFF file. Render the owning AiffFile instead.");
 
 	/// <inheritdoc/>
-	public override void Clear ()
-	{
-		_file.Comment = null;
-		_file.Title = null;
-		_file.Artist = null;
-		_file.Copyright = null;
-		_file.Id3v2Tag?.Clear ();
-	}
+	public override void Clear () => _file.ClearMappedFields ();
 
 	Id3v2Tag? Id3 => _file.Id3v2Tag;
 

@@ -19,10 +19,13 @@ namespace TagLibSharp2.Aiff;
 ///
 /// Required chunks: COMM (audio properties), SSND (sound data)
 /// Optional chunks: ID3, ANNO, COMT, NAME, AUTH, "(c) ", MARK, INST.
-/// Native text stays in those chunks. ID3 is not filled from them.
-/// Comment, Title, Artist, and Copyright prefer a non-empty ID3 value and
-/// otherwise use the native text. A COMT entry with marker id 0 is the file
-/// comment and ranks above ANNO. Any other marker id is not the file comment.
+/// Native text stays in those chunks until a field is edited. ID3 is not filled
+/// from them on read. Comment, Title, Artist, and Copyright prefer a non-empty
+/// ID3 value and otherwise use the native text. A COMT entry with marker id 0
+/// is the file comment and ranks above ANNO. Any other marker id is not the
+/// file comment. A value the caller sets is written on the ID3 tag. A native
+/// chunk is rewritten only for text that was read from that chunk and was not
+/// overridden. Native bytes use Mac OS Roman.
 ///
 /// Unlike RIFF/WAV, AIFF uses big-endian byte order throughout.
 /// </remarks>
@@ -76,31 +79,35 @@ public sealed class AiffFile : IMediaFile
 	/// </summary>
 	/// <remarks>
 	/// Native ANNO, COMT, NAME, AUTH, and copyright text is not copied here.
-	/// Null when the file has no ID3 chunk. Save writes this tag only when it
-	/// has fields of its own.
+	/// Null when the file has no ID3 chunk. Save writes this tag when it has any frame.
 	/// </remarks>
-	public Id3v2Tag? Id3v2Tag { get; set; }
-
-	AiffTag? _metadata;
+	public Id3v2Tag? Id3v2Tag {
+		get => _id3;
+		set {
+			_id3 = value;
+			if (value is not null)
+				_metadata ??= new AiffTag (this);
+		}
+	}
 
 	/// <summary>
-	/// Gets or sets the metadata view.
+	/// Gets the combined metadata view.
 	/// </summary>
 	/// <remarks>
 	/// Comment, Title, Artist, and Copyright return the ID3 value when that field
-	/// is non-empty, otherwise the native chunk. Assigning an <see cref="Id3v2Tag"/>
-	/// replaces <see cref="Id3v2Tag"/>. Setting one of those four fields updates the
-	/// ID3 field when that ID3 field already has text, and otherwise the native chunk
-	/// the value came from. A new comment with neither is stored as a marker-0 COMT.
-	/// Clearing a field clears both the ID3 field and the native text.
+	/// is non-empty, otherwise the native chunk. Other fields come from the ID3 tag.
+	/// The view is cached. Clearing the last field does not make this null.
+	/// Assign an <see cref="Id3v2Tag"/> through <see cref="Id3v2Tag"/>; this property
+	/// has no setter, so the combined view cannot be downcast and drop the ID3 chunk.
 	/// </remarks>
 	public Tag? Tag {
 		get {
-			if (Id3v2Tag is null && !HasNativeText)
+			if (_metadata is not null)
+				return _metadata;
+			if (_id3 is null && !HasNativeFields)
 				return null;
-			return _metadata ??= new AiffTag (this);
+			return _metadata = new AiffTag (this);
 		}
-		set => Id3v2Tag = value as Id3v2Tag;
 	}
 
 	/// <summary>
@@ -191,8 +198,10 @@ public sealed class AiffFile : IMediaFile
 	readonly List<AiffChunk> _chunks = [];
 	readonly List<SkippedChunk> _skipped = [];
 	readonly List<MarkerNote> _markers = [];
-	string? _annotation;
-	string? _markerComment;
+	readonly List<string> _annotations = [];
+	readonly List<string> _markerComments = [];
+	Id3v2Tag? _id3;
+	AiffTag? _metadata;
 	string? _name;
 	string? _author;
 	string? _copyright;
@@ -211,11 +220,12 @@ public sealed class AiffFile : IMediaFile
 
 	readonly struct MarkerNote
 	{
-		public MarkerNote (uint timestamp, ushort markerId, string text)
+		public MarkerNote (uint timestamp, ushort markerId, string text, byte[] raw)
 		{
 			Timestamp = timestamp;
 			MarkerId = markerId;
 			Text = text;
+			Raw = raw;
 		}
 
 		public uint Timestamp { get; }
@@ -223,6 +233,8 @@ public sealed class AiffFile : IMediaFile
 		public ushort MarkerId { get; }
 
 		public string Text { get; }
+
+		public byte[] Raw { get; }
 	}
 
 	readonly struct SkippedChunk
@@ -251,10 +263,10 @@ public sealed class AiffFile : IMediaFile
 
 		_chunks.Clear ();
 		_markers.Clear ();
+		_annotations.Clear ();
+		_markerComments.Clear ();
 		Id3v2Tag = null;
 		_metadata = null;
-		_annotation = null;
-		_markerComment = null;
 		_name = null;
 		_author = null;
 		_copyright = null;
@@ -542,7 +554,7 @@ public sealed class AiffFile : IMediaFile
 				break;
 			case "ANNO":
 				// A file may carry more than one annotation. Keep each of them.
-				_annotation = JoinText (_annotation, MacRoman.Decode (chunk.Data.Span));
+				AddText (_annotations, MacRoman.Decode (chunk.Data.Span));
 				break;
 			case "COMT":
 				ReadComments (chunk.Data);
@@ -562,23 +574,29 @@ public sealed class AiffFile : IMediaFile
 	// Marker id 0 is the file comment and ranks above ANNO. Other marker ids stay out of Comment.
 	void FinishNative ()
 	{
-		if (!string.IsNullOrEmpty (_markerComment))
+		if (_markerComments.Count > 0)
 			_commentKind = NativeCommentKind.MarkerComment;
-		else if (!string.IsNullOrEmpty (_annotation))
+		else if (_annotations.Count > 0)
 			_commentKind = NativeCommentKind.Annotation;
 		else
 			_commentKind = NativeCommentKind.None;
+
+		if (_id3 is not null || HasNativeFields)
+			_metadata ??= new AiffTag (this);
 	}
 
-	bool HasNativeText =>
-		_commentKind != NativeCommentKind.None
+	internal bool HasNativeFields =>
+		_annotations.Count > 0
+		|| _markerComments.Count > 0
 		|| _name is not null
 		|| _author is not null
 		|| _copyright is not null;
 
+	internal bool HasNativeSource => HasNativeFields || _markers.Count > 0;
+
 	string? NativeComment => _commentKind switch {
-		NativeCommentKind.MarkerComment => _markerComment,
-		NativeCommentKind.Annotation => _annotation,
+		NativeCommentKind.MarkerComment => Join (_markerComments),
+		NativeCommentKind.Annotation => Join (_annotations),
 		_ => null
 	};
 
@@ -587,98 +605,88 @@ public sealed class AiffFile : IMediaFile
 
 	void SetComment (string? value)
 	{
+		// ID3 can hold a comment, including one longer than a COMT text field.
+		// The native chunk stays only when this field was not overridden.
+		_commentRewritten = true;
+		_annotations.Clear ();
+		_markerComments.Clear ();
+		_commentKind = NativeCommentKind.None;
 		if (string.IsNullOrEmpty (value)) {
-			_commentRewritten = true;
-			_annotation = null;
-			_markerComment = null;
-			_commentKind = NativeCommentKind.None;
 			if (Id3v2Tag is not null)
 				Id3v2Tag.Comment = null;
 			return;
 		}
 
-		if (Id3v2Tag is { } id3 && !string.IsNullOrEmpty (id3.Comment)) {
-			id3.Comment = value;
-			return;
-		}
-
-		_commentRewritten = true;
-		if (_commentKind == NativeCommentKind.Annotation) {
-			_annotation = value;
-			return;
-		}
-
-		_markerComment = value;
-		_commentKind = NativeCommentKind.MarkerComment;
+		EnsureId3 ().Comment = value;
 	}
 
-	void SetTitle (string? value)
+	void SetTitle (string? value) =>
+		SetId3Field (value, ref _nameRewritten, ref _name, static (tag, text) => tag.Title = text);
+
+	void SetArtist (string? value) =>
+		SetId3Field (value, ref _authorRewritten, ref _author, static (tag, text) => tag.Artist = text);
+
+	void SetCopyright (string? value) =>
+		SetId3Field (value, ref _copyrightRewritten, ref _copyright, static (tag, text) => tag.Copyright = text);
+
+	void SetId3Field (string? value, ref bool rewritten, ref string? native, Action<Id3v2Tag, string?> write)
 	{
+		rewritten = true;
+		native = null;
 		if (string.IsNullOrEmpty (value)) {
-			_nameRewritten = true;
-			_name = null;
 			if (Id3v2Tag is not null)
-				Id3v2Tag.Title = null;
+				write (Id3v2Tag, null);
 			return;
 		}
 
-		if (Id3v2Tag is { } id3 && !string.IsNullOrEmpty (id3.Title)) {
-			id3.Title = value;
-			return;
-		}
-
-		_nameRewritten = true;
-		_name = value;
+		write (EnsureId3 (), value);
 	}
 
-	void SetArtist (string? value)
+	internal void SetPerformers (string[]? value)
 	{
-		if (string.IsNullOrEmpty (value)) {
-			_authorRewritten = true;
-			_author = null;
-			if (Id3v2Tag is not null)
-				Id3v2Tag.Artist = null;
+		if (!HasText (value)) {
+			SetArtist (null);
 			return;
 		}
 
-		if (Id3v2Tag is { } id3 && !string.IsNullOrEmpty (id3.Artist)) {
-			id3.Artist = value;
-			return;
-		}
-
+		// Same TPE1 frame as Artist. Drop AUTH so an empty performers list cannot
+		// leave the old author behind, and a new list cannot shadow it.
 		_authorRewritten = true;
-		_author = value;
+		_author = null;
+		EnsureId3 ().Performers = value!;
 	}
 
-	void SetCopyright (string? value)
+	static bool HasText (string[]? value)
 	{
-		if (string.IsNullOrEmpty (value)) {
-			_copyrightRewritten = true;
-			_copyright = null;
-			if (Id3v2Tag is not null)
-				Id3v2Tag.Copyright = null;
-			return;
+		if (value is null)
+			return false;
+		for (var i = 0; i < value.Length; i++) {
+			if (!string.IsNullOrEmpty (value[i]))
+				return true;
 		}
 
-		if (Id3v2Tag is { } id3 && !string.IsNullOrEmpty (id3.Copyright)) {
-			id3.Copyright = value;
-			return;
-		}
-
-		_copyrightRewritten = true;
-		_copyright = value;
+		return false;
 	}
 
 	internal Id3v2Tag EnsureId3 () => Id3v2Tag ??= new Id3v2Tag ();
 
-	static string? JoinText (string? current, string? next)
+	internal void ClearMappedFields ()
 	{
-		if (string.IsNullOrEmpty (next))
-			return current;
-		if (string.IsNullOrEmpty (current))
-			return next;
-		return current + "\n" + next;
+		SetComment (null);
+		SetTitle (null);
+		SetArtist (null);
+		SetCopyright (null);
+		Id3v2Tag?.Clear ();
 	}
+
+	static void AddText (List<string> parts, string? text)
+	{
+		if (!string.IsNullOrEmpty (text))
+			parts.Add (text!);
+	}
+
+	static string? Join (List<string> parts) =>
+		parts.Count == 0 ? null : string.Join ("\n", parts);
 
 	void ReadComments (BinaryData data)
 	{
@@ -699,8 +707,11 @@ public sealed class AiffFile : IMediaFile
 				break;
 
 			string? text = null;
-			if (textLength > 0)
-				text = MacRoman.Decode (data.Slice (offset, textLength).Span);
+			byte[] raw = [];
+			if (textLength > 0) {
+				raw = data.Slice (offset, textLength).ToArray ();
+				text = MacRoman.Decode (raw);
+			}
 
 			offset += textLength;
 			// Odd-length text is padded inside ckSize. The pad is not part of the text.
@@ -711,9 +722,9 @@ public sealed class AiffFile : IMediaFile
 				continue;
 
 			if (marker == 0)
-				_markerComment = JoinText (_markerComment, text!);
+				_markerComments.Add (text!);
 			else
-				_markers.Add (new MarkerNote (timestamp, marker, text!));
+				_markers.Add (new MarkerNote (timestamp, marker, text!, raw));
 		}
 	}
 
@@ -752,7 +763,7 @@ public sealed class AiffFile : IMediaFile
 		}
 
 		AppendRewrittenNative (output);
-		if (Id3v2Tag is not null && ShouldWriteId3 (Id3v2Tag)) {
+		if (Id3v2Tag is not null && !Id3v2Tag.IsEmpty) {
 			var id3Data = Id3v2Tag.Render ();
 			if (id3Data.Length > 0)
 				output.Add (new AiffChunk ("ID3 ", id3Data));
@@ -797,37 +808,58 @@ public sealed class AiffFile : IMediaFile
 	void AppendRewrittenNative (List<AiffChunk> output)
 	{
 		if (_commentRewritten) {
-			if (_annotation is { Length: > 0 } annotation)
-				output.Add (TextChunk ("ANNO", annotation));
+			var annotation = Join (_annotations);
+			if (annotation is { Length: > 0 })
+				AddNativeOrId3 (output, "ANNO", annotation, static (tag, text) => tag.Comment = text);
 
-			var notes = new List<MarkerNote> ();
-			if (_commentKind == NativeCommentKind.MarkerComment && _markerComment is { Length: > 0 } fileComment)
-				notes.Add (new MarkerNote (0, 0, fileComment));
+			var notes = new List<MarkerNote> (_markers.Count + 1);
+			var fileComment = _commentKind == NativeCommentKind.MarkerComment ? Join (_markerComments) : null;
+			if (fileComment is { Length: > 0 }) {
+				if (TryNativeBytes (fileComment, out var bytes))
+					notes.Add (new MarkerNote (0, 0, fileComment, bytes));
+				else if (string.IsNullOrEmpty (Id3v2Tag?.Comment))
+					EnsureId3 ().Comment = fileComment;
+			}
+
 			notes.AddRange (_markers);
 			if (notes.Count > 0)
 				output.Add (new AiffChunk ("COMT", RenderComments (notes)));
 		}
 
 		if (_name is { Length: > 0 } name && _nameRewritten)
-			output.Add (TextChunk ("NAME", name));
+			AddNativeOrId3 (output, "NAME", name, static (tag, text) => tag.Title = text);
 		if (_author is { Length: > 0 } author && _authorRewritten)
-			output.Add (TextChunk ("AUTH", author));
+			AddNativeOrId3 (output, "AUTH", author, static (tag, text) => tag.Artist = text);
 		if (_copyright is { Length: > 0 } copyright && _copyrightRewritten)
-			output.Add (TextChunk (CopyrightChunkId, copyright));
+			AddNativeOrId3 (output, CopyrightChunkId, copyright, static (tag, text) => tag.Copyright = text);
 	}
 
-	static AiffChunk TextChunk (string fourCC, string text) =>
-		new (fourCC, new BinaryData (MacRoman.Encode (text)));
+	void AddNativeOrId3 (List<AiffChunk> output, string fourCC, string text, Action<Id3v2Tag, string> write)
+	{
+		if (TryNativeBytes (text, out var bytes)) {
+			output.Add (new AiffChunk (fourCC, new BinaryData (bytes)));
+			return;
+		}
+
+		write (EnsureId3 (), text);
+	}
+
+	static bool TryNativeBytes (string text, out byte[] bytes)
+	{
+		if (!MacRoman.TryEncode (text, out bytes) || bytes.Length > ushort.MaxValue) {
+			bytes = [];
+			return false;
+		}
+
+		return true;
+	}
 
 	static BinaryData RenderComments (List<MarkerNote> notes)
 	{
 		using var body = new BinaryDataBuilder ();
 		body.AddUInt16BE ((ushort)notes.Count);
 		foreach (var note in notes) {
-			var bytes = MacRoman.Encode (note.Text);
-			if (bytes.Length > ushort.MaxValue)
-				throw new InvalidOperationException ("Cannot store an AIFF comment longer than 65535 bytes.");
-
+			var bytes = NoteBytes (note);
 			body.AddUInt32BE (note.Timestamp);
 			body.AddUInt16BE (note.MarkerId);
 			body.AddUInt16BE ((ushort)bytes.Length);
@@ -841,13 +873,14 @@ public sealed class AiffFile : IMediaFile
 		return body.ToBinaryData ();
 	}
 
-	static bool ShouldWriteId3 (Id3v2Tag tag) =>
-		!tag.IsEmpty
-		|| tag.HasPictures
-		|| tag.Frames.Count > 0
-		|| tag.Comments.Count > 0
-		|| tag.UserTextFrames.Count > 0
-		|| tag.UniqueFileIdFrames.Count > 0;
+	static byte[] NoteBytes (MarkerNote note)
+	{
+		if (MacRoman.TryEncode (note.Text, out var encoded) && encoded.Length <= ushort.MaxValue)
+			return encoded;
+		if (note.Raw.Length <= ushort.MaxValue)
+			return note.Raw;
+		return [];
+	}
 
 	/// <summary>
 	/// Saves the AIFF file to the specified path.
@@ -857,12 +890,16 @@ public sealed class AiffFile : IMediaFile
 	/// <returns>The write result.</returns>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
-		var fs = fileSystem ?? _sourceFileSystem;
-		if (!TryLoadSkipped (fs, out var skipped))
-			return FileWriteResult.Failure (skipped!);
+		try {
+			var fs = fileSystem ?? _sourceFileSystem;
+			if (!TryLoadSkipped (fs, out var skipped))
+				return FileWriteResult.Failure (skipped!);
 
-		var data = Render ();
-		return AtomicFileWriter.Write (path, data.Span, fs);
+			var data = Render ();
+			return AtomicFileWriter.Write (path, data.Span, fs);
+		} catch (InvalidOperationException ex) {
+			return FileWriteResult.Failure (ex.Message);
+		}
 	}
 
 	bool TryLoadSkipped (IFileSystem? fileSystem, out string? error)
@@ -915,12 +952,16 @@ public sealed class AiffFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		var fs = fileSystem ?? _sourceFileSystem;
-		if (!TryLoadSkipped (fs, out var skipped))
-			return Task.FromResult (FileWriteResult.Failure (skipped!));
+		try {
+			var fs = fileSystem ?? _sourceFileSystem;
+			if (!TryLoadSkipped (fs, out var skipped))
+				return Task.FromResult (FileWriteResult.Failure (skipped!));
 
-		var data = Render ();
-		return AtomicFileWriter.WriteAsync (path, data.Memory, fs, cancellationToken);
+			var data = Render ();
+			return AtomicFileWriter.WriteAsync (path, data.Memory, fs, cancellationToken);
+		} catch (InvalidOperationException ex) {
+			return Task.FromResult (FileWriteResult.Failure (ex.Message));
+		}
 	}
 
 	/// <summary>
