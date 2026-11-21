@@ -52,7 +52,12 @@ public sealed class MpegAudioProperties : IMediaProperties
 	/// Gets the codec name. Layer III is "MP3" for every MPEG version.
 	/// Layer I and Layer II include the version (for example, "MPEG-2 Layer II").
 	/// </summary>
-	public string Codec => (Version, Layer) switch {
+	public string Codec => CodecName (Version, Layer);
+
+	/// <summary>
+	/// The codec name for a version and layer. A program stream names its MPEG audio the same way.
+	/// </summary>
+	internal static string CodecName (MpegVersion version, MpegLayer layer) => (version, layer) switch {
 		(MpegVersion.Version1, MpegLayer.Layer1) => "MPEG-1 Layer I",
 		(MpegVersion.Version1, MpegLayer.Layer2) => "MPEG-1 Layer II",
 		(MpegVersion.Version2, MpegLayer.Layer1) => "MPEG-2 Layer I",
@@ -60,7 +65,7 @@ public sealed class MpegAudioProperties : IMediaProperties
 		(MpegVersion.Version25, MpegLayer.Layer1) => "MPEG-2.5 Layer I",
 		(MpegVersion.Version25, MpegLayer.Layer2) => "MPEG-2.5 Layer II",
 		(_, MpegLayer.Layer3) => "MP3",
-		_ => $"{FormatVersion (Version)} {FormatLayer (Layer)}"
+		_ => $"{FormatVersion (version)} {FormatLayer (layer)}"
 	};
 
 	/// <summary>
