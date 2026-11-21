@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Matroska: `DiscNumber` and `TotalDiscs` are read and written (#130). Setting or clearing a track or disc number or total leaves the other three as they were, including a total held in a `4/12` or `2/3` slash, and a clear removes every element the getter could still read.
 - Matroska: every rendered Tag has a `Targets` element. An omitted `TargetTypeValue` is not written back as 50, and an empty one reads as the default 50. A Tag that a clear leaves with no SimpleTag is not written (RFC 9559 section 5.1.8.1.2); one that was already empty when read is kept.
 
+### Changed
+
+- An APE artist, album artist, composer, or genre is the first name. It is not a comma-joined string. A Basic copy from APE into MP4, ASF, RIFF INFO, or ID3v1 keeps that first name. A copy into ID3v2 keeps the full list.
+- Setting or clearing an APE year also removes `Date`. A locator reads as the same string a title locator reads. An empty text item reads as an empty string, and a binary item reads as null, for a name and for a title.
+- Setting or clearing a Vorbis original release date also removes `ORIGINALYEAR`. Setting or clearing a movement also removes `MOVEMENTNAME`.
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes

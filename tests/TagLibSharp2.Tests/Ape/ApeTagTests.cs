@@ -1833,12 +1833,12 @@ public class ApeTagTests
 
 		var onlyNuls = new ApeTag ();
 		onlyNuls.SetValue ("Artist", "\0\0");
-		Assert.IsNull (onlyNuls.Artist);
+		Assert.AreEqual ("", onlyNuls.Artist);
 		Assert.HasCount (0, onlyNuls.Performers);
 
 		var emptyText = new ApeTag ();
 		emptyText.SetValue ("Genre", "");
-		Assert.IsNull (emptyText.Genre);
+		Assert.AreEqual ("", emptyText.Genre);
 		Assert.HasCount (0, emptyText.Genres);
 
 		var cleared = new ApeTag { Performers = ["A", "B"], Composers = ["Cara", "Dan"] };
@@ -1855,6 +1855,71 @@ public class ApeTagTests
 		binary.SetBinaryItem ("Artist", "a.jpg", [0x01]);
 		Assert.IsNull (binary.Artist);
 		Assert.HasCount (0, binary.Performers);
+	}
+
+	[TestMethod]
+	public void Year_SetAndClear_RemovesDate ()
+	{
+		var replaced = new ApeTag ();
+		replaced.SetValue ("Date", "1999");
+		replaced.Year = "2001";
+
+		Assert.AreEqual ("2001", replaced.Year);
+		Assert.AreEqual ("2001", replaced.GetValue ("Year"));
+		Assert.IsNull (replaced.GetValue ("Date"));
+
+		replaced.Year = null;
+		Assert.IsNull (replaced.Year);
+		Assert.IsNull (replaced.GetValue ("Year"));
+		Assert.IsNull (replaced.GetValue ("Date"));
+
+		var cleared = new ApeTag ();
+		cleared.SetValue ("Date", "1999-05-01");
+		cleared.Year = null;
+		Assert.IsNull (cleared.Year);
+		Assert.IsNull (cleared.GetValue ("Date"));
+	}
+
+	[TestMethod]
+	public void LocatorName_ReadsTheSameStringAsTitle ()
+	{
+		const string url = "http://example.com/name";
+		var title = TagWith (CreateExternalLocatorItem ("Title", url));
+		var artist = TagWith (CreateExternalLocatorItem ("Artist", url));
+		var albumArtist = TagWith (CreateExternalLocatorItem ("Album Artist", url));
+		var composer = TagWith (CreateExternalLocatorItem ("Composer", url));
+		var genre = TagWith (CreateExternalLocatorItem ("Genre", url));
+
+		Assert.AreEqual (url, title.Title);
+		Assert.AreEqual (title.Title, artist.Artist);
+		Assert.AreEqual (url, albumArtist.AlbumArtist);
+		Assert.AreEqual (url, composer.Composer);
+		Assert.AreEqual (url, genre.Genre);
+		Assert.HasCount (0, artist.Performers);
+
+		var emptyTitle = new ApeTag ();
+		emptyTitle.SetValue ("Title", "");
+		var emptyArtist = new ApeTag ();
+		emptyArtist.SetValue ("Artist", "");
+		Assert.AreEqual (emptyTitle.Title, emptyArtist.Artist);
+
+		var binaryTitle = new ApeTag ();
+		binaryTitle.SetBinaryItem ("Title", "t.jpg", [0x01]);
+		var binaryArtist = new ApeTag ();
+		binaryArtist.SetBinaryItem ("Artist", "a.jpg", [0x01]);
+		Assert.IsNull (binaryTitle.Title);
+		Assert.IsNull (binaryArtist.Artist);
+	}
+
+	static ApeTag TagWith (byte[] item)
+	{
+		var footer = CreateValidFooter (2000, (uint)(item.Length + 32), 1, 0);
+		var data = new byte[item.Length + footer.Length];
+		item.CopyTo (data, 0);
+		footer.CopyTo (data, item.Length);
+		var parsed = ApeTag.Parse (data);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		return parsed.Tag!;
 	}
 
 	static void AssertRaw (ApeTag tag, string key, string expected)
