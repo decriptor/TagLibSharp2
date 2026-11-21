@@ -163,6 +163,9 @@ internal static class AudibleTestBuilder
 		return file.AsSpan ((int)offset, (int)size).ToArray ();
 	}
 
+	public static uint ReadU32 (byte[] file, int offset) =>
+		BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (offset));
+
 	public static void SetU32 (byte[] file, int offset, uint value) =>
 		BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (offset), value);
 
