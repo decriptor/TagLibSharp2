@@ -61,7 +61,10 @@ public sealed class Mp4Picture : IPicture
 	/// Initializes a new instance of the <see cref="Mp4Picture"/> class with minimal parameters.
 	/// </summary>
 	/// <param name="data">The raw image data.</param>
-	/// <param name="isJpeg">True for JPEG, false for PNG.</param>
+	/// <param name="isJpeg">
+	/// True for JPEG, false for PNG. The bytes decide the stored type when they are a known
+	/// image format; otherwise this choice does.
+	/// </param>
 	public Mp4Picture (byte[] data, bool isJpeg)
 		: this (isJpeg ? "image/jpeg" : "image/png", PictureType.FrontCover, string.Empty, new BinaryData (data))
 	{
@@ -87,9 +90,38 @@ public sealed class Mp4Picture : IPicture
 
 	/// <summary>
 	/// Type code written for this picture. Unchanged parsed bytes keep their original code.
-	/// A picture created in memory is sniffed from the bytes, not the MIME string.
+	/// A picture created in memory is identified from its bytes first, then from its MIME type.
 	/// </summary>
-	internal int RenderTypeIndicator => _parsedTypeIndicator ?? SniffType (PictureData.Span);
+	/// <remarks>
+	/// Codes are the well-known data types of the value atom: 13 JPEG, 14 PNG, 27 BMP, and 0 when
+	/// no type is indicated (https://developer.apple.com/documentation/quicktime-file-format/well-known_types).
+	/// 12 (GIF) is not in that table but is what iTunes-era files use.
+	/// </remarks>
+	internal int RenderTypeIndicator => _parsedTypeIndicator ?? IdentifyType (PictureData.Span, MimeType);
+
+	static int IdentifyType (ReadOnlySpan<byte> data, string mimeType)
+	{
+		var sniffed = SniffType (data);
+		return sniffed != Mp4AtomMapping.TypeBinary ? sniffed : TypeFromMime (mimeType);
+	}
+
+	static int TypeFromMime (string mimeType)
+	{
+		if (mimeType.Contains ("jpeg", StringComparison.OrdinalIgnoreCase) ||
+			mimeType.Contains ("jpg", StringComparison.OrdinalIgnoreCase))
+			return Mp4AtomMapping.TypeJpeg;
+
+		if (mimeType.Contains ("png", StringComparison.OrdinalIgnoreCase))
+			return Mp4AtomMapping.TypePng;
+
+		if (mimeType.Contains ("gif", StringComparison.OrdinalIgnoreCase))
+			return Mp4AtomMapping.TypeGif;
+
+		if (mimeType.Contains ("bmp", StringComparison.OrdinalIgnoreCase))
+			return Mp4AtomMapping.TypeBmp;
+
+		return Mp4AtomMapping.TypeBinary;
+	}
 
 	static int SniffType (ReadOnlySpan<byte> data)
 	{
