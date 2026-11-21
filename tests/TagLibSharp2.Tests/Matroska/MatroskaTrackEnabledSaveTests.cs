@@ -51,7 +51,7 @@ public partial class MatroskaFileTests
 		// Nothing moves, so a SeekHead the writer cannot walk is not a reason to fail.
 		var seekHead = Master (MatroskaIds.SeekHead, new byte[] { 0x00, 0x00, 0x00 });
 		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050, Enabled (1)));
-		var original = FileWith (seekHead, tracks, Master (0x1F43B675, ClusterMarker));
+		var original = TrackFile (seekHead, tracks, Master (0x1F43B675, ClusterMarker));
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
@@ -67,7 +67,7 @@ public partial class MatroskaFileTests
 		// The Void after Tracks absorbs the element, so the SeekHead is never read.
 		var seekHead = Master (MatroskaIds.SeekHead, new byte[] { 0x00, 0x00, 0x00 });
 		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
-		var original = FileWith (seekHead, tracks, MakeVoid (8), Master (0x1F43B675, ClusterMarker));
+		var original = TrackFile (seekHead, tracks, MakeVoid (8), Master (0x1F43B675, ClusterMarker));
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
@@ -186,7 +186,7 @@ public partial class MatroskaFileTests
 	{
 		var info = Master (0x1549A966, Element (0x7BA9, "Far"u8));
 		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
-		var original = FileWith (info, tracks, Master (0x1F43B675, ClusterMarker), Element (0xEC, new byte[18]));
+		var original = TrackFile (info, tracks, Master (0x1F43B675, ClusterMarker), Element (0xEC, new byte[18]));
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
@@ -204,7 +204,7 @@ public partial class MatroskaFileTests
 		}
 
 		children.Add (Master (0x1F43B675, ClusterMarker));
-		var original = FileWith (children.ToArray ());
+		var original = TrackFile (children.ToArray ());
 		var parsed = MatroskaFile.Read (original).File!;
 		Assert.AreEqual (200, parsed.Tracks.Count);
 		foreach (var track in parsed.Tracks)
@@ -315,6 +315,71 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_InsertedFlag_AddsAMissingDocTypeVersion ()
+	{
+		// An omitted DocTypeVersion is 1 (RFC 8794 §11.2.7). FlagEnabled has minver 2, and RFC 9559
+		// section 7 requires DocTypeVersion to be at least the highest version of any element present.
+		// The EBML header is outside the Segment, so growing it moves no Segment Position.
+		var header = WithCrc (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), Element (0x4285, new byte[] { 1 })));
+		var original = Concat (header, Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), MakeVoid (3), Master (0x1F43B675, ClusterMarker)));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		var saved = Save (parsed, original);
+
+		Assert.AreEqual (original.Length + 4, saved.Length);
+		AssertDocTypeVersion (saved, 2);
+		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
+		Assert.AreEqual (IndexOf (original, ClusterMarker) - header.Length, IndexOf (saved, ClusterMarker) - header.Length - 4, "no Segment Position moved");
+	}
+
+	[TestMethod]
+	public void Save_InsertedFlag_ReplacesAnEmptyDocTypeVersion ()
+	{
+		// An empty DocTypeVersion takes its default of 1 (RFC 8794 §6.1).
+		var header = Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), Element (0x4287, Array.Empty<byte> ())));
+		var original = Concat (header, Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), MakeVoid (3), Master (0x1F43B675, ClusterMarker)));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		var saved = Save (parsed, original);
+
+		Assert.AreEqual (original.Length + 1, saved.Length);
+		AssertDocTypeVersion (saved, 2);
+		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
+	}
+
+	[TestMethod]
+	public void Save_InPlaceFlag_LeavesAMissingDocTypeVersion ()
+	{
+		// The flag was already stored, so the file already declared what it needed.
+		var header = Master (0x1A45DFA3, Element (0x4282, "matroska"u8));
+		var original = Concat (header, Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050, Enabled (1)))));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		var saved = Save (parsed, original);
+
+		Assert.AreEqual (1, DifferingBytes (original, saved));
+	}
+
+	static void AssertDocTypeVersion (byte[] file, ulong expected)
+	{
+		Assert.IsTrue (EbmlReader.TryRead (file, 0, file.Length, out var header));
+		ulong? found = null;
+		var offset = header.DataOffset;
+		while (offset < header.End && EbmlReader.TryRead (file, offset, header.End, out var child)) {
+			if (child.Id == MatroskaIds.DocTypeVersion)
+				found = EbmlReader.ReadUInt (file.AsSpan (child.DataOffset, (int)child.DataLength));
+			offset = child.End;
+		}
+
+		Assert.AreEqual (expected, found);
+		if (EbmlReader.TryRead (file, header.DataOffset, header.End, out var first) && first.Id == MatroskaIds.Crc32)
+			Assert.IsTrue (CrcMatches (file.AsSpan (header.DataOffset, (int)header.DataLength)), "EBML header CRC-32");
+	}
+
+	[TestMethod]
 	public void Save_InPlaceFlag_LeavesDocTypeVersion ()
 	{
 		var header = Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), Element (0x4287, new byte[] { 1 })));
@@ -335,7 +400,7 @@ public partial class MatroskaFileTests
 		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
 		// An unknown-size cluster ends where its children stop parsing, so the marker sits in a SimpleBlock.
 		var block = Element (0xA3, ClusterMarker);
-		var original = Matroska (Unknown (0x18538067, Concat (info, tracks, MakeVoid (6), Unknown (0x1F43B675, Concat (Element (0xE7, new byte[] { 0 }), block)))));
+		var original = TrackMatroska (Unknown (0x18538067, Concat (info, tracks, MakeVoid (6), Unknown (0x1F43B675, Concat (Element (0xE7, new byte[] { 0 }), block)))));
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
@@ -353,7 +418,7 @@ public partial class MatroskaFileTests
 	{
 		var first = Master (0x1654AE6B, AudioEntry (1, 22050));
 		var second = Master (0x1654AE6B, Concat (AudioEntry (2, 44100), VideoEntry (3, 640)));
-		var original = FileWith (first, MakeVoid (8), second, MakeVoid (3), Master (0x1F43B675, ClusterMarker));
+		var original = TrackFile (first, MakeVoid (8), second, MakeVoid (3), Master (0x1F43B675, ClusterMarker));
 		var parsed = MatroskaFile.Read (original).File!;
 		Assert.AreEqual (3, parsed.Tracks.Count);
 		parsed.Tracks[0].IsEnabled = false;
