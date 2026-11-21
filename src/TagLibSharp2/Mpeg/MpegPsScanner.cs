@@ -79,9 +79,11 @@ internal static class MpegPsScanner
 		if (length <= 0)
 			return -1;
 
-		// What follows a pack header is another start code. This keeps a box whose size
-		// is 0x000001BA from passing for a pack.
-		if (rest.Length >= length + 3 && (rest[length] != 0 || rest[length + 1] != 0 || rest[length + 2] != 1))
+		// What follows a pack header is another start code (a system header, a packet, or the end
+		// code). This keeps a box whose size is 0x000001BA from passing for a pack. It is required,
+		// not checked only when the bytes are there: the reader sees the stream cut at the first
+		// tag after it while detection sees the file, and both must give the same answer.
+		if (rest.Length < length + 3 || rest[length] != 0 || rest[length + 1] != 0 || rest[length + 2] != 1)
 			return -1;
 		return at;
 	}
