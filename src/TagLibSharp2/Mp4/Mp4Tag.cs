@@ -734,8 +734,9 @@ public sealed class Mp4Tag : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Reads the freeform <c>----</c> atom whose <c>mean</c> is <c>com.apple.iTunes</c> and whose
-	/// <c>name</c> equals <paramref name="name"/> exactly. Each <c>data</c> atom with text (type 1, UTF-8)
-	/// is one value. The name is the whole name: <c>"a:b"</c> is a name with a colon, not a mean and a
+	/// <c>name</c> equals <paramref name="name"/> exactly. Each <c>data</c> atom of type 1 (UTF-8) or type 0
+	/// (implicit, read as UTF-8 as <see cref="Mp4File.GetFreeformTag"/> reads it) is one value; other types
+	/// are not text (Apple, QuickTime File Format, "Well-known types"). The name is the whole name: <c>"a:b"</c> is a name with a colon, not a mean and a
 	/// name. Use <see cref="Mp4File.GetFreeformTag"/> for another mean.
 	/// </remarks>
 	public override IReadOnlyList<string> GetCustomField (string name)
@@ -747,7 +748,7 @@ public sealed class Mp4Tag : Tag
 
 		var values = new List<string> (dataAtoms.Count);
 		foreach (var dataAtom in dataAtoms) {
-			if (dataAtom.TypeIndicator != Mp4AtomMapping.TypeUtf8)
+			if (dataAtom.TypeIndicator is not (Mp4AtomMapping.TypeBinary or Mp4AtomMapping.TypeUtf8))
 				continue;
 			var text = dataAtom.ToUtf8String ();
 			if (!string.IsNullOrEmpty (text))

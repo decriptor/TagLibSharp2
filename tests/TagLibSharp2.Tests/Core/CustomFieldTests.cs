@@ -536,6 +536,34 @@ public class CustomFieldTests
 	}
 
 	[TestMethod]
+	[DataRow (0)]
+	[DataRow (1)]
+	public void Mp4_ImplicitAndUtf8Data_AreText (int typeIndicator)
+	{
+		// Apple's well-known types: 0 is implicit (no type indicated), 1 is UTF-8. GetFreeformTag reads both.
+		var original = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var file = Mp4File.Read (original).File!;
+		file.Tag = new Mp4Tag ();
+		file.Tag.SetAtoms ("----:com.apple.iTunes:Implicit",
+			[new Mp4DataAtom (typeIndicator, BinaryData.FromStringUtf8 ("implicit"))]);
+		var again = Mp4File.Read (file.Render (original).Span).File!;
+
+		Assert.AreEqual ("implicit", again.GetFreeformTag ("com.apple.iTunes", "Implicit"));
+		AssertValues (again.Tag!.GetCustomField ("Implicit"), "implicit");
+	}
+
+	[TestMethod]
+	public void Mp4_NonTextData_IsNotAValue ()
+	{
+		var tag = new Mp4Tag ();
+		tag.SetAtoms ("----:com.apple.iTunes:Blob", [
+			new Mp4DataAtom (13, new BinaryData ([0xFF, 0xD8])),
+			new Mp4DataAtom (1, BinaryData.FromStringUtf8 ("text"))]);
+
+		AssertValues (tag.GetCustomField ("Blob"), "text");
+	}
+
+	[TestMethod]
 	public void Mp4_NameWithColon_SurvivesRender ()
 	{
 		var tag = new Mp4Tag ();
