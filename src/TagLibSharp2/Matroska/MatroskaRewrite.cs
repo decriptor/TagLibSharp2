@@ -336,13 +336,13 @@ static class MatroskaRewrite
 	{
 		var strict = plan.MustRetarget || plan.Delta != 0;
 		if (!TryReadSeek (body, seek, out var id, out var position, out var positionElement))
-			return strict ? TryDropSeek (body, seek, ref changed) : true;
+			return strict ? TryVoidElement (body, seek, ref changed) : true;
 
 		var isTags = id == MatroskaIds.Tags;
 		ulong desired;
 		if (isTags) {
 			if (plan.TagsOffset < 0)
-				return TryDropSeek (body, seek, ref changed);
+				return TryVoidElement (body, seek, ref changed);
 			desired = (ulong)plan.TagsOffset;
 		} else if (plan.Delta != 0 && position >= (ulong)plan.ShiftFrom) {
 			desired = position + (ulong)plan.Delta;
@@ -376,7 +376,7 @@ static class MatroskaRewrite
 			return true;
 		}
 
-		return TryDropSeek (body, seek, ref changed);
+		return TryVoidElement (body, seek, ref changed);
 	}
 
 	static bool TryReadSeek (byte[] body, EbmlElement seek, out ulong id, out ulong position, out EbmlElement positionElement)
@@ -406,12 +406,12 @@ static class MatroskaRewrite
 		return sawId && sawPosition && offset == seek.End;
 	}
 
-	static bool TryDropSeek (byte[] body, EbmlElement seek, ref bool changed)
+	static bool TryVoidElement (byte[] body, EbmlElement element, ref bool changed)
 	{
-		var total = seek.End - seek.Position;
+		var total = element.End - element.Position;
 		if (!TryMakeVoid (total, out var hole))
 			return false;
-		hole.CopyTo (body.AsSpan (seek.Position));
+		hole.CopyTo (body.AsSpan (element.Position));
 		changed = true;
 		return true;
 	}
@@ -491,12 +491,11 @@ static class MatroskaRewrite
 		while (offset < end) {
 			if (!EbmlReader.TryRead (body, offset, end, out var element) || element.UnknownSize)
 				return false;
-			// CueCodecState 0 is the initial TrackEntry, not segment offset 0.
-			var codecStateSentinel = element.Id == MatroskaIds.CueCodecState
-				&& element.DataLength is >= 1 and <= 8
-				&& EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength)) == 0;
-			if (!codecStateSentinel && element.Id is MatroskaIds.CueClusterPosition or MatroskaIds.CueCodecState) {
-				if (!TryAddDelta (body, element, plan, ref changed))
+			if (element.Id == MatroskaIds.CueClusterPosition) {
+				if (!TryAddDelta (body, element, plan, ref changed, emptyIsZero: false))
+					return false;
+			} else if (element.Id == MatroskaIds.CueCodecState) {
+				if (!TryAddDeltaOrVoid (body, element, plan, ref changed))
 					return false;
 			} else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions or MatroskaIds.Cues) {
 				var nested = false;
@@ -540,7 +539,8 @@ static class MatroskaRewrite
 			}
 
 			// PrevSize is the previous cluster's length, not a segment offset.
-			if (child.Id == MatroskaIds.Position && !TryAddDelta (body, child, plan, ref changed)) {
+			// Position is optional, so a value that does not fit is removed instead of failing the save.
+			if (child.Id == MatroskaIds.Position && !TryAddDeltaOrVoid (body, child, plan, ref changed)) {
 				error = "Matroska Cluster Position cannot be updated";
 				return false;
 			}
@@ -560,9 +560,12 @@ static class MatroskaRewrite
 
 	/// <summary>
 	/// Adds <see cref="Plan.Delta"/> when the stored segment offset is at or past the insertion point.
+	/// An empty element is 0 (RFC 8794) and is left unchanged when <paramref name="emptyIsZero"/> is set.
 	/// </summary>
-	static bool TryAddDelta (byte[] body, EbmlElement element, Plan plan, ref bool changed)
+	static bool TryAddDelta (byte[] body, EbmlElement element, Plan plan, ref bool changed, bool emptyIsZero)
 	{
+		if (element.DataLength == 0)
+			return emptyIsZero;
 		if (element.DataLength is < 1 or > 8)
 			return false;
 		var value = EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength));
@@ -575,6 +578,13 @@ static class MatroskaRewrite
 		if (updated != value)
 			changed = true;
 		return true;
+	}
+
+	static bool TryAddDeltaOrVoid (byte[] body, EbmlElement element, Plan plan, ref bool changed)
+	{
+		if (TryAddDelta (body, element, plan, ref changed, emptyIsZero: true))
+			return true;
+		return TryVoidElement (body, element, ref changed);
 	}
 
 	/// <summary>
