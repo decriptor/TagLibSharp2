@@ -16,10 +16,12 @@ namespace TagLibSharp2.Tests.Mp4;
 [TestCategory ("Mp4")]
 public class Mp4PreservationTests
 {
-	// Reads must stay linear in the number of ilst children, whatever their kind, because the
-	// file is untrusted. Each shape is read at n and 8n children: a linear read takes 8 to 14 times
-	// as long (cache and GC), a quadratic one about 64 times. The ratio cancels out machine and
-	// build speed, and the best of several runs filters out scheduler noise.
+	// Reads must stay linear in the number of ilst children, whatever their kind, because the file
+	// is untrusted. Each shape compares one read of a 16n-child file with 16 reads of an n-child
+	// file: the same number of children, so a linear parser costs about the same (1x to 3x with
+	// cache and GC), while a quadratic one costs about 16x. Process CPU time is used instead of
+	// wall time so other load on the machine does not count, and the cheapest of several rounds
+	// is kept.
 	[TestMethod]
 	[DoNotParallelize]
 	[DataRow ("unknown-then-title")]
@@ -30,24 +32,34 @@ public class Mp4PreservationTests
 	[DataRow ("invalid-then-valid-freeforms")]
 	public void Read_ManyIlstChildren_ScalesLinearly (string shape)
 	{
-		const int small = 4000;
-		const int factor = 8;
+		const int small = 2000;
+		const int factor = 16;
+		const double limit = factor / 2.0;
+		const int reps = 4;
 		var smallFile = TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, small));
 		var largeFile = TestBuilders.Mp4.CreateWithIlstAtoms (IlstShape (shape, small * factor));
 
-		// Warm up so JIT time is not charged to the small read.
-		Assert.IsTrue (Mp4File.Read (smallFile).IsSuccess);
+		// Warm up so JIT time is not charged to the first measurement.
+		CpuTimeOfReads (smallFile, 2);
 
-		var smallTicks = long.MaxValue;
-		var largeTicks = long.MaxValue;
-		for (var run = 0; run < 7; run++) {
-			smallTicks = Math.Min (smallTicks, TimeRead (smallFile));
-			largeTicks = Math.Min (largeTicks, TimeRead (largeFile));
+		var smallCost = TimeSpan.MaxValue;
+		var largeCost = TimeSpan.MaxValue;
+		var ratio = 0.0;
+		for (var round = 0; round < 5; round++) {
+			var smallRound = CpuTimeOfReads (smallFile, factor * reps);
+			var largeRound = CpuTimeOfReads (largeFile, reps);
+			smallCost = smallRound < smallCost ? smallRound : smallCost;
+			largeCost = largeRound < largeCost ? largeRound : largeCost;
+			ratio = largeCost.TotalMilliseconds / Math.Max (1.0, smallCost.TotalMilliseconds);
+
+			// A quadratic read is well past the limit on the first round; no need to repeat it.
+			if (ratio > limit * 1.5)
+				break;
 		}
 
-		var ratio = (double)largeTicks / Math.Max (1, smallTicks);
-		Assert.IsLessThan (factor * 4.0, ratio,
-			$"{shape}: {small} children took {smallTicks} ticks, {small * factor} took {largeTicks} ticks (ratio {ratio:F1})");
+		Assert.IsLessThan (limit, ratio,
+			$"{shape}: {factor * reps} reads of {small} children took {smallCost.TotalMilliseconds:F0} ms of CPU, " +
+			$"{reps} reads of {small * factor} took {largeCost.TotalMilliseconds:F0} ms (ratio {ratio:F2})");
 	}
 
 	[TestMethod]
@@ -449,15 +461,20 @@ public class Mp4PreservationTests
 		Assert.AreEqual ("New", Mp4File.Read (rendered.Span).File!.Title);
 	}
 
-	static long TimeRead (byte[] file)
+	static TimeSpan CpuTimeOfReads (byte[] file, int reads)
 	{
 		GC.Collect ();
 		GC.WaitForPendingFinalizers ();
-		var watch = Stopwatch.StartNew ();
-		var result = Mp4File.Read (file);
-		watch.Stop ();
-		Assert.IsTrue (result.IsSuccess, result.Error);
-		return watch.ElapsedTicks;
+		GC.Collect ();
+		using var process = Process.GetCurrentProcess ();
+		var start = process.TotalProcessorTime;
+		for (var i = 0; i < reads; i++) {
+			var result = Mp4File.Read (file);
+			Assert.IsTrue (result.IsSuccess, result.Error);
+		}
+
+		process.Refresh ();
+		return process.TotalProcessorTime - start;
 	}
 
 	static byte[][] IlstShape (string shape, int count)
