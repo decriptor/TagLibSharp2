@@ -1108,8 +1108,8 @@ public abstract class Tag
 	/// <item><term>APEv2</term><description>A text item. Keys are case-insensitive. Values are
 	/// separated by U+0000.</description></item>
 	/// <item><term>ID3v2</term><description>A <c>TXXX</c> frame whose description is the name. The
-	/// description is matched exactly. Values are separated by U+0000. The name never addresses a
-	/// standard frame such as <c>TIT2</c>.</description></item>
+	/// description is matched case-insensitively, as <c>Id3v2Tag.GetUserText</c> matches it. Values are
+	/// separated by U+0000. The name never addresses a standard frame such as <c>TIT2</c>.</description></item>
 	/// <item><term>MP4</term><description>A freeform <c>----</c> atom with mean
 	/// <c>com.apple.iTunes</c> and the name as its <c>name</c>. Matched exactly. Each value is its own
 	/// <c>data</c> atom.</description></item>

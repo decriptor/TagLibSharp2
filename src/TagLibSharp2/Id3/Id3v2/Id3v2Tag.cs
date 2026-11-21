@@ -2108,10 +2108,11 @@ public sealed class Id3v2Tag : Tag
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Reads every <c>TXXX</c> frame whose description equals <paramref name="name"/> exactly. The spec
-	/// allows one <c>TXXX</c> per description (https://id3.org/id3v2.4.0-frames §4.2.6) and does not fold
-	/// case, so <c>"MOOD"</c> and <c>"Mood"</c> are different fields. The value is split at U+0000, the
-	/// ID3v2.4 separator for multiple strings (https://id3.org/id3v2.4.0-structure §4).
+	/// Reads every <c>TXXX</c> frame whose description matches <paramref name="name"/> ignoring case, the
+	/// same rule <see cref="GetUserText"/> and the mapped properties use, so <c>"MOOD"</c> and <c>"Mood"</c>
+	/// are one field. The spec allows one <c>TXXX</c> per description (https://id3.org/id3v2.4.0-frames
+	/// §4.2.6). The value is split at U+0000, the ID3v2.4 separator for multiple strings
+	/// (https://id3.org/id3v2.4.0-structure §4).
 	/// </remarks>
 	public override IReadOnlyList<string> GetCustomField (string name)
 	{
@@ -2121,7 +2122,7 @@ public sealed class Id3v2Tag : Tag
 
 		var values = new List<string> ();
 		for (var i = 0; i < _userTextFrames.Count; i++) {
-			if (string.Equals (_userTextFrames[i].Description, name, StringComparison.Ordinal))
+			if (string.Equals (_userTextFrames[i].Description, name, StringComparison.OrdinalIgnoreCase))
 				CustomFieldValues.AddSplit (_userTextFrames[i].Value, values);
 		}
 		return values;
@@ -2130,8 +2131,8 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// <para>
-	/// Replaces every <c>TXXX</c> frame with exactly this description by one frame, kept at the position of
-	/// the first (https://id3.org/id3v2.4.0-frames §4.2.6). The values are joined with U+0000
+	/// Replaces every <c>TXXX</c> frame whose description matches ignoring case, as <see cref="SetUserText"/>
+	/// does, by one frame with <paramref name="name"/> as its description, kept at the position of the first (https://id3.org/id3v2.4.0-frames §4.2.6). The values are joined with U+0000
 	/// (https://id3.org/id3v2.4.0-structure §4).
 	/// </para>
 	/// <para>
@@ -2146,8 +2147,8 @@ public sealed class Id3v2Tag : Tag
 		if (!CustomFieldValues.IsUsableName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
 			return false;
 
-		var at = _userTextFrames.FindIndex (f => string.Equals (f.Description, name, StringComparison.Ordinal));
-		_userTextFrames.RemoveAll (f => string.Equals (f.Description, name, StringComparison.Ordinal));
+		var at = _userTextFrames.FindIndex (f => string.Equals (f.Description, name, StringComparison.OrdinalIgnoreCase));
+		_userTextFrames.RemoveAll (f => string.Equals (f.Description, name, StringComparison.OrdinalIgnoreCase));
 		if (kept.Count == 0)
 			return true;
 
@@ -2158,13 +2159,13 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <inheritdoc/>
-	/// <remarks>Removes every <c>TXXX</c> frame whose description equals <paramref name="name"/> exactly.</remarks>
+	/// <remarks>Removes every <c>TXXX</c> frame whose description matches <paramref name="name"/> ignoring case.</remarks>
 	public override bool RemoveCustomField (string name)
 	{
 		CustomFieldValues.ThrowIfNull (name);
 		if (!CustomFieldValues.IsUsableName (name))
 			return false;
-		return _userTextFrames.RemoveAll (f => string.Equals (f.Description, name, StringComparison.Ordinal)) > 0;
+		return _userTextFrames.RemoveAll (f => string.Equals (f.Description, name, StringComparison.OrdinalIgnoreCase)) > 0;
 	}
 
 	/// <summary>

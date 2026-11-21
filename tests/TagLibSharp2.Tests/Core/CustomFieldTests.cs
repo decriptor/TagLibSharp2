@@ -408,16 +408,39 @@ public class CustomFieldTests
 	// ───────────────────────── ID3v2 ─────────────────────────
 
 	[TestMethod]
-	public void Id3v2_DescriptionMatchesExactly ()
+	public void Id3v2_DescriptionMatchesIgnoringCase ()
 	{
 		var tag = new Id3v2Tag ();
 
 		tag.SetCustomField ("Mood", "calm");
 		tag.SetCustomField ("MOOD", "loud");
 
-		AssertValues (tag.GetCustomField ("Mood"), "calm");
-		AssertValues (tag.GetCustomField ("MOOD"), "loud");
-		Assert.AreEqual (2, tag.UserTextFrames.Count);
+		AssertValues (tag.GetCustomField ("mood"), "loud");
+		Assert.AreEqual (1, tag.UserTextFrames.Count);
+		Assert.AreEqual ("MOOD", tag.UserTextFrames[0].Description);
+	}
+
+	[TestMethod]
+	public void Id3v2_TxxxFromSetUserText_IsFoundReplacedAndRemovedInAnyCase ()
+	{
+		var tag = new Id3v2Tag ();
+		tag.SetUserText ("FOO", "old");
+
+		AssertValues (tag.GetCustomField ("foo"), "old");
+
+		Assert.IsTrue (tag.SetCustomField ("foo", "new"));
+		Assert.AreEqual (1, tag.UserTextFrames.Count);
+		Assert.AreEqual ("new", tag.GetUserText ("FOO"));
+
+		tag.SetUserText ("Foo", "again");
+		Assert.AreEqual (1, tag.UserTextFrames.Count);
+		AssertValues (tag.GetCustomField ("FOO"), "again");
+
+		var reread = Id3v2Tag.Read (tag.Render ().Span).Tag!;
+		Assert.AreEqual (1, reread.UserTextFrames.Count);
+		Assert.IsTrue (reread.RemoveCustomField ("fOO"));
+		Assert.AreEqual (0, reread.UserTextFrames.Count);
+		Assert.IsNull (reread.GetUserText ("FOO"));
 	}
 
 	[TestMethod]
