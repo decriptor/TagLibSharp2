@@ -237,6 +237,7 @@ static partial class MatroskaRewrite
 				cues.Add ((at, at + piece.Length));
 			else if (piece.Id == MatroskaIds.Cluster) {
 				// Piece.Offset is the file offset. Position is relative to the segment payload.
+				// The difference is O(1). Summing preceding pieces once per cluster is quadratic.
 				clusters.Add ((at, at + piece.Length, piece.Offset - layout.DataOffset));
 			}
 			i++;
