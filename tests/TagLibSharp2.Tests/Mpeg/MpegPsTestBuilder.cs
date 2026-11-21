@@ -47,6 +47,12 @@ internal static class MpegPsTestBuilder
 		public int VideoFrameBytes { get; init; } = 64;
 		public int Ac3Acmod { get; init; } = 2;
 		public bool Ac3Lfe { get; init; }
+
+		/// <summary>The AC-3 bsid. 8 is AC-3; 16 is E-AC-3, whose syncinfo differs.</summary>
+		public int Ac3Bsid { get; init; } = 8;
+
+		/// <summary>The 12 high bits of an MPEG-2 bit rate (sequence extension bit_rate_extension).</summary>
+		public int BitRateExtension { get; init; }
 		public bool EndCode { get; init; } = true;
 		public int BitRateValue { get; init; } = 2500;
 
@@ -318,8 +324,8 @@ internal static class MpegPsTestBuilder
 		// Identifier 1, profile_and_level 0x48, progressive, 4:2:0, then the size extensions.
 		ext[4] = 0x10 | 0x04;
 		ext[5] = (byte)(0x80 | 0x08 | 0x02 | (hExt >> 1));
-		ext[6] = (byte)(((hExt & 0x01) << 7) | (vExt << 5));
-		ext[7] = 0x01;
+		ext[6] = (byte)(((hExt & 0x01) << 7) | (vExt << 5) | ((o.BitRateExtension >> 7) & 0x1F));
+		ext[7] = (byte)(((o.BitRateExtension & 0x7F) << 1) | 0x01);
 		ext[8] = 0x00;
 		ext[9] = (byte)((o.FrameRateExtensionN << 5) | o.FrameRateExtensionD);
 		return Concat (header, ext);
@@ -371,7 +377,7 @@ internal static class MpegPsTestBuilder
 	/// <summary>
 	/// An AC-3 sync frame (ATSC A/52 5.3): 48 kHz, 192 kbps, the given acmod and LFE flag.
 	/// </summary>
-	public static byte[] Ac3Frame (int acmod, bool lfe)
+	public static byte[] Ac3Frame (int acmod, bool lfe, int bsid = 8)
 	{
 		// frmsizecod 20 is 192 kbps; at 48 kHz the frame is 384 words.
 		var frame = new byte[768];
@@ -379,7 +385,7 @@ internal static class MpegPsTestBuilder
 		frame[1] = 0x77;
 		frame[4] = 0x00 | 20;
 		var bits = new BitWriter ();
-		bits.Write (8, 5);
+		bits.Write (bsid, 5);
 		bits.Write (0, 3);
 		bits.Write (acmod, 3);
 		if ((acmod & 0x1) != 0 && acmod != 0x1)
@@ -394,7 +400,7 @@ internal static class MpegPsTestBuilder
 	}
 
 	static byte[] AudioFrame (Options o) => o.AudioKind switch {
-		Audio.Ac3 => Ac3Frame (o.Ac3Acmod, o.Ac3Lfe),
+		Audio.Ac3 => Ac3Frame (o.Ac3Acmod, o.Ac3Lfe, o.Ac3Bsid),
 		Audio.Lpcm => new byte[1920],
 		_ => Mp2Frame ()
 	};
