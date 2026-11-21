@@ -17,6 +17,7 @@ internal static class Mp4ChapterTestBuilder
 	internal const uint AudioTrackId = 1;
 	internal const uint TextTrackId = 2;
 	internal const uint ImageTrackId = 3;
+	internal const uint UrlTrackId = 4;
 	internal const uint MovieTimescale = 1000;
 	internal const uint MovieDuration = 10_000;
 	internal const int AudioSampleCount = 8;
@@ -66,6 +67,9 @@ internal static class Mp4ChapterTestBuilder
 
 		/// <summary>Add a video track (id 3) that the audio track's chap names, as Apple chapter images are.</summary>
 		public bool ImageTrack { get; set; }
+
+		/// <summary>Add a second text track (id 4) that the audio track's chap names, as Apple chapter URLs are.</summary>
+		public bool UrlTrack { get; set; }
 	}
 
 	internal static byte[] AudioPayload ()
@@ -133,8 +137,12 @@ internal static class Mp4ChapterTestBuilder
 	static byte[] Moov (Options options, uint audioAt, uint textAt, uint[] textSizes)
 	{
 		var hasTrack = options.Track is not null || options.RawSamples is not null;
-		var children = new List<byte[]> { Mvhd (options.ImageTrack ? 4u : hasTrack ? 3u : 2u) };
-		uint[] extra = options.ImageTrack ? [.. options.ExtraChapReferences, ImageTrackId] : options.ExtraChapReferences;
+		var children = new List<byte[]> { Mvhd (options.UrlTrack ? 5u : options.ImageTrack ? 4u : hasTrack ? 3u : 2u) };
+		uint[] extra = [
+			.. options.ExtraChapReferences,
+			.. options.ImageTrack ? [ImageTrackId] : Array.Empty<uint> (),
+			.. options.UrlTrack ? [UrlTrackId] : Array.Empty<uint> (),
+		];
 		uint[] chap = hasTrack ? [TextTrackId, .. extra] : extra;
 		children.Add (AudioTrak (audioAt, chap));
 		if (hasTrack) {
@@ -144,7 +152,9 @@ internal static class Mp4ChapterTestBuilder
 		}
 
 		if (options.ImageTrack)
-			children.Add (ImageTrak ());
+			children.Add (EmptyTrak (ImageTrackId, "vide"));
+		if (options.UrlTrack)
+			children.Add (EmptyTrak (UrlTrackId, "text"));
 
 		if (options.Mvex)
 			children.Add (Mp4TestBuilder.CreateBox ("mvex", Mp4TestBuilder.CreateFullBox ("trex", 0, 0, new byte[20])));
@@ -316,7 +326,7 @@ internal static class Mp4ChapterTestBuilder
 		return Mp4TestBuilder.CreateBox ("trak", [.. children]);
 	}
 
-	static byte[] ImageTrak ()
+	static byte[] EmptyTrak (uint trackId, string handler)
 	{
 		var stbl = Mp4TestBuilder.CreateBox ("stbl", [
 			.. Mp4TestBuilder.CreateFullBox ("stsd", 0, 0, [0, 0, 0, 0]),
@@ -326,8 +336,8 @@ internal static class Mp4ChapterTestBuilder
 			.. Table ("stco", 0),
 		]);
 		var minf = Mp4TestBuilder.CreateBox ("minf", [.. Dinf (), .. stbl]);
-		var mdia = Mp4TestBuilder.CreateBox ("mdia", [.. Mdhd (1000, MovieDuration), .. Hdlr ("vide"), .. minf]);
-		return Mp4TestBuilder.CreateBox ("trak", [.. Tkhd (ImageTrackId, 2, MovieDuration), .. mdia]);
+		var mdia = Mp4TestBuilder.CreateBox ("mdia", [.. Mdhd (1000, MovieDuration), .. Hdlr (handler), .. minf]);
+		return Mp4TestBuilder.CreateBox ("trak", [.. Tkhd (trackId, 2, MovieDuration), .. mdia]);
 	}
 
 	static void AddMatrix (BinaryDataBuilder body)

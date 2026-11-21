@@ -681,7 +681,7 @@ public sealed class Mp4File : IMediaFile
 	/// movie or to a file with no track; <c>chpl</c> carries the list alone there.
 	/// </para>
 	/// <para>
-	/// An empty list removes <c>chpl</c>, the chapter track, and its references. A save that leaves the list
+	/// An empty list removes <c>chpl</c>, every text track a <c>chap</c> reference names, and those references. A save that leaves the list
 	/// as read, or sets it to the list the file already holds, keeps the chapter bytes unchanged.
 	/// </para>
 	/// </remarks>
