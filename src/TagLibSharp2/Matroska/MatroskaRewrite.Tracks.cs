@@ -140,6 +140,7 @@ static partial class MatroskaRewrite
 			return true;
 
 		var body = BuildWithTracks (data, layout, replacements, out var seekHeads, out var cues, out var map);
+		// An in-place edit moves nothing, so the SeekHead and Cues are left exactly as they were.
 		var plan = new Plan { RetargetTags = false, Moves = map };
 		if (!TryPatch (body, seekHeads, cues, plan, out error))
 			return false;
@@ -343,6 +344,7 @@ static partial class MatroskaRewrite
 
 	/// <summary>
 	/// Lays out the segment with the edited <c>Tracks</c>, taking each one's growth from a Void when one is close.
+	/// <paramref name="map"/> is null when every piece kept its segment position.
 	/// </summary>
 	static byte[] BuildWithTracks (
 		ReadOnlySpan<byte> data,
@@ -350,7 +352,7 @@ static partial class MatroskaRewrite
 		byte[]?[] replacements,
 		out List<(int Start, int End)> seekHeads,
 		out List<(int Start, int End)> cues,
-		out PieceMap map)
+		out PieceMap? map)
 	{
 		var pieces = layout.Pieces;
 		var room = new int[pieces.Count];
@@ -396,7 +398,10 @@ static partial class MatroskaRewrite
 				cues.Add ((at, at + length));
 		}
 
-		map = new PieceMap (oldStarts, newStarts, source, builder.Length);
+		var moved = source != builder.Length;
+		for (var i = 0; i < pieces.Count && !moved; i++)
+			moved = oldStarts[i] != newStarts[i];
+		map = moved ? new PieceMap (oldStarts, newStarts, source, builder.Length) : null;
 		return builder.ToArray ();
 	}
 

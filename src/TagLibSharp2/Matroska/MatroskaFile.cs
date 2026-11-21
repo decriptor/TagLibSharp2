@@ -361,7 +361,10 @@ public sealed class MatroskaFile : IMediaFile
 		return result.IsSuccess;
 	}
 
-	/// <summary>Writes the rendered <c>Tags</c> element into a copy of <paramref name="originalData"/>.</summary>
+	/// <summary>
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set and the rendered <c>Tags</c> element
+	/// into a copy of <paramref name="originalData"/>.
+	/// </summary>
 	/// <returns>The rewritten file, or empty when the container cannot be bounded.</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
 		TryRender (originalData, out var rewritten, out _)
@@ -792,7 +795,7 @@ public sealed class MatroskaFile : IMediaFile
 	}
 
 	/// <summary>
-	/// A 0/1 flag. An empty element is the default 1 (RFC 8794 §7.1, RFC 9559 §5.1.4.1.4).
+	/// A 0/1 flag. An empty element is the default 1 (RFC 8794 §6.1, RFC 9559 §5.1.4.1.4).
 	/// </summary>
 	internal static bool IsFlagSet (ReadOnlySpan<byte> payload) =>
 		payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;

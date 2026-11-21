@@ -45,6 +45,35 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_InPlaceFlag_LeavesAnUnreadableSeekHeadAlone ()
+	{
+		// Nothing moves, so a SeekHead the writer cannot walk is not a reason to fail.
+		var seekHead = Master (MatroskaIds.SeekHead, new byte[] { 0x00, 0x00, 0x00 });
+		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050, Enabled (1)));
+		var original = FileWith (seekHead, tracks, Master (0x1F43B675, ClusterMarker));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		var saved = Save (parsed, original);
+
+		Assert.AreEqual (1, DifferingBytes (original, saved));
+		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
+	}
+
+	[TestMethod]
+	public void Save_GrowthPastAnUnreadableSeekHead_Fails ()
+	{
+		// A moved element whose seek cannot be updated would leave a pointer to the wrong bytes.
+		var seekHead = Master (MatroskaIds.SeekHead, new byte[] { 0x00, 0x00, 0x00 });
+		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
+		var original = FileWith (seekHead, tracks, Master (0x1F43B675, ClusterMarker));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		AssertFailure (parsed, new MockFileSystem (), "/seekhead.mkv", original, "SeekHead");
+	}
+
+	[TestMethod]
 	public void Save_EnableWithAStoredFlag_WritesTheByteInPlace ()
 	{
 		var original = TracksFile (AudioEntry (1, 22050, Element (0xB9, new byte[] { 0, 0 })), withVoid: 0);
