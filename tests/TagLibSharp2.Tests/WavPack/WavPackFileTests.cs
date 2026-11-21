@@ -904,6 +904,64 @@ public class WavPackFileTests
 	}
 
 	[TestMethod]
+	[DataRow (1_048_576, 0)]
+	[DataRow (1_048_531, 0)]
+	[DataRow (600 * 1024, 600 * 1024)]
+	public async Task Read_ChunksWithinOneMegabyte_OpenAsWavPackWhenDataStartsLater (int firstChunk, int secondChunk)
+	{
+		// Each chunk is at most 1 MB. fmt plus that chunk puts "data" past 1 MB.
+		// A cap on the running offset opens this as Wav. A cap on each chunk does not.
+		var data = CreateLegacyRiffWavPack (
+			version: 3,
+			samplesAtOffset16: 1255050,
+			payloadBytes: 32,
+			chunkBeforeData: firstChunk,
+			secondChunkBeforeData: secondChunk);
+		var name = "wide.wv";
+
+		AssertLegacyDuration (MediaFile.ReadFromData (data, name));
+		AssertLegacyDuration (MediaFile.Read (new MemoryStream (data), name));
+		AssertLegacyDuration (await MediaFile.ReadAsync (new MemoryStream (data), name));
+		AssertLegacyDuration (FromWavPackStream (data, name));
+		AssertLegacyDuration (FromWavPackFile (data, name));
+
+		var path = Path.Combine (Path.GetTempPath (), "tls-wv-" + Guid.NewGuid ().ToString ("N") + ".wv");
+		try {
+			File.WriteAllBytes (path, data);
+			AssertLegacyDuration (MediaFile.Read (path));
+			using var stream = File.OpenRead (path);
+			AssertLegacyDuration (MediaFile.Read (stream, name));
+		} finally {
+			if (File.Exists (path))
+				File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public void Read_ChunkLargerThanOneMegabyte_IsNotLegacyWavPack ()
+	{
+		// The reference stops at a chunk bigger than 1 MB. Bytes, the stream
+		// walker, and a direct WavPack read have to agree.
+		var data = CreateLegacyRiffWavPack (
+			version: 3,
+			samplesAtOffset16: 1255050,
+			payloadBytes: 32,
+			chunkBeforeData: WavPackFile.MaxRiffChunkSkip + 1);
+		var name = "huge.wv";
+
+		Assert.IsFalse (WavPackFile.IsValidFormat (data));
+		Assert.IsFalse (WavPackFile.Read (data).IsSuccess);
+		Assert.IsFalse (WavPackFile.Read (new MemoryStream (data), name, null).IsSuccess);
+		AssertStaysWav (MediaFile.ReadFromData (data, name));
+		AssertStaysWav (MediaFile.Read (new MemoryStream (data), name));
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/" + name, data);
+		Assert.IsFalse (WavPackFile.ReadFromFile ("/" + name, fs).IsSuccess);
+		AssertStaysWav (MediaFile.Read ("/" + name, fs));
+	}
+
+	[TestMethod]
 	public async Task Read_ChunkBetweenFmtAndData_PathAndStreamsOpenAsWavPack ()
 	{
 		// bext before fmt, then a fact chunk before data. A fixed peek that assumes
@@ -968,6 +1026,26 @@ public class WavPackFileTests
 	{
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (MediaFormat.Wav, result.Format);
+	}
+
+	static MediaFileResult FromWavPackStream (byte[] data, string name)
+	{
+		var opened = WavPackFile.Read (new MemoryStream (data), name, null);
+		if (!opened.IsSuccess || opened.File is null)
+			return MediaFileResult.Failure (opened.Error ?? "WavPack stream read failed");
+
+		return MediaFileResult.Success (opened.File, opened.File.Tag, MediaFormat.WavPack);
+	}
+
+	static MediaFileResult FromWavPackFile (byte[] data, string name)
+	{
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/" + name, data);
+		var opened = WavPackFile.ReadFromFile ("/" + name, fs);
+		if (!opened.IsSuccess || opened.File is null)
+			return MediaFileResult.Failure (opened.Error ?? "WavPack file read failed");
+
+		return MediaFileResult.Success (opened.File, opened.File.Tag, MediaFormat.WavPack);
 	}
 
 	static byte[] WavWithFactChunk ()
@@ -1271,7 +1349,8 @@ public class WavPackFileTests
 		int chunkBeforeData = 0,
 		int chunkBeforeFmt = 0,
 		int channels = 2,
-		string chunkBeforeDataId = "JUNK")
+		string chunkBeforeDataId = "JUNK",
+		int secondChunkBeforeData = 0)
 	{
 		var headerLength = version switch {
 			1 => 10,
@@ -1303,6 +1382,8 @@ public class WavPackFileTests
 			ms.Write ("bext"u8);
 			WriteUInt32LE (ms, (uint)chunkBeforeFmt);
 			ms.Write (new byte[chunkBeforeFmt]);
+			if ((chunkBeforeFmt & 1) == 1)
+				ms.WriteByte (0);
 		}
 
 		ms.Write ("fmt "u8);
@@ -1320,6 +1401,16 @@ public class WavPackFileTests
 				ms.Write ("JUNK"u8);
 			WriteUInt32LE (ms, (uint)chunkBeforeData);
 			ms.Write (new byte[chunkBeforeData]);
+			if ((chunkBeforeData & 1) == 1)
+				ms.WriteByte (0);
+		}
+
+		if (secondChunkBeforeData > 0) {
+			ms.Write ("JUNK"u8);
+			WriteUInt32LE (ms, (uint)secondChunkBeforeData);
+			ms.Write (new byte[secondChunkBeforeData]);
+			if ((secondChunkBeforeData & 1) == 1)
+				ms.WriteByte (0);
 		}
 
 		ms.Write ("data"u8);
