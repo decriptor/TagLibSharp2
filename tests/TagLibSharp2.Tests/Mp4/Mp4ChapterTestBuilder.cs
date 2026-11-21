@@ -70,6 +70,40 @@ internal static class Mp4ChapterTestBuilder
 
 		/// <summary>Add a second text track (id 4) that the audio track's chap names, as Apple chapter URLs are.</summary>
 		public bool UrlTrack { get; set; }
+
+		/// <summary>The ftyp major brand.</summary>
+		public string MajorBrand { get; set; } = "M4A ";
+
+		/// <summary>The text track's packed mdhd language.</summary>
+		public ushort TextLanguage { get; set; } = 0x55C4;
+
+		/// <summary>The text track's hdlr name.</summary>
+		public string TextHandlerName { get; set; } = "";
+
+		/// <summary>The text track's tkhd flags.</summary>
+		public uint TextTkhdFlags { get; set; } = 2;
+
+		/// <summary>
+		/// Put the text track's samples in a movie fragment (moov gets mvex, the text track an empty stbl),
+		/// located the way <see cref="FragmentBase"/> says. Null keeps them in moov.
+		/// </summary>
+		public FragmentBase? Fragment { get; set; }
+
+		/// <summary>The text traf's tfdt baseMediaDecodeTime.</summary>
+		public ulong FragmentDecodeTime { get; set; }
+	}
+
+	/// <summary>How a test traf locates its data (ISO 14496-12 §8.8.7).</summary>
+	internal enum FragmentBase
+	{
+		/// <summary>tfhd default-base-is-moof; trun data_offset from the moof.</summary>
+		Moof,
+
+		/// <summary>tfhd base_data_offset; trun without data_offset.</summary>
+		Explicit,
+
+		/// <summary>No base flags, after an audio traf: the base is the end of the previous traf's data.</summary>
+		PreviousTraf,
 	}
 
 	internal static byte[] AudioPayload ()
@@ -82,9 +116,12 @@ internal static class Mp4ChapterTestBuilder
 
 	internal static byte[] Build (Options options)
 	{
+		if (options.Fragment is not null)
+			return BuildFragmented (options);
+
 		var audio = AudioPayload ();
 		var text = TextPayload (options, out var textSizes);
-		var ftyp = Mp4TestBuilder.CreateFtypBox ("M4A ", 0, "M4A ", "isom");
+		var ftyp = Mp4TestBuilder.CreateFtypBox (options.MajorBrand, 0, options.MajorBrand, "isom");
 
 		var draft = Moov (options, 0, 0, textSizes);
 		var mdatStart = ftyp.Length + (options.MoovFirst ? draft.Length : 0);
@@ -104,6 +141,72 @@ internal static class Mp4ChapterTestBuilder
 		}
 
 		return file.ToArray ();
+	}
+
+	/// <summary>
+	/// ftyp | mdat (audio) | moov (mvhd duration 0, as ffmpeg's empty_moov writes it; mvex) | moof | mdat.
+	/// </summary>
+	static byte[] BuildFragmented (Options options)
+	{
+		var audio = AudioPayload ();
+		var text = TextPayload (options, out var textSizes);
+		var durations = options.Track?.Select (t => t.Duration).ToArray () ?? [.. textSizes.Select (_ => 600u)];
+		var ftyp = Mp4TestBuilder.CreateFtypBox (options.MajorBrand, 0, options.MajorBrand, "iso6");
+		var audioMdat = Mp4TestBuilder.CreateBox ("mdat", audio);
+		var audioAt = (uint)(ftyp.Length + 8);
+		var moov = Moov (options, audioAt, 0, textSizes);
+		var moofStart = ftyp.Length + audioMdat.Length + moov.Length;
+		byte[] audioFragment = options.Fragment == FragmentBase.PreviousTraf ? new byte[20] : [];
+
+		var draft = Moof (options.Fragment!.Value, 0, 0, textSizes, durations, options.FragmentDecodeTime);
+		var fragmentData = moofStart + draft.Length + 8;
+		var moof = Moof (options.Fragment.Value, moofStart, fragmentData, textSizes, durations, options.FragmentDecodeTime);
+		return [.. ftyp, .. audioMdat, .. moov, .. moof, .. Mp4TestBuilder.CreateBox ("mdat", [.. audioFragment, .. text])];
+	}
+
+	static byte[] Moof (FragmentBase mode, int moofStart, int dataStart, uint[] sizes, uint[] durations, ulong decodeTime)
+	{
+		var trafs = new List<byte> ();
+		var textStart = dataStart;
+		if (mode == FragmentBase.PreviousTraf) {
+			// Audio: base is the moof (first traf), data_offset to the fragment mdat, two 10-byte samples.
+			trafs.AddRange (Mp4TestBuilder.CreateBox ("traf", [
+				.. Mp4TestBuilder.CreateFullBox ("tfhd", 0, 0, U32 (AudioTrackId)),
+				.. Mp4TestBuilder.CreateFullBox ("trun", 0, 0x201, [.. U32 (2), .. U32 ((uint)(dataStart - moofStart)), .. U32 (10), .. U32 (10)]),
+			]));
+			textStart += 20;
+		}
+
+		var entries = new List<byte> ();
+		for (var i = 0; i < sizes.Length; i++)
+			entries.AddRange ([.. U32 (durations[i]), .. U32 (sizes[i])]);
+
+		var (tfhdFlags, tfhdBody, trunFlags, trunOffset) = mode switch {
+			FragmentBase.Moof => (0x020000u, U32 (TextTrackId), 0x301u, U32 ((uint)(textStart - moofStart))),
+			FragmentBase.Explicit => (0x1u, [.. U32 (TextTrackId), .. U64 ((ulong)textStart)], 0x300u, Array.Empty<byte> ()),
+			_ => (0u, U32 (TextTrackId), 0x300u, Array.Empty<byte> ()),
+		};
+		trafs.AddRange (Mp4TestBuilder.CreateBox ("traf", [
+			.. Mp4TestBuilder.CreateFullBox ("tfhd", 0, tfhdFlags, tfhdBody),
+			.. Mp4TestBuilder.CreateFullBox ("tfdt", 1, 0, U64 (decodeTime)),
+			.. Mp4TestBuilder.CreateFullBox ("trun", 0, trunFlags, [.. U32 ((uint)sizes.Length), .. trunOffset, .. entries]),
+		]));
+
+		return Mp4TestBuilder.CreateBox ("moof", [.. Mp4TestBuilder.CreateFullBox ("mfhd", 0, 0, U32 (1)), .. trafs]);
+	}
+
+	static byte[] U32 (uint value)
+	{
+		var bytes = new byte[4];
+		BinaryPrimitives.WriteUInt32BigEndian (bytes, value);
+		return bytes;
+	}
+
+	static byte[] U64 (ulong value)
+	{
+		var bytes = new byte[8];
+		BinaryPrimitives.WriteUInt64BigEndian (bytes, value);
+		return bytes;
 	}
 
 	static byte[] TextPayload (Options options, out uint[] sizes)
@@ -137,7 +240,7 @@ internal static class Mp4ChapterTestBuilder
 	static byte[] Moov (Options options, uint audioAt, uint textAt, uint[] textSizes)
 	{
 		var hasTrack = options.Track is not null || options.RawSamples is not null;
-		var children = new List<byte[]> { Mvhd (options.UrlTrack ? 5u : options.ImageTrack ? 4u : hasTrack ? 3u : 2u) };
+		var children = new List<byte[]> { Mvhd (options.UrlTrack ? 5u : options.ImageTrack ? 4u : hasTrack ? 3u : 2u, options.Fragment is null ? MovieDuration : 0) };
 		uint[] extra = [
 			.. options.ExtraChapReferences,
 			.. options.ImageTrack ? [ImageTrackId] : Array.Empty<uint> (),
@@ -156,8 +259,13 @@ internal static class Mp4ChapterTestBuilder
 		if (options.UrlTrack)
 			children.Add (EmptyTrak (UrlTrackId, "text"));
 
-		if (options.Mvex)
-			children.Add (Mp4TestBuilder.CreateBox ("mvex", Mp4TestBuilder.CreateFullBox ("trex", 0, 0, new byte[20])));
+		if (options.Fragment is not null) {
+			byte[] Trex (uint id) => Mp4TestBuilder.CreateFullBox ("trex", 0, 0, [.. U32 (id), .. U32 (1), .. new byte[12]]);
+			children.Add (Mp4TestBuilder.CreateBox ("mvex", [.. Trex (AudioTrackId), .. Trex (TextTrackId)]));
+		} else if (options.Mvex) {
+			byte[] Trex (uint id) => Mp4TestBuilder.CreateFullBox ("trex", 0, 0, [.. U32 (id), .. U32 (1), .. new byte[12]]);
+			children.Add (Mp4TestBuilder.CreateBox ("mvex", [.. Trex (AudioTrackId), .. (hasTrack ? Trex (TextTrackId) : [])]));
+		}
 
 		var udta = new List<byte[]> ();
 		if (options.Title is not null)
@@ -197,13 +305,13 @@ internal static class Mp4ChapterTestBuilder
 		return Mp4TestBuilder.CreateFullBox ("chpl", version, 0, body.ToArray ());
 	}
 
-	static byte[] Mvhd (uint nextTrackId)
+	static byte[] Mvhd (uint nextTrackId, uint duration)
 	{
 		using var body = new BinaryDataBuilder ();
 		body.AddUInt32BE (0);
 		body.AddUInt32BE (0);
 		body.AddUInt32BE (MovieTimescale);
-		body.AddUInt32BE (MovieDuration);
+		body.AddUInt32BE (duration);
 		body.AddUInt32BE (0x00010000);
 		body.AddUInt16BE (0x0100);
 		body.AddZeros (10);
@@ -228,20 +336,20 @@ internal static class Mp4ChapterTestBuilder
 		return Mp4TestBuilder.CreateFullBox ("tkhd", 0, flags, body.ToArray ());
 	}
 
-	static byte[] Mdhd (uint timescale, uint duration)
+	static byte[] Mdhd (uint timescale, uint duration, ushort language = 0x55C4)
 	{
 		using var body = new BinaryDataBuilder ();
 		body.AddUInt32BE (0);
 		body.AddUInt32BE (0);
 		body.AddUInt32BE (timescale);
 		body.AddUInt32BE (duration);
-		body.AddUInt16BE (0x55C4);
+		body.AddUInt16BE (language);
 		body.AddUInt16BE (0);
 		return Mp4TestBuilder.CreateFullBox ("mdhd", 0, 0, body.ToArray ());
 	}
 
-	static byte[] Hdlr (string type) =>
-		Mp4TestBuilder.CreateFullBox ("hdlr", 0, 0, [0, 0, 0, 0, .. Encoding.ASCII.GetBytes (type), .. new byte[13]]);
+	static byte[] Hdlr (string type, string name = "") =>
+		Mp4TestBuilder.CreateFullBox ("hdlr", 0, 0, [0, 0, 0, 0, .. Encoding.ASCII.GetBytes (type), .. new byte[12], .. Encoding.UTF8.GetBytes (name), 0]);
 
 	static byte[] Dinf ()
 	{
@@ -303,20 +411,27 @@ internal static class Mp4ChapterTestBuilder
 			stts.Add (duration);
 		}
 
-		var stbl = Mp4TestBuilder.CreateBox ("stbl", [
-			.. stsd,
-			.. Table ("stts", [.. stts]),
-			.. Table ("stsc", 1, 1, (uint)sizes.Length, 1),
-			.. Table ("stsz", [0, (uint)sizes.Length, .. sizes]),
-			.. (options.TextCo64 ? Table ("co64", 1, 0, chunkOffset) : Table ("stco", 1, chunkOffset)),
-		]);
+		// In a fragmented movie the samples are in the moof, and moov's tables are empty, as ffmpeg writes them.
+		var stbl = options.Fragment is not null
+			? Mp4TestBuilder.CreateBox ("stbl", [.. stsd, .. Table ("stts", 0), .. Table ("stsc", 0), .. Table ("stsz", 0, 0), .. Table ("stco", 0)])
+			: Mp4TestBuilder.CreateBox ("stbl", [
+				.. stsd,
+				.. Table ("stts", [.. stts]),
+				.. Table ("stsc", 1, 1, (uint)sizes.Length, 1),
+				.. Table ("stsz", [0, (uint)sizes.Length, .. sizes]),
+				.. (options.TextCo64 ? Table ("co64", 1, 0, chunkOffset) : Table ("stco", 1, chunkOffset)),
+			]);
 		var nmhd = Mp4TestBuilder.CreateFullBox ("nmhd", 0, 0, []);
 		var minf = Mp4TestBuilder.CreateBox ("minf", [.. nmhd, .. Dinf (), .. stbl]);
 		var total = (uint)durations.Sum (d => (long)d);
-		var mdia = Mp4TestBuilder.CreateBox ("mdia", [.. Mdhd (options.TrackTimescale, total), .. Hdlr (options.TextHandler), .. minf]);
+		var mdia = Mp4TestBuilder.CreateBox ("mdia", [
+			.. Mdhd (options.TrackTimescale, options.Fragment is null ? total : 0, options.TextLanguage),
+			.. Hdlr (options.TextHandler, options.TextHandlerName),
+			.. minf,
+		]);
 
 		var children = new List<byte> ();
-		children.AddRange (Tkhd (TextTrackId, 2, MovieDuration));
+		children.AddRange (Tkhd (TextTrackId, options.TextTkhdFlags, MovieDuration));
 		if (options.EmptyEdit > 0) {
 			var elst = Table ("elst", 2, options.EmptyEdit, 0xFFFFFFFF, 0x00010000, MovieDuration - options.EmptyEdit, 0, 0x00010000);
 			children.AddRange (Mp4TestBuilder.CreateBox ("edts", elst));
