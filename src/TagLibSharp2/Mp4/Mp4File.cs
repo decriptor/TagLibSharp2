@@ -993,8 +993,9 @@ public sealed class Mp4File : IMediaFile
 	{
 		// iTunes and ffmpeg write moov/udta/meta. QuickTime and Apple devices write moov/meta
 		// (https://developer.apple.com/documentation/quicktime-file-format/metadata_atom).
-		// udta/meta is the tag when it holds an ilst; a moov/meta beside it is read for the fields
-		// udta/meta lacks, kept as it is, and loses a field's items when that field is set.
+		// udta/meta is the tag when it holds an ilst. A moov/meta beside it is merged in and wins
+		// for the fields it declares: QTFF gives metadata precedence over user data that declares
+		// the same information. A set writes where the winning value lives and drops the other copy.
 		var userDataMeta = moov.FindChild ("udta")?.FindChild ("meta");
 		var userDataList = userDataMeta?.FindChild ("ilst");
 		var movieMeta = moov.FindChild ("meta");
@@ -1063,8 +1064,8 @@ public sealed class Mp4File : IMediaFile
 
 	static void ReadMovieMeta (Mp4Tag tag, Mp4Box ilst, Mp4Box meta)
 	{
-		tag.UseMovieMeta ();
 		var keys = Mp4QuickTimeKeys.Read (meta);
+		tag.UseMovieMeta (keys);
 		foreach (var item in ilst.Children) {
 			if (!ReadSourceItem (item, keys, tag, movie: true))
 				tag.AddMovieItem (item.Render ());
@@ -1081,7 +1082,7 @@ public sealed class Mp4File : IMediaFile
 
 		if (keys is not null && keys.TryResolve (type, out var field)) {
 			var rank = movie ? Mp4SourceRank.Movie : Mp4SourceRank.Keyed;
-			var keyIndex = movie ? 0 : type;
+			var keyIndex = type;
 			var dataAtoms = DataAtomsIn (item.Data.Span);
 			switch (field.Kind) {
 				case Mp4KeyedKind.Artwork:
@@ -2143,7 +2144,7 @@ public sealed class Mp4File : IMediaFile
 
 			if (!replacedMeta && child.Type == "meta" && (inMovieMeta || Tag?.HasMovieMeta == true)) {
 				replacedMeta = true;
-				var (ilst, keys) = inMovieMeta ? RenderTag (child) : (Tag!.RenderMovieIlst (), null);
+				var (ilst, keys) = inMovieMeta ? RenderTag (child) : (Tag!.RenderMovieIlst (), Tag.RenderMovieKeys ());
 				var rebuilt = RebuildMeta (child, ilst, keys);
 				if (!rebuilt.IsEmpty)
 					moovContent.Add (rebuilt);

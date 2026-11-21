@@ -24,14 +24,17 @@ internal enum Mp4MetaPlacement
 /// </summary>
 internal enum Mp4SourceRank
 {
-	/// <summary>An item of the second meta (moov/meta beside udta/meta).</summary>
-	Movie = 1,
-
 	/// <summary>A keyed item.</summary>
-	Keyed = 2,
+	Keyed = 1,
 
 	/// <summary>An iTunes atom, which lenient writers such as mutagen add beside keyed items.</summary>
-	Atom = 3
+	Atom = 2,
+
+	/// <summary>
+	/// An item of the second meta (moov/meta beside udta/meta). QTFF: when user data and metadata
+	/// declare the same information, the metadata takes precedence.
+	/// </summary>
+	Movie = 3
 }
 
 /// <summary>
