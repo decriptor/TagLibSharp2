@@ -2389,8 +2389,11 @@ public sealed class Mp4File : IMediaFile
 		if (plan is null || next >= boxes.Count || boxes[next].Box.Type != "mdat")
 			return -1;
 
-		// Unread bytes after the last box could hold a movie fragment that points into the mdat. Fail closed.
+		// Unread bytes after the last box could hold a movie fragment that points into the mdat, and a top-level
+		// meta can locate items anywhere (iloc, §8.11.3). Fail closed.
 		if (unreadTail && boxes[moovIndex].Box.FindChild ("mvex") is not null)
+			return -1;
+		if (boxes.Exists (b => b.Box.Type == "meta"))
 			return -1;
 
 		var (box, start, length) = boxes[next];

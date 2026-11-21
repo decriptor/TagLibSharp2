@@ -730,6 +730,66 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	[DataRow (1)]
+	[DataRow (2)]
+	public void Read_FragmentWithTrailingBytes_StillReadsItsChapters (int tail)
+	{
+		// Four stray bytes at the end of the moof (1) or traf (2) do not hide the boxes in front of them,
+		// as ffprobe, AVFoundation and MediaInfo read such files. Only the save guard fails closed on them.
+		var options = FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.Moof);
+		options.FragmentTail = tail;
+		var data = Mp4ChapterTestBuilder.Build (options);
+
+		AssertChapters (Mp4ChapterTestBuilder.ReadFile (data).Chapters, (0, "Intro"), (1.5, "Middle ü"), (3.5, "End 日本"));
+		using var stream = new MemoryStream (data);
+		AssertChapters (((Mp4File)MediaFile.Read (stream, "x.m4a").File!).Chapters, (0, "Intro"), (1.5, "Middle ü"), (3.5, "End 日本"));
+	}
+
+	[TestMethod]
+	public void Read_FragmentWithAnUnreadableTrafForAnotherTrack_StillReadsTheChapterTraf ()
+	{
+		// A traf whose tfhd is cut short is skipped; the chapter traf after it is still read.
+		var options = FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.Moof);
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var moofAt = data.AsSpan ().IndexOf ("moof"u8) - 4;
+		var mfhdEnd = moofAt + 8 + 16;
+		byte[] badTraf = Mp4TestBuilder.CreateBox ("traf", [0, 0, 0, 12, (byte)'t', (byte)'f', (byte)'h', (byte)'d', 0, 0, 0, 0]);
+		byte[] file = [.. data.AsSpan (0, mfhdEnd), .. badTraf, .. data.AsSpan (mfhdEnd)];
+		var moofSize = BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (moofAt));
+		BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (moofAt), moofSize + (uint)badTraf.Length);
+		// The chapter trun's data_offset counts from the moof; the data moved by the inserted traf.
+		var trunAt = file.AsSpan (moofAt).IndexOf ("trun"u8) + moofAt - 4;
+		var dataOffset = BinaryPrimitives.ReadInt32BigEndian (file.AsSpan (trunAt + 16));
+		BinaryPrimitives.WriteInt32BigEndian (file.AsSpan (trunAt + 16), dataOffset + badTraf.Length);
+
+		AssertChapters (Mp4ChapterTestBuilder.ReadFile (file).Chapters, (0, "Intro"), (1.5, "Middle ü"), (3.5, "End 日本"));
+	}
+
+	[TestMethod]
+	public void Read_ManyInvalidChapterSamples_DecodeWithoutExceptions ()
+	{
+		// 65,535 samples (the track cap) that are not UTF-8 each decode once, with no exception per sample.
+		var options = new Mp4ChapterTestBuilder.Options { RawSamples = [.. Enumerable.Repeat (new byte[] { 0, 1, 0xFF }, Mp4ChapterCodec.MaxTrackChapters)] };
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var thrown = 0;
+		void Count (object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs e)
+		{
+			if (e.Exception is DecoderFallbackException)
+				Interlocked.Increment (ref thrown);
+		}
+
+		AppDomain.CurrentDomain.FirstChanceException += Count;
+		try {
+			var file = Mp4ChapterTestBuilder.ReadFile (data);
+			Assert.AreEqual (Mp4ChapterCodec.MaxTrackChapters, file.Chapters.Count);
+		} finally {
+			AppDomain.CurrentDomain.FirstChanceException -= Count;
+		}
+
+		Assert.AreEqual (0, thrown, "decoder exceptions");
+	}
+
+	[TestMethod]
 	public void Read_FragmentedChapterTrack_TfdtSetsTheDecodeTime ()
 	{
 		// tfdt baseMediaDecodeTime 600 in a 600 Hz track (§8.8.12): the fragment's samples start at 1 s.
@@ -771,6 +831,24 @@ public class Mp4ChapterTests
 		StringAssert.Contains (write.Error, "fragmented movie");
 		Assert.IsFalse (fs.FileExists ("/b.m4a"));
 		Assert.IsTrue (file.Render (data).IsEmpty);
+	}
+
+	[TestMethod]
+	public void Save_ChapterTrafInAnUnreadMoofTail_IsRefused ()
+	{
+		// The chapter traf sits behind a box that does not parse, so no reader sees it, and it may still hold
+		// chapter samples. Rewriting the track could leave a second list: the save fails closed.
+		var options = FragmentedTrack (Mp4ChapterTestBuilder.FragmentBase.Moof);
+		options.FragmentTail = 3;
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/a.m4a", Mp4ChapterTestBuilder.Build (options));
+		var file = Mp4File.ReadFromFile ("/a.m4a", fs).File!;
+
+		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "One")];
+		var write = file.SaveToFile ("/b.m4a", fs);
+
+		Assert.IsFalse (write.IsSuccess);
+		StringAssert.Contains (write.Error, "fragmented movie");
 	}
 
 	[TestMethod]
@@ -872,9 +950,53 @@ public class Mp4ChapterTests
 		byte[] unreadable = before == 5 ? [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'] : [];
 		byte[] withMoof = [.. edited, .. unreadable, .. moof];
 
+		// A traf whose track it cannot tell (1, 3) or an unread moof tail (4) may be a chapter traf, so a chapter
+		// change is refused outright; the file is not touched.
+		if (before is 1 or 3 or 4) {
+			var file = Mp4ChapterTestBuilder.ReadFile (withMoof);
+			file.Chapters = Edit (2);
+			Assert.IsTrue (file.Render (withMoof).IsEmpty, "refused");
+			return;
+		}
+
 		var again = EditChapters (withMoof, 2);
 
 		Assert.AreEqual (3, ReadableTopLevelTypes (again).Count (t => t == "mdat"));
+	}
+
+	[TestMethod]
+	[DataRow (0)]
+	[DataRow (1)]
+	[DataRow (2)]
+	[DataRow (3)]
+	[DataRow (4)]
+	public void HoldsOnlyReplacedSamples_UnreadableFragment_FailsClosed (int variant)
+	{
+		// The guard alone, below the save's refusal: a moof whose tail does not parse (1), a traf whose tail does
+		// not parse (2), a short tfhd (3), or a trun whose count runs past its box (4) means "keep the mdat".
+		// A readable fragment that points elsewhere (0) does not.
+		var options = ThreeChapterTrack ();
+		options.Mvex = true;
+		var edited = EditChapters (Mp4ChapterTestBuilder.Build (options), 1);
+		var chapterMdat = edited.AsSpan ().LastIndexOf ("mdat"u8) - 4;
+		var chapterEnd = chapterMdat + (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (chapterMdat));
+		byte[] bad = [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'];
+		byte[] tfhd = [0, 0, 0, 16, (byte)'t', (byte)'f', (byte)'h', (byte)'d', 0, 2, 0, 0, 0, 0, 0, (byte)Mp4ChapterTestBuilder.AudioTrackId];
+		byte[] shortTfhd = [0, 0, 0, 12, (byte)'t', (byte)'f', (byte)'h', (byte)'d', 0, 0, 0, 0];
+		byte[] trun = [0, 0, 0, 16, (byte)'t', (byte)'r', (byte)'u', (byte)'n', 0, 0, 2, 0, 0, 0, 0, (byte)(variant == 4 ? 9 : 0)];
+		byte[] traf = variant switch {
+			2 => Mp4TestBuilder.CreateBox ("traf", [.. tfhd, .. trun, .. bad]),
+			3 => Mp4TestBuilder.CreateBox ("traf", [.. shortTfhd, .. trun]),
+			_ => Mp4TestBuilder.CreateBox ("traf", [.. tfhd, .. trun]),
+		};
+		var moofBytes = Mp4TestBuilder.CreateBox ("moof", [.. traf, .. (variant == 1 ? bad : [])]);
+		var moof = Mp4Box.Parse (moofBytes).Box!;
+		var moov = Mp4ChapterTestBuilder.Moov (edited);
+		var plan = new Mp4ChapterCodec.ChapterPlan (BinaryData.Empty, [], Mp4ChapterTestBuilder.TextTrackId, [], [Mp4ChapterTestBuilder.TextTrackId]);
+
+		var drop = Mp4ChapterCodec.HoldsOnlyReplacedSamples (moov, [(moof, edited.Length)], plan, chapterMdat, chapterMdat + 8, chapterEnd);
+
+		Assert.AreEqual (variant == 0, drop);
 	}
 
 	/// <summary>Top-level box types up to the first box that does not parse.</summary>
@@ -1105,21 +1227,94 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
-	public void Save_ChapterMdatReferencedByAnotherTrack_IsKept ()
+	[DataRow (0)]
+	[DataRow (1)]
+	[DataRow (2)]
+	[DataRow (3)]
+	[DataRow (4)]
+	[DataRow (5)]
+	[DataRow (6)]
+	[DataRow (7)]
+	[DataRow (8)]
+	[DataRow (9)]
+	public void Save_ChapterMdatReferencedByAnotherTrack_IsKept (int variant)
 	{
-		// The audio track's chunk offset is moved into the chapter mdat. That mdat is no longer chapter-only.
+		// The audio track's chunk is moved into the chapter mdat, so that mdat is no longer chapter-only. The guard
+		// fails closed when it cannot read a track's tables: a bad box in the audio stbl in front of stco (1), or in
+		// the trak in front of mdia (2), or a trak in moov's unread tail (3). A chunk that starts before the mdat
+		// and runs into it counts (4). An item location box (iloc) anywhere in moov keeps the mdat too (5). A bad
+		// box after the audio stco hides a co64 that points into the mdat (6): the unread stbl tail keeps it.
+		// Without stsz the extent of a chunk that starts just before the mdat is unknown (7). A chunk table (8) or
+		// size table (9) whose count runs past its box hides entries, so it keeps the mdat too.
 		var edited = EditChapters (Mp4ChapterTestBuilder.Build (new ()), 1);
-		var chapterPayload = edited.AsSpan ().LastIndexOf ("mdat"u8) + 4;
-		var audioStco = edited.AsSpan ().IndexOf ("stco"u8) - 4;
-		BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (audioStco + 16), (uint)chapterPayload);
+		byte[] bad = [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'];
+		var moovAt = edited.AsSpan ().IndexOf ("moov"u8) - 4;
+		var trakAt = moovAt + edited.AsSpan (moovAt).IndexOf ("trak"u8) - 4;
+		var mdiaAt = trakAt + edited.AsSpan (trakAt).IndexOf ("mdia"u8) - 4;
+		var minfAt = mdiaAt + edited.AsSpan (mdiaAt).IndexOf ("minf"u8) - 4;
+		var stblAt = minfAt + edited.AsSpan (minfAt).IndexOf ("stbl"u8) - 4;
+		var stcoAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stco"u8) - 4;
+		var trakLength = (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (trakAt));
+		var stblEnd = stblAt + (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (stblAt));
+		var moovEnd = moovAt + (int)BinaryPrimitives.ReadUInt32BigEndian (edited.AsSpan (moovAt));
 
-		var again = EditChapters (edited, 2);
+		var meta = Mp4TestBuilder.CreateFullBox ("meta", 0, 0, Mp4TestBuilder.CreateFullBox ("iloc", 0, 0, [0x44, 0, 0, 0]));
+		var (insertAt, inserted, containers) = variant switch {
+			1 => (stcoAt, bad, new[] { moovAt, trakAt, mdiaAt, minfAt, stblAt }),
+			2 => (mdiaAt, bad, new[] { moovAt, trakAt }),
+			3 => (moovEnd, [.. bad, .. edited.AsSpan (trakAt, trakLength)], new[] { moovAt }),
+			5 => (moovEnd, meta, new[] { moovAt }),
+			6 => (stblEnd, new byte[8 + 24], new[] { moovAt, trakAt, mdiaAt, minfAt, stblAt }),
+			_ => (moovEnd, Array.Empty<byte> (), new[] { moovAt }),
+		};
 
-		Assert.AreEqual (3, Mp4ChapterTestBuilder.TopLevelTypes (again).Count (t => t == "mdat"));
-		var audioAt = BinaryPrimitives.ReadUInt32BigEndian (Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (again), 1)!
-			.FindDescendant ("mdia", "minf", "stbl", "stco")!.Data.Span.Slice (8));
-		var moved = again.AsSpan ((int)audioAt, 8).ToArray ();
-		CollectionAssert.AreEqual (edited.AsSpan (chapterPayload, 8).ToArray (), moved, "the audio offset still finds the same bytes");
+		// The chapter mdat follows moov; every inserted byte moves it.
+		var chapterPayload = moovEnd + 8 + inserted.Length;
+		var moov = edited.AsSpan (moovAt, moovEnd - moovAt).ToArray ();
+		Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.TextTrackId, (uint)chapterPayload);
+		// Rows 3, 5, 6, 8 and 9 leave the parsed audio stco alone: only the unread trak, the iloc, the hidden
+		// co64, or the entries past the box can reach the mdat.
+		if (variant is not 3 and not 5 and not 6 and not 8 and not 9)
+			Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.AudioTrackId, (uint)(variant is 4 or 7 ? chapterPayload - 50 : chapterPayload));
+		moov.CopyTo (edited, moovAt);
+		if (variant == 7) {
+			var stszAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stsz"u8);
+			"free"u8.CopyTo (edited.AsSpan (stszAt));
+		}
+
+		if (variant == 8)
+			BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stcoAt + 12), 2);
+		if (variant == 9) {
+			var stszAt = stblAt + edited.AsSpan (stblAt).IndexOf ("stsz"u8) - 4;
+			BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 16), Mp4ChapterTestBuilder.AudioSampleCount + 1);
+		}
+		if (variant == 3) {
+			// The tail trak is a copy of the audio trak whose chunk sits in the chapter mdat.
+			var copy = Mp4TestBuilder.CreateMoovBox (edited.AsSpan (trakAt, trakLength).ToArray ());
+			Mp4ChapterCodec.WriteChunkOffset (copy, Mp4ChapterTestBuilder.AudioTrackId, (uint)chapterPayload);
+			inserted = [.. bad, .. copy.AsSpan (8)];
+		}
+
+		if (variant == 6) {
+			var co64 = Mp4TestBuilder.CreateFullBox ("co64", 0, 0, [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+			BinaryPrimitives.WriteUInt64BigEndian (co64.AsSpan (16), (ulong)chapterPayload);
+			inserted = [.. bad, .. co64];
+		}
+
+		byte[] file = [.. edited.AsSpan (0, insertAt), .. inserted, .. edited.AsSpan (insertAt)];
+		foreach (var at in containers)
+			BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (at), BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (at)) + (uint)inserted.Length);
+
+		var again = EditChapters (file, 2);
+
+		Assert.AreEqual (3, ReadableTopLevelTypes (again).Count (t => t == "mdat"), "the chapter mdat that another track uses is kept");
+		if (variant is 3 or 5 or 6)
+			CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (again, 1), "the parsed audio track is intact");
+		if (variant == 0) {
+			var audioAt = BinaryPrimitives.ReadUInt32BigEndian (Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (again), 1)!
+				.FindDescendant ("mdia", "minf", "stbl", "stco")!.Data.Span.Slice (8));
+			CollectionAssert.AreEqual (file.AsSpan (chapterPayload, 8).ToArray (), again.AsSpan ((int)audioAt, 8).ToArray (), "the audio offset still finds the same bytes");
+		}
 	}
 
 	[TestMethod]

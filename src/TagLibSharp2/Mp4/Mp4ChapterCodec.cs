@@ -45,9 +45,9 @@ internal static class Mp4ChapterCodec
 
 	/// <summary>The save failure for a chapter change on a fragmented movie that has a chapter track.</summary>
 	internal const string FragmentedChapterTrackError =
-		"Cannot write MP4 chapters: the file is a fragmented movie whose chapter track has samples in movie "
-		+ "fragments (moof/traf). Rewriting that track in moov would leave the fragment samples as a second "
-		+ "chapter list. Write the file unfragmented first.";
+		"Cannot write MP4 chapters: the file is a fragmented movie whose chapter track has, or may have, samples "
+		+ "in movie fragments (moof/traf). Rewriting that track in moov would leave the fragment samples as a "
+		+ "second chapter list. Write the file unfragmented first.";
 	const long TicksPerSecond = TimeSpan.TicksPerSecond;
 	const uint DefaultTimescale = 1000;
 
@@ -319,8 +319,9 @@ internal static class Mp4ChapterCodec
 	/// 0x100 duration, 0x200 size, 0x400 flags, 0x800 composition offset. A run without data_offset continues
 	/// where the previous run of the traf ended. A run's sample count is bounded by its bytes when it has
 	/// per-sample fields; otherwise its length is count times the default size, with no loop.
-	/// Returns false when it stops early: a traf or trun it cannot read, an unread box tail, or the read
-	/// budget or sample cap. A null <paramref name="trackId"/> only measures the runs into <paramref name="runs"/>.
+	/// Returns false when anything was left unread: a traf or trun it cannot read, an unread box tail, or the
+	/// read budget or sample cap. A null <paramref name="trackId"/> only measures the runs into
+	/// <paramref name="runs"/> and stops at the first such point; reading skips it and goes on.
 	/// </remarks>
 	static bool AppendFragmentSamples (
 		uint? trackId,
@@ -331,11 +332,18 @@ internal static class Mp4ChapterCodec
 		ref long budget,
 		List<(long Start, long End)>? runs)
 	{
+		// Measuring (no track) serves a guard that must fail closed: it stops at the first thing it cannot read.
+		// Reading goes on past it, as other readers do, and keeps every sample it can locate.
+		var measuring = trackId is null;
+		var complete = true;
 		var defaults = new Dictionary<uint, (uint Duration, uint Size)> ();
 		foreach (var (moof, moofStart) in fragments) {
 			// Children past a box that did not parse are unread; a traf could be among them.
-			if (moof.UnparsedTail.Length > 0)
-				return false;
+			if (moof.UnparsedTail.Length > 0) {
+				if (measuring)
+					return false;
+				complete = false;
+			}
 
 			var previousEnd = moofStart;
 			var firstTraf = true;
@@ -343,33 +351,19 @@ internal static class Mp4ChapterCodec
 				if (traf.Type != "traf")
 					continue;
 
-				var tfhd = Payload (traf.FindChild ("tfhd"));
-				if (tfhd.Length < 8 || traf.UnparsedTail.Length > 0)
-					return false;
-
-				var flags = BinaryPrimitives.ReadUInt32BigEndian (tfhd) & 0xFFFFFF;
-				var id = BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4));
-				var pos = 8;
-				long baseOffset = firstTraf || (flags & 0x020000) != 0 ? moofStart : previousEnd;
-				if ((flags & 0x1) != 0) {
-					if (!TryRead64 (tfhd, ref pos, out var explicitBase))
+				if (traf.UnparsedTail.Length > 0) {
+					if (measuring)
 						return false;
-					baseOffset = explicitBase > long.MaxValue / 2 ? long.MaxValue / 2 : (long)explicitBase;
+					complete = false;
 				}
 
-				if ((flags & 0x2) != 0)
-					pos += 4;
-				if (!defaults.TryGetValue (id, out var trex)) {
-					trex = ReadTrex (moov, id);
-					defaults[id] = trex;
+				if (!TryReadTfhd (traf, firstTraf, moofStart, previousEnd, moov, defaults, out var id, out var baseOffset, out var defaultDuration, out var defaultSize)) {
+					if (measuring)
+						return false;
+					complete = false;
+					firstTraf = false;
+					continue;
 				}
-
-				var defaultDuration = trex.Duration;
-				var defaultSize = trex.Size;
-				if ((flags & 0x8) != 0 && !TryRead32 (tfhd, ref pos, out defaultDuration))
-					return false;
-				if ((flags & 0x10) != 0 && !TryRead32 (tfhd, ref pos, out defaultSize))
-					return false;
 
 				var mine = id == trackId;
 				if (mine) {
@@ -385,8 +379,12 @@ internal static class Mp4ChapterCodec
 					var runStart = runEnd;
 					var ok = ReadRun (trun.Data.Span, baseOffset, ref runStart, ref runEnd, defaultDuration, defaultSize, mine, samples, ref time, ref budget);
 					runs?.Add ((runStart, runEnd));
-					if (!ok)
-						return false;
+					if (!ok) {
+						if (measuring)
+							return false;
+						complete = false;
+						break;
+					}
 				}
 
 				previousEnd = runEnd;
@@ -394,7 +392,55 @@ internal static class Mp4ChapterCodec
 			}
 		}
 
-		return true;
+		return complete;
+	}
+
+	/// <summary>
+	/// tfhd (§8.8.7): track_ID, the base data offset (explicit, the moof, or the end of the previous traf's
+	/// data), and the default sample duration and size (tfhd, else trex). False when a field it needs is cut off.
+	/// </summary>
+	static bool TryReadTfhd (
+		Mp4Box traf,
+		bool firstTraf,
+		long moofStart,
+		long previousEnd,
+		Mp4Box moov,
+		Dictionary<uint, (uint Duration, uint Size)> defaults,
+		out uint id,
+		out long baseOffset,
+		out uint defaultDuration,
+		out uint defaultSize)
+	{
+		id = 0;
+		baseOffset = 0;
+		defaultDuration = 0;
+		defaultSize = 0;
+		var tfhd = Payload (traf.FindChild ("tfhd"));
+		if (tfhd.Length < 8)
+			return false;
+
+		var flags = BinaryPrimitives.ReadUInt32BigEndian (tfhd) & 0xFFFFFF;
+		id = BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4));
+		var pos = 8;
+		baseOffset = firstTraf || (flags & 0x020000) != 0 ? moofStart : previousEnd;
+		if ((flags & 0x1) != 0) {
+			if (!TryRead64 (tfhd, ref pos, out var explicitBase))
+				return false;
+			baseOffset = explicitBase > long.MaxValue / 2 ? long.MaxValue / 2 : (long)explicitBase;
+		}
+
+		if ((flags & 0x2) != 0)
+			pos += 4;
+		if (!defaults.TryGetValue (id, out var trex)) {
+			trex = ReadTrex (moov, id);
+			defaults[id] = trex;
+		}
+
+		defaultDuration = trex.Duration;
+		defaultSize = trex.Size;
+		if ((flags & 0x8) != 0 && !TryRead32 (tfhd, ref pos, out defaultDuration))
+			return false;
+		return (flags & 0x10) == 0 || TryRead32 (tfhd, ref pos, out defaultSize);
 	}
 
 	static bool ReadRun (
@@ -478,14 +524,24 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// True when a traf in <paramref name="fragments"/> belongs to one of <paramref name="trackIds"/>.
+	/// True when a traf in <paramref name="fragments"/> belongs, or may belong, to one of <paramref name="trackIds"/>.
 	/// </summary>
 	static bool HasFragments (IReadOnlyList<(Mp4Box Moof, long Start)> fragments, HashSet<uint> trackIds)
 	{
+		if (trackIds.Count == 0)
+			return false;
+
 		foreach (var (moof, _) in fragments) {
+			// An unread moof tail, or a traf whose track it cannot tell, may hold one of these tracks: fail closed.
+			if (moof.UnparsedTail.Length > 0)
+				return true;
+
 			foreach (var traf in moof.Children) {
-				var tfhd = Payload (traf.Type == "traf" ? traf.FindChild ("tfhd") : null);
-				if (tfhd.Length >= 8 && trackIds.Contains (BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4))))
+				if (traf.Type != "traf")
+					continue;
+
+				var tfhd = Payload (traf.FindChild ("tfhd"));
+				if (tfhd.Length < 8 || trackIds.Contains (BinaryPrimitives.ReadUInt32BigEndian (tfhd.Slice (4))))
 					return true;
 			}
 		}
@@ -519,15 +575,12 @@ internal static class Mp4ChapterCodec
 	/// </summary>
 	public static string DecodeSample (ReadOnlySpan<byte> sample) => Decode (sample).Text;
 
-	static readonly UTF8Encoding StrictUtf8 = new (false, true);
-	static readonly UnicodeEncoding StrictUtf16BigEndian = new (true, false, true);
-	static readonly UnicodeEncoding StrictUtf16LittleEndian = new (false, false, true);
-
 	/// <summary>
 	/// <see cref="DecodeSample"/>, and whether the text was valid UTF-8, or valid UTF-16 after its byte order
 	/// mark (TN2174: "a series of Unicode characters, either in UTF-16 or UTF-8"). Bytes that are not valid
 	/// text are not a title: a stale fragment offset can land on media data (ffmpeg +global_sidx output).
-	/// The text is then the lossy decoding.
+	/// The text is then the lossy decoding. Validity is a scan, not a caught exception, so a file of invalid
+	/// samples costs one decode per sample.
 	/// </summary>
 	public static SampleText Decode (ReadOnlySpan<byte> sample)
 	{
@@ -536,23 +589,103 @@ internal static class Mp4ChapterCodec
 
 		var length = Math.Min (BinaryPrimitives.ReadUInt16BigEndian (sample), sample.Length - 2);
 		var text = sample.Slice (2, length);
-		Encoding strict;
-		Encoding lossy;
 		if (text.Length >= 2 && text[0] == 0xFE && text[1] == 0xFF) {
 			text = text.Slice (2);
-			(strict, lossy) = (StrictUtf16BigEndian, Encoding.BigEndianUnicode);
-		} else if (text.Length >= 2 && text[0] == 0xFF && text[1] == 0xFE) {
-			text = text.Slice (2);
-			(strict, lossy) = (StrictUtf16LittleEndian, Encoding.Unicode);
-		} else {
-			(strict, lossy) = (StrictUtf8, Encoding.UTF8);
+			return new SampleText (Encoding.BigEndianUnicode.GetString (text).TrimEnd ('\0'), IsValidUtf16 (text, bigEndian: true));
 		}
 
-		try {
-			return new SampleText (strict.GetString (text).TrimEnd ('\0'), true);
-		} catch (DecoderFallbackException) {
-			return new SampleText (lossy.GetString (text).TrimEnd ('\0'), false);
+		if (text.Length >= 2 && text[0] == 0xFF && text[1] == 0xFE) {
+			text = text.Slice (2);
+			return new SampleText (Encoding.Unicode.GetString (text).TrimEnd ('\0'), IsValidUtf16 (text, bigEndian: false));
 		}
+
+		return new SampleText (DecodeUtf8 (text), IsValidUtf8 (text));
+	}
+
+	/// <summary>
+	/// True when <paramref name="bytes"/> is well-formed UTF-8 (RFC 3629 §4; Unicode §3.9 Table 3-7).
+	/// </summary>
+	internal static bool IsValidUtf8 (ReadOnlySpan<byte> bytes)
+	{
+#if NET8_0_OR_GREATER
+		return System.Text.Unicode.Utf8.IsValid (bytes);
+#else
+		return ScanUtf8 (bytes);
+#endif
+	}
+
+	/// <summary>
+	/// A UTF-8 well-formedness scan per Unicode §3.9 Table 3-7: no overlong forms, no surrogates
+	/// (ED A0..BF), nothing above U+10FFFF (F4 90..), no stray continuation bytes, no cut-off sequence.
+	/// </summary>
+	internal static bool ScanUtf8 (ReadOnlySpan<byte> bytes)
+	{
+		var i = 0;
+		while (i < bytes.Length) {
+			var b = bytes[i];
+			if (b < 0x80) {
+				i++;
+				continue;
+			}
+
+			int count;
+			byte low = 0x80, high = 0xBF;
+			if (b >= 0xC2 && b <= 0xDF) {
+				count = 1;
+			} else if (b >= 0xE0 && b <= 0xEF) {
+				count = 2;
+				if (b == 0xE0)
+					low = 0xA0;
+				else if (b == 0xED)
+					high = 0x9F;
+			} else if (b >= 0xF0 && b <= 0xF4) {
+				count = 3;
+				if (b == 0xF0)
+					low = 0x90;
+				else if (b == 0xF4)
+					high = 0x8F;
+			} else {
+				return false;
+			}
+
+			if (bytes.Length - i <= count)
+				return false;
+			if (bytes[i + 1] < low || bytes[i + 1] > high)
+				return false;
+			for (var k = 2; k <= count; k++) {
+				if ((bytes[i + k] & 0xC0) != 0x80)
+					return false;
+			}
+
+			i += count + 1;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// True when <paramref name="bytes"/> is whole UTF-16 code units with every surrogate paired
+	/// (a high D800..DBFF followed by a low DC00..DFFF; Unicode §3.9 D91).
+	/// </summary>
+	internal static bool IsValidUtf16 (ReadOnlySpan<byte> bytes, bool bigEndian)
+	{
+		if (bytes.Length % 2 != 0)
+			return false;
+
+		for (var i = 0; i < bytes.Length; i += 2) {
+			var unit = bigEndian ? BinaryPrimitives.ReadUInt16BigEndian (bytes.Slice (i)) : BinaryPrimitives.ReadUInt16LittleEndian (bytes.Slice (i));
+			if (unit < 0xD800 || unit > 0xDFFF)
+				continue;
+			if (unit > 0xDBFF || i + 2 >= bytes.Length)
+				return false;
+
+			var next = bigEndian ? BinaryPrimitives.ReadUInt16BigEndian (bytes.Slice (i + 2)) : BinaryPrimitives.ReadUInt16LittleEndian (bytes.Slice (i + 2));
+			if (next < 0xDC00 || next > 0xDFFF)
+				return false;
+			i += 2;
+		}
+
+		return true;
 	}
 
 	/// <summary>
@@ -854,25 +987,121 @@ internal static class Mp4ChapterCodec
 		if (covered != boxEnd)
 			return false;
 
+		// Fail closed on moov too: an unread moov tail can hold a trak, and an item location (iloc, §8.11.3)
+		// can point anywhere.
+		if (moov.UnparsedTail.Length > 0 || ContainsBox (moov, "iloc", 0))
+			return false;
+
 		foreach (var child in moov.Children) {
 			if (child.Type != "trak")
 				continue;
 			if (TryReadTrackId (child, out var id) && plan.ReplacedTrackIds.Contains (id))
 				continue;
-
-			var stbl = child.FindChild ("mdia")?.FindChild ("minf")?.FindChild ("stbl");
-			var co64 = stbl?.FindChild ("co64");
-			var stco = stbl?.FindChild ("stco");
-			var offsets = co64 is not null ? ReadChunkOffsets (co64.Data.Span, 8)
-				: stco is not null ? ReadChunkOffsets (stco.Data.Span, 4)
-				: [];
-			foreach (var offset in offsets) {
-				if (offset >= boxStart && offset < boxEnd)
-					return false;
-			}
+			if (!TrackDataAvoids (child, boxStart, boxEnd))
+				return false;
 		}
 
 		return true;
+	}
+
+	/// <summary>
+	/// True when every chunk of <paramref name="trak"/> lies outside [<paramref name="start"/>, <paramref name="end"/>).
+	/// A chunk spans its offset plus the sizes of its samples (§8.7.3 to §8.7.5), so a chunk that starts before
+	/// the range and runs into it counts. A track with no chunk offset table has no data. False, failing closed,
+	/// when the extent of a chunk cannot be known: an unread tail on the trak, mdia, minf, or stbl, a missing
+	/// stsz or stsc (stz2 included), or a count past its box.
+	/// </summary>
+	static bool TrackDataAvoids (Mp4Box trak, long start, long end)
+	{
+		var mdia = trak.FindChild ("mdia");
+		var minf = mdia?.FindChild ("minf");
+		var stbl = minf?.FindChild ("stbl");
+		if (stbl is null || trak.UnparsedTail.Length > 0 || mdia!.UnparsedTail.Length > 0
+			|| minf!.UnparsedTail.Length > 0 || stbl.UnparsedTail.Length > 0)
+			return false;
+
+		var stsz = stbl.FindChild ("stsz");
+		var stsc = stbl.FindChild ("stsc");
+		var co64 = stbl.FindChild ("co64");
+		var stco = stbl.FindChild ("stco");
+		if (stco is null && co64 is null)
+			return true;
+		if (stsz is null || stsc is null)
+			return false;
+
+		var width = co64 is not null ? 8 : 4;
+		var chunkTable = (co64 ?? stco)!.Data.Span;
+		if (!TableComplete (chunkTable, 8, width))
+			return false;
+
+		var sizes = stsz.Data.Span;
+		if (sizes.Length < 12)
+			return false;
+		var constant = BinaryPrimitives.ReadUInt32BigEndian (sizes.Slice (4));
+		var sampleCount = (long)BinaryPrimitives.ReadUInt32BigEndian (sizes.Slice (8));
+		if (constant == 0 && !TableComplete (sizes.Slice (4), 8, 4))
+			return false;
+
+		var rowTable = stsc.Data.Span;
+		if (!TableComplete (rowTable, 8, 12))
+			return false;
+
+		var rows = ReadStscRows (rowTable);
+		var chunks = ReadChunkOffsets (chunkTable, width);
+		var row = 0;
+		long sample = 0;
+		for (var chunk = 0; chunk < chunks.Count; chunk++) {
+			var chunkNumber = (uint)chunk + 1;
+			while (row + 1 < rows.Count && rows[row + 1].FirstChunk <= chunkNumber)
+				row++;
+			var perChunk = rows.Count > 0 && rows[row].FirstChunk <= chunkNumber ? rows[row].SamplesPerChunk : 0u;
+			var inChunk = Math.Min (perChunk, Math.Max (0, sampleCount - sample));
+
+			long length;
+			if (constant != 0) {
+				length = inChunk * constant;
+			} else {
+				length = 0;
+				for (var k = 0L; k < inChunk; k++)
+					length += BinaryPrimitives.ReadUInt32BigEndian (sizes.Slice (12 + (int)((sample + k) * 4)));
+			}
+
+			sample += inChunk;
+			var offset = chunks[chunk];
+			if (offset < end && offset + Math.Max (length, 1) > start)
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// True when the entry count at <paramref name="countAt"/> - 4 of a FullBox payload fits its entries in the box.
+	/// </summary>
+	static bool TableComplete (ReadOnlySpan<byte> payload, int countAt, int entrySize)
+	{
+		if (payload.Length < countAt)
+			return false;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (countAt - 4));
+		return count <= (ulong)(payload.Length - countAt) / (ulong)entrySize;
+	}
+
+	/// <summary>
+	/// True when a parsed box of <paramref name="type"/> sits anywhere under <paramref name="box"/>, or when the
+	/// nesting is too deep to tell.
+	/// </summary>
+	static bool ContainsBox (Mp4Box box, string type, int depth)
+	{
+		if (depth > 16)
+			return true;
+
+		foreach (var child in box.Children) {
+			if (child.Type == type || ContainsBox (child, type, depth + 1))
+				return true;
+		}
+
+		return false;
 	}
 
 	/// <summary>
