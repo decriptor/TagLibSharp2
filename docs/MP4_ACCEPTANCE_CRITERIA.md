@@ -523,8 +523,8 @@ And ffprobe, MediaInfo, and TagLibSharp2 read the same list back
 ```gherkin
 Given an MP4 file with chapters
 When I set Chapters to an empty list and save
-Then chpl, the chapter track, and the chap references to it are removed
-And other chap references (chapter images) are kept
+Then chpl, every text track a chap reference names (titles, and Apple chapter URLs), and those references are removed
+And chap references to chapter image tracks are kept
 ```
 
 #### Scenario: Leave chapters alone

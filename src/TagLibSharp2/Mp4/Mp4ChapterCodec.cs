@@ -130,32 +130,41 @@ internal static class Mp4ChapterCodec
 	/// </summary>
 	public static ChapterTrack? FindChapterTrack (Mp4Box moov)
 	{
+		var tracks = FindChapterTracks (moov);
+		return tracks.Count > 0 ? tracks[0] : null;
+	}
+
+	/// <summary>
+	/// Every text track a <c>tref</c>/<c>chap</c> reference names, in reference order. A track_ID names the first
+	/// trak that has it. Apple files can name a second text track (chapter URLs) next to the titles.
+	/// </summary>
+	public static List<ChapterTrack> FindChapterTracks (Mp4Box moov)
+	{
 		var traks = new List<(Mp4Box Trak, uint Id)> ();
+		var byId = new Dictionary<uint, Mp4Box> ();
 		foreach (var child in moov.Children) {
-			if (child.Type == "trak" && TryReadTrackId (child, out var id))
-				traks.Add ((child, id));
+			if (child.Type != "trak" || !TryReadTrackId (child, out var id))
+				continue;
+
+			traks.Add ((child, id));
+			if (!byId.ContainsKey (id))
+				byId[id] = child;
 		}
 
+		var found = new List<ChapterTrack> ();
+		var seen = new HashSet<uint> ();
 		foreach (var (trak, id) in traks) {
 			var tref = trak.FindChild ("tref");
 			if (tref is null)
 				continue;
 
 			foreach (var reference in ReadChapterReferences (tref.Data.Span)) {
-				if (reference == id)
-					continue;
-
-				for (var i = 0; i < traks.Count; i++) {
-					if (traks[i].Id != reference)
-						continue;
-					if (!IsTextHandler (traks[i].Trak))
-						break;
-					return new ChapterTrack (traks[i].Trak, reference);
-				}
+				if (reference != id && byId.TryGetValue (reference, out var target) && IsTextHandler (target) && seen.Add (reference))
+					found.Add (new ChapterTrack (target, reference));
 			}
 		}
 
-		return null;
+		return found;
 	}
 
 	/// <summary>
@@ -256,7 +265,11 @@ internal static class Mp4ChapterCodec
 	/// first sample at zero and rounds to its timescale. End times follow the next start, the track end, or
 	/// <paramref name="duration"/>.
 	/// </summary>
-	public static List<Mp4Chapter> Merge (TrackLayout? layout, IReadOnlyList<string?>? titles, List<Mp4Chapter>? chpl, TimeSpan duration)
+	public static List<Mp4Chapter> Merge (
+		TrackLayout? layout,
+		IReadOnlyList<string?>? titles,
+		List<Mp4Chapter>? chpl,
+		TimeSpan duration)
 	{
 		var chapters = new List<Mp4Chapter> ();
 		TimeSpan? trackEnd = null;
@@ -367,7 +380,8 @@ internal static class Mp4ChapterCodec
 	/// <para>
 	/// An existing chapter track is replaced in place with the same track_ID. Without one, a new text track is
 	/// added after the last trak, and every sound and video track gets a <c>chap</c> reference to it.
-	/// An empty list removes chpl, the chapter track, and the references to it.
+	/// An empty list removes chpl, every text track a <c>chap</c> reference names (Apple files can have a
+	/// second one for chapter URLs), and the references to them. Chapter image tracks stay.
 	/// </para>
 	/// <para>
 	/// No track is added to a fragmented movie (<c>mvex</c>, §8.8.1, needs a trex per track) or to a moov with
@@ -380,14 +394,19 @@ internal static class Mp4ChapterCodec
 	/// </remarks>
 	public static ChapterPlan Plan (Mp4Box moov, IReadOnlyList<Mp4Chapter> chapters, TimeSpan duration, bool quickTime)
 	{
-		var existing = FindChapterTrack (moov);
+		var chapterTracks = FindChapterTracks (moov);
+		var existing = chapterTracks.Count > 0 ? chapterTracks[0] : null;
 		var children = new List<Mp4Box> (moov.Children);
 		if (chapters.Count == 0) {
-			if (existing is not null) {
-				children.Remove (existing.Trak);
-				ReplaceReferences (children, existing.Id, add: false);
+			// Every chap text track reads as a chapter list, so all of them go. Chapter image tracks stay.
+			var removed = new HashSet<uint> ();
+			foreach (var track in chapterTracks) {
+				children.Remove (track.Trak);
+				removed.Add (track.Id);
 			}
 
+			if (removed.Count > 0)
+				ReplaceReferences (children, removed, add: false);
 			return new ChapterPlan (BinaryData.Empty, children, 0, []);
 		}
 
@@ -426,7 +445,7 @@ internal static class Mp4ChapterCodec
 
 		// A replaced track keeps its id, so the references that found it still do.
 		if (existing is null)
-			ReplaceReferences (children, trackId, add: true);
+			ReplaceReferences (children, new HashSet<uint> { trackId }, add: true);
 		return new ChapterPlan (chpl, children, trackId, samples);
 	}
 
@@ -764,11 +783,12 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// Adds <paramref name="trackId"/> to the <c>chap</c> reference of every sound and video track that is not
-	/// itself chapter media, or removes it from every <c>chap</c> reference. An emptied <c>chap</c> and an emptied
-	/// <c>tref</c> are dropped. Other reference types are kept byte for byte.
+	/// Adds the id in <paramref name="trackIds"/> to the <c>chap</c> reference of every sound and video track
+	/// that is not itself chapter media, or removes every id in <paramref name="trackIds"/> from every
+	/// <c>chap</c> reference. An emptied <c>chap</c> and an emptied <c>tref</c> are dropped. Other reference
+	/// types are kept byte for byte.
 	/// </summary>
-	static void ReplaceReferences (List<Mp4Box> children, uint trackId, bool add)
+	static void ReplaceReferences (List<Mp4Box> children, HashSet<uint> trackIds, bool add)
 	{
 		// A track that a chap reference names is chapter media (Apple files hold chapter images in a video
 		// track). It is not a presentation track and does not get a chap reference of its own.
@@ -783,7 +803,7 @@ internal static class Mp4ChapterCodec
 			var trak = children[i];
 			if (trak.Type != "trak")
 				continue;
-			if (TryReadTrackId (trak, out var id) && id == trackId)
+			if (TryReadTrackId (trak, out var id) && trackIds.Contains (id))
 				continue;
 
 			var tref = trak.FindChild ("tref");
@@ -792,7 +812,7 @@ internal static class Mp4ChapterCodec
 			if (!add && tref is null)
 				continue;
 
-			var newTref = RebuildTref (Payload (tref), trackId, add);
+			var newTref = RebuildTref (Payload (tref), trackIds, add);
 			if (tref is not null && newTref.Span.SequenceEqual (tref.Data.Span))
 				continue;
 
@@ -813,11 +833,13 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// The tref payload with <paramref name="trackId"/> added to its <c>chap</c> box, or removed from it.
-	/// Entries already present keep their order; an id already present is not added twice.
+	/// The tref payload with the single id in <paramref name="trackIds"/> added to its <c>chap</c> box, or with
+	/// every id in <paramref name="trackIds"/> removed from it. Entries already present keep their order; an id
+	/// already present is not added twice.
 	/// </summary>
-	static BinaryData RebuildTref (ReadOnlySpan<byte> payload, uint trackId, bool add)
+	static BinaryData RebuildTref (ReadOnlySpan<byte> payload, HashSet<uint> trackIds, bool add)
 	{
+		var trackId = add ? trackIds.First () : 0;
 		using var builder = new BinaryDataBuilder ();
 		var placed = false;
 		var end = 0;
@@ -833,7 +855,7 @@ internal static class Mp4ChapterCodec
 			var body = payload.Slice (start + header, length - header);
 			for (var pos = 0; pos + 4 <= body.Length; pos += 4) {
 				var id = BinaryPrimitives.ReadUInt32BigEndian (body.Slice (pos));
-				if (add || id != trackId)
+				if (add || !trackIds.Contains (id))
 					ids.Add (id);
 			}
 

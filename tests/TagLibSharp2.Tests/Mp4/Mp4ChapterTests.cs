@@ -267,7 +267,8 @@ public class Mp4ChapterTests
 		CollectionAssert.AreEqual (new uint[] { 2 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
 		var chpl = Mp4ChapterCodec.ReadChpl (moov)!;
 		AssertChapters (chpl, (0, "One"), (2.5, "Two ü"));
-		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (saved, 1), "audio samples moved with their offsets");
+		var audio = Mp4ChapterTestBuilder.SampleBytes (saved, 1);
+		CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), audio, "audio samples moved with their offsets");
 		AssertChapters (Mp4ChapterTestBuilder.ReadFile (saved).Chapters, (0, "One"), (2.5, "Two ü"));
 	}
 
@@ -332,7 +333,12 @@ public class Mp4ChapterTests
 		var original = Mp4ChapterTestBuilder.Build (options);
 		var file = Mp4ChapterTestBuilder.ReadFile (original);
 
-		file.Chapters = [new Mp4Chapter (TimeSpan.Zero, "A"), new Mp4Chapter (TimeSpan.FromSeconds (4), "B"), new Mp4Chapter (TimeSpan.FromSeconds (6), "C"), new Mp4Chapter (TimeSpan.FromSeconds (8), "D")];
+		file.Chapters = [
+			new Mp4Chapter (TimeSpan.Zero, "A"),
+			new Mp4Chapter (TimeSpan.FromSeconds (4), "B"),
+			new Mp4Chapter (TimeSpan.FromSeconds (6), "C"),
+			new Mp4Chapter (TimeSpan.FromSeconds (8), "D"),
+		];
 		var saved = Save (file, original);
 
 		var moov = Mp4ChapterTestBuilder.Moov (saved);
@@ -421,6 +427,26 @@ public class Mp4ChapterTests
 		var moov = Mp4ChapterTestBuilder.Moov (saved);
 		CollectionAssert.AreEqual (new uint[] { 7 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
 		Assert.AreEqual ("Kept", Mp4ChapterTestBuilder.ReadFile (saved).Title);
+	}
+
+	[TestMethod]
+	public void Save_ClearChapters_RemovesEveryChapterTextTrackAndKeepsImages ()
+	{
+		// Apple layout: chap names the titles (2), chapter images (3, video), and chapter URLs (4, text).
+		// Both text tracks read as chapter lists, so clearing removes both; the image track stays.
+		var options = ThreeChapterTrack ();
+		options.ImageTrack = true;
+		options.UrlTrack = true;
+		var original = Mp4ChapterTestBuilder.Build (options);
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+
+		file.Chapters = [];
+		var saved = Save (file, original);
+
+		var moov = Mp4ChapterTestBuilder.Moov (saved);
+		CollectionAssert.AreEqual (new uint[] { 1, 3 }, Mp4ChapterTestBuilder.TrackIds (moov));
+		CollectionAssert.AreEqual (new uint[] { 3 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		Assert.AreEqual (0, Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Count);
 	}
 
 	[TestMethod]
