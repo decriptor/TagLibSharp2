@@ -51,9 +51,11 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 }
 
 /// <summary>
-/// A Matroska or WebM file. Reading maps <c>Tags</c> onto <see cref="Tag"/>.
-/// Saving splices <see cref="MatroskaTag.Render"/> into the first <c>Segment</c>,
-/// after writing any <see cref="MatroskaTrack.IsEnabled"/> the caller set.
+/// A Matroska or WebM file. Reading maps <c>Tags</c> onto <see cref="Tag"/> and image attachments
+/// onto <see cref="MatroskaTag.Pictures"/>.
+/// Saving splices <see cref="MatroskaTag.Render()"/> into the first <c>Segment</c>, and the
+/// <c>Attachments</c> element too when the pictures were set.
+/// Any <see cref="MatroskaTrack.IsEnabled"/> the caller set is written first.
 /// </summary>
 public sealed class MatroskaFile : IMediaFile
 {
@@ -780,39 +782,20 @@ public sealed class MatroskaFile : IMediaFile
 		}
 	}
 
+	/// <summary>
+	/// An image attachment is a picture. <see cref="MatroskaAttachments.TypeOf"/> maps its name to a type.
+	/// </summary>
 	static void ReadAttachedFile (ReadOnlySpan<byte> body, MatroskaTag tag)
 	{
-		string? name = null;
-		string? description = null;
-		string? mime = null;
-		byte[]? bytes = null;
-		var offset = 0;
-		while (offset < body.Length) {
-			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
-				break;
-			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
-			if (element.Id == MatroskaIds.FileName)
-				name = EbmlReader.ReadString (payload);
-			else if (element.Id == MatroskaIds.FileDescription)
-				description = EbmlReader.ReadString (payload);
-			else if (element.Id == MatroskaIds.FileMimeType)
-				mime = EbmlReader.ReadString (payload);
-			else if (element.Id == MatroskaIds.FileData && payload.Length > 0)
-				bytes = payload.ToArray ();
-			offset = element.End;
-		}
-
-		if (bytes is null || mime is null || !mime.StartsWith ("image/", StringComparison.OrdinalIgnoreCase))
+		var info = MatroskaAttachments.Read (body);
+		if (!info.IsPicture)
 			return;
 
-		var cover = (name is not null && name.Contains ("cover", StringComparison.OrdinalIgnoreCase))
-			|| (description is not null && description.Contains ("cover", StringComparison.OrdinalIgnoreCase))
-			|| string.Equals (description, "Front", StringComparison.OrdinalIgnoreCase);
 		tag.AddPicture (new MatroskaPicture (
-			mime,
-			cover ? PictureType.FrontCover : PictureType.Other,
-			description ?? name ?? string.Empty,
-			bytes));
+			info.MediaType!,
+			info.PictureType,
+			info.PictureDescription,
+			body.Slice (info.DataOffset, info.DataLength).ToArray ()));
 	}
 
 	/// <summary>
@@ -902,9 +885,12 @@ public sealed class MatroskaFile : IMediaFile
 				block.KeepTarget (body.Slice (element.Position, element.End - element.Position).ToArray ());
 				if (element.Id == MatroskaIds.TagChapterUid)
 					NoteTargetUid (payload, ref chapterAll, ref chapterSpecific);
-				else if (element.Id == MatroskaIds.TagAttachmentUid)
+				else if (element.Id == MatroskaIds.TagAttachmentUid) {
 					NoteTargetUid (payload, ref attachmentAll, ref attachmentSpecific);
-				else if (element.Id == MatroskaIds.TagTrackUid)
+					var uid = EbmlReader.ReadUInt (payload);
+					if (uid != 0)
+						block.AttachmentUids.Add (uid);
+				} else if (element.Id == MatroskaIds.TagTrackUid)
 					NoteTargetUid (payload, ref trackAll, ref trackSpecific);
 				else if (element.Id == MatroskaIds.TagEditionUid)
 					NoteTargetUid (payload, ref editionAll, ref editionSpecific);

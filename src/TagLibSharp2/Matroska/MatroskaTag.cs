@@ -358,10 +358,38 @@ public sealed class MatroskaTag : Tag
 
 	readonly List<IPicture> _pictures = new ();
 
-	/// <inheritdoc/>
+	/// <summary>
+	/// Gets or sets the image attachments (RFC 9559 section 21).
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// Reading returns every attachment with an <c>image/</c> media type. Fonts and other attachments
+	/// are not pictures and saving never removes them.
+	/// </para>
+	/// <para>
+	/// Setting this property makes the next save rewrite the image attachments. An attachment that
+	/// matches a picture by media type, type, description and bytes keeps its <c>FileName</c>,
+	/// <c>FileUID</c> and element bytes, and its place in storage order. A removed picture removes only
+	/// its attachment. A new front cover is named <c>cover.jpg</c> or <c>cover.png</c> after its media
+	/// type and goes first, as the cover art guidance asks. Another new picture is named after its
+	/// type, such as <c>back.jpg</c> or <c>artist.png</c>, and goes after the existing attachments.
+	/// The description is written to <c>FileDescription</c>. Reading maps those names back to the
+	/// picture type.
+	/// </para>
+	/// <para>
+	/// A picture must have an <c>image/</c> media type; an empty one is detected from the bytes.
+	/// Any other media type fails the save. JPEG and PNG are the formats the guidance recommends;
+	/// another image type is written with its own media type. WebM has no attachments, so a save
+	/// that would add one to a WebM file fails. A new or moved <c>Attachments</c> element goes in a
+	/// Void or after the last Cluster and needs an entry in the first SeekHead; a file whose
+	/// SeekHead has no room for it fails the save. A save that does not set this property leaves
+	/// the <c>Attachments</c> element byte for byte.
+	/// </para>
+	/// </remarks>
 	public override IPicture[] Pictures {
 		get => _pictures.ToArray ();
 		set {
+			_picturesChanged = true;
 			_pictures.Clear ();
 			if (value is null)
 				return;
@@ -377,7 +405,13 @@ public sealed class MatroskaTag : Tag
 	{
 		_blocks.Clear ();
 		_pictures.Clear ();
+		_picturesChanged = true;
 	}
+
+	bool _picturesChanged;
+
+	/// <summary>Gets a value indicating whether <see cref="Pictures"/> was set or cleared since reading.</summary>
+	internal bool PicturesChanged => _picturesChanged;
 
 	internal void AddPicture (IPicture picture) => _pictures.Add (picture);
 
@@ -385,20 +419,33 @@ public sealed class MatroskaTag : Tag
 	/// Writes the current tags as one <c>Tags</c> element.
 	/// </summary>
 	/// <returns>The EBML element, or empty when there are no tags.</returns>
-	public override BinaryData Render ()
+	public override BinaryData Render () => RenderWithout (null);
+
+	/// <summary>
+	/// Writes the tags without the attachments in <paramref name="removedAttachments"/>.
+	/// A <c>TagAttachmentUID</c> MUST match an attachment in the Segment (RFC 9559 section 5.1.8.1.1.6).
+	/// A tag left with no target at all is dropped, so it does not become a file-level tag.
+	/// </summary>
+	internal BinaryData RenderWithout (HashSet<ulong>? removedAttachments)
 	{
 		using var tags = new BinaryDataBuilder ();
-		var rendered = 0;
+		var written = 0;
 		foreach (var block in _blocks) {
 			// A Tag contains at least one SimpleTag (RFC 9559 section 5.1.8.1.2). One that a clear emptied is
 			// dropped. One that was already empty when read is kept, so a save leaves it as it was.
 			if (block.Tags.Count == 0 && !block.WasEmpty)
 				continue;
-			tags.Add (block.Render ());
-			rendered++;
+			if (removedAttachments is { Count: > 0 } && block.TargetsAttachment (removedAttachments)) {
+				var kept = block.RenderWithout (removedAttachments);
+				if (kept is null)
+					continue;
+				tags.Add (kept.Value);
+			} else
+				tags.Add (block.Render ());
+			written++;
 		}
 
-		return rendered == 0 ? BinaryData.Empty : EbmlWriter.Master (MatroskaIds.Tags, tags.ToBinaryData ().Span);
+		return written == 0 ? BinaryData.Empty : EbmlWriter.Master (MatroskaIds.Tags, tags.ToBinaryData ().Span);
 	}
 
 	internal void SetSegmentTitle (string? title) => _segmentTitle = title;
@@ -1167,6 +1214,49 @@ internal sealed class TagBlock
 
 	internal void KeepTarget (byte[] element) => _targetChildren.Add (element);
 
+	/// <summary>Gets the nonzero <c>TagAttachmentUID</c> values in the targets.</summary>
+	public List<ulong> AttachmentUids { get; } = [];
+
+	public bool TargetsAttachment (HashSet<ulong> uids)
+	{
+		foreach (var uid in AttachmentUids) {
+			if (uids.Contains (uid))
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Renders the tag with the <c>TagAttachmentUID</c> elements in <paramref name="uids"/> removed.
+	/// </summary>
+	/// <returns>The element, or null when no target UID is left.</returns>
+	public BinaryData? RenderWithout (HashSet<ulong> uids)
+	{
+		var children = new List<byte[]> ();
+		var targetsLeft = 0;
+		foreach (var child in _targetChildren) {
+			if (!EbmlReader.TryRead (child, 0, child.Length, out var element) || element.UnknownSize) {
+				children.Add (child);
+				continue;
+			}
+
+			var isUid = element.Id is MatroskaIds.TagAttachmentUid or MatroskaIds.TagTrackUid
+				or MatroskaIds.TagChapterUid or MatroskaIds.TagEditionUid;
+			if (element.Id == MatroskaIds.TagAttachmentUid
+				&& uids.Contains (EbmlReader.ReadUInt (child.AsSpan (element.DataOffset, (int)element.DataLength))))
+				continue;
+			if (isUid)
+				targetsLeft++;
+			children.Add (child);
+		}
+
+		if (targetsLeft == 0)
+			return null;
+
+		return Render (children);
+	}
+
 	public bool HasName (string name)
 	{
 		foreach (var tag in Tags) {
@@ -1200,15 +1290,15 @@ internal sealed class TagBlock
 
 	public void Remove (string name) => Tags.RemoveAll (tag => tag.Name == name);
 
-	public BinaryData Render ()
-	{
-		if (_original is not null)
-			return new BinaryData (_original);
+	public BinaryData Render () =>
+		_original is not null ? new BinaryData (_original) : Render (_targetChildren);
 
+	BinaryData Render (List<byte[]> targetChildren)
+	{
 		using var body = new BinaryDataBuilder ();
 		if (HasTargetTypeValue)
 			body.Add (EbmlWriter.Unsigned (MatroskaIds.TargetTypeValue, Level));
-		foreach (var child in _targetChildren)
+		foreach (var child in targetChildren)
 			body.Add (child);
 		using var tag = new BinaryDataBuilder ();
 		var targets = body.ToBinaryData ();
