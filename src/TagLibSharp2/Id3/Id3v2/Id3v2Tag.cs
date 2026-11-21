@@ -1937,21 +1937,8 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override void Clear ()
 	{
-		_frames.Clear ();
-		_pictures.Clear ();
-		_comments.Clear ();
-		_userTextFrames.Clear ();
-		_lyricsFrames.Clear ();
-		_uniqueFileIdFrames.Clear ();
-		_involvedPeopleFrames.Clear ();
-		_popularimeterFrames.Clear ();
-		_urlFrames.Clear ();
-		_userUrlFrames.Clear ();
-		_syncLyricsFrames.Clear ();
-		_generalObjectFrames.Clear ();
-		_privateFrames.Clear ();
-		_chapterFrames.Clear ();
-		_tableOfContentsFrames.Clear ();
+		foreach (var list in FrameLists)
+			list.Clear ();
 		InvalidatePerformersRoleCache ();
 	}
 
@@ -2173,12 +2160,27 @@ public sealed class Id3v2Tag : Tag
 	/// mapped properties (a <c>TXXX</c>, a <c>PRIV</c>) is not empty to a container that decides whether to
 	/// write it.
 	/// </summary>
-	internal bool HasFrames =>
-		_frames.Count > 0 || _pictures.Count > 0 || _comments.Count > 0 || _userTextFrames.Count > 0 ||
-		_lyricsFrames.Count > 0 || _uniqueFileIdFrames.Count > 0 || _involvedPeopleFrames.Count > 0 ||
-		_popularimeterFrames.Count > 0 || _urlFrames.Count > 0 || _userUrlFrames.Count > 0 ||
-		_syncLyricsFrames.Count > 0 || _generalObjectFrames.Count > 0 || _privateFrames.Count > 0 ||
-		_chapterFrames.Count > 0 || _tableOfContentsFrames.Count > 0;
+	internal bool HasFrames {
+		get {
+			foreach (var list in FrameLists) {
+				if (list.Count > 0)
+					return true;
+			}
+			return false;
+		}
+	}
+
+	System.Collections.IList[]? _frameLists;
+
+	/// <summary>
+	/// Every list of frames this tag holds, the one source <see cref="Clear"/> and <see cref="HasFrames"/> read.
+	/// A new frame list belongs here, or a container may drop a tag that holds only that kind of frame.
+	/// </summary>
+	System.Collections.IList[] FrameLists => _frameLists ??= [
+		_frames, _pictures, _comments, _userTextFrames, _lyricsFrames, _uniqueFileIdFrames,
+		_involvedPeopleFrames, _popularimeterFrames, _urlFrames, _userUrlFrames, _syncLyricsFrames,
+		_generalObjectFrames, _privateFrames, _chapterFrames, _tableOfContentsFrames,
+	];
 
 	/// <summary>
 	/// Gets the first lyrics with an empty description, or the first lyrics if none have empty description.
