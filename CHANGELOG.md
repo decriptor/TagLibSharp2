@@ -5,6 +5,17 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `MatroskaFile.Tracks` lists every `TrackEntry` as a `MatroskaTrack` with `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
+- `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry` when the `Void` right after `Tracks` has room, so no element moves; otherwise the save fails and nothing is written. A track the caller did not set keeps its bytes.
+
+### Fixed
+
+- Matroska: a track with `FlagEnabled` 0 is no longer chosen as the main audio or video track while an enabled track of that type exists (#117).
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes

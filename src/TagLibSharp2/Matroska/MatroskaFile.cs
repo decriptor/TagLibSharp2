@@ -52,7 +52,8 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 
 /// <summary>
 /// A Matroska or WebM file. Reading maps <c>Tags</c> onto <see cref="Tag"/>.
-/// Saving splices <see cref="MatroskaTag.Render"/> into the first <c>Segment</c>.
+/// Saving splices <see cref="MatroskaTag.Render"/> into the first <c>Segment</c>,
+/// after writing any <see cref="MatroskaTrack.IsEnabled"/> the caller set.
 /// </summary>
 public sealed class MatroskaFile : IMediaFile
 {
@@ -72,6 +73,7 @@ public sealed class MatroskaFile : IMediaFile
 		_height = layout.Height;
 		_frameRate = layout.FrameRate;
 		_videoCodec = layout.VideoCodec;
+		Tracks = layout.Tracks is null ? [] : layout.Tracks.ToArray ();
 	}
 
 	readonly int _sampleRate;
@@ -93,6 +95,12 @@ public sealed class MatroskaFile : IMediaFile
 
 	/// <summary>Gets audio and video flags from <c>TrackType</c>.</summary>
 	public MediaTypes MediaTypes { get; }
+
+	/// <summary>
+	/// Gets every known-size <c>TrackEntry</c> in file order. RFC 9559 §5.1.4.1.
+	/// <see cref="MatroskaTrack.IsEnabled"/> can be changed and is written on save.
+	/// </summary>
+	public IReadOnlyList<MatroskaTrack> Tracks { get; }
 
 	IMediaProperties? IMediaFile.AudioProperties =>
 		(MediaTypes & MediaTypes.Audio) != 0
@@ -353,17 +361,45 @@ public sealed class MatroskaFile : IMediaFile
 		return result.IsSuccess;
 	}
 
-	/// <summary>Writes the rendered <c>Tags</c> element into a copy of <paramref name="originalData"/>.</summary>
+	/// <summary>
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set and the rendered <c>Tags</c> element
+	/// into a copy of <paramref name="originalData"/>.
+	/// </summary>
 	/// <returns>The rewritten file, or empty when the container cannot be bounded.</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
-		MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out _)
+		TryRender (originalData, out var rewritten, out _)
 			? new BinaryData (rewritten)
 			: BinaryData.Empty;
+
+	/// <summary>
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the tags.
+	/// With no track set, the container goes straight to the tag rewrite.
+	/// </summary>
+	bool TryRender (ReadOnlySpan<byte> originalData, out byte[] rewritten, out string error)
+	{
+		List<TrackFlagEdit>? edits = null;
+		foreach (var track in Tracks) {
+			if (track.IsEnabledAssigned)
+				(edits ??= new List<TrackFlagEdit> ()).Add (new TrackFlagEdit (track.Ordinal, track.TrackNumber, track.TrackUid, track.IsEnabled));
+		}
+
+		if (edits is null)
+			return MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error);
+
+		if (!MatroskaRewrite.TryWriteTrackFlags (originalData, edits, out var flagged, out error)) {
+			rewritten = [];
+			return false;
+		}
+
+		return flagged is null
+			? MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error)
+			: MatroskaRewrite.TryRewrite (flagged, Tag, out rewritten, out error);
+	}
 
 	/// <summary>Saves tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
 	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out var error))
+		if (!TryRender (originalData, out var rewritten, out var error))
 			return FileWriteResult.Failure (error);
 
 		fileSystem ??= _sourceFileSystem;
@@ -400,7 +436,7 @@ public sealed class MatroskaFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData.Span, Tag, out var rewritten, out var error))
+		if (!TryRender (originalData.Span, out var rewritten, out var error))
 			return Task.FromResult (FileWriteResult.Failure (error));
 
 		fileSystem ??= _sourceFileSystem;
@@ -524,9 +560,12 @@ public sealed class MatroskaFile : IMediaFile
 	static void ReadTrackEntry (ReadOnlySpan<byte> entry, ref TrackLayout layout)
 	{
 		ulong kind = 0;
+		ulong number = 0;
+		ulong uid = 0;
 		string? codecId = null;
 		string? codecName = null;
 		var isDefault = true;
+		var isEnabled = true;
 		var privateOffset = -1;
 		var privateLength = 0;
 		var rate = 0;
@@ -545,8 +584,14 @@ public sealed class MatroskaFile : IMediaFile
 			var payload = entry.Slice (element.DataOffset, (int)element.DataLength);
 			if (element.Id == MatroskaIds.TrackType)
 				kind = EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.TrackNumber)
+				number = EbmlReader.ReadUInt (payload);
+			else if (element.Id == MatroskaIds.TrackUid)
+				uid = EbmlReader.ReadUInt (payload);
 			else if (element.Id == MatroskaIds.FlagDefault)
 				isDefault = payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
+			else if (element.Id == MatroskaIds.FlagEnabled)
+				isEnabled = IsFlagSet (payload);
 			else if (element.Id == MatroskaIds.CodecId)
 				codecId = EbmlReader.ReadString (payload).TrimEnd ('\0');
 			else if (element.Id == MatroskaIds.CodecPrivate) {
@@ -576,12 +621,17 @@ public sealed class MatroskaFile : IMediaFile
 		else if (sawAudio && rate == 0)
 			rate = 8000;
 		var codec = CodecLabel (codecId, codecName, codecPrivate);
-		// FlagDefault defaults to 1. Keep the first default track. A later default replaces one that opted out.
+		layout.Tracks ??= new List<MatroskaTrack> ();
+		layout.Tracks.Add (new MatroskaTrack (layout.Tracks.Count, number, uid, kind, codecId, isDefault, isEnabled));
+		// FlagEnabled and FlagDefault both default to 1 (RFC 9559 §5.1.4.1.4, §5.1.4.1.5).
+		// An enabled track beats a disabled one; among those, a default track beats one that opted out.
+		// The first track of the best rank is kept. When every track is disabled, the disabled ones still rank.
+		var rank = (isEnabled ? 2 : 0) + (isDefault ? 1 : 0);
 		if (kind == 2) {
 			layout.Types |= MediaTypes.Audio;
-			if (!layout.HasAudio || (!layout.AudioIsDefault && isDefault)) {
+			if (!layout.HasAudio || rank > layout.AudioRank) {
 				layout.HasAudio = true;
-				layout.AudioIsDefault = isDefault;
+				layout.AudioRank = rank;
 				layout.SampleRate = rate;
 				layout.Channels = channels;
 				layout.BitsPerSample = bits;
@@ -589,9 +639,9 @@ public sealed class MatroskaFile : IMediaFile
 			}
 		} else if (kind == 1) {
 			layout.Types |= MediaTypes.Video;
-			if (!layout.HasVideo || (!layout.VideoIsDefault && isDefault)) {
+			if (!layout.HasVideo || rank > layout.VideoRank) {
 				layout.HasVideo = true;
-				layout.VideoIsDefault = isDefault;
+				layout.VideoRank = rank;
 				layout.Width = width;
 				layout.Height = height;
 				layout.FrameRate = frameRate;
@@ -744,21 +794,28 @@ public sealed class MatroskaFile : IMediaFile
 			bytes));
 	}
 
+	/// <summary>
+	/// A 0/1 flag. An empty element is the default 1 (RFC 8794 §6.1, RFC 9559 §5.1.4.1.4).
+	/// </summary>
+	internal static bool IsFlagSet (ReadOnlySpan<byte> payload) =>
+		payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
+
 	struct TrackLayout
 	{
+		public List<MatroskaTrack>? Tracks;
 		public MediaTypes Types;
 		public int SampleRate;
 		public int Channels;
 		public int BitsPerSample;
 		public string? AudioCodec;
 		public bool HasAudio;
-		public bool AudioIsDefault;
+		public int AudioRank;
 		public int Width;
 		public int Height;
 		public double FrameRate;
 		public string? VideoCodec;
 		public bool HasVideo;
-		public bool VideoIsDefault;
+		public int VideoRank;
 	}
 
 	static void ReadTags (ReadOnlySpan<byte> data, ReadOnlySpan<byte> body, MatroskaTag tag)
