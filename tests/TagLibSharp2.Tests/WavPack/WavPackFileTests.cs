@@ -813,7 +813,8 @@ public class WavPackFileTests
 	[TestMethod]
 	public async Task Read_LegacyRiffVersion3_DurationUsesSamplesAtOffset16 ()
 	{
-		var data = CreateLegacyRiffWavPack (version: 3, samplesAtOffset16: 1255050, payloadBytes: 4);
+		// The data-chunk size would be 25 samples. Version 3 ignores it.
+		var data = CreateLegacyRiffWavPack (version: 3, samplesAtOffset16: 1255050, payloadBytes: 4, declaredDataSize: 100);
 
 		AssertLegacyDuration (MediaFile.ReadFromData (data, "song.wav"));
 		AssertLegacyDuration (MediaFile.Read (new MemoryStream (data), "song.wav"));
@@ -823,20 +824,63 @@ public class WavPackFileTests
 	}
 
 	[TestMethod]
-	public void Read_LegacyRiffVersion1_DoesNotInventSamples ()
+	[DataRow ((ushort)1, "vers-10.wv")]
+	[DataRow ((ushort)2, "vers-20.wv")]
+	public async Task Read_LegacyRiffVersion1And2_DurationUsesDataChunkSize (ushort version, string name)
 	{
-		var data = CreateLegacyRiffWavPack (version: 1, samplesAtOffset16: 0, payloadBytes: 4);
-		var result = MediaFile.ReadFromData (data);
+		// 1,255,050 stereo 16-bit frames. Offset 16 is 0xA5 audio, not a sample count.
+		const uint declared = 1_255_050u * 2u * 2u;
+		var data = CreateLegacyRiffWavPack (version, samplesAtOffset16: 0, payloadBytes: 16, declaredDataSize: declared);
 
-		Assert.IsTrue (result.IsSuccess, result.Error);
-		Assert.AreEqual (MediaFormat.WavPack, result.Format);
-		var file = result.GetFileAs<WavPackFile> ()!;
-		Assert.AreEqual (0u, file.TotalSamples);
-		Assert.AreEqual (44100, file.SampleRate);
-		Assert.AreEqual (2, file.Channels);
-		Assert.AreEqual (16, file.BitsPerSample);
-		Assert.IsFalse (file.Properties.IsValid);
-		Assert.AreNotEqual (28.459, file.Properties.Duration.TotalSeconds, 0.05);
+		await AssertDataChunkDuration (data, name, version);
+	}
+
+	[TestMethod]
+	[DataRow ((ushort)1, (uint)0)]
+	[DataRow ((ushort)1, (uint)10)]
+	[DataRow ((ushort)2, (uint)12)]
+	[DataRow ((ushort)3, (uint)0)]
+	[DataRow ((ushort)3, (uint)20)]
+	[DataRow ((ushort)3, (uint)31)]
+	public async Task Read_ShortDeclaredDataChunk_OpensWhenWvpkIsPresent (ushort version, uint declared)
+	{
+		var exactMinimum = declared is 10u or 12u or 20u;
+		var samples = version == 3 ? 44100u : 0u;
+		var data = CreateLegacyRiffWavPack (
+			version,
+			samples,
+			payloadBytes: exactMinimum ? 0 : 32,
+			declaredDataSize: exactMinimum ? null : declared);
+
+		Assert.IsTrue (WavPackFile.IsValidFormat (data));
+		AssertOpened (WavPackFile.Read (data), version, samples, declared);
+		AssertOpened (MediaFile.Read (new MemoryStream (data), "pipe.wv"), version, samples, declared);
+		AssertOpened (await MediaFile.ReadAsync (new MemoryStream (data), "pipe.wv"), version, samples, declared);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/pipe.wv", data);
+		AssertOpened (MediaFile.Read ("/pipe.wv", fs), version, samples, declared);
+		AssertOpened (await MediaFile.ReadAsync ("/pipe.wv", fs), version, samples, declared);
+	}
+
+	[TestMethod]
+	public void Read_ChunkBeforeData_Skips100KbAndKeepsDuration ()
+	{
+		var data = CreateLegacyRiffWavPack (
+			version: 3,
+			samplesAtOffset16: 1255050,
+			payloadBytes: 1024 * 1024,
+			chunkBeforeData: 100 * 1024);
+		var counted = new CountingStream (new MemoryStream (data));
+
+		var opened = WavPackFile.Read (counted, "wide.wv", null);
+
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.AreEqual (3, opened.File!.Version);
+		Assert.AreEqual (1255050u, opened.File.TotalSamples);
+		Assert.AreEqual (1255050 / 44100.0, opened.File.Properties.Duration.TotalSeconds, 0.005);
+		Assert.IsTrue (counted.BytesRead < data.Length - 500_000, $"read {counted.BytesRead} of {data.Length}");
+		AssertLegacyDuration (MediaFile.ReadFromData (data, "wide.wv"));
 	}
 
 	[TestMethod]
@@ -874,6 +918,60 @@ public class WavPackFileTests
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (441000u, result.File!.TotalSamples);
 		Assert.AreEqual (10.0, result.File.Properties.Duration.TotalSeconds, 0.005);
+	}
+
+	static async Task AssertDataChunkDuration (byte[] data, string name, int version)
+	{
+		AssertLegacySamples (MediaFile.ReadFromData (data, name), version);
+		AssertLegacySamples (MediaFile.Read (new MemoryStream (data), name), version);
+		AssertLegacySamples (await MediaFile.ReadAsync (new MemoryStream (data), name), version);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/" + name, data);
+		AssertLegacySamples (MediaFile.Read ("/" + name, fs), version);
+		AssertLegacySamples (await MediaFile.ReadAsync ("/" + name, fs), version);
+	}
+
+	static void AssertLegacySamples (MediaFileResult result, int version)
+	{
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.WavPack, result.Format);
+		var file = result.GetFileAs<WavPackFile> ()!;
+		Assert.AreEqual (version, file.Version);
+		Assert.AreEqual (1255050u, file.TotalSamples);
+		Assert.AreNotEqual (0xA5A5A5A5u, file.TotalSamples);
+		Assert.AreEqual (44100, file.SampleRate);
+		Assert.AreEqual (2, file.Channels);
+		Assert.AreEqual (16, file.BitsPerSample);
+		Assert.AreEqual (1255050 / 44100.0, file.Properties.Duration.TotalSeconds, 0.005);
+	}
+
+	static void AssertOpened (WavPackFileReadResult result, int version, uint samplesAtOffset16, uint declared)
+	{
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		AssertOpenedFile (result.File, version, samplesAtOffset16, declared);
+	}
+
+	static void AssertOpened (MediaFileResult result, int version, uint samplesAtOffset16, uint declared)
+	{
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (MediaFormat.WavPack, result.Format);
+		AssertOpenedFile (result.GetFileAs<WavPackFile> (), version, samplesAtOffset16, declared);
+	}
+
+	static void AssertOpenedFile (WavPackFile? file, int version, uint samplesAtOffset16, uint declared)
+	{
+		Assert.IsNotNull (file);
+		Assert.AreEqual (version, file!.Version);
+		if (version == 3) {
+			Assert.AreEqual (samplesAtOffset16, file.TotalSamples);
+			return;
+		}
+
+		// Declared size 0 is not a sample count, even when audio bytes follow the header.
+		var expected = declared == 0 ? 0u : declared / 2u / 2u;
+		Assert.AreEqual (expected, file.TotalSamples);
+		Assert.AreNotEqual (0xA5A5A5A5u, file.TotalSamples);
 	}
 
 	static void AssertLegacyDuration (MediaFileResult result)
@@ -1029,31 +1127,41 @@ public class WavPackFileTests
 	}
 
 	/// <summary>
-	/// RIFF/WAVE whose fmt is 44100 Hz stereo 16-bit and whose data chunk starts with a 32-byte wvpk header.
-	/// Sample count for legacy files is the uint32 at wvpk+16. Offset 12 is left at 0.
+	/// RIFF/WAVE whose fmt is 44100 Hz stereo 16-bit. Version 1 is a 10-byte header,
+	/// version 2 is 12 bytes, and version 3 stores the sample count at offset 16.
+	/// Bytes past a short header are 0xA5 so offset 16 is not a sample count.
 	/// </summary>
-	private static byte[] CreateLegacyRiffWavPack (ushort version, uint samplesAtOffset16, int payloadBytes)
+	private static byte[] CreateLegacyRiffWavPack (
+		ushort version,
+		uint samplesAtOffset16,
+		int payloadBytes,
+		uint? declaredDataSize = null,
+		int chunkBeforeData = 0)
 	{
-		using var block = new MemoryStream ();
-		block.Write ("wvpk"u8);
-		WriteUInt32LE (block, 24);
-		WriteUInt16LE (block, version);
-		block.WriteByte (0);
-		block.WriteByte (0);
-		WriteUInt32LE (block, 0);
-		WriteUInt32LE (block, samplesAtOffset16);
-		WriteUInt32LE (block, 0);
-		WriteUInt32LE (block, 0);
-		WriteUInt32LE (block, 0);
-		if (payloadBytes > 0)
-			block.Write (new byte[payloadBytes]);
-		var samples = block.ToArray ();
+		var headerLength = version switch {
+			1 => 10,
+			2 => 12,
+			_ => 20
+		};
+		var audio = payloadBytes;
+		if (version < 3 && payloadBytes > 0)
+			audio = Math.Max (payloadBytes, 20 - headerLength);
 
+		var block = new byte[headerLength + Math.Max (0, audio)];
+		"wvpk"u8.CopyTo (block);
+		WriteUInt16LE (block, 8, version);
+		if (version >= 3)
+			WriteUInt32LE (block, 16, samplesAtOffset16);
+		else {
+			for (var i = headerLength; i < block.Length; i++)
+				block[i] = 0xA5;
+		}
+
+		var dataSize = declaredDataSize ?? (uint)block.Length;
 		using var ms = new MemoryStream ();
 		const int fmtBody = 16;
-		var riffSize = 4 + (8 + fmtBody) + (8 + samples.Length);
 		ms.Write ("RIFF"u8);
-		WriteUInt32LE (ms, (uint)riffSize);
+		WriteUInt32LE (ms, 0);
 		ms.Write ("WAVE"u8);
 		ms.Write ("fmt "u8);
 		WriteUInt32LE (ms, fmtBody);
@@ -1063,10 +1171,24 @@ public class WavPackFileTests
 		WriteUInt32LE (ms, 44100 * 2 * 2);
 		WriteUInt16LE (ms, 4);
 		WriteUInt16LE (ms, 16);
+		if (chunkBeforeData > 0) {
+			ms.Write ("JUNK"u8);
+			WriteUInt32LE (ms, (uint)chunkBeforeData);
+			ms.Write (new byte[chunkBeforeData]);
+		}
+
 		ms.Write ("data"u8);
-		WriteUInt32LE (ms, (uint)samples.Length);
-		ms.Write (samples);
-		return ms.ToArray ();
+		WriteUInt32LE (ms, dataSize);
+		ms.Write (block);
+		var bytes = ms.ToArray ();
+		WriteUInt32LE (bytes, 4, (uint)(bytes.Length - 8));
+		return bytes;
+	}
+
+	private static void WriteUInt16LE (byte[] data, int offset, ushort v)
+	{
+		data[offset] = (byte)v;
+		data[offset + 1] = (byte)(v >> 8);
 	}
 
 	sealed class CountingStream : Stream
