@@ -106,43 +106,42 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override uint? Track {
-		get => ParseNumber (TrackPartNumber ());
-		set => SetAt (TrackLevel, "PART_NUMBER", value?.ToString (CultureInfo.InvariantCulture));
+		get => ParseLeading (TrackPartNumber ());
+		set {
+			if (value is null) {
+				RemoveWhere (IsTrackTarget, "PART_NUMBER");
+				return;
+			}
+
+			SetAt (TrackLevel, "PART_NUMBER", value.Value.ToString (CultureInfo.InvariantCulture));
+		}
 	}
 
 	/// <inheritdoc/>
 	public override uint? TotalTracks {
-		get => ParseNumber (FirstAt (AlbumLevel, "TOTAL_PARTS"));
+		get => TrackTotal ();
 		set => SetTrackTotal (value);
 	}
 
 	/// <inheritdoc/>
 	public override uint? DiscNumber {
 		// PART_NUMBER is the disc only when TargetTypeValue is stored and equal to 50.
-		get => ParseNumber (TextWhere (IsExplicitAlbum, "PART_NUMBER") ?? FallbackDiscName ());
+		get => ParseLeading (TextWhere (IsExplicitAlbum, "PART_NUMBER") ?? FallbackDiscName ());
 		set {
 			if (value is null) {
-				DiscTarget (create: false)?.Remove ("PART_NUMBER");
+				RemoveWhere (IsExplicitAlbum, "PART_NUMBER");
 				RemoveDiscNames ();
 				return;
 			}
 
-			ReplaceOrAdd (DiscTarget (create: true)!, "PART_NUMBER", value.Value.ToString (CultureInfo.InvariantCulture));
+			ReplaceOrAdd (DiscHome (), "PART_NUMBER", value.Value.ToString (CultureInfo.InvariantCulture));
 		}
 	}
 
 	/// <inheritdoc/>
 	public override uint? TotalDiscs {
-		// One explicit-50 TOTAL_PARTS is both this and TotalTracks when they share that element.
-		get => ParseNumber (DiscTotal ());
-		set {
-			if (value is null) {
-				ClearDiscTotal ();
-				return;
-			}
-
-			ReplaceOrAdd (DiscTarget (create: true)!, "TOTAL_PARTS", value.Value.ToString (CultureInfo.InvariantCulture));
-		}
+		get => DiscTotal ();
+		set => SetDiscTotal (value);
 	}
 
 	/// <inheritdoc/>
@@ -651,87 +650,150 @@ public sealed class MatroskaTag : Tag
 		var atTrack = FirstAt (TrackLevel, "PART_NUMBER");
 		if (atTrack is not null)
 			return atTrack;
-		// ffmpeg writes the track as PART_NUMBER and omits TargetTypeValue. The default 50 is not a disc.
+		// ffmpeg writes the track as PART_NUMBER and omits TargetTypeValue. Missing is not the disc default.
 		return TextWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "PART_NUMBER");
 	}
 
+	uint? TrackTotal () =>
+		FirstNumberWhere (block => block.IsFileLevel && block.Level == TrackLevel, "TOTAL_PARTS")
+		?? FirstNumberWhere (block => block.IsFileLevel && !block.HasTargetTypeValue, "TOTAL_PARTS")
+		?? ParseEmbeddedTotal (TrackPartNumber ());
+
 	void SetTrackTotal (uint? value)
 	{
-		var disc = SeparateDiscTotalBlock ();
-		var homes = new List<TagBlock> ();
-		foreach (var block in _blocks) {
-			if (!block.IsFileLevel || block.Level != AlbumLevel || ReferenceEquals (block, disc))
-				continue;
-			if (block.HasName ("TOTAL_PARTS"))
-				homes.Add (block);
-		}
-
 		if (value is null) {
-			foreach (var home in homes)
-				home.Remove ("TOTAL_PARTS");
+			RemoveWhere (IsTrackTarget, "TOTAL_PARTS");
+			StripEmbeddedTotal (IsTrackTarget, "PART_NUMBER");
 			return;
 		}
 
 		var text = value.Value.ToString (CultureInfo.InvariantCulture);
-		if (homes.Count == 0) {
-			var shared = disc is not null
-				&& FirstBlock (block => block.IsFileLevel && block.Level == AlbumLevel && block.HasName ("TOTAL_PARTS")) is TagBlock only
-				&& ReferenceEquals (only, disc);
-			ReplaceOrAdd (shared ? disc! : FileBlock (AlbumLevel), "TOTAL_PARTS", text);
+		var home = TrackTotalHome ();
+		ReplaceOrAdd (home, "TOTAL_PARTS", text);
+		foreach (var block in _blocks) {
+			if (IsTrackTarget (block) && !ReferenceEquals (block, home))
+				block.Remove ("TOTAL_PARTS");
+		}
+
+		StripEmbeddedTotal (IsTrackTarget, "PART_NUMBER");
+	}
+
+	TagBlock TrackTotalHome ()
+	{
+		var atLevel = FirstBlock (block =>
+			block.IsFileLevel && block.Level == TrackLevel && block.HasName ("TOTAL_PARTS"));
+		if (atLevel is not null)
+			return atLevel;
+		var track = FirstBlock (block => block.IsFileLevel && block.Level == TrackLevel);
+		if (track is not null)
+			return track;
+		var bareTotal = FirstBlock (block =>
+			block.IsFileLevel && !block.HasTargetTypeValue && block.HasName ("TOTAL_PARTS"));
+		if (bareTotal is not null)
+			return bareTotal;
+		var bare = FirstBlock (block => block.IsFileLevel && !block.HasTargetTypeValue);
+		if (bare is not null)
+			return bare;
+		return FileBlock (TrackLevel);
+	}
+
+	uint? DiscTotal ()
+	{
+		var dedicated = FirstNumberWhere (IsExplicitAlbum, "TOTAL_PARTS");
+		if (dedicated is not null)
+			return dedicated;
+		var explicitPart = TextWhere (IsExplicitAlbum, "PART_NUMBER");
+		if (explicitPart is not null)
+			return ParseEmbeddedTotal (explicitPart);
+		return ParseEmbeddedTotal (FallbackDiscName ());
+	}
+
+	void SetDiscTotal (uint? value)
+	{
+		if (value is null) {
+			RemoveWhere (IsExplicitAlbum, "TOTAL_PARTS");
+			StripEmbeddedTotal (IsExplicitAlbum, "PART_NUMBER");
+			StripEmbeddedTotal (block => block.IsFileLevel, "DISC");
+			StripEmbeddedTotal (block => block.IsFileLevel, "DISCNUMBER");
 			return;
 		}
 
-		ReplaceOrAdd (homes[0], "TOTAL_PARTS", text);
-		for (var i = 1; i < homes.Count; i++)
-			homes[i].Remove ("TOTAL_PARTS");
-	}
-
-	string? DiscTotal ()
-	{
-		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
-		if (withPart is not null)
-			return Text (withPart, "TOTAL_PARTS");
-		var separate = SeparateDiscTotalBlock ();
-		return separate is null ? null : Text (separate, "TOTAL_PARTS");
-	}
-
-	void ClearDiscTotal ()
-	{
-		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
-		if (withPart is not null) {
-			withPart.Remove ("TOTAL_PARTS");
-			return;
+		var text = value.Value.ToString (CultureInfo.InvariantCulture);
+		var home = DiscHome ();
+		ReplaceOrAdd (home, "TOTAL_PARTS", text);
+		foreach (var block in _blocks) {
+			if (IsExplicitAlbum (block) && !ReferenceEquals (block, home))
+				block.Remove ("TOTAL_PARTS");
 		}
 
-		SeparateDiscTotalBlock ()?.Remove ("TOTAL_PARTS");
+		StripEmbeddedTotal (IsExplicitAlbum, "PART_NUMBER");
+		StripEmbeddedTotal (block => block.IsFileLevel, "DISC");
+		StripEmbeddedTotal (block => block.IsFileLevel, "DISCNUMBER");
 	}
 
 	/// <summary>
-	/// The explicit album target that holds the disc, or a new one that does not reuse the track total.
+	/// The explicit album target that stores the disc. An omitted <c>TargetTypeValue</c> is not this target.
 	/// </summary>
-	TagBlock? DiscTarget (bool create)
+	TagBlock DiscHome ()
 	{
 		var withPart = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("PART_NUMBER"));
 		if (withPart is not null)
 			return withPart;
-		var separate = SeparateDiscTotalBlock ();
-		if (separate is not null)
-			return separate;
-		if (!create)
-			return null;
+		var withTotal = FirstBlock (block => IsExplicitAlbum (block) && block.HasName ("TOTAL_PARTS"));
+		if (withTotal is not null)
+			return withTotal;
+		var album = FirstBlock (IsExplicitAlbum);
+		if (album is not null)
+			return album;
 		var created = new TagBlock (AlbumLevel);
 		_blocks.Add (created);
 		return created;
 	}
 
-	TagBlock? SeparateDiscTotalBlock ()
-	{
-		var track = FirstBlock (block => block.IsFileLevel && block.Level == AlbumLevel && block.HasName ("TOTAL_PARTS"));
-		return FirstBlock (block => IsExplicitAlbum (block) && !ReferenceEquals (block, track) && block.HasName ("TOTAL_PARTS"));
-	}
+	static bool IsTrackTarget (TagBlock block) =>
+		block.IsFileLevel && (block.Level == TrackLevel || !block.HasTargetTypeValue);
 
 	static bool IsExplicitAlbum (TagBlock block) =>
 		block.IsFileLevel && block.HasTargetTypeValue && block.Level == AlbumLevel;
+
+	void RemoveWhere (Func<TagBlock, bool> match, string name)
+	{
+		foreach (var block in _blocks) {
+			if (match (block))
+				block.Remove (name);
+		}
+	}
+
+	void StripEmbeddedTotal (Func<TagBlock, bool> match, string name)
+	{
+		foreach (var block in _blocks) {
+			if (!match (block))
+				continue;
+			for (var i = 0; i < block.Tags.Count; i++) {
+				var tag = block.Tags[i];
+				var text = tag.Text;
+				if (tag.Name != name || text is null || text.Length == 0)
+					continue;
+				var slash = SlashAt (text);
+				if (slash <= 0)
+					continue;
+				block.Tags[i] = CopyTag (tag, text.Substring (0, slash));
+			}
+		}
+	}
+
+	uint? FirstNumberWhere (Func<TagBlock, bool> match, string name)
+	{
+		foreach (var block in _blocks) {
+			if (!match (block))
+				continue;
+			var parsed = ParseLeading (Text (block, name));
+			if (parsed is not null)
+				return parsed;
+		}
+
+		return null;
+	}
 
 	string? FallbackDiscName ()
 	{
@@ -944,6 +1006,35 @@ public sealed class MatroskaTag : Tag
 			: null;
 	}
 
+	// The number before '/' is the part. The number after it is the total, not another part.
+	static uint? ParseLeading (string? text)
+	{
+		if (text is null)
+			return null;
+		var slash = SlashAt (text);
+		var head = slash > 0 ? text.Substring (0, slash) : text;
+		return ParseNumber (head);
+	}
+
+	static uint? ParseEmbeddedTotal (string? text)
+	{
+		if (text is null)
+			return null;
+		var slash = SlashAt (text);
+		if (slash <= 0 || slash >= text.Length - 1)
+			return null;
+		return ParseNumber (text.Substring (slash + 1));
+	}
+
+	static int SlashAt (string text)
+	{
+#if NETSTANDARD2_0
+		return text.IndexOf ('/');
+#else
+		return text.IndexOf ('/', StringComparison.Ordinal);
+#endif
+	}
+
 	static uint? ParseWholeOrDecimal (string? text)
 	{
 		var whole = ParseNumber (text);
@@ -1037,8 +1128,8 @@ internal sealed class TagBlock
 			body.Add (child);
 		using var tag = new BinaryDataBuilder ();
 		var targets = body.ToBinaryData ();
-		if (targets.Length > 0)
-			tag.Add (EbmlWriter.Master (MatroskaIds.Targets, targets.Span));
+		// Targets is mandatory. A block with no target type and no UIDs still writes an empty master.
+		tag.Add (EbmlWriter.Master (MatroskaIds.Targets, targets.Span));
 		foreach (var simple in Tags)
 			tag.Add (simple.Render ());
 		return EbmlWriter.Master (MatroskaIds.Tag, tag.ToBinaryData ().Span);
