@@ -94,8 +94,8 @@ public sealed class WavPackFile : IMediaFile
 	private const int LegacyV2HeaderBytes = 12;
 	private const int LegacyV3HeaderBytes = 20;
 
-	// Chunks before "data" are skipped up to this size. The audio payload is not loaded.
-	// MediaFile's RIFF probe uses the same cap and seeks over the payloads.
+	// Each chunk before "data" is skipped only up to this size. The data chunk may
+	// start further in. The audio payload is not loaded. MediaFile uses the same cap.
 	internal const int MaxRiffChunkSkip = 1024 * 1024;
 
 	private static readonly byte[] Magic = "wvpk"u8.ToArray ();
@@ -495,6 +495,10 @@ public sealed class WavPackFile : IMediaFile
 					fmt = data.Slice (payload, take);
 				}
 			}
+
+			var chunkBytes = (long)size + ((size & 1) == 1 ? 1L : 0L);
+			if (chunkBytes > MaxRiffChunkSkip)
+				return false;
 
 			var padded = 8L + size + (size & 1);
 			if ((long)offset + padded > data.Length)

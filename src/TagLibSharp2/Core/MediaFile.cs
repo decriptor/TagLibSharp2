@@ -323,8 +323,8 @@ public static class MediaFile
 	}
 
 	// Walk RIFF chunk headers until "data". Payloads are skipped, not copied.
-	// The data chunk has to start within MaxRiffChunkSkip, and no chunk before it
-	// may be larger than that. "wvpk" at the start of the data payload is legacy WavPack.
+	// Each chunk before data may be at most MaxRiffChunkSkip. The data chunk
+	// may start further in. "wvpk" at the start of its payload is legacy WavPack.
 	static bool RiffDataStartsWithWavPack (Stream stream)
 	{
 		if (stream.Length < 12)
@@ -332,7 +332,7 @@ public static class MediaFile
 
 		var cap = (long)WavPackFile.MaxRiffChunkSkip;
 		stream.Position = 12;
-		while (stream.Position + 8 <= stream.Length && stream.Position < cap) {
+		while (stream.Position + 8 <= stream.Length) {
 			var header = StreamBytes.ReadAtMost (stream, 8);
 			if (header.Length < 8)
 				return false;
