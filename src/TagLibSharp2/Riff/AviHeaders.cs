@@ -104,6 +104,19 @@ internal sealed class AviHeaders
 		return headers;
 	}
 
+	/// <summary>
+	/// Drops every frame count and stream length, for a file whose writer never filled them in.
+	/// </summary>
+	public void ForgetLengths ()
+	{
+		TotalFrames = 0;
+		OdmlTotalFrames = 0;
+		for (var i = 0; i < Streams.Count; i++) {
+			var stream = Streams[i];
+			Streams[i] = new AviStreamHeader (stream.Type, stream.Handler, stream.Scale, stream.Rate, 0, stream.Format);
+		}
+	}
+
 	void ReadMainHeader (ReadOnlySpan<byte> avih)
 	{
 		_sawMainHeader = true;

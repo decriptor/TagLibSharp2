@@ -32,6 +32,37 @@ public class RiffInfoTag : Tag
 	readonly Dictionary<string, string> _fields = new (StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>
+	/// The stored bytes of each field, kept by a tag in AVI text mode. A field whose value is
+	/// unchanged is written back with these bytes, whatever their encoding.
+	/// </summary>
+	readonly Dictionary<string, (string Value, byte[] Bytes)>? _stored;
+
+	static readonly System.Text.UTF8Encoding StrictUtf8 = new (encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+	/// <summary>
+	/// Creates an empty tag whose text is Latin-1, as WAV INFO is read and written.
+	/// </summary>
+	public RiffInfoTag ()
+	{
+	}
+
+	/// <summary>
+	/// Creates an empty tag in AVI text mode when <paramref name="utf8"/> is true.
+	/// </summary>
+	/// <remarks>
+	/// RIFF INFO strings (Multimedia Programming Interface and Data Specifications 1.0, "INFO List
+	/// Chunk") are ZSTRs in the character set of a <c>CSET</c> chunk, which AVI writers do not emit.
+	/// ffmpeg, the common AVI writer, stores UTF-8, and readers such as ffprobe decode UTF-8.
+	/// In AVI text mode a value is read as UTF-8 when its bytes are valid UTF-8, else as Latin-1,
+	/// and written as UTF-8. An unchanged value is written back with its original bytes.
+	/// </remarks>
+	internal RiffInfoTag (bool utf8)
+	{
+		if (utf8)
+			_stored = new (StringComparer.OrdinalIgnoreCase);
+	}
+
+	/// <summary>
 	/// INFO field ID for Title.
 	/// </summary>
 	public const string INAM = "INAM";
@@ -218,6 +249,7 @@ public class RiffInfoTag : Tag
 	{
 		if (string.IsNullOrEmpty (value)) {
 			_fields.Remove (fourCC);
+			_stored?.Remove (fourCC);
 		} else {
 #pragma warning disable CS8601 // Possible null reference assignment - checked above
 			_fields[fourCC] = value;
@@ -247,22 +279,35 @@ public class RiffInfoTag : Tag
 				continue;
 
 			var value = later.GetField (id);
-			if (!string.IsNullOrEmpty (value))
-				SetField (id, value);
+			if (string.IsNullOrEmpty (value))
+				continue;
+			SetField (id, value);
+			if (_stored is not null && later._stored is not null && later._stored.TryGetValue (id, out var stored))
+				_stored[id] = stored;
 		}
 	}
 
 	/// <summary>
 	/// Clears all fields from this tag.
 	/// </summary>
-	public override void Clear () => _fields.Clear ();
+	public override void Clear ()
+	{
+		_fields.Clear ();
+		_stored?.Clear ();
+	}
 
 	/// <summary>
 	/// Parses a RIFF INFO tag from a LIST chunk's data.
 	/// </summary>
 	/// <param name="data">The LIST chunk data (starting after LIST header).</param>
 	/// <returns>The parsed tag, or null if invalid.</returns>
-	public static RiffInfoTag? Parse (BinaryData data)
+	public static RiffInfoTag? Parse (BinaryData data) => Parse (data, utf8: false);
+
+	/// <summary>
+	/// Parses a RIFF INFO tag, in AVI text mode when <paramref name="utf8"/> is true
+	/// (see <see cref="RiffInfoTag(bool)"/>).
+	/// </summary>
+	internal static RiffInfoTag? Parse (BinaryData data, bool utf8)
 	{
 		// LIST chunk data starts with type (INFO) then fields
 		if (data.Length < 4)
@@ -272,7 +317,7 @@ public class RiffInfoTag : Tag
 		if (listType != "INFO")
 			return null;
 
-		var tag = new RiffInfoTag ();
+		var tag = new RiffInfoTag (utf8);
 		var offset = 4;
 
 		while (offset + 8 <= data.Length) {
@@ -291,10 +336,14 @@ public class RiffInfoTag : Tag
 
 			// Read field value (null-terminated string, safe cast after overflow check)
 			var fieldData = data.Slice (offset, (int)fieldSize);
-			var value = fieldData.ToStringLatin1NullTerminated ();
+			var value = utf8 ? DecodeAviText (fieldData) : fieldData.ToStringLatin1NullTerminated ();
 
-			if (!string.IsNullOrEmpty (fieldId) && fieldId.Length == 4)
+			if (!string.IsNullOrEmpty (fieldId) && fieldId.Length == 4) {
 				tag._fields[fieldId] = value;
+				tag._stored?.Remove (fieldId);
+				if (tag._stored is not null && value.Length > 0)
+					tag._stored[fieldId] = (value, fieldData.ToArray ());
+			}
 
 			// Field size does not include the pad. Advance in long; a size near int.MaxValue must not throw.
 			var next = (long)offset + fieldSize + (fieldSize & 1);
@@ -305,6 +354,33 @@ public class RiffInfoTag : Tag
 		}
 
 		return tag;
+	}
+
+	/// <summary>Valid UTF-8 up to the first NUL is UTF-8; anything else is Latin-1.</summary>
+	static string DecodeAviText (BinaryData field)
+	{
+		var bytes = field.ToArray ();
+		var end = Array.IndexOf (bytes, (byte)0);
+		if (end < 0)
+			end = bytes.Length;
+		try {
+			return StrictUtf8.GetString (bytes, 0, end);
+		} catch (System.Text.DecoderFallbackException) {
+			return field.ToStringLatin1NullTerminated ();
+		}
+	}
+
+	BinaryData Encode (string id, string value)
+	{
+		if (_stored is null)
+			return BinaryData.FromStringLatin1NullTerminated (value);
+		if (_stored.TryGetValue (id, out var stored) && stored.Value == value)
+			return new BinaryData (stored.Bytes);
+
+		var text = System.Text.Encoding.UTF8.GetBytes (value);
+		var encoded = new byte[text.Length + 1];
+		text.CopyTo (encoded, 0);
+		return new BinaryData (encoded);
 	}
 
 	/// <inheritdoc />
@@ -319,7 +395,7 @@ public class RiffInfoTag : Tag
 			if (string.IsNullOrEmpty (kvp.Key) || kvp.Key.Length != 4)
 				continue;
 
-			var encoded = BinaryData.FromStringLatin1NullTerminated (kvp.Value);
+			var encoded = Encode (kvp.Key, kvp.Value);
 			fieldsSize += 8 + encoded.Length; // FourCC + size + data
 			if ((encoded.Length & 1) != 0)
 				fieldsSize++; // Padding
@@ -337,7 +413,7 @@ public class RiffInfoTag : Tag
 			if (string.IsNullOrEmpty (kvp.Key) || kvp.Key.Length != 4)
 				continue;
 
-			var encoded = BinaryData.FromStringLatin1NullTerminated (kvp.Value);
+			var encoded = Encode (kvp.Key, kvp.Value);
 
 			builder.AddStringLatin1 (kvp.Key);
 			builder.AddUInt32LE ((uint)encoded.Length);

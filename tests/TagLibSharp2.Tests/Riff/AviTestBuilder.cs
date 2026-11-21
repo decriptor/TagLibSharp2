@@ -40,6 +40,12 @@ public sealed class AviTestBuilder
 	/// <summary>INFO fields written in one LIST INFO after hdrl, or none when empty.</summary>
 	public List<(string Id, string Value)> Info { get; } = [];
 
+	/// <summary>The text encoding of INFO values. RIFF INFO has no fixed encoding; ffmpeg writes UTF-8.</summary>
+	public Encoding InfoEncoding { get; set; } = Encoding.Latin1;
+
+	/// <summary>A chunk written right after the RIFF header, before <c>hdrl</c>.</summary>
+	public (string FourCC, byte[] Data)? ChunkBeforeHeaders { get; set; }
+
 	/// <summary>A second LIST INFO written after <c>movi</c>, or none when empty.</summary>
 	public List<(string Id, string Value)> InfoAfterMovi { get; } = [];
 
@@ -62,6 +68,15 @@ public sealed class AviTestBuilder
 
 	/// <summary>Makes the video super index name the first standard index twice.</summary>
 	public bool DuplicateSuperIndexEntry { get; set; }
+
+	/// <summary>
+	/// Writes each standard index with qwBaseOffset 0 and absolute dwOffsets. AVISTDINDEX allows any
+	/// base: qwBaseOffset + dwOffset is the file offset of the data.
+	/// </summary>
+	public bool StandardIndexBaseZero { get; set; }
+
+	/// <summary>bIndexSubType written into each standard index (1 is AVI_INDEX_2FIELD).</summary>
+	public byte StandardIndexSubType { get; set; }
 
 	/// <summary>Overrides the video super index's bIndexType.</summary>
 	public byte? SuperIndexType { get; set; }
@@ -101,6 +116,9 @@ public sealed class AviTestBuilder
 		w.FourCC ("RIFF");
 		var riffSize = w.Placeholder32 ();
 		w.FourCC ("AVI ");
+
+		if (ChunkBeforeHeaders is { } first)
+			w.Chunk (first.FourCC, first.Data);
 
 		var hdrl = w.BeginList ("hdrl");
 		w.FourCC ("avih");
@@ -247,15 +265,16 @@ public sealed class AviTestBuilder
 			written.Add ((s, w.Position));
 			w.FourCC ("ix0" + s.ToString (System.Globalization.CultureInfo.InvariantCulture));
 			w.U32 ((uint)(24 + entries.Count * 8));
+			var stored = StandardIndexBaseZero ? 0 : baseOffset;
 			w.U16 (2);
-			w.U8 (0);
+			w.U8 (StandardIndexSubType);
 			w.U8 (1);
 			w.U32 ((uint)entries.Count);
 			w.FourCC (ids[s]);
-			w.U64 ((ulong)baseOffset);
+			w.U64 ((ulong)stored);
 			w.U32 (0);
 			foreach (var entry in entries) {
-				w.U32 ((uint)(entry.Position + 8 - baseOffset));
+				w.U32 ((uint)(entry.Position + 8 - stored));
 				w.U32 ((uint)entry.Size);
 			}
 		}
@@ -315,11 +334,11 @@ public sealed class AviTestBuilder
 		w.Zero (8);
 	}
 
-	static void InfoList (Writer w, List<(string Id, string Value)> fields)
+	void InfoList (Writer w, List<(string Id, string Value)> fields)
 	{
 		var list = w.BeginList ("INFO");
 		foreach (var (id, value) in fields)
-			w.Chunk (id, Encoding.Latin1.GetBytes (value + "\0"));
+			w.Chunk (id, InfoEncoding.GetBytes (value + "\0"));
 		w.EndList (list);
 	}
 

@@ -1256,4 +1256,36 @@ public sealed class CrossTaggerCompatibilityTests
 		Assert.AreEqual (5u, resultTag.TotalDiscs);
 		Assert.AreEqual ("Live recording", resultTag.Comment);
 	}
+
+	/// <summary>
+	/// AVI INFO uses the field IDs ffmpeg, mediainfo and Windows read: INAM title, IART artist,
+	/// IPRD album, ICMT comment, ICRD date, IGNR genre, ICOP copyright.
+	/// </summary>
+	[TestMethod]
+	[TestCategory ("Avi")]
+	public void AviFile_InfoFields_UseStandardIds ()
+	{
+		var original = new TagLibSharp2.Tests.Riff.AviTestBuilder ().Build ();
+		var file = AviFile.Read (original).File!;
+		var tag = file.InfoTag;
+		tag.Title = "Movie";
+		tag.Artist = "Director";
+		tag.Album = "Series";
+		tag.Comment = "Notes";
+		tag.Year = "2024";
+		tag.Genre = "Drama";
+		tag.Copyright = "Studio";
+
+		var saved = file.Render (original).ToArray ();
+
+		var again = AviFile.Read (saved).File!.InfoTag;
+		Assert.AreEqual ("Movie", again.GetField ("INAM"));
+		Assert.AreEqual ("Director", again.GetField ("IART"));
+		Assert.AreEqual ("Series", again.GetField ("IPRD"));
+		Assert.AreEqual ("Notes", again.GetField ("ICMT"));
+		Assert.AreEqual ("2024", again.GetField ("ICRD"));
+		Assert.AreEqual ("Drama", again.GetField ("IGNR"));
+		Assert.AreEqual ("Studio", again.GetField ("ICOP"));
+		Assert.AreEqual ("Movie", again.GetField ("inam"), "INFO IDs are matched without regard to case.");
+	}
 }
