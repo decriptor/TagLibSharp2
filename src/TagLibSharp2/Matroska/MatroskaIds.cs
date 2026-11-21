@@ -11,6 +11,7 @@ static class MatroskaIds
 {
 	public const ulong Ebml = 0x1A45DFA3;
 	public const ulong DocType = 0x4282;
+	public const ulong DocTypeVersion = 0x4287;
 	public const ulong Void = 0xEC;
 	public const ulong Crc32 = 0xBF;
 	public const ulong Segment = 0x18538067;
@@ -22,6 +23,9 @@ static class MatroskaIds
 	public const ulong Tracks = 0x1654AE6B;
 	public const ulong TrackEntry = 0xAE;
 	public const ulong TrackType = 0x83;
+	public const ulong TrackNumber = 0xD7;
+	public const ulong TrackUid = 0x73C5;
+	public const ulong FlagEnabled = 0xB9;
 	public const ulong FlagDefault = 0x88;
 	public const ulong CodecId = 0x86;
 	public const ulong CodecPrivate = 0x63A2;
