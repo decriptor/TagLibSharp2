@@ -37,7 +37,13 @@ internal static class Mp4BoxParser
 	/// <param name="offset">The byte offset to start parsing at.</param>
 	/// <param name="maxSize">Maximum size constraint (for bounds checking), or 0 for end of data.</param>
 	/// <returns>Parse result containing the box and bytes consumed, or failure.</returns>
-	public static Mp4BoxReadResult ParseBox (ReadOnlySpan<byte> data, int offset = 0, long maxSize = 0)
+	public static Mp4BoxReadResult ParseBox (ReadOnlySpan<byte> data, int offset = 0, long maxSize = 0) =>
+		ParseBox (data, offset, maxSize, isItem: false);
+
+	// Every child of ilst is a metadata item that holds data (and for "----", mean and name) boxes,
+	// whatever its code. Parsing only the codes in ContainerBoxes dropped any other item, such as the
+	// Audible atoms in .aax files, on read and so on save.
+	static Mp4BoxReadResult ParseBox (ReadOnlySpan<byte> data, int offset, long maxSize, bool isItem)
 	{
 		if (offset >= data.Length || offset < 0)
 			return Mp4BoxReadResult.Failure ();
@@ -100,7 +106,7 @@ internal static class Mp4BoxParser
 		IReadOnlyList<Mp4Box>? children = null;
 		BinaryData? unparsedTail = null;
 		BinaryData? headerPrefix = null;
-		if (IsContainerBox (type)) {
+		if (isItem || IsContainerBox (type)) {
 			// ISO meta is a FullBox. QuickTime meta starts with a child box and has no prefix.
 			var childData = boxData.Span;
 			var prefix = 0;
@@ -110,7 +116,7 @@ internal static class Mp4BoxParser
 				prefix = 4;
 			}
 
-			children = ParseChildren (childData, out var consumed);
+			children = ParseChildren (childData, out var consumed, itemsInside: type == "ilst");
 			if (consumed < childData.Length)
 				unparsedTail = boxData.Slice (prefix + consumed);
 		}
@@ -181,13 +187,16 @@ internal static class Mp4BoxParser
 	/// <param name="data">The container's data (excluding container header).</param>
 	/// <param name="bytesConsumed">Bytes covered by successfully parsed children. The remainder is unread.</param>
 	/// <returns>List of parsed child boxes.</returns>
-	public static IReadOnlyList<Mp4Box> ParseChildren (ReadOnlySpan<byte> data, out int bytesConsumed)
+	public static IReadOnlyList<Mp4Box> ParseChildren (ReadOnlySpan<byte> data, out int bytesConsumed) =>
+		ParseChildren (data, out bytesConsumed, itemsInside: false);
+
+	static List<Mp4Box> ParseChildren (ReadOnlySpan<byte> data, out int bytesConsumed, bool itemsInside)
 	{
 		var children = new List<Mp4Box> ();
 		var offset = 0;
 
 		while (offset < data.Length) {
-			var result = ParseBox (data, offset, data.Length - offset);
+			var result = ParseBox (data, offset, data.Length - offset, itemsInside);
 			if (!result.IsSuccess)
 				break;
 
