@@ -784,14 +784,14 @@ public sealed class MpegPsFile : IMediaFile
 	bool WritesAppended => _readAppended is not null && Id3v2Tag is { Version: 4 };
 
 	// The tag that was read and still renders as it did keeps its original bytes, padding included.
-	// An ID3v2 tag whose bytes did not parse stays where it is.
+	// A prepended tag whose bytes did not parse stays until a tag is written in front in its place.
 	ReadOnlySpan<byte> RenderPrependedId3v2 (ReadOnlySpan<byte> originalData, bool appendedUnchanged)
 	{
 		var original = originalData.Slice (0, Id3v2Size);
-		if (Id3v2Size > 0 && _readId3v2 is null)
-			return original;
-
+		var unparsed = Id3v2Size > 0 && _readId3v2 is null;
 		if (WritesAppended) {
+			if (unparsed)
+				return original;
 			if (EarlierTag is { } earlier)
 				return KeepIfUnchanged (earlier, _readId3v2, original, earlier.Render (), static tag => tag.Render ());
 
@@ -800,7 +800,7 @@ public sealed class MpegPsFile : IMediaFile
 		}
 
 		if (Id3v2Tag is null)
-			return [];
+			return unparsed ? original : [];
 		return KeepIfUnchanged (Id3v2Tag, _readId3v2, original, Id3v2Tag.Render (), static tag => tag.Render ());
 	}
 
