@@ -187,8 +187,15 @@ public partial class MatroskaFileTests
 	{
 		// DocTypeVersion has maxOccurs 1 (RFC 8794 §11.2.7), so two copies are invalid. Every copy below 2
 		// is raised, as every FlagEnabled copy is written, so no reader is left with an old value.
-		foreach (var second in new[] { new byte[] { 0x42, 0x87, 0x81, 0x04 }, new byte[] { 0x42, 0x87, 0x80 } }) {
-			var header = Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), Element (0x4287, new byte[] { 1 }), second));
+		// Rows: first copy, second copy, the two values expected after the insert. An empty copy means 1.
+		var one = new byte[] { 0x42, 0x87, 0x81, 0x01 };
+		var four = new byte[] { 0x42, 0x87, 0x81, 0x04 };
+		var empty = new byte[] { 0x42, 0x87, 0x80 };
+		foreach (var (first, second, expectFirst, expectSecond) in new[] {
+			(one, four, 2ul, 4ul),
+			(one, empty, 2ul, 2ul),
+			(empty, empty, 2ul, 2ul) }) {
+			var header = Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), first, second));
 			var original = Concat (header, Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), MakeVoid (3), Master (0x1F43B675, ClusterMarker)));
 			var parsed = MatroskaFile.Read (original).File!;
 			parsed.Tracks[0].IsEnabled = false;
@@ -197,8 +204,8 @@ public partial class MatroskaFileTests
 
 			var copies = DocTypeVersions (saved);
 			Assert.AreEqual (2, copies.Count);
-			Assert.AreEqual (2ul, copies[0]);
-			Assert.AreEqual (second.Length == 3 ? 2ul : 4ul, copies[1]);
+			Assert.AreEqual (expectFirst, copies[0]);
+			Assert.AreEqual (expectSecond, copies[1]);
 			Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
 		}
 	}
