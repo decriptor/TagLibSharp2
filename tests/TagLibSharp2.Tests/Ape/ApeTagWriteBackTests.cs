@@ -64,7 +64,7 @@ public class ApeTagWriteBackTests
 	[DataRow ("V1\0V2")]
 	[DataRow ("\0V2")]
 	[DataRow ("")]
-	public void EveryStringProperty_UnchangedWriteBack_KeepsTheItem (string raw)
+	public void EveryStringProperty_UnchangedWriteBack_KeepsTheItem_AndAnEditReplaces (string raw)
 	{
 		var covered = new List<string> ();
 		var failures = new List<string> ();
@@ -80,12 +80,23 @@ public class ApeTagWriteBackTests
 			tag.SetValue (key, raw);
 			tag = Reparse (tag);
 			var before = Snapshot (tag);
-
-			property.SetValue (tag, property.GetValue (tag));
+			var read = (string?)property.GetValue (tag);
+			property.SetValue (tag, read);
 			var after = Snapshot (Reparse (tag));
 
-			if (!before.SequenceEqual (after))
+			// "" is a write-back only when no value holds text: an empty first value reads "",
+			// and "" over a list with text clears it.
+			var clears = read == "" && before.Any (r => r.Contains ("V2", StringComparison.Ordinal));
+			if (clears ? after.Any (r => r.Contains ("V2", StringComparison.Ordinal)) : !before.SequenceEqual (after))
 				failures.Add ($"{property.Name}: [{string.Join (" | ", before)}] -> [{string.Join (" | ", after)}]");
+
+			// A case-only edit, or "" over a list whose later values hold text, is not a write-back.
+			var current = (string?)property.GetValue (tag);
+			var edit = string.IsNullOrEmpty (current) ? "" : current!.ToLowerInvariant ();
+			property.SetValue (tag, edit);
+			var edited = Snapshot (Reparse (tag));
+			if (edited.Any (r => r.Contains ("V2", StringComparison.Ordinal)) || (edit.Length != 0 && !Equals (property.GetValue (tag), edit)))
+				failures.Add ($"{property.Name} edit {edit}: [{string.Join (" | ", edited)}]");
 		}
 
 		Assert.IsEmpty (failures, string.Join ("\n", failures).Replace ("\0", "\\0", StringComparison.Ordinal));
@@ -146,6 +157,31 @@ public class ApeTagWriteBackTests
 		Assert.AreEqual ("P3", string.Join ("|", tag.Performers));
 		Assert.IsEmpty (tag.Genres);
 		Assert.IsEmpty (tag.Composers);
+	}
+
+	[TestMethod]
+	public void Null_OverAnItemThatReadsNull_StillRemovesIt ()
+	{
+		// A binary Title reads null. Writing null is a clear, not a write-back of that null.
+		var tag = new ApeTag ();
+		tag.SetBinaryItem ("Title", "cover.bin", [1, 2, 3]);
+		Assert.IsNull (tag.Title);
+
+		tag.Title = null;
+
+		Assert.AreEqual (0, tag.ItemCount);
+	}
+
+	[TestMethod]
+	public void EmptyString_OverAListWithText_ClearsIt ()
+	{
+		var tag = new ApeTag ();
+		tag.SetValue ("Artist", "\0V2");
+		Assert.AreEqual ("V2", tag.Artist);
+
+		tag.Artist = "";
+
+		Assert.AreEqual (0, tag.ItemCount);
 	}
 
 	[TestMethod]

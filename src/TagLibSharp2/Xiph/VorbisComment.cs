@@ -922,13 +922,34 @@ public sealed class VorbisComment : Tag
 	/// <summary>
 	/// Writes a single-value property. Writing back the value its getter returned is a no-op, so
 	/// a field that appears more than once (https://xiph.org/vorbis/doc/v-comment.html allows
-	/// repeated names) keeps every value. Any other value replaces them all; null removes them.
+	/// repeated names) keeps every value (<see cref="Tag.IsWriteBack(string?, string?)"/>). Any other value
+	/// replaces them all. Null removes them, and so does an empty string unless every value is already empty.
 	/// </summary>
 	void SetValueProperty (string name, string? value, string? current)
 	{
-		if (value is not null && string.Equals (value, current, StringComparison.Ordinal))
-			return;
-		SetValue (name, value);
+		if (!IsFieldWriteBack (value, current, name))
+			SetValue (name, value);
+	}
+
+	/// <summary>
+	/// <see cref="Tag.IsWriteBack(string?, string?)"/>, except that an empty string is a write-back only when
+	/// no field named in <paramref name="names"/> holds text. The getter returns "" for an empty first field
+	/// even when a later one has text, and "" over such fields still clears them.
+	/// </summary>
+	bool IsFieldWriteBack (string? value, string? current, params string[] names)
+	{
+		if (!IsWriteBack (value, current))
+			return false;
+		if (value!.Length != 0)
+			return true;
+		foreach (var name in names) {
+			var upper = name.ToUpperInvariant ();
+			for (var i = 0; i < _fields.Count; i++) {
+				if (_fields[i].Name == upper && _fields[i].Value.Length != 0)
+					return false;
+			}
+		}
+		return true;
 	}
 
 	/// <summary>
@@ -948,16 +969,15 @@ public sealed class VorbisComment : Tag
 
 	/// <summary>
 	/// Sets a field whose getter falls back to <paramref name="fallback"/>.
-	/// The value the getter already returns is a no-op, so neither field is lost; that includes "",
-	/// which the getter returns only when every field present is empty.
+	/// The value the getter already returns is a no-op, so neither field is lost; "" counts only when
+	/// no field of either name holds text.
 	/// Otherwise a null or empty value clears the fallback too, so it cannot come back.
 	/// Any other value goes to <paramref name="name"/>, and to <paramref name="fallback"/>
 	/// when that field exists and <paramref name="toFallback"/> gives a value for it.
 	/// </summary>
 	void SetValueWithFallback (string name, string? value, string fallback, Func<string, string?> toFallback)
 	{
-		var current = GetValueOrFallback (name, fallback);
-		if (value is not null && string.Equals (current, value, StringComparison.Ordinal))
+		if (IsFieldWriteBack (value, GetValueOrFallback (name, fallback), name, fallback))
 			return;
 
 		if (string.IsNullOrEmpty (value)) {

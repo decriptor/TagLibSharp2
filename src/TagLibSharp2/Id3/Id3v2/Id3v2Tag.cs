@@ -220,7 +220,11 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Year {
 		get => NormalizeYear (Version == 4 ? GetTextFrame ("TDRC") : GetTextFrame ("TYER"));
-		set => SetDateFrame (Version == 4 ? "TDRC" : "TYER", value, Version == 4, keepMatchingYear: Version == 4);
+		set {
+			if (IsWriteBack (value, Year))
+				return;
+			SetDateFrame (Version == 4 ? "TDRC" : "TYER", value, Version == 4, keepMatchingYear: Version == 4);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -262,7 +266,7 @@ public sealed class Id3v2Tag : Tag
 			return NormalizeYear (GetTextFrame ("TORY")) ?? NormalizeReleaseTimestamp (GetTextFrame ("TDOR"));
 		}
 		set {
-			if (IsUnchanged (value, OriginalReleaseDate))
+			if (IsWriteBack (value, OriginalReleaseDate))
 				return;
 			SetDateFrame (
 				Version == 4 ? "TDOR" : "TORY",
@@ -622,7 +626,10 @@ public sealed class Id3v2Tag : Tag
 	/// </remarks>
 	public override string? PodcastFeedUrl {
 		get => GetUrl ("WFED");
-		set => SetUrl ("WFED", value);
+		set {
+			if (!IsWriteBack (value, PodcastFeedUrl))
+				SetUrl ("WFED", value);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -1013,7 +1020,7 @@ public sealed class Id3v2Tag : Tag
 			return string.IsNullOrEmpty (user) ? apple ?? user : user;
 		}
 		set {
-			if (IsUnchanged (value, Movement))
+			if (IsTextWriteBack (value, Movement, GetRawTextFrame ("MVNM"), GetRawUserText ("MOVEMENT")))
 				return;
 			SetTextFrame ("MVNM", value);
 			SetUserText ("MOVEMENT", value);
@@ -1040,7 +1047,7 @@ public sealed class Id3v2Tag : Tag
 			return uint.TryParse (value, out var result) ? result : null;
 		}
 		set {
-			if (value is not null && value == MovementNumber)
+			if (IsWriteBack (value, MovementNumber))
 				return;
 			var total = MovementTotal;
 			SetUserText ("MOVEMENTNUMBER", value?.ToString (CultureInfo.InvariantCulture));
@@ -1070,7 +1077,7 @@ public sealed class Id3v2Tag : Tag
 			return uint.TryParse (value, out var result) ? result : null;
 		}
 		set {
-			if (value is not null && value == MovementTotal)
+			if (IsWriteBack (value, MovementTotal))
 				return;
 			var number = MovementNumber;
 			SetUserText ("MOVEMENTTOTAL", value?.ToString (CultureInfo.InvariantCulture));
@@ -1213,6 +1220,8 @@ public sealed class Id3v2Tag : Tag
 	public override string? MusicBrainzRecordingId {
 		get => GetUniqueFileId (UniqueFileIdFrame.MusicBrainzOwner)?.IdentifierString;
 		set {
+			if (IsWriteBack (value, MusicBrainzRecordingId))
+				return;
 			RemoveUniqueFileIds (UniqueFileIdFrame.MusicBrainzOwner);
 			if (!string.IsNullOrEmpty (value))
 				_uniqueFileIdFrames.Add (new UniqueFileIdFrame (UniqueFileIdFrame.MusicBrainzOwner, value!));
@@ -1746,13 +1755,14 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <summary>
-	/// Writes a single-value text property. Writing back the value its getter returned is a no-op,
-	/// so the other values of a multi-value frame (ID3v2.4 §4.2, NUL-separated) and an empty
-	/// first value stay as they are. Any other value replaces the frame; null or empty removes it.
+	/// Writes a single-value text property. Writing back the value its getter returned is a no-op
+	/// (<see cref="Tag.IsWriteBack(string?, string?)"/>), so the other values of a multi-value frame
+	/// (ID3v2.4 §4.2, NUL-separated) stay as they are. Any other value replaces the frame. Null removes it,
+	/// and so does an empty string unless every value in the frame is already empty.
 	/// </summary>
 	void SetTextFrameProperty (string frameId, string? value, string? current)
 	{
-		if (!IsUnchanged (value, current))
+		if (!IsTextWriteBack (value, current, GetRawTextFrame (frameId)))
 			SetTextFrame (frameId, value);
 	}
 
@@ -1761,16 +1771,53 @@ public sealed class Id3v2Tag : Tag
 	/// </summary>
 	void SetUserTextProperty (string description, string? value, string? current)
 	{
-		if (!IsUnchanged (value, current))
+		if (!IsTextWriteBack (value, current, GetRawUserText (description)))
 			SetUserText (description, value);
 	}
 
 	/// <summary>
-	/// True when <paramref name="value"/> is exactly what the getter returned, including an empty string.
-	/// A null value is always a clear.
+	/// <see cref="Tag.IsWriteBack(string?, string?)"/>, except that an empty string is a write-back only
+	/// when none of <paramref name="stored"/> holds text. A getter returns "" for an empty first value
+	/// ("\0V2"), and "" over such a frame still clears it.
 	/// </summary>
-	static bool IsUnchanged (string? value, string? current) =>
-		value is not null && string.Equals (value, current, StringComparison.Ordinal);
+	static bool IsTextWriteBack (string? value, string? current, params string?[] stored)
+	{
+		if (!IsWriteBack (value, current))
+			return false;
+		if (value!.Length != 0)
+			return true;
+		foreach (var text in stored) {
+			if (HasText (text))
+				return false;
+		}
+		return true;
+	}
+
+	/// <summary>
+	/// True when the stored text holds any character other than a NUL value separator.
+	/// </summary>
+	static bool HasText (string? text)
+	{
+		if (text is null)
+			return false;
+		for (var i = 0; i < text.Length; i++) {
+			if (text[i] != '\0')
+				return true;
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// The stored value of the first TXXX frame with this description, including NUL separators.
+	/// </summary>
+	string? GetRawUserText (string description)
+	{
+		for (var i = 0; i < _userTextFrames.Count; i++) {
+			if (string.Equals (_userTextFrames[i].Description, description, StringComparison.OrdinalIgnoreCase))
+				return _userTextFrames[i].Value;
+		}
+		return null;
+	}
 
 	/// <summary>
 	/// Sets or creates a text frame.

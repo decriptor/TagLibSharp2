@@ -34,7 +34,7 @@ public class VorbisCommentWriteBackTests
 	[TestMethod]
 	[DataRow ("V1", "V2")]
 	[DataRow ("", "V2")]
-	public void EveryStringProperty_UnchangedWriteBack_KeepsEveryField (string first, string second)
+	public void EveryStringProperty_UnchangedWriteBack_KeepsEveryField_AndAnEditReplaces (string first, string second)
 	{
 		var covered = new List<string> ();
 		var failures = new List<string> ();
@@ -51,18 +51,60 @@ public class VorbisCommentWriteBackTests
 			comment.AddField (name, second);
 			comment = Reparse (comment);
 			var before = Snapshot (comment);
-
-			property.SetValue (comment, property.GetValue (comment));
+			var read = (string?)property.GetValue (comment);
+			property.SetValue (comment, read);
 			var after = Snapshot (Reparse (comment));
 
-			if (!before.SequenceEqual (after))
+			// "" is a write-back only when no value holds text: an empty first value reads "",
+			// and "" over a list with text clears it.
+			var clears = read == "" && before.Any (r => r.Contains ("V2", StringComparison.Ordinal));
+			if (clears ? after.Any (r => r.Contains ("V2", StringComparison.Ordinal)) : !before.SequenceEqual (after))
 				failures.Add ($"{property.Name}: [{string.Join (" | ", before)}] -> [{string.Join (" | ", after)}]");
+
+			// A case-only edit, or "" over a list whose later values hold text, is not a write-back.
+			var current = (string?)property.GetValue (comment);
+			var edit = string.IsNullOrEmpty (current) ? "" : current!.ToLowerInvariant ();
+			property.SetValue (comment, edit);
+			var edited = Snapshot (Reparse (comment));
+			if (edited.Any (r => r.Contains ("V2", StringComparison.Ordinal)) || (edit.Length != 0 && !Equals (property.GetValue (comment), edit)))
+				failures.Add ($"{property.Name} edit {edit}: [{string.Join (" | ", edited)}]");
 		}
 
 		Assert.IsEmpty (failures, string.Join ("\n", failures));
 		foreach (var name in ListFields)
 			Assert.Contains (name, covered);
 		Assert.IsGreaterThanOrEqualTo (45, covered.Count, string.Join (",", covered));
+	}
+
+	[TestMethod]
+	public void EmptyString_OverFieldsWithText_ClearsThem ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("ARTIST", "");
+		comment.AddField ("ARTIST", "V2");
+		comment.AddField ("MOVEMENT", "");
+		comment.AddField ("MOVEMENT", "V2");
+		comment.AddField ("MOVEMENTNAME", "N");
+		Assert.AreEqual ("", comment.Artist);
+
+		comment.Artist = "";
+		comment.Movement = "";
+
+		Assert.AreEqual ("", string.Join ("|", comment.GetValues ("ARTIST")));
+		Assert.AreEqual ("", string.Join ("|", comment.GetValues ("MOVEMENT")));
+		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+	}
+
+	[TestMethod]
+	public void EmptyString_OverEmptyFieldsOnly_IsAWriteBack ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("ARTIST", "");
+		comment.AddField ("ARTIST", "");
+
+		comment.Artist = comment.Artist;
+
+		Assert.HasCount (2, comment.GetValues ("ARTIST"));
 	}
 
 	[TestMethod]
