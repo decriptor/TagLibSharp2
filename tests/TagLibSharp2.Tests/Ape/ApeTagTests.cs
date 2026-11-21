@@ -1911,12 +1911,39 @@ public class ApeTagTests
 		Assert.IsNull (binaryArtist.Artist);
 	}
 
-	static ApeTag TagWith (byte[] item)
+	[TestMethod]
+	public void AlbumArtist_LocatorDoesNotHideAliasText ()
 	{
-		var footer = CreateValidFooter (2000, (uint)(item.Length + 32), 1, 0);
-		var data = new byte[item.Length + footer.Length];
-		item.CopyTo (data, 0);
-		footer.CopyTo (data, item.Length);
+		const string url = "http://example.com/name";
+		var names = new[] { "Ada", "Bea" };
+		var hidden = TagWith (
+			CreateExternalLocatorItem ("Album Artist", url),
+			CreateTextItem ("ALBUMARTIST", "Ada\0Bea"));
+
+		Assert.AreEqual ("Ada", hidden.AlbumArtist);
+		CollectionAssert.AreEqual (names, hidden.AlbumArtists);
+
+		var onlyLocator = TagWith (CreateExternalLocatorItem ("Album Artist", url));
+		Assert.AreEqual (url, onlyLocator.AlbumArtist);
+		Assert.HasCount (0, onlyLocator.AlbumArtists);
+
+		var textWins = TagWith (
+			CreateTextItem ("Album Artist", "Ada\0Bea"),
+			CreateExternalLocatorItem ("ALBUMARTIST", url));
+		Assert.AreEqual ("Ada", textWins.AlbumArtist);
+		CollectionAssert.AreEqual (names, textWins.AlbumArtists);
+	}
+
+	static ApeTag TagWith (params byte[][] items)
+	{
+		using var body = new MemoryStream ();
+		foreach (var item in items)
+			body.Write (item);
+		var itemsData = body.ToArray ();
+		var footer = CreateValidFooter (2000, (uint)(itemsData.Length + 32), (uint)items.Length, 0);
+		var data = new byte[itemsData.Length + footer.Length];
+		itemsData.CopyTo (data, 0);
+		footer.CopyTo (data, itemsData.Length);
 		var parsed = ApeTag.Parse (data);
 		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
 		return parsed.Tag!;
