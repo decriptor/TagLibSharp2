@@ -302,10 +302,21 @@ public sealed class AacFile : IMediaFile
 	/// </summary>
 	/// <param name="data">The data to check.</param>
 	/// <returns>
-	/// Without a leading ID3v2 tag: true when offset 0 holds "ADIF" or an ADTS header (sync 0xFFF, layer '00')
-	/// whose next frame header, when the data reaches it, names the same stream. After an ID3v2 tag: "ADIF"
-	/// right after the tag, or the first such ADTS header in the next 8 KB, unless an MPEG audio frame comes
-	/// first. An MPEG audio frame has layer bits other than '00', so an ID3-tagged MP3 stays MP3.
+	/// <para>
+	/// True when the stream starts at offset 0, or after a leading ID3v2 tag within the next 8 KB. "ADIF" counts
+	/// only at that first byte and only when its header parses. Each 0xFF byte in the window is judged in turn:
+	/// </para>
+	/// <list type="bullet">
+	/// <item>An ADTS header (sync 0xFFF, layer '00') whose next frame header names the same stream, or whose frame
+	/// ends where an ID3v1, APEv2, or Lyrics3 tag begins, makes the data AAC.</item>
+	/// <item>An ADTS header whose next header lies past the data makes it AAC only at the first byte.</item>
+	/// <item>An MPEG audio frame header (layer other than '00') ends the search as not AAC when its successor
+	/// confirms it or lies past the data, so an ID3-tagged MP3, even a truncated one, stays MP3.</item>
+	/// <item>A header its successor contradicts is skipped.</item>
+	/// </list>
+	/// <para>
+	/// <see cref="Read(ReadOnlySpan{byte})"/> uses the same rule against the same bytes, so data this accepts opens.
+	/// </para>
 	/// </returns>
 	public static bool IsValidFormat (ReadOnlySpan<byte> data)
 	{
