@@ -3,6 +3,7 @@
 
 using System.Buffers.Binary;
 using System.Text;
+using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
@@ -159,6 +160,12 @@ public class ScanWithoutAudioTests
 	[TestMethod]
 	public async Task ReadAsync_Asf_SkipsDataObject () => await AssertScanAsync (AsfWithPackets (), "song.wma");
 
+	[TestMethod]
+	public void Read_Aac_ReadsFrameHeadersOnly () => AssertScan (AacWithFrames (), "song.aac", contiguous: false);
+
+	[TestMethod]
+	public async Task ReadAsync_Aac_ReadsFrameHeadersOnly () => await AssertScanAsync (AacWithFrames (), "song.aac", contiguous: false);
+
 	static void AssertScan (byte[] file, string name, bool contiguous = true)
 	{
 		var loaded = MediaFile.ReadFromData (file, name);
@@ -253,6 +260,7 @@ public class ScanWithoutAudioTests
 		DsfFile dsf => dsf.SaveToFile (path, fileSystem),
 		DffFile dff => dff.SaveToFile (path, fileSystem),
 		AsfFile asf => asf.SaveToFile (path, fileSystem),
+		AacFile aac => aac.SaveToFile (path, fileSystem),
 		_ => FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name)
 	};
 
@@ -269,6 +277,7 @@ public class ScanWithoutAudioTests
 		DsfFile dsf => dsf.SaveToFileAsync (path, fileSystem),
 		DffFile dff => dff.SaveToFileAsync (path, fileSystem),
 		AsfFile asf => asf.SaveToFileAsync (path, fileSystem),
+		AacFile aac => aac.SaveToFileAsync (path, fileSystem),
 		_ => Task.FromResult (FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name))
 	};
 
@@ -285,6 +294,12 @@ public class ScanWithoutAudioTests
 	}
 
 	static byte[] Marker () => [0xFE, 0xED, 0xA5, 0x5A, 0x3C, 0xC3, 0x11, 0x22, 0x33, 0x44, 0xBE, 0xEF];
+
+	// 1 MiB of 4 KiB ADTS frames. Duration needs every frame header, so a scan reads 7 bytes a frame.
+	static byte[] AacWithFrames () => Concat (
+		new Id3v2Tag { Title = "Window" }.Render ().ToArray (),
+		TagLibSharp2.Tests.Aac.AacTestBuilder.Adts (PayloadBytes / 4096, length: 4096, payload: Marker ()),
+		new ApeTag { Album = "Tail" }.Render ().ToArray ());
 
 	static byte[] Mp4WithMdat ()
 	{

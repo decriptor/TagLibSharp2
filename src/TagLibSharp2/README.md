@@ -22,6 +22,7 @@ A modern .NET library for reading and writing metadata in media files.
 | Ogg Opus | ✅ | ✅ | ✅ |
 | Ogg FLAC | ✅ | ✅ | ✅ |
 | MP4/M4A (AAC/ALAC) | ✅ | ✅ | ✅ |
+| AAC (ADTS/ADIF) | ✅ | ✅ | ✅ |
 | WAV (RIFF INFO/ID3v2) | ✅ | ✅ | ✅ |
 | AIFF/AIFC | ✅ | ✅ | ✅ |
 | DSF (DSD) | ✅ | ✅ | ✅ |

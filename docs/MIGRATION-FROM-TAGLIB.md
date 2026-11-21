@@ -578,6 +578,31 @@ if (result.IsSuccess)
 }
 ```
 
+### Raw AAC Files
+
+A raw AAC file (.aac) is an ADTS or ADIF stream. It can carry an ID3v2 tag in front and APEv2 or ID3v1
+tags at the end. A file that starts with `ID3` is AAC when an ADTS or ADIF stream follows the tag, and MP3 otherwise.
+AAC inside MP4 is read by `Mp4File`.
+
+```csharp
+var result = AacFile.ReadFromFile("audio.aac");
+if (result.IsSuccess)
+{
+    var aac = result.File!;
+
+    // From every ADTS frame header (or the ADIF header)
+    Console.WriteLine($"Duration: {aac.Duration}");
+    Console.WriteLine($"Codec: {aac.Properties!.Codec}"); // AAC-LC, AAC Main, ...
+    Console.WriteLine($"Format: {aac.Properties.StreamFormat}"); // Adts or Adif
+
+    // Writes go to every tag the file has. An untagged file gets ID3v2.
+    aac.EnsureId3v2Tag();
+    aac.Tag!.Title = "Track Title";
+
+    aac.SaveToFile(); // the AAC frames are copied unchanged
+}
+```
+
 ### Ogg FLAC Files
 
 Ogg FLAC wraps FLAC audio in an Ogg container, using Vorbis Comments for metadata.
@@ -643,7 +668,7 @@ if (result.IsSuccess)
 
 TagLibSharp2 includes several features not available in TagLib#:
 
-- **Automatic format detection**: `MediaFile.Read()` auto-detects 16 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, and Matroska/WebM
+- **Automatic format detection**: `MediaFile.Read()` auto-detects 17 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, Matroska/WebM, and raw AAC (ADTS/ADIF)
 - **DSD audio support**: Native DSF and DFF format support for high-resolution DSD audio
 - **Lossless format breadth**: WavPack and Monkey's Audio support with APE tag handling
 - **Async I/O**: Full async support throughout the API with cancellation token support

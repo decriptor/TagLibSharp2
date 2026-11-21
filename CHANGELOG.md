@@ -5,6 +5,21 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### Raw AAC (ADTS/ADIF) Support
+- `AacFile` reads and writes raw AAC files (`.aac`): ADTS (ISO/IEC 13818-7 §6.2, MPEG-2 and MPEG-4) and ADIF (§6.1)
+- `AacAudioProperties`: duration from every ADTS frame header (1024 samples per raw data block), average bitrate, sample rate, channels (including a program config element when channel_configuration is 0), profile, MPEG version, and frame count. ADIF duration comes from the header bitrate
+- `AacProfile` and `AacStreamFormat` enums, and `MediaFormat.Aac`
+- ID3v2 in front, APEv2 and ID3v1 at the end, unified through `AacFile.Tag`. Saving rewrites only the tags and copies the AAC frames unchanged. An APEv2 tag is written with a header and a footer unless the tag that was read had only a footer
+- `MediaFile` detection uses the reader's rule: "ADIF" or a confirmed ADTS sync (layer '00') at offset 0, or after a leading ID3v2 tag "ADIF" right after the tag or the first confirmed ADTS sync in the next 8 KB, is AAC. An MPEG audio frame that comes first stays MP3. `.aac` is an extension fallback
+
+### Changed
+
+- A file that starts with an ID3v2 tag followed by an ADTS or ADIF stream is now detected as `MediaFormat.Aac` instead of `MediaFormat.Mp3`, and `Mp3File.IsValidFormat` returns false for it
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes
