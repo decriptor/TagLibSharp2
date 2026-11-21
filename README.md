@@ -26,6 +26,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Format Support**:
   - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
   - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): tags, duration, audio and video properties, and pictures. Tag values can be saved. Picture attachments are read but not rewritten.
+  - AVI (`.avi`, including OpenDML): RIFF INFO and `ID32` (ID3v2) tags, duration, video size, frame rate and FourCC, and the first audio stream. Tags are saved without changing the `movi` sample data; every `idx1` and OpenDML index stays valid.
 
 ## Format Support Matrix
 
@@ -72,6 +73,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | WavPack | APE tag | — | Native only |
 | Monkey's Audio | APE tag | — | Native only |
 | Musepack | APE tag | — | Native only |
+| AVI | RIFF INFO | ID3v2 (`ID32` chunk) | RIFF INFO preferred |
 
 ## Installation
 
