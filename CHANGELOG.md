@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry` when the `Void` right after `Tracks` has room, so no element moves; otherwise the save fails and nothing is written. Adding a FlagEnabled (minver 2) also makes the EBML header's `DocTypeVersion` at least 2: a stored lower value is raised, and an empty or missing one is written (RFC 9559 section 7); no Segment Position moves. A track the caller did not set keeps its bytes.
 - `AiffFile.Id3v2Tag`, and `AiffFile.Title`, `Artist`, `Comment` and `Copyright`
 
+### Changed
+
+- Matroska: `TotalTracks` and `TotalDiscs` follow the tagging spec. `TOTAL_PARTS` counts the parts of the first lower level ([tagging](https://www.matroska.org/technical/tagging.html)), so at 50 it is the album's track count and at 60 the set's disc count ([audio examples](https://www.matroska.org/technical/tagging-audio-example.html), "Collection of CD sets"). `Track` is `PART_NUMBER` at 30 and `DiscNumber` is `PART_NUMBER` at 50. ffmpeg's untargeted `PART_NUMBER` (read as the track), its `4/12` and `DISC=2/3` slash forms and its `TRACKTOTAL`/`DISCTOTAL` names are read as fallbacks; setting a total writes `TOTAL_PARTS` and removes them. A `TOTAL_PARTS` at 30 is read as the track total only when nothing else gives one, and is never written.
+- Matroska: TagLib writes the track total at 30 and the disc total at 50, against the spec. A TagLib-written file holding both totals now reads its disc total as `TotalTracks`, and TagLib reads a level 50 total written here as its disc total and does not read 60. This is a deliberate spec choice.
+- Matroska: a new 60 or 50 tag goes before the file's narrower tags and before ffmpeg's untargeted tag, the order of the spec's examples, so readers that keep the last value they meet (MediaInfo) still show the track. New fields go into ffmpeg's untargeted tag, not into a disc-only tag. Setting `TotalDiscs` on a file with no 40 or 50 tag first moves a known disc number to 50.
+
 ### Fixed
 
 - Ogg Vorbis comment packets that run across pages without the continuation flag keep their comments, and a stream whose last audio page is cut off keeps its duration (#126). `missing_flag.ogg` from that issue now opens with its title, artist, album, genre, cover and 10.189 s duration. Its framing byte is 0x01: the comments were lost in page reassembly, not at the framing bit.
@@ -26,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Matroska: a track with `FlagEnabled` 0 is no longer chosen as the main audio or video track while an enabled track of that type exists (#117).
 - AIFF and AIFF-C files return their native `ANNO`, `COMT` (marker id 0), `NAME`, `AUTH` and `(c) ` text through `Tag` when the ID3 tag has no value for that field (#127). Text is read as Mac OS Roman, or as UTF-8 when the whole value is valid UTF-8 with a multibyte sequence
 - Editing Title, Artist, Comment, Copyright or Performers on an AIFF file writes the value to the ID3 chunk and removes that field's native chunk on save, even when the new value equals the old one. `COMT` notes attached to other markers are kept byte for byte. An unchanged save leaves the native chunks as they are
+- Matroska: when a save inserts tags before an unknown-size Cluster, each Cluster `Position` at or past the insertion point moves with the data and the Cluster CRC-32 is recomputed (#118). A live `0` stays `0`, and a `Position` that no longer fits is voided, since it is optional. The walk is linear in the number of top-level elements.
+- Matroska: `DiscNumber` and `TotalDiscs` are read and written (#130). Setting or clearing a track or disc number or total leaves the other three as they were, including a total held in a `4/12` or `2/3` slash, and a clear removes every element the getter could still read.
+- Matroska: every rendered Tag has a `Targets` element. An omitted `TargetTypeValue` is not written back as 50, and an empty one reads as the default 50.
 
 ## [0.6.0] - 2026-01-05
 
