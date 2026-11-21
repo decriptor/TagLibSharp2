@@ -207,7 +207,8 @@ public sealed class ApeTag : Tag
 	/// Gets or sets the album artist.
 	/// </summary>
 	/// <remarks>
-	/// The first album artist. Reads "Album Artist", or "ALBUMARTIST" when that item is absent.
+	/// The first album artist. A text name on "Album Artist" wins, then a text name on
+	/// "ALBUMARTIST". A locator is used only when neither item has text.
 	/// Setting or clearing removes both items and stores the name in "Album Artist".
 	/// </remarks>
 	public override string? AlbumArtist {
@@ -810,17 +811,31 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <summary>
-	/// The first text name, or the same string <see cref="GetValue"/> returns for a
-	/// locator, an empty text item, or a binary item.
+	/// The first text name on <paramref name="key"/>, or on <paramref name="alias"/>
+	/// when the primary item has none. A locator, an empty text item, or a binary
+	/// item is used only when neither key has a text name, and then it matches
+	/// <see cref="GetValue"/>.
 	/// </summary>
 	string? ReadFirstName (string key, string? alias = null)
 	{
+		var text = FirstTextName (key);
+		if (text is null && alias is not null)
+			text = FirstTextName (alias);
+		if (text is not null)
+			return text;
+
 		var primary = ReadListedOrRaw (key);
 		if (!string.IsNullOrEmpty (primary) || alias is null)
 			return primary;
 
 		var secondary = ReadListedOrRaw (alias);
 		return string.IsNullOrEmpty (secondary) ? primary ?? secondary : secondary;
+	}
+
+	string? FirstTextName (string key)
+	{
+		var names = GetTextList (key);
+		return names.Length == 0 ? null : names[0];
 	}
 
 	string? ReadListedOrRaw (string key)
