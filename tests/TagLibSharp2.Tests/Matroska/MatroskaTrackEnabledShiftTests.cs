@@ -130,6 +130,45 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_InsertedFlag_WidensTheEbmlHeaderSize ()
+	{
+		// 123 header octets fit a one-octet size; the 4-octet DocTypeVersion makes 127, which needs two
+		// (RFC 8794 section 6.1: all ones is reserved). The file grows by 5 and the size reads 40 7F.
+		var docType = Element (0x4282, "matroska"u8);
+		var filler = Element (0xEC, new byte[123 - docType.Length - 2]);
+		var header = Master (0x1A45DFA3, Concat (docType, filler));
+		Assert.AreEqual (4 + 1 + 123, header.Length);
+		var original = Concat (header, Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), MakeVoid (3), Master (0x1F43B675, ClusterMarker)));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		var saved = Save (parsed, original);
+
+		Assert.AreEqual (original.Length + 5, saved.Length);
+		CollectionAssert.AreEqual (new byte[] { 0x1A, 0x45, 0xDF, 0xA3, 0x40, 0x7F }, saved.AsSpan (0, 6).ToArray ());
+		AssertDocTypeVersion (saved, 2);
+		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
+	}
+
+	[TestMethod]
+	public void Save_InsertedFlag_ReplacesAWideEmptyDocTypeVersion ()
+	{
+		// An empty DocTypeVersion with an eight-octet size (10 octets) becomes 42 87 81 02, so the
+		// header shrinks by 6.
+		var wideEmpty = new byte[] { 0x42, 0x87, 0x01, 0, 0, 0, 0, 0, 0, 0 };
+		var header = Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), wideEmpty));
+		var original = Concat (header, Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), MakeVoid (3), Master (0x1F43B675, ClusterMarker)));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		var saved = Save (parsed, original);
+
+		Assert.AreEqual (original.Length - 6, saved.Length);
+		AssertDocTypeVersion (saved, 2);
+		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
+	}
+
+	[TestMethod]
 	public void Save_InPlaceFlag_LeavesAMissingDocTypeVersion ()
 	{
 		// The flag was already stored, so the file already declared what it needed.
