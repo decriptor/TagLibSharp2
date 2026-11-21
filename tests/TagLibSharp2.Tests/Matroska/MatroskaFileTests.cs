@@ -698,6 +698,22 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void TotalTracks_Set_OnAnUntargetedTag_StaysInThatTag ()
+	{
+		// An omitted TargetTypeValue is 50 already, so ffmpeg's single tag is the album total's home.
+		var original = FileWith (
+			Tags (Master (0x7373, Concat (Master (0x63C0, Array.Empty<byte> ()), Simple ("PART_NUMBER", "4"), Simple ("TITLE", "Song")))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.TotalTracks = 12;
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		AssertNumbers (again, 4, 12, null, null, "set");
+		Assert.IsTrue (bytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 50 })) < 0, "no new album target");
+		Assert.AreEqual (1, CountOf (bytes, Id (0x7373)));
+	}
+
+	[TestMethod]
 	public void Read_TagLibWrittenTotals_FollowTheSpecLevels ()
 	{
 		// TagLib writes the track total at 30 and the disc total at 50. The spec makes 50 the track total.
