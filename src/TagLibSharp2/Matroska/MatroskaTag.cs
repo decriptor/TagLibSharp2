@@ -422,6 +422,13 @@ public sealed class MatroskaTag : Tag
 	}
 
 	bool _picturesChanged;
+	byte[] _baseline = [];
+
+	/// <summary>Records the tags as read, so a save can leave an unedited <c>Tags</c> element as it was.</summary>
+	internal void MarkRead () => _baseline = Render ().ToArray ();
+
+	/// <summary>Returns true when <paramref name="rendered"/> is the <c>Tags</c> element as read.</summary>
+	internal bool IsAsRead (ReadOnlySpan<byte> rendered) => rendered.SequenceEqual (_baseline);
 
 	/// <summary>Gets a value indicating whether <see cref="Pictures"/> was set or cleared since reading.</summary>
 	internal bool PicturesChanged => _picturesChanged;
