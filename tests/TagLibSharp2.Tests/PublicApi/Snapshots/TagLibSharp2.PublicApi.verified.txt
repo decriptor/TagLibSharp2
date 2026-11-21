@@ -2356,6 +2356,17 @@ namespace TagLibSharp2.Mp4
         public static bool operator !=(TagLibSharp2.Mp4.Mp4BoxReadResult left, TagLibSharp2.Mp4.Mp4BoxReadResult right) { }
         public static bool operator ==(TagLibSharp2.Mp4.Mp4BoxReadResult left, TagLibSharp2.Mp4.Mp4BoxReadResult right) { }
     }
+    public sealed class Mp4Chapter : System.IEquatable<TagLibSharp2.Mp4.Mp4Chapter>
+    {
+        public Mp4Chapter(System.TimeSpan startTime, string title) { }
+        public System.TimeSpan? EndTime { get; }
+        public System.TimeSpan StartTime { get; }
+        public string Title { get; }
+        public bool Equals(TagLibSharp2.Mp4.Mp4Chapter? other) { }
+        public override bool Equals(object? obj) { }
+        public override int GetHashCode() { }
+        public override string ToString() { }
+    }
     public enum Mp4ContentRating
     {
         None = 0,
@@ -2376,6 +2387,7 @@ namespace TagLibSharp2.Mp4
         public TagLibSharp2.Mp4.Mp4AudioCodec AudioCodec { get; }
         public string? Barcode { get; set; }
         public string? CatalogNumber { get; set; }
+        public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Mp4.Mp4Chapter> Chapters { get; set; }
         public string? Comment { get; set; }
         public string? Composer { get; set; }
         public string? ComposerSort { get; set; }
