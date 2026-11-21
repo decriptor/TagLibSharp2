@@ -25,7 +25,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Multi-Target**: Supports .NET Standard 2.0/2.1, .NET 8.0, and .NET 10.0
 - **Format Support**:
   - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
-  - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): tags, duration, audio and video properties, tracks, and pictures. Tag values and each track's enabled flag can be saved (adding a missing flag needs a Void after Tracks). A disabled track is not picked as the main audio or video track. Picture attachments are read but not rewritten.
+  - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): tags, duration, audio and video properties, tracks, and pictures. Tag values, pictures, and each track's enabled flag can be saved (adding a missing flag needs a Void after Tracks). A disabled track is not picked as the main audio or video track. Pictures are image attachments: a new front cover is written as `cover.jpg` or `cover.png`, and fonts and other attachments are kept. WebM has no attachments, so pictures are not written to it.
   - MPEG program streams (`.mpg`, `.mpeg`, `.mpe`, `.vob`) and MPEG video elementary streams (`.mpv`, `.m1v`, `.m2v`): duration, MPEG-1/MPEG-2 video properties, and the first audio stream (MPEG audio, AC-3, LPCM). ID3v2 in front of the stream, an ID3v2.4 tag appended after it (the layout TagLib# writes), and ID3v1 are read and written in place; the stream bytes are not changed.
 
 ## Format Support Matrix

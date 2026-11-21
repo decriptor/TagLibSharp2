@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-TagLibSharp2 currently supports **17 formats** with read and write. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). Matroska/WebM saves tag values; it does not rewrite attachments or chapters.
+TagLibSharp2 currently supports **17 formats** with read and write. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). Matroska/WebM saves tag values and picture attachments; it does not rewrite chapters.
 
 ---
 
@@ -28,7 +28,7 @@ TagLibSharp2 currently supports **17 formats** with read and write. The library 
 | DFF | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | WavPack | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | Musepack | P1 | ✅ | ✅ | ✅ | - | SV7 and SV8 support |
-| Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values and track enabled flags are saved. Attachments and chapters are preserved, not rewritten |
+| Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values, picture attachments, and track enabled flags are saved. Other attachments and chapters are preserved, not rewritten |
 | MPEG PS / video ES | P2 | ✅ | ✅ | ✅ | - | ID3v2 and ID3v1 around the stream; duration from PTS or GOP time codes |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |
