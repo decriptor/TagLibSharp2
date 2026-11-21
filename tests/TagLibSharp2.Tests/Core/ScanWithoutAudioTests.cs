@@ -7,6 +7,7 @@ using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
+using TagLibSharp2.Audible;
 using TagLibSharp2.Core;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
@@ -18,6 +19,7 @@ using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Tests;
 using TagLibSharp2.Tests.Asf;
+using TagLibSharp2.Tests.Audible;
 using TagLibSharp2.Tests.Mpeg;
 using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
@@ -175,6 +177,17 @@ public class ScanWithoutAudioTests
 	[TestMethod]
 	public async Task ReadAsync_Aac_ReadsFrameHeadersOnly () => await AssertScanAsync (AacWithFrames (), "song.aac", contiguous: false);
 
+	[TestMethod]
+	public void Read_Audible_SkipsAudio () => AssertScan (AudibleWithAudio (), "book.aa");
+
+	[TestMethod]
+	public async Task ReadAsync_Audible_SkipsAudio () => await AssertScanAsync (AudibleWithAudio (), "book.aa");
+
+	static byte[] AudibleWithAudio () => AudibleTestBuilder.Create (
+		AudibleTestBuilder.DefaultEntries.Select (e => e.Key == "title" ? (e.Key, "Window") : e),
+		audio: Payload (),
+		cover: AudibleTestBuilder.Jpeg ());
+
 	static void AssertScan (byte[] file, string name, bool contiguous = true)
 	{
 		var loaded = MediaFile.ReadFromData (file, name);
@@ -271,6 +284,7 @@ public class ScanWithoutAudioTests
 		AsfFile asf => asf.SaveToFile (path, fileSystem),
 		MpegPsFile mpeg => mpeg.SaveToFile (path, fileSystem),
 		AacFile aac => aac.SaveToFile (path, fileSystem),
+		AudibleFile audible => audible.SaveToFile (path, fileSystem),
 		_ => FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name)
 	};
 
@@ -289,6 +303,7 @@ public class ScanWithoutAudioTests
 		AsfFile asf => asf.SaveToFileAsync (path, fileSystem),
 		MpegPsFile mpeg => mpeg.SaveToFileAsync (path, fileSystem),
 		AacFile aac => aac.SaveToFileAsync (path, fileSystem),
+		AudibleFile audible => audible.SaveToFileAsync (path, fileSystem),
 		_ => Task.FromResult (FileWriteResult.Failure ("Unsupported file " + file.GetType ().Name))
 	};
 
