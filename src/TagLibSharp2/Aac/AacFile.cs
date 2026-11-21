@@ -42,6 +42,11 @@ public sealed class AacFile : IMediaFile
 	bool _disposed;
 	IFileSystem? _sourceFileSystem;
 
+	// The APEv2 tag that was read had only a footer. Spec-valid, so a save keeps that layout.
+	// Every other tag is written with a header and a footer, as ffmpeg writes it; some readers
+	// (mediainfo) find the tag only through the header.
+	bool _apeFooterOnly;
+
 	AacFile ()
 	{
 	}
@@ -200,6 +205,7 @@ public sealed class AacFile : IMediaFile
 			var ape = ApeTag.Parse (apeBytes);
 			if (ape.IsSuccess && ape.Tag is not null) {
 				file.ApeTag = ape.Tag;
+				file._apeFooterOnly = !HasApeHeader (apeBytes);
 				audioEnd = apeOffset;
 			}
 		}
@@ -221,6 +227,15 @@ public sealed class AacFile : IMediaFile
 
 		file.Properties = properties;
 		return AacFileReadResult.Success (file);
+	}
+
+	// The footer's flags say whether a header precedes the items (APEv2: bit 31 "contains a header").
+	static bool HasApeHeader (byte[] tag)
+	{
+		if (tag.Length < ApeTagFooter.Size)
+			return false;
+		var footer = ApeTagFooter.Parse (tag.AsSpan (tag.Length - ApeTagFooter.Size));
+		return footer.IsSuccess && footer.Footer is { HasHeader: true };
 	}
 
 	/// <summary>
@@ -331,6 +346,7 @@ public sealed class AacFile : IMediaFile
 	/// <returns>
 	/// The new ID3v2 tag, the original bytes from the end of the read ID3v2 tag to the start of the
 	/// trailing tags, the new APEv2 tag, any Lyrics3 block that sat in front of ID3v1, and the new ID3v1 tag.
+	/// The APEv2 tag has a header and a footer unless the tag that was read had only a footer.
 	/// </returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData)
 	{
@@ -339,7 +355,7 @@ public sealed class AacFile : IMediaFile
 		var audioEnd = Math.Max (location.AudioEnd, audioStart);
 
 		var id3v2 = Id3v2Tag?.Render () ?? BinaryData.Empty;
-		var ape = ApeTag?.Render () ?? BinaryData.Empty;
+		var ape = ApeTag?.RenderWithOptions (includeHeader: !_apeFooterOnly) ?? BinaryData.Empty;
 		var id3v1 = Id3v1Tag?.Render () ?? BinaryData.Empty;
 
 		// Lyrics3 belongs in front of ID3v1 and goes when that tag goes.
