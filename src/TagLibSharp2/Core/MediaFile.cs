@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
+using TagLibSharp2.Audible;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Matroska;
@@ -38,6 +39,7 @@ namespace TagLibSharp2.Core;
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
 /// <item>Matroska/WebM (Matroska tags)</item>
+/// <item>Audible .aa (text dictionary). Audible .aax is MPEG-4 and opens as MP4.</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -398,6 +400,7 @@ public static class MediaFile
 			MediaFormat.Mp3 => FromMp3 (await Mp3File.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Flac => FromFlac (await FlacFile.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Audible => FromAudible (await AudibleFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
 			_ => OpenDetected (format, stream, sourcePath, fileSystem, pathHint)
 		};
 		return RememberMatroskaSource (result, sourcePath, fileSystem);
@@ -420,6 +423,7 @@ public static class MediaFile
 			MediaFormat.Dsf => FromDsf (DsfFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Dff => FromDff (DffFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Asf => FromAsf (AsfFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Audible => FromAudible (AudibleFile.Read (stream, sourcePath, fileSystem)),
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
@@ -529,6 +533,13 @@ public static class MediaFile
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Asf);
 	}
 
+	static MediaFileResult FromAudible (AudibleFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse Audible file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Audible);
+	}
+
 	static MediaFileResult FromWav (WavFileReadResult result)
 	{
 		if (!result.IsSuccess || result.File is null)
@@ -569,6 +580,7 @@ public static class MediaFile
 			MediaFormat.Asf => OpenAsf (data),
 			MediaFormat.Musepack => OpenMusepack (data),
 			MediaFormat.Matroska => OpenMatroska (data),
+			MediaFormat.Audible => FromAudible (AudibleFile.Read (data.Span)),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 
@@ -648,6 +660,10 @@ public static class MediaFile
 				data[2] == MusepackSV8Magic[2] && data[3] == MusepackSV8Magic[3])
 				return MediaFormat.Musepack;
 
+			// Audible .aa: file size, then the magic 0x57907536 at offset 4
+			if (AudibleFile.IsValidFormat (data))
+				return MediaFormat.Audible;
+
 			// Musepack SV7: starts with "MP+"
 			if (data[0] == MusepackSV7Magic[0] && data[1] == MusepackSV7Magic[1] &&
 				data[2] == MusepackSV7Magic[2])
@@ -679,7 +695,8 @@ public static class MediaFile
 				".MP3" => MediaFormat.Mp3,
 				".WAV" => MediaFormat.Wav,
 				".AIF" or ".AIFF" or ".AIFC" => MediaFormat.Aiff,
-				".M4A" or ".M4B" or ".M4P" or ".M4V" or ".MP4" => MediaFormat.Mp4,
+				".M4A" or ".M4B" or ".M4P" or ".M4V" or ".MP4" or ".AAX" => MediaFormat.Mp4,
+				".AA" => MediaFormat.Audible,
 				".DSF" => MediaFormat.Dsf,
 				".DFF" => MediaFormat.Dff,
 				".WV" => MediaFormat.WavPack,
@@ -1030,5 +1047,10 @@ public enum MediaFormat
 	/// <summary>
 	/// Matroska and WebM (.mkv, .mka, .mks, .mk3d, .webm).
 	/// </summary>
-	Matroska
+	Matroska,
+
+	/// <summary>
+	/// Audible audiobook (.aa). Audible .aax files are MPEG-4 and report <see cref="Mp4"/>.
+	/// </summary>
+	Audible
 }
