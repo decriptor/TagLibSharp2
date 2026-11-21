@@ -4,6 +4,7 @@
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Mpeg;
+using static TagLibSharp2.Tests.Mpeg.MpegPsAppendedTagTests;
 using static TagLibSharp2.Tests.Mpeg.MpegPsFileTests;
 using static TagLibSharp2.Tests.Mpeg.MpegPsTestBuilder;
 
@@ -167,6 +168,109 @@ public sealed class MpegPsGuardTests
 		var file = MpegPsFile.Read (output.ToArray ()).File!;
 
 		Assert.AreEqual (48000, file.AudioProperties!.Value.SampleRate);
+	}
+
+	[TestMethod]
+	public void Render_UpdateTagReplacedByANewTag_DropsTheEarlierTagAndTheUpdateFlag ()
+	{
+		var front = new Id3v2Tag (Id3v2Version.V24) { Title = "Front", Album = "Front Album" }.Render ().ToArray ();
+		var stream = ProgramStream ();
+		var data = Concat (front, stream, UpdateTag ("Back"));
+		var file = MpegPsFile.Read (data).File!;
+		Assert.AreEqual ("Front Album", file.Tag!.Album);
+
+		file.Id3v2Tag = new Id3v2Tag (Id3v2Version.V24) { Title = "New" };
+		Assert.IsNull (file.Tag!.Album, "the replaced update no longer reaches the earlier tag");
+		var rendered = file.Render (data).ToArray ();
+
+		Assert.AreEqual (1, Count (rendered, "ID3"u8));
+		var at = rendered.Length - new Id3v2Tag (Id3v2Version.V24) { Title = "New" }.Render (0, withFooter: true).Length;
+		Assert.AreEqual (0, rendered[at + 5] & 0x40, "no extended header");
+		var reread = MpegPsFile.Read (rendered).File!;
+		Assert.AreEqual ("New", reread.Tag!.Title);
+		Assert.IsNull (reread.Tag.Album);
+		CollectionAssert.AreEqual (stream, rendered.AsSpan (0, stream.Length).ToArray ());
+	}
+
+	[TestMethod]
+	public void Render_ChangedAppendedTag_KeepsAnUnparsedPrependedTag ()
+	{
+		// A v2.5 header is skipped, not parsed (ID3v2.4 3.1), so its bytes are kept as they are.
+		byte[] odd = [0x49, 0x44, 0x33, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04];
+		var stream = ProgramStream ();
+		var data = Concat (odd, stream, Appended ("Back"));
+		var file = MpegPsFile.Read (data).File!;
+
+		file.Tag!.Title = "Changed";
+		var rendered = file.Render (data).ToArray ();
+
+		CollectionAssert.AreEqual (Concat (odd, stream), rendered.AsSpan (0, odd.Length + stream.Length).ToArray ());
+		Assert.AreEqual ("Changed", MpegPsFile.Read (rendered).File!.Tag!.Title);
+	}
+
+	[TestMethod]
+	[DataRow (0)]
+	[DataRow (2)]
+	public void Read_ExtendedHeaderWithoutOneFlagByte_IsNotAnUpdate (int flagBytes)
+	{
+		// 3.2: "Number of flag bytes $01". Any other count does not put the flags in the next byte.
+		var front = new Id3v2Tag (Id3v2Version.V24) { Title = "Front", Album = "Front Album" }.Render ().ToArray ();
+		var data = Concat (front, ProgramStream (), UpdateTag ("Back", flagBytes));
+
+		var file = MpegPsFile.Read (data).File!;
+
+		Assert.AreEqual ("Back", file.Tag!.Title);
+		Assert.IsNull (file.Tag.Album);
+	}
+
+	[TestMethod]
+	public void Read_FooterWithRevisionFF_IsStreamData ()
+	{
+		// 3.1: the version and revision bytes are below $FF; the footer copies them.
+		var tag = Appended ("Revision");
+		tag[4] = 0xFF;
+		tag[^6] = 0xFF;
+		var data = Concat (ProgramStream (), tag);
+
+		Assert.IsNull (MpegPsFile.Read (data).File!.Tag);
+	}
+
+	[TestMethod]
+	public void Read_FooterWithANonSyncsafeSize_IsStreamData ()
+	{
+		// A padding packet holds a copy of a header whose size byte has its high bit set, and a
+		// footer at the end repeats it. The size measures exactly back to that copy, but a
+		// size byte of $80 or more is not syncsafe (3.1), so the bytes are stream data.
+		var stream = ProgramStream (new Options { PaddingBytes = 64, PaddingPack = -3, EndCode = false });
+		var marker = new byte[] { 0x49, 0x44, 0x33, 0x04, 0x00, 0x10, 0, 0, 0, 0 };
+		var withMarker = ProgramStream (new Options { PaddingBytes = 64, PaddingPack = -3, PaddingMarker = marker, EndCode = false });
+		var at = IndexOf (withMarker, marker);
+		var size = withMarker.Length + 10 - at - 20;
+		byte[] bytes = [(byte)((size >> 21) & 0x7F), (byte)((size >> 14) & 0x7F), (byte)((size >> 7) & 0x7F), (byte)(size & 0x7F)];
+		Assert.IsTrue (bytes[2] >= 1);
+		bytes[2]--;
+		bytes[3] += 0x80;
+		bytes.CopyTo (withMarker, at + 6);
+		var footer = withMarker.AsSpan (at, 10).ToArray ();
+		footer[0] = (byte)'3';
+		footer[1] = (byte)'D';
+		footer[2] = (byte)'I';
+		var data = Concat (withMarker, footer);
+
+		var file = MpegPsFile.Read (data).File!;
+
+		Assert.AreEqual (MpegPsFile.Read (stream).File!.Duration, file.Duration);
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+	}
+
+	static int IndexOf (byte[] data, byte[] needle)
+	{
+		for (var i = 0; i + needle.Length <= data.Length; i++) {
+			if (data.AsSpan (i, needle.Length).SequenceEqual (needle))
+				return i;
+		}
+
+		return -1;
 	}
 
 	static byte[] Timestamp (int prefix, long value)
