@@ -9,8 +9,9 @@ namespace TagLibSharp2.Tests.Matroska;
 
 /// <summary>
 /// Saving <c>TrackEntry\FlagEnabled</c>. RFC 9559 §5.1.4.1.4.
-/// Invariant: a save writes the flag only for a track the caller set, and every element a segment position
-/// names is still at that position afterwards.
+/// Invariant: a save writes the flag only for a track the caller set, and no element changes its segment
+/// position, so the SeekHead, Cues, and clusters keep their bytes. An insert that would need to move
+/// elements fails and writes nothing.
 /// </summary>
 public partial class MatroskaFileTests
 {
@@ -61,16 +62,20 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_GrowthPastAnUnreadableSeekHead_Fails ()
+	public void Save_InsertedFlag_LeavesAnUnreadableSeekHeadAlone ()
 	{
-		// A moved element whose seek cannot be updated would leave a pointer to the wrong bytes.
+		// The Void after Tracks absorbs the element, so the SeekHead is never read.
 		var seekHead = Master (MatroskaIds.SeekHead, new byte[] { 0x00, 0x00, 0x00 });
 		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
-		var original = FileWith (seekHead, tracks, Master (0x1F43B675, ClusterMarker));
+		var original = FileWith (seekHead, tracks, MakeVoid (8), Master (0x1F43B675, ClusterMarker));
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
-		AssertFailure (parsed, new MockFileSystem (), "/seekhead.mkv", original, "SeekHead");
+		var saved = Save (parsed, original);
+
+		Assert.AreEqual (original.Length, saved.Length);
+		Assert.IsTrue (saved.AsSpan ().StartsWith (original.AsSpan (0, IndexOf (original, Master (0x1654AE6B, AudioEntry (1, 22050))))));
+		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
 	}
 
 	[TestMethod]
@@ -124,91 +129,74 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_DisableWithoutAFlag_UsesAVoidBeforeTracks ()
+	public void Save_VoidBeforeTracks_IsNotUsed ()
 	{
+		// Taking room before Tracks would move Info and Tracks, which needs the shared shift.
 		var info = Master (0x1549A966, Element (0x7BA9, "Before"u8));
 		var tracks = Master (0x1654AE6B, Concat (AudioEntry (1, 22050), AudioEntry (2, 44100)));
-		var cluster = Master (0x1F43B675, ClusterMarker);
-		var hole = Element (0xEC, new byte[30]);
-		var original = Layout (new[] { MatroskaIds.Info, MatroskaIds.Tracks, MatroskaIds.Cues, MatroskaIds.Cluster },
-			(seekHead, positions) => Concat (seekHead, hole, info, tracks, CueElement (positions[3]), cluster));
+		var original = Layout (new[] { MatroskaIds.Info, MatroskaIds.Tracks, MatroskaIds.Cluster },
+			(seekHead, positions) => Concat (seekHead, Element (0xEC, new byte[30]), info, tracks, Master (0x1F43B675, ClusterMarker)));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		AssertFailure (parsed, new MockFileSystem (), "/before.mkv", original, "no Void right after Tracks");
+	}
+
+	[TestMethod]
+	public async Task Save_InsertWithoutAVoid_FailsAndWritesNothing ()
+	{
+		var original = TracksFile (Concat (AudioEntry (1, 22050), AudioEntry (2, 44100)), withVoid: 0);
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		AssertFailure (parsed, new MockFileSystem (), "/novoid.mkv", original, "no Void right after Tracks");
+		Assert.IsTrue (parsed.Render (original).IsEmpty);
+		var fs = new MockFileSystem ();
+		Assert.IsFalse ((await parsed.SaveToFileAsync ("/novoid-async.mkv", original, fs)).IsSuccess);
+		Assert.IsFalse (fs.FileExists ("/novoid-async.mkv"));
+	}
+
+	[TestMethod]
+	public void Save_VoidThatWouldLeaveOneByte_IsNotUsed ()
+	{
+		// No Void is one octet long (RFC 8794 §11.3.2 needs an ID and a size).
+		var original = TracksFile (AudioEntry (1, 22050), withVoid: 4);
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+
+		AssertFailure (parsed, new MockFileSystem (), "/onebyte.mkv", original, "no Void right after Tracks");
+	}
+
+	[TestMethod]
+	public void Save_VoidOfFiveOctets_LeavesTwo ()
+	{
+		var original = TracksFile (AudioEntry (1, 22050), withVoid: 5);
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
 		var saved = Save (parsed, original);
 
 		Assert.AreEqual (original.Length, saved.Length);
-		Assert.AreEqual (IndexOf (original, ClusterMarker), IndexOf (saved, ClusterMarker));
-		AssertSeeksLand (saved);
-		Assert.IsTrue (TryReadCueClusterPosition (saved, out var cue, out var crcOk));
-		Assert.IsTrue (crcOk);
-		Assert.IsTrue (IsElementAt (saved, cue, MatroskaIds.Cluster));
-		var again = MatroskaFile.Read (saved).File!;
-		Assert.AreEqual ("Before", again.Tag.Title);
-		Assert.IsFalse (again.Tracks[0].IsEnabled);
-	}
-
-	[TestMethod]
-	public void Save_DisableWithoutAVoid_MovesTheLaterElements ()
-	{
-		var original = TracksFile (Concat (AudioEntry (1, 22050), AudioEntry (2, 44100)), withVoid: 0);
-		var parsed = MatroskaFile.Read (original).File!;
-		parsed.Tracks[0].IsEnabled = false;
-
-		var saved = Save (parsed, original);
-
-		Assert.AreEqual (original.Length + 3, saved.Length);
-		Assert.AreEqual (1, CountOf (saved, ClusterMarker));
-		AssertSeeksLand (saved);
-		Assert.IsTrue (TryReadCueClusterPosition (saved, out var cue, out var crcOk));
-		Assert.IsTrue (crcOk);
-		Assert.IsTrue (IsElementAt (saved, cue, MatroskaIds.Cluster));
-		Assert.IsTrue (EveryCrcMatches (saved));
-		var again = MatroskaFile.Read (saved).File!;
-		Assert.IsFalse (again.Tracks[0].IsEnabled);
-		Assert.AreEqual ("Movie", again.Tag.Title);
-	}
-
-	[TestMethod]
-	public void Save_VoidThatWouldLeaveOneByte_IsNotUsed ()
-	{
-		var original = TracksFile (AudioEntry (1, 22050), withVoid: 4);
-		var parsed = MatroskaFile.Read (original).File!;
-		parsed.Tracks[0].IsEnabled = false;
-
-		var saved = Save (parsed, original);
-
-		Assert.AreEqual (original.Length + 3, saved.Length);
-		Assert.IsTrue (saved.AsSpan ().IndexOf (Element (0xEC, new byte[2])) >= 0);
-		AssertSeeksLand (saved);
+		Assert.IsTrue (saved.AsSpan ().IndexOf (new byte[] { 0xB9, 0x81, 0x00, 0xEC, 0x80 }) >= 0);
 		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
 	}
 
 	[TestMethod]
 	public void Save_VoidPastACluster_IsNotUsed ()
 	{
-		// Taking room past a Cluster would move the cluster. RFC 9559 §6.1 keeps Tracks ahead of it.
 		var info = Master (0x1549A966, Element (0x7BA9, "Far"u8));
 		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
-		var hole = Element (0xEC, new byte[18]);
-		var original = Layout (new[] { MatroskaIds.Info, MatroskaIds.Tracks, MatroskaIds.Cues, MatroskaIds.Cluster },
-			(seekHead, positions) => Concat (seekHead, info, tracks, Master (0x1F43B675, ClusterMarker), CueElement (positions[3]), hole));
+		var original = FileWith (info, tracks, Master (0x1F43B675, ClusterMarker), Element (0xEC, new byte[18]));
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
-		var saved = Save (parsed, original);
-
-		Assert.AreEqual (original.Length + 3, saved.Length);
-		Assert.IsTrue (saved.AsSpan ().EndsWith (hole));
-		AssertSeeksLand (saved);
-		Assert.IsTrue (TryReadCueClusterPosition (saved, out var cue, out _));
-		Assert.IsTrue (IsElementAt (saved, cue, MatroskaIds.Cluster));
+		AssertFailure (parsed, new MockFileSystem (), "/far.mkv", original, "no Void right after Tracks");
 	}
 
 	[TestMethod]
 	public void Save_ManyTracksElements_EachFindsItsOwnRoom ()
 	{
-		// Each Tracks looks for room only up to its neighbors, so the work stays linear in the piece count.
+		// Each Tracks takes the Void after it; the walk is one pass over the pieces.
 		var children = new List<byte[]> ();
 		for (var i = 1; i <= 200; i++) {
 			children.Add (Master (0x1654AE6B, AudioEntry ((ulong)i, 22050)));
@@ -231,14 +219,16 @@ public partial class MatroskaFileTests
 	[TestMethod]
 	public void Save_EmptyFlag_GrowsByOneByte ()
 	{
-		var original = TracksFile (AudioEntry (1, 22050, Element (0xB9, Array.Empty<byte> ())), withVoid: 0);
+		var original = TracksFile (AudioEntry (1, 22050, Element (0xB9, Array.Empty<byte> ())), withVoid: 3);
 		var parsed = MatroskaFile.Read (original).File!;
 		Assert.IsTrue (parsed.Tracks[0].IsEnabled);
 		parsed.Tracks[0].IsEnabled = false;
 
 		var saved = Save (parsed, original);
 
-		Assert.AreEqual (original.Length + 1, saved.Length);
+		Assert.AreEqual (original.Length, saved.Length);
+		Assert.IsTrue (saved.AsSpan ().IndexOf (new byte[] { 0xB9, 0x81, 0x00 }) >= 0);
+		Assert.IsTrue (saved.AsSpan ().IndexOf (new byte[] { 0xEC, 0x80, 0x12, 0x54, 0xC3, 0x67 }) >= 0, "a 2-octet Void is left before Tags");
 		AssertSeeksLand (saved);
 		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
 	}
@@ -250,13 +240,14 @@ public partial class MatroskaFileTests
 		var filler = 124 - AudioBody (1, 22050).Length - 3;
 		var entry = AudioEntry (1, 22050, Element (0x63A2, new byte[filler]));
 		Assert.AreEqual (2 + 124, entry.Length);
-		var original = TracksFile (entry, withVoid: 0);
+		var original = TracksFile (entry, withVoid: 7);
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
 		var saved = Save (parsed, original);
 
-		Assert.AreEqual (original.Length + 5, saved.Length);
+		Assert.AreEqual (original.Length, saved.Length);
+		Assert.IsTrue (saved.AsSpan ().IndexOf (new byte[] { 0xB9, 0x81, 0x00, 0xEC, 0x80 }) >= 0);
 		AssertSeeksLand (saved);
 		var again = MatroskaFile.Read (saved).File!;
 		Assert.IsFalse (again.Tracks[0].IsEnabled);
@@ -286,7 +277,7 @@ public partial class MatroskaFileTests
 	[TestMethod]
 	public void Save_TrackFlagAndTags_AreBothWritten ()
 	{
-		var original = TracksFile (Concat (AudioEntry (1, 22050), VideoEntry (2, 640)), withVoid: 0);
+		var original = TracksFile (Concat (AudioEntry (1, 22050), VideoEntry (2, 640)), withVoid: 12);
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[1].IsEnabled = false;
 		parsed.Tag.Title = "Renamed";
@@ -305,12 +296,12 @@ public partial class MatroskaFileTests
 	[TestMethod]
 	public void Save_InsertedFlag_RaisesDocTypeVersionOne ()
 	{
-		// FlagEnabled has minver 2. RFC 9559 §5.1.4.1.4, RFC 8794 §11.2.5.
+		// FlagEnabled has minver 2. RFC 9559 §5.1.4.1.4, RFC 8794 §11.2.7.
 		var header = WithCrc (0x1A45DFA3, Concat (
 			Element (0x4282, "matroska"u8),
 			Element (0x4287, new byte[] { 1 }),
 			Element (0x4285, new byte[] { 1 })));
-		var segment = Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), Master (0x1F43B675, ClusterMarker));
+		var segment = Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), MakeVoid (3), Master (0x1F43B675, ClusterMarker));
 		var original = Concat (header, segment);
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
@@ -338,20 +329,20 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_UnknownSizeSegment_MovesTheLiveCluster ()
+	public void Save_UnknownSizeSegment_KeepsTheLiveClusterInPlace ()
 	{
 		var info = Master (0x1549A966, Element (0x7BA9, "Live"u8));
 		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
 		// An unknown-size cluster ends where its children stop parsing, so the marker sits in a SimpleBlock.
 		var block = Element (0xA3, ClusterMarker);
-		var original = Matroska (Unknown (0x18538067, Concat (info, tracks, Unknown (0x1F43B675, Concat (Element (0xE7, new byte[] { 0 }), block)))));
+		var original = Matroska (Unknown (0x18538067, Concat (info, tracks, MakeVoid (6), Unknown (0x1F43B675, Concat (Element (0xE7, new byte[] { 0 }), block)))));
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 
 		var saved = Save (parsed, original);
 
-		Assert.AreEqual (original.Length + 3, saved.Length);
-		Assert.IsTrue (saved.AsSpan ().EndsWith (block));
+		Assert.AreEqual (original.Length, saved.Length);
+		Assert.AreEqual (IndexOf (original, block), IndexOf (saved, block));
 		var again = MatroskaFile.Read (saved).File!;
 		Assert.IsFalse (again.Tracks[0].IsEnabled);
 		Assert.AreEqual ("Live", again.Tag.Title);
@@ -362,7 +353,7 @@ public partial class MatroskaFileTests
 	{
 		var first = Master (0x1654AE6B, AudioEntry (1, 22050));
 		var second = Master (0x1654AE6B, Concat (AudioEntry (2, 44100), VideoEntry (3, 640)));
-		var original = FileWith (first, Element (0xEC, new byte[8]), second, Master (0x1F43B675, ClusterMarker));
+		var original = FileWith (first, MakeVoid (8), second, MakeVoid (3), Master (0x1F43B675, ClusterMarker));
 		var parsed = MatroskaFile.Read (original).File!;
 		Assert.AreEqual (3, parsed.Tracks.Count);
 		parsed.Tracks[0].IsEnabled = false;
@@ -380,7 +371,7 @@ public partial class MatroskaFileTests
 	[TestMethod]
 	public void Save_ChangedBackAfterASave_IsWrittenAgain ()
 	{
-		var original = TracksFile (AudioEntry (1, 22050), withVoid: 0);
+		var original = TracksFile (AudioEntry (1, 22050), withVoid: 10);
 		var fs = new MockFileSystem ();
 		fs.AddFile ("/flag.mkv", original);
 		var parsed = MatroskaFile.ReadFromFile ("/flag.mkv", fs).File!;
@@ -415,7 +406,7 @@ public partial class MatroskaFileTests
 	[TestMethod]
 	public async Task SaveAsync_WithData_WritesTheFlag ()
 	{
-		var original = TracksFile (AudioEntry (1, 22050), withVoid: 0);
+		var original = TracksFile (AudioEntry (1, 22050), withVoid: 3);
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Tracks[0].IsEnabled = false;
 		var fs = new MockFileSystem ();
