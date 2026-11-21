@@ -164,7 +164,7 @@ public sealed class MatroskaChapters
 			// A Chapters element with only a Void or other unmodelled children has nothing to compare, so Clear says it.
 			var modified = !SameItems (_editions, _readEditions) || _kept.Count != _readKept || (_cleared && _hadElement);
 			foreach (var edition in _editions) {
-				if (edition is not null && !edition.Prepare ())
+				if (edition is not null && !edition.Prepare (IsWebM))
 					modified = true;
 			}
 
@@ -188,12 +188,13 @@ public sealed class MatroskaChapters
 			var edition = _editions[e];
 			if (edition is null)
 				continue;
-			var all = edition.ValuesChanged;
+			var all = edition.ValuesChanged (IsWebM);
 			var chapters = edition.Chapters;
 			for (var c = 0; c < chapters.Count; c++) {
 				var path = "edition " + (e + 1).ToString (System.Globalization.CultureInfo.InvariantCulture)
 					+ ", chapter " + (c + 1).ToString (System.Globalization.CultureInfo.InvariantCulture);
-				if (chapters[c] is { } chapter && !chapter.TryValidate (edition.IsOrdered, all, null, false, path, 1, out error))
+				// WebM stores no EditionFlagOrdered, so its editions are never ordered.
+				if (chapters[c] is { } chapter && !chapter.TryValidate (!IsWebM && edition.IsOrdered, all, null, false, path, 1, IsWebM, out error))
 					return false;
 			}
 		}
@@ -242,7 +243,7 @@ public sealed class MatroskaChapters
 	void Write (ChapterWriter writer)
 	{
 		foreach (var edition in _editions)
-			edition?.Prepare ();
+			edition?.Prepare (IsWebM);
 
 		writer.Begin (MatroskaIds.Chapters);
 		var anchor = LastRead (_editions);
@@ -274,7 +275,7 @@ public sealed class MatroskaChapters
 		var offset = 0;
 		while (TryNext (source, ref offset, ref budget, chapters._kept, out var element)) {
 			if (element.Id == MatroskaIds.EditionEntry)
-				chapters._editions.Add (MatroskaEdition.Read (source, element, ref budget));
+				chapters._editions.Add (MatroskaEdition.Read (source, element, isWebM, ref budget));
 			else
 				KeepUnknown (chapters._kept, source, element);
 		}
@@ -450,18 +451,21 @@ public sealed class MatroskaEdition : IReadFromFile
 
 	string OwnState => string.Join ("|", Uid, IsDefault, IsOrdered, IsHidden);
 
-	/// <summary>Gets a value indicating whether the edition is new or its own values (UID, flags) changed.</summary>
-	internal bool ValuesChanged => !_fromFile || OwnState != _readState;
+	/// <summary>
+	/// Gets a value indicating whether the edition is new or its own values (UID, flags) changed.
+	/// WebM stores none of them, so there only a new edition counts.
+	/// </summary>
+	internal bool ValuesChanged (bool isWebM) => !_fromFile || (!isWebM && OwnState != _readState);
 
 	/// <summary>Gets a value indicating whether the edition is new, or its own values or chapter list changed.</summary>
-	internal bool OwnChanged => ValuesChanged || !MatroskaChapters.SameItems (_chapters, _readChapters);
+	internal bool OwnChanged (bool isWebM) => ValuesChanged (isWebM) || !MatroskaChapters.SameItems (_chapters, _readChapters);
 
 	/// <summary>Works out, for this save, which parts are unchanged. Returns true when the whole edition is.</summary>
-	internal bool Prepare ()
+	internal bool Prepare (bool isWebM)
 	{
-		var unchanged = !OwnChanged;
+		var unchanged = !OwnChanged (isWebM);
 		foreach (var chapter in _chapters) {
-			if (chapter is not null && !chapter.Prepare (1))
+			if (chapter is not null && !chapter.Prepare (1, isWebM))
 				unchanged = false;
 		}
 
@@ -542,7 +546,7 @@ public sealed class MatroskaEdition : IReadFromFile
 		writer.End ();
 	}
 
-	internal static MatroskaEdition Read (byte[] source, EbmlElement entry, ref int budget)
+	internal static MatroskaEdition Read (byte[] source, EbmlElement entry, bool isWebM, ref int budget)
 	{
 		// EditionUID is optional, so an edition read without one keeps 0.
 		var edition = new MatroskaEdition (0) {
@@ -570,7 +574,7 @@ public sealed class MatroskaEdition : IReadFromFile
 					edition.IsOrdered = MatroskaChapters.ReadFlag (payload, false);
 					break;
 				case MatroskaIds.ChapterAtom:
-					edition._chapters.Add (MatroskaChapter.Read (source, bodyAt, element, 1, ref budget));
+					edition._chapters.Add (MatroskaChapter.Read (source, bodyAt, element, 1, isWebM, ref budget));
 					break;
 				default:
 					MatroskaChapters.KeepUnknown (edition._kept, body, element);
@@ -610,7 +614,7 @@ public sealed class MatroskaChapter : IReadFromFile
 	MatroskaChapter?[] _readChapters = [];
 	bool _unchanged;
 
-	void MarkRead ()
+	void MarkRead (bool isWebM)
 	{
 		_readUid = _uid;
 		_readStringUid = StringUid;
@@ -618,37 +622,38 @@ public sealed class MatroskaChapter : IReadFromFile
 		_readEnd = EndNanoseconds;
 		_readHidden = IsHidden;
 		_readEnabled = IsEnabled;
-		_readDisplays = _displays.Count == 0 ? [] : _displays.ConvertAll (display => display?.State).ToArray ();
+		_readDisplays = _displays.Count == 0 ? [] : _displays.ConvertAll (display => display?.State (isWebM)).ToArray ();
 		_readChapters = _chapters.Count == 0 ? [] : _chapters.ToArray ();
 	}
 
-	bool DisplaysAsRead {
-		get {
-			if (_displays.Count != _readDisplays.Length)
+	bool DisplaysAsRead (bool isWebM)
+	{
+		if (_displays.Count != _readDisplays.Length)
+			return false;
+		for (var i = 0; i < _readDisplays.Length; i++) {
+			if (_displays[i]?.State (isWebM) != _readDisplays[i])
 				return false;
-			for (var i = 0; i < _readDisplays.Length; i++) {
-				if (_displays[i]?.State != _readDisplays[i])
-					return false;
-			}
-
-			return true;
 		}
+
+		return true;
 	}
 
-	/// <summary>Gets a value indicating whether the chapter is new, or its own values or nested list changed.</summary>
-	internal bool OwnChanged =>
+	/// <summary>
+	/// Gets a value indicating whether the chapter is new, or its own values or nested list changed.
+	/// The flags WebM does not store are not compared in a WebM file.
+	/// </summary>
+	internal bool OwnChanged (bool isWebM) =>
 		!_fromFile
 		|| _uid != _readUid
 		|| StringUid != _readStringUid
 		|| StartNanoseconds != _readStart
 		|| EndNanoseconds != _readEnd
-		|| IsHidden != _readHidden
-		|| IsEnabled != _readEnabled
-		|| !DisplaysAsRead
+		|| (!isWebM && (IsHidden != _readHidden || IsEnabled != _readEnabled))
+		|| !DisplaysAsRead (isWebM)
 		|| !MatroskaChapters.SameItems (_chapters, _readChapters);
 
 	/// <summary>Works out, for this save, which parts are unchanged. Returns true when the whole chapter is.</summary>
-	internal bool Prepare (int depth)
+	internal bool Prepare (int depth, bool isWebM)
 	{
 		// Bounded like Write, which also stops a chapter that was added inside itself.
 		if (depth > MatroskaChapters.MaxDepth) {
@@ -656,9 +661,9 @@ public sealed class MatroskaChapter : IReadFromFile
 			return false;
 		}
 
-		var unchanged = !OwnChanged;
+		var unchanged = !OwnChanged (isWebM);
 		foreach (var chapter in _chapters) {
-			if (chapter is not null && !chapter.Prepare (depth + 1))
+			if (chapter is not null && !chapter.Prepare (depth + 1, isWebM))
 				unchanged = false;
 		}
 
@@ -808,7 +813,7 @@ public sealed class MatroskaChapter : IReadFromFile
 		writer.End ();
 	}
 
-	internal static MatroskaChapter Read (byte[] source, int parentAt, EbmlElement atom, int depth, ref int budget)
+	internal static MatroskaChapter Read (byte[] source, int parentAt, EbmlElement atom, int depth, bool isWebM, ref int budget)
 	{
 		ulong uid = 0;
 		var chapter = new MatroskaChapter (0) {
@@ -845,7 +850,7 @@ public sealed class MatroskaChapter : IReadFromFile
 					chapter._displays.Add (MatroskaChapterDisplay.Read (payload, ref budget));
 					break;
 				case MatroskaIds.ChapterAtom when depth < MatroskaChapters.MaxDepth:
-					chapter._chapters.Add (Read (source, bodyAt, element, depth + 1, ref budget));
+					chapter._chapters.Add (Read (source, bodyAt, element, depth + 1, isWebM, ref budget));
 					break;
 				default:
 					// Too deep or not modelled: the bytes go back as they were.
@@ -857,7 +862,7 @@ public sealed class MatroskaChapter : IReadFromFile
 		// ChapterUID is mandatory and nonzero. A missing or 0 UID gets a new one, written only when the
 		// chapter itself is rewritten; until then the chapter keeps its bytes.
 		chapter._uid = uid != 0 ? uid : MatroskaChapters.NewUid ();
-		chapter.MarkRead ();
+		chapter.MarkRead (isWebM);
 		return chapter;
 	}
 
@@ -877,11 +882,12 @@ public sealed class MatroskaChapter : IReadFromFile
 	/// <param name="parentChanged">Whether the parent's own values changed, which puts the nesting rule back in play.</param>
 	/// <param name="path">The chapter's position, such as "edition 1, chapter 2.1".</param>
 	/// <param name="depth">The nesting depth.</param>
+	/// <param name="isWebM">Whether the file is WebM, which does not store the chapter flags.</param>
 	/// <param name="error">The rule that failed, naming the chapter.</param>
-	internal bool TryValidate (bool ordered, bool all, MatroskaChapter? parent, bool parentChanged, string path, int depth, out string error)
+	internal bool TryValidate (bool ordered, bool all, MatroskaChapter? parent, bool parentChanged, string path, int depth, bool isWebM, out string error)
 	{
 		error = "";
-		var changed = all || OwnChanged;
+		var changed = all || OwnChanged (isWebM);
 		var name = "Matroska chapter (" + path + ", UID " + _uid.ToString (System.Globalization.CultureInfo.InvariantCulture) + ")";
 		if (changed && EndNanoseconds is ulong end && end < StartNanoseconds) {
 			error = name + " ends before it starts (RFC 9559 section 20.2.2)";
@@ -902,7 +908,7 @@ public sealed class MatroskaChapter : IReadFromFile
 					continue;
 				nested = true;
 				var childPath = path + "." + (i + 1).ToString (System.Globalization.CultureInfo.InvariantCulture);
-				if (!chapter.TryValidate (ordered, all, this, changed, childPath, depth + 1, out error))
+				if (!chapter.TryValidate (ordered, all, this, changed, childPath, depth + 1, isWebM, out error))
 					return false;
 			}
 		}
@@ -949,9 +955,9 @@ public sealed class MatroskaChapterDisplay
 	/// <summary>Gets the <c>ChapCountry</c> values.</summary>
 	public IList<string> Countries => _countries;
 
-	/// <summary>Gets the display's values as one string, to tell an edit from a no-op.</summary>
-	internal string State =>
-		Text + "\u0002" + string.Join ("\u0003", _languages) + "\u0002" + string.Join ("\u0003", _languagesBcp47)
+	/// <summary>Gets the display's values as one string, to tell an edit from a no-op. WebM stores no BCP 47 language.</summary>
+	internal string State (bool isWebM) =>
+		Text + "\u0002" + string.Join ("\u0003", _languages) + "\u0002" + (isWebM ? "" : string.Join ("\u0003", _languagesBcp47))
 		+ "\u0002" + string.Join ("\u0003", _countries);
 
 	internal void Write (ChapterWriter writer, bool isWebM)
