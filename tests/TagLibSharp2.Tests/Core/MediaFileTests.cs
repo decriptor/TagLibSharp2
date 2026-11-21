@@ -637,4 +637,36 @@ public class MediaFileTests
 			Array.Reverse (bytes);
 		s.Write (bytes, 0, 2);
 	}
+
+	[TestMethod]
+	[DataRow ("clip.avi")]
+	[DataRow ("clip.wav")]
+	[DataRow ("clip.mkv")]
+	public void Read_MislabeledMp3_IsFoundByItsContent (string name)
+	{
+		// Two bare MPEG frames: the sync is past the 32-byte peek, so only the longer peek finds it.
+		var bytes = BareMp3 ();
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/" + name, bytes);
+
+		var fromBytes = MediaFile.ReadFromData (bytes, name);
+		var fromStream = MediaFile.Read (new MemoryStream (bytes), name);
+		var fromPath = MediaFile.Read ("/" + name, fs);
+
+		Assert.AreEqual (MediaFormat.Mp3, fromBytes.Format, fromBytes.Error);
+		Assert.AreEqual (MediaFormat.Mp3, fromStream.Format, fromStream.Error);
+		Assert.AreEqual (MediaFormat.Mp3, fromPath.Format, fromPath.Error);
+		Assert.AreEqual ("Tail", fromPath.Tag!.Title);
+	}
+
+	static byte[] BareMp3 ()
+	{
+		var header = new byte[] { 0xFF, 0xFB, 0x90, 0x00 };
+		Assert.IsTrue (MpegFrame.TryParse (new BinaryData (header), 0, out var frame));
+		var audio = new byte[frame!.FrameSize * 2];
+		header.CopyTo (audio, 0);
+		header.CopyTo (audio, frame.FrameSize);
+		var id3v1 = new TagLibSharp2.Id3.Id3v1Tag { Title = "Tail" }.Render ().ToArray ();
+		return [.. audio, .. id3v1];
+	}
 }
