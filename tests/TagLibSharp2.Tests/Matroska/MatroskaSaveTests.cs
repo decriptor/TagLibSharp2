@@ -711,10 +711,9 @@ public partial class MatroskaFileTests
 		Assert.IsTrue (IsElementAt (bytes, position, MatroskaIds.Cluster));
 		Assert.AreEqual (1, CountOf (bytes, Element (MatroskaIds.Position, UIntBytes (position))));
 
-		// The known-size cluster is before the insert, so its Position bytes stay.
-		Assert.IsTrue (bytes.AsSpan ().IndexOf (early) >= 0);
-		Assert.AreEqual (1, CountOf (original, earlyPosition));
-		Assert.AreEqual (1, CountOf (bytes, earlyPosition));
+		// The known-size cluster moves or stays depending on where the Tags go. Either way its Position is its offset.
+		Assert.IsTrue (EveryClusterPositionIsItsOffset (bytes, out var clusters));
+		Assert.AreEqual (2, clusters);
 		Assert.AreEqual (1, CountOf (original, prevSize));
 		Assert.AreEqual (1, CountOf (bytes, prevSize));
 		Assert.AreEqual (1, CountOf (original, relative));
@@ -902,7 +901,7 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_AppendedTags_DoNotChangeClusterPosition ()
+	public void Save_AddedTags_KeepEachClusterPositionAtItsCluster ()
 	{
 		var marker = new byte[] { 0x0D, 0x1C };
 		var info = Master (0x1549A966, Element (0x7BA9, "Kept"u8));
@@ -921,9 +920,10 @@ public partial class MatroskaFileTests
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		var bytes = fs.ReadAllBytes ("/still.mkv");
 		Assert.AreEqual ("Appended", MatroskaFile.Read (bytes).File!.Tag.Title);
-		Assert.AreEqual (1, CountOf (bytes, cluster));
-		Assert.AreEqual (1, CountOf (bytes, position));
-		Assert.IsTrue (IsElementAt (bytes, (ulong)info.Length, MatroskaIds.Cluster));
+		// Where the Tags element goes is the writer's choice. Position must still be the cluster's own offset.
+		Assert.AreEqual (1, CountOf (bytes, Element (0xEC, marker)));
+		Assert.IsTrue (EveryClusterPositionIsItsOffset (bytes, out var clusters));
+		Assert.AreEqual (1, clusters);
 	}
 
 	[TestMethod]
@@ -1562,6 +1562,56 @@ public partial class MatroskaFileTests
 		}
 
 		return false;
+	}
+
+	// Every Cluster's CRC-32 matches and its non-zero Position is its offset from the segment payload start.
+	static bool EveryClusterPositionIsItsOffset (byte[] file, out int clusters)
+	{
+		clusters = 0;
+		if (!TrySegmentBody (file, out var body, out _))
+			return false;
+		var offset = 0;
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out var element))
+				return false;
+			var end = element.UnknownSize ? body.Length : element.End;
+			if (element.Id == MatroskaIds.Cluster) {
+				clusters++;
+				if (!ClusterPositionIs (body, element.DataOffset, end, (ulong)offset))
+					return false;
+			}
+
+			if (element.UnknownSize)
+				return true;
+			offset = element.End;
+		}
+
+		return true;
+	}
+
+	static bool ClusterPositionIs (byte[] body, int offset, int end, ulong expected)
+	{
+		var cursor = offset;
+		if (EbmlReader.TryRead (body, cursor, end, out var first) && first.Id == MatroskaIds.Crc32) {
+			var stored = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian (body.AsSpan (first.DataOffset, 4));
+			if (stored != new BinaryData (body.AsSpan (first.End, end - first.End).ToArray ()).ComputeCrc32 ())
+				return false;
+			cursor = first.End;
+		}
+
+		while (cursor < end) {
+			if (!EbmlReader.TryRead (body, cursor, end, out var child) || child.UnknownSize)
+				return false;
+			if (child.Id == MatroskaIds.Position && child.DataLength > 0) {
+				var value = EbmlReader.ReadUInt (body.AsSpan (child.DataOffset, (int)child.DataLength));
+				if (value != 0 && value != expected)
+					return false;
+			}
+
+			cursor = child.End;
+		}
+
+		return cursor == end;
 	}
 
 	static bool ReadClusterPositions (byte[] body, int offset, int end, out ulong position, out bool crcOk, out bool sawLiveZero)
