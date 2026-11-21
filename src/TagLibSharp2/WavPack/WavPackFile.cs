@@ -85,8 +85,17 @@ public sealed class WavPackFile : IMediaFile
 	private const int MagicSize = 4;
 	private const int BlockHeaderSize = 32;
 
-	// Older than this, the sample count is at offset 16 and a RIFF fmt chunk holds the rate.
+	// 0x100 and later is the 32-byte block header. Older files are RIFF/WAVE.
 	private const int LegacyHeaderVersion = 0x100;
+
+	// Version 1 is ckID + ckSize + version. Version 2 adds the bits field.
+	// Version 3 adds flags and shift, then the sample count at offset 16.
+	private const int LegacyV1HeaderBytes = 10;
+	private const int LegacyV2HeaderBytes = 12;
+	private const int LegacyV3HeaderBytes = 20;
+
+	// Chunks before "data" are skipped up to this size. The audio payload is not loaded.
+	private const int MaxRiffChunkSkip = 1024 * 1024;
 
 	private static readonly byte[] Magic = "wvpk"u8.ToArray ();
 
@@ -166,11 +175,11 @@ public sealed class WavPackFile : IMediaFile
 		if (data.Length < MagicSize)
 			return WavPackFileReadResult.Failure ("Invalid WavPack file: data too short for magic");
 
-		if (!TryLocateBlock (data, out var blockOffset, out var fmt))
+		if (!TryLocateBlock (data, out var blockOffset, out var fmt, out var dataChunkSize, out var sawDataChunk))
 			return WavPackFileReadResult.Failure ("Invalid WavPack file: missing magic (expected 'wvpk')");
 
 		var block = data.Slice (blockOffset);
-		if (block.Length < BlockHeaderSize)
+		if (block.Length < LegacyV1HeaderBytes)
 			return WavPackFileReadResult.Failure ("Invalid WavPack file: data too short for block header");
 
 		var file = new WavPackFile ();
@@ -182,12 +191,13 @@ public sealed class WavPackFile : IMediaFile
 		// [8-9] Version
 		file.Version = BinaryPrimitives.ReadUInt16LittleEndian (block.Slice (8, 2));
 
-		if (file.Version < LegacyHeaderVersion) {
-			// The sample count is at offset 16. Zero means the duration is unknown.
-			file.TotalSamples = BinaryPrimitives.ReadUInt32LittleEndian (block.Slice (16, 4));
-			ApplyWaveFormat (file, fmt);
-		} else {
+		if (file.Version >= LegacyHeaderVersion) {
+			if (block.Length < BlockHeaderSize)
+				return WavPackFileReadResult.Failure ("Invalid WavPack file: data too short for block header");
+
 			ApplyBlockHeader (file, block);
+		} else if (!ApplyLegacyHeader (file, block, fmt, sawDataChunk, dataChunkSize)) {
+			return WavPackFileReadResult.Failure ("Invalid WavPack file: data too short for block header");
 		}
 
 		// Store original data
@@ -373,7 +383,7 @@ public sealed class WavPackFile : IMediaFile
 	/// <param name="data">The data to check.</param>
 	/// <returns>True when the bytes start with "wvpk", or are RIFF/WAVE whose data chunk starts with "wvpk".</returns>
 	public static bool IsValidFormat (ReadOnlySpan<byte> data) =>
-		TryLocateBlock (data, out _, out _);
+		TryLocateBlock (data, out _, out _, out _, out _);
 
 	static WavPackFileReadResult ReadRiffWrapped (Stream stream, string? sourcePath, IFileSystem? fileSystem)
 	{
@@ -388,7 +398,9 @@ public sealed class WavPackFile : IMediaFile
 		return Finish (Read (Join (window, tag)), sourcePath, fileSystem, keepPayload: false, fileLength: stream.Length);
 	}
 
-	// Copies fmt and the 32-byte wvpk header. The rest of the data chunk stays on disk.
+	// Copies fmt and the wvpk header bytes that are present (at most 32). A declared
+	// data size of 0–31 is common on a pipe; the header still follows that field.
+	// The rest of the data chunk stays on disk.
 	static bool TryCopyRiffWavPackHeader (Stream stream, out byte[] window)
 	{
 		window = [];
@@ -406,22 +418,27 @@ public sealed class WavPackFile : IMediaFile
 			var size = BinaryPrimitives.ReadUInt32LittleEndian (chunkHeader.AsSpan (4, 4));
 			if (HasId (chunkHeader, 0, (byte)'d', (byte)'a', (byte)'t', (byte)'a')) {
 				var available = stream.Length - stream.Position;
-				var want = size < BlockHeaderSize ? (int)size : BlockHeaderSize;
-				if (available < want)
-					want = (int)Math.Max (0, available);
+				if (available < 0)
+					available = 0;
+				var want = available > BlockHeaderSize ? BlockHeaderSize : (int)available;
 				var magic = StreamBytes.ReadAtMost (stream, want);
 				if (magic.Length < MagicSize || !magic.AsSpan (0, MagicSize).SequenceEqual (Magic))
 					return false;
 
 				StreamBytes.Append (kept, chunkHeader);
 				StreamBytes.Append (kept, magic);
-				var pad = (size & 1) == 1 ? 1L : 0L;
-				StreamBytes.Skip (stream, (long)size - magic.Length + pad);
+				var unread = (long)size - magic.Length;
+				if (unread > 0) {
+					var pad = (size & 1) == 1 ? 1L : 0L;
+					StreamBytes.Skip (stream, unread + pad);
+				}
+
 				window = kept.ToArray ();
 				return true;
 			}
 
-			if (size > 64 * 1024)
+			var padded = (long)size + ((size & 1) == 1 ? 1L : 0L);
+			if (padded > MaxRiffChunkSkip)
 				return false;
 
 			var payload = StreamBytes.ReadAtMost (stream, (int)size);
@@ -438,10 +455,18 @@ public sealed class WavPackFile : IMediaFile
 	}
 
 	// "wvpk" at byte 0, or at the start of a RIFF data chunk. The payload is not scanned.
-	static bool TryLocateBlock (ReadOnlySpan<byte> data, out int blockOffset, out ReadOnlySpan<byte> fmt)
+	// dataChunkSize is the declared data ckSize. It is not the number of bytes copied.
+	static bool TryLocateBlock (
+		ReadOnlySpan<byte> data,
+		out int blockOffset,
+		out ReadOnlySpan<byte> fmt,
+		out uint dataChunkSize,
+		out bool sawDataChunk)
 	{
 		blockOffset = 0;
 		fmt = default;
+		dataChunkSize = 0;
+		sawDataChunk = false;
 		if (data.Length >= MagicSize && data[..MagicSize].SequenceEqual (Magic))
 			return true;
 
@@ -457,6 +482,8 @@ public sealed class WavPackFile : IMediaFile
 					return false;
 
 				blockOffset = payload;
+				dataChunkSize = size;
+				sawDataChunk = true;
 				return true;
 			}
 
@@ -476,6 +503,35 @@ public sealed class WavPackFile : IMediaFile
 		}
 
 		return false;
+	}
+
+	// Version 3 stores the sample count at offset 16. Versions 1 and 2 are 16-bit,
+	// and that count is the declared data-chunk size / channels / 2. Offset 16 is audio.
+	static bool ApplyLegacyHeader (
+		WavPackFile file,
+		ReadOnlySpan<byte> block,
+		ReadOnlySpan<byte> fmt,
+		bool sawDataChunk,
+		uint dataChunkSize)
+	{
+		if (file.Version == 3) {
+			if (block.Length < LegacyV3HeaderBytes)
+				return false;
+
+			file.TotalSamples = BinaryPrimitives.ReadUInt32LittleEndian (block.Slice (16, 4));
+		} else if (file.Version == 2) {
+			if (block.Length < LegacyV2HeaderBytes)
+				return false;
+		} else if (file.Version != 1) {
+			ApplyWaveFormat (file, fmt);
+			return true;
+		}
+
+		ApplyWaveFormat (file, fmt);
+		if (file.Version is 1 or 2 && sawDataChunk && file.Channels > 0)
+			file.TotalSamples = dataChunkSize / (uint)file.Channels / 2u;
+
+		return true;
 	}
 
 	// Version < 0x100 stores zeros in the v4 flag word, so that table reports 6000 Hz.
