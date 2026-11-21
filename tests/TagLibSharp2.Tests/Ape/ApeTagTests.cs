@@ -1858,7 +1858,7 @@ public class ApeTagTests
 	}
 
 	[TestMethod]
-	public void Year_SetAndClear_RemovesDate ()
+	public void Year_Set_RewritesDate_ClearRemovesBoth ()
 	{
 		var replaced = new ApeTag ();
 		replaced.SetValue ("Date", "1999");
@@ -1866,7 +1866,7 @@ public class ApeTagTests
 
 		Assert.AreEqual ("2001", replaced.Year);
 		Assert.AreEqual ("2001", replaced.GetValue ("Year"));
-		Assert.IsNull (replaced.GetValue ("Date"));
+		Assert.AreEqual ("2001", replaced.GetValue ("Date"));
 
 		replaced.Year = null;
 		Assert.IsNull (replaced.Year);
@@ -1875,9 +1875,33 @@ public class ApeTagTests
 
 		var cleared = new ApeTag ();
 		cleared.SetValue ("Date", "1999-05-01");
-		cleared.Year = null;
+		cleared.Year = "";
 		Assert.IsNull (cleared.Year);
 		Assert.IsNull (cleared.GetValue ("Date"));
+
+		var noDate = new ApeTag ();
+		noDate.Year = "2001";
+		Assert.IsNull (noDate.GetValue ("Date"));
+	}
+
+	[TestMethod]
+	public void Year_UnchangedWriteBack_KeepsDate ()
+	{
+		var both = new ApeTag ();
+		both.SetValue ("Year", "2001");
+		both.SetValue ("Date", "2001-05-03");
+		both.Year = both.Year;
+
+		var reparsed = ApeTag.Parse (both.Render ().Span);
+		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
+		Assert.AreEqual ("2001", reparsed.Tag!.GetValue ("Year"));
+		Assert.AreEqual ("2001-05-03", reparsed.Tag.GetValue ("Date"));
+
+		var dateOnly = new ApeTag ();
+		dateOnly.SetValue ("Date", "2001-05-03");
+		dateOnly.Year = dateOnly.Year;
+		Assert.AreEqual ("2001-05-03", dateOnly.Year);
+		Assert.AreEqual ("2001-05-03", dateOnly.GetValue ("Date"));
 	}
 
 	[TestMethod]

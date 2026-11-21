@@ -355,17 +355,29 @@ public class VorbisCommentExtendedMetadataTests
 		Assert.AreEqual ("1969-09-26", comment.OriginalReleaseDate);
 	}
 
+	static void AssertSingle (VorbisComment comment, string name, string expected)
+	{
+		var values = comment.GetValues (name);
+		Assert.HasCount (1, values, name);
+		Assert.AreEqual (expected, values[0], name);
+	}
+
 	[TestMethod]
-	public void OriginalReleaseDate_SetAndClear_RemovesOriginalYear ()
+	public void OriginalReleaseDate_Set_RewritesOriginalYear_ClearRemovesBoth ()
 	{
 		var comment = new VorbisComment ("test");
 		comment.AddField ("ORIGINALYEAR", "1969");
 		comment.OriginalReleaseDate = "2001-01-01";
 
 		Assert.AreEqual ("2001-01-01", comment.OriginalReleaseDate);
-		Assert.HasCount (0, comment.GetValues ("ORIGINALYEAR"));
+		AssertSingle (comment, "ORIGINALDATE", "2001-01-01");
+		AssertSingle (comment, "ORIGINALYEAR", "2001");
 
-		comment.AddField ("ORIGINALYEAR", "1969");
+		// No four-digit year to copy: ORIGINALYEAR keeps its value; the getter reads ORIGINALDATE.
+		comment.OriginalReleaseDate = "Summer";
+		Assert.AreEqual ("Summer", comment.OriginalReleaseDate);
+		AssertSingle (comment, "ORIGINALYEAR", "2001");
+
 		comment.OriginalReleaseDate = null;
 		Assert.IsNull (comment.OriginalReleaseDate);
 		Assert.HasCount (0, comment.GetValues ("ORIGINALYEAR"));
@@ -373,19 +385,118 @@ public class VorbisCommentExtendedMetadataTests
 	}
 
 	[TestMethod]
-	public void Movement_SetAndClear_RemovesMovementName ()
+	[DataRow ("1970", "1970")]
+	[DataRow ("1970-02", "1970")]
+	[DataRow ("1970/02/03", "1970")]
+	[DataRow ("197", "1969")]
+	[DataRow ("19701", "1969")]
+	[DataRow ("19x0-01-01", "1969")]
+	public void OriginalReleaseDate_Set_CopiesOnlyALeadingFourDigitYear (string date, string expectedYear)
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("ORIGINALYEAR", "1969");
+		comment.OriginalReleaseDate = date;
+
+		Assert.AreEqual (date, comment.OriginalReleaseDate);
+		AssertSingle (comment, "ORIGINALYEAR", expectedYear);
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_SetWithoutOriginalYear_DoesNotAddIt ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.OriginalReleaseDate = "2001-01-01";
+
+		Assert.HasCount (0, comment.GetValues ("ORIGINALYEAR"));
+	}
+
+	[TestMethod]
+	public void OriginalReleaseDate_SetEmpty_RemovesOriginalYear ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("ORIGINALYEAR", "1969");
+		comment.OriginalReleaseDate = "";
+
+		Assert.AreEqual ("", comment.OriginalReleaseDate);
+		Assert.HasCount (0, comment.GetValues ("ORIGINALYEAR"));
+	}
+
+	[TestMethod]
+	public void Movement_Set_RewritesMovementName_ClearRemovesBoth ()
 	{
 		var comment = new VorbisComment ("test");
 		comment.AddField ("MOVEMENTNAME", "Adagio");
 		comment.Movement = "Allegro";
 
 		Assert.AreEqual ("Allegro", comment.Movement);
-		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+		AssertSingle (comment, "MOVEMENT", "Allegro");
+		AssertSingle (comment, "MOVEMENTNAME", "Allegro");
 
-		comment.AddField ("MOVEMENTNAME", "Adagio");
 		comment.Movement = null;
 		Assert.IsNull (comment.Movement);
+		Assert.HasCount (0, comment.GetValues ("MOVEMENT"));
 		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+	}
+
+	[TestMethod]
+	public void Movement_SetWithoutMovementName_DoesNotAddIt ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.Movement = "Allegro";
+
+		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+	}
+
+	[TestMethod]
+	public void Movement_SetEmpty_RemovesMovementName ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("MOVEMENTNAME", "Adagio");
+		comment.Movement = "";
+
+		Assert.AreEqual ("", comment.Movement);
+		Assert.HasCount (0, comment.GetValues ("MOVEMENTNAME"));
+	}
+
+	[TestMethod]
+	public void PicardTags_UnchangedWriteBack_KeepsEveryField ()
+	{
+		// Picard's mapping: MOVEMENTNAME is the name, MOVEMENT the number, ORIGINALYEAR the year
+		// beside ORIGINALDATE. Writing back what the getters return must not lose any of them.
+		var comment = new VorbisComment ("test");
+		comment.AddField ("MOVEMENTNAME", "Allegro");
+		comment.AddField ("MOVEMENT", "2");
+		comment.AddField ("MOVEMENTTOTAL", "4");
+		comment.AddField ("ORIGINALDATE", "1969-09-26");
+		comment.AddField ("ORIGINALYEAR", "1969");
+
+		comment.Movement = comment.Movement;
+		comment.OriginalReleaseDate = comment.OriginalReleaseDate;
+
+		var reparsed = VorbisComment.Read (comment.Render ().Span);
+		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
+		var tag = reparsed.Tag!;
+		AssertSingle (tag, "MOVEMENTNAME", "Allegro");
+		AssertSingle (tag, "MOVEMENT", "2");
+		AssertSingle (tag, "MOVEMENTTOTAL", "4");
+		AssertSingle (tag, "ORIGINALDATE", "1969-09-26");
+		AssertSingle (tag, "ORIGINALYEAR", "1969");
+	}
+
+	[TestMethod]
+	public void FallbackOnly_UnchangedWriteBack_KeepsFallbackField ()
+	{
+		var comment = new VorbisComment ("test");
+		comment.AddField ("MOVEMENTNAME", "Allegro");
+		comment.AddField ("ORIGINALYEAR", "1969");
+
+		comment.Movement = comment.Movement;
+		comment.OriginalReleaseDate = comment.OriginalReleaseDate;
+
+		Assert.AreEqual ("Allegro", comment.Movement);
+		Assert.AreEqual ("1969", comment.OriginalReleaseDate);
+		AssertSingle (comment, "MOVEMENTNAME", "Allegro");
+		AssertSingle (comment, "ORIGINALYEAR", "1969");
 	}
 
 	[TestMethod]
