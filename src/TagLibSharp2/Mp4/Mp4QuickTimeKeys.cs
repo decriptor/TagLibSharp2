@@ -118,6 +118,8 @@ internal sealed class Mp4QuickTimeKeys
 		["grouping"] = Mp4AtomMapping.Grouping,
 		["lyrics"] = Mp4AtomMapping.Lyrics,
 		["encoder"] = Mp4AtomMapping.Encoder,
+		["encoded_by"] = Mp4AtomMapping.EncodedBy,
+		["publisher"] = Mp4AtomMapping.Publisher,
 		["sort_name"] = Mp4AtomMapping.TitleSort,
 		["sort_artist"] = Mp4AtomMapping.ArtistSort,
 		["sort_album"] = Mp4AtomMapping.AlbumSort,
