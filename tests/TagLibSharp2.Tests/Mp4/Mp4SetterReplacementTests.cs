@@ -133,8 +133,9 @@ public class Mp4SetterReplacementTests
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
 	}
 
-	// Aliases: QuickTime user data atoms (©com composer, ©swr software), 3GPP TS 26.244 asset atoms
-	// (titl, albm, dscp), and ©st3, which ffprobe and ExifTool both read as the subtitle.
+	// Aliases: QuickTime user data atoms (©com composer, ©swr software), the 3GPP asset names titl,
+	// albm and dscp as ExifTool reads them inside ilst, and ©st3, which ffprobe and ExifTool both read
+	// as the subtitle.
 	[TestMethod]
 	[DataRow ("Title", "©nam", "titl")]
 	[DataRow ("Album", "©alb", "albm")]

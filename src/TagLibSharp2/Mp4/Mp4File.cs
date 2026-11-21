@@ -993,14 +993,22 @@ public sealed class Mp4File : IMediaFile
 	{
 		// iTunes and ffmpeg write moov/udta/meta. QuickTime and Apple devices write moov/meta
 		// (https://developer.apple.com/documentation/quicktime-file-format/metadata_atom).
-		// The first one that holds an ilst is the tag; the other is left as it is.
+		// udta/meta is the tag when it holds an ilst; a moov/meta beside it is read for the fields
+		// udta/meta lacks, kept as it is, and loses a field's items when that field is set.
 		var userDataMeta = moov.FindChild ("udta")?.FindChild ("meta");
-		if (userDataMeta is not null && userDataMeta.FindChild ("ilst") is { } userDataList)
-			return (ParseIlst (userDataList, userDataMeta), Mp4MetaPlacement.UserData);
-
+		var userDataList = userDataMeta?.FindChild ("ilst");
 		var movieMeta = moov.FindChild ("meta");
-		if (movieMeta is not null && movieMeta.FindChild ("ilst") is { } movieList)
-			return (ParseIlst (movieList, movieMeta), Mp4MetaPlacement.Movie);
+		var movieList = movieMeta?.FindChild ("ilst");
+
+		if (userDataList is not null) {
+			var tag = ParseIlst (userDataList, userDataMeta!);
+			if (movieList is not null)
+				ReadMovieMeta (tag, movieList, movieMeta!);
+			return (tag, Mp4MetaPlacement.UserData);
+		}
+
+		if (movieList is not null)
+			return (ParseIlst (movieList, movieMeta!), Mp4MetaPlacement.Movie);
 
 		return (null, Mp4MetaPlacement.UserData);
 	}
@@ -1016,9 +1024,16 @@ public sealed class Mp4File : IMediaFile
 		foreach (var atomBox in ilst.Children) {
 			var atomId = atomBox.Type;
 
-			// In an "mdta" meta, an item's type is the index of its key.
-			if (keys is not null && ParseKeyedItem (atomBox, keys, tag))
+			// In an "mdta" meta every item that names a field is kept as it is until that field is set.
+			if (keys is not null) {
+				if (ReadSourceItem (atomBox, keys, tag, movie: false))
+					continue;
+				if (atomId == Mp4AtomMapping.FreeformAtom)
+					ParseFreeformAtom (atomBox, tag);
+				else
+					tag.PreserveIlstAtom (atomBox.Render ());
 				continue;
+			}
 
 			// Handle cover art specially
 			if (atomId == Mp4AtomMapping.CoverArt) {
@@ -1036,9 +1051,7 @@ public sealed class Mp4File : IMediaFile
 			// Standard atoms contain data sub-atoms. A mapped atom is read from its payload even when
 			// the box parser left it unparsed, so no property depends on ContainerBoxes; anything
 			// else is kept as it is.
-			var dataAtoms = atomBox.Children.Count == 0 && Mp4AtomMapping.IsTagAtom (atomId)
-				? DataAtomsIn (atomBox.Data.Span)
-				: DataAtomsOf (atomBox);
+			var dataAtoms = TagAtomValue (atomBox);
 			if (dataAtoms.Count > 0)
 				tag.SetAtoms (atomId, dataAtoms);
 			else
@@ -1048,41 +1061,83 @@ public sealed class Mp4File : IMediaFile
 		return tag;
 	}
 
-	// Returns false when the item's type is not a key index the tag maps, so the caller treats it
-	// as an iTunes atom or keeps it. An item that maps but holds no value is kept as it is.
-	static bool ParseKeyedItem (Mp4Box item, Mp4QuickTimeKeys keys, Mp4Tag tag)
+	static void ReadMovieMeta (Mp4Tag tag, Mp4Box ilst, Mp4Box meta)
 	{
-		if (item.Type.Length != 4)
-			return false;
+		tag.UseMovieMeta ();
+		var keys = Mp4QuickTimeKeys.Read (meta);
+		foreach (var item in ilst.Children) {
+			if (!ReadSourceItem (item, keys, tag, movie: true))
+				tag.AddMovieItem (item.Render ());
+		}
+	}
 
-		var type = ((uint)item.Type[0] << 24) | ((uint)item.Type[1] << 16) | ((uint)item.Type[2] << 8) | item.Type[3];
-		if (!keys.TryResolve (type, out var field))
-			return false;
+	// Records an item that names a field as a kept source of that field: a keyed item, or an
+	// iTunes atom found in an "mdta" meta or in a second meta. Returns false for any other item.
+	static bool ReadSourceItem (Mp4Box item, Mp4QuickTimeKeys? keys, Mp4Tag tag, bool movie)
+	{
+		var type = item.Type.Length == 4
+			? ((uint)item.Type[0] << 24) | ((uint)item.Type[1] << 16) | ((uint)item.Type[2] << 8) | item.Type[3]
+			: 0;
 
-		var dataAtoms = DataAtomsIn (item.Data.Span);
-		if (dataAtoms.Count == 0) {
-			tag.PreserveIlstAtom (item.Render ());
+		if (keys is not null && keys.TryResolve (type, out var field)) {
+			var rank = movie ? Mp4SourceRank.Movie : Mp4SourceRank.Keyed;
+			var keyIndex = movie ? 0 : type;
+			var dataAtoms = DataAtomsIn (item.Data.Span);
+			switch (field.Kind) {
+				case Mp4KeyedKind.Artwork:
+					tag.AddSourcePictures (PicturesOf (dataAtoms), item.Render (), keyIndex, rank, movie);
+					break;
+				case Mp4KeyedKind.Freeform:
+					tag.AddSourceFreeform (field.Mean!, field.Name!, dataAtoms, item.Render (), keyIndex, rank, movie);
+					break;
+				default:
+					tag.AddSourceAtom (field.AtomId, Mp4Tag.FromKeyed (field.AtomId, dataAtoms, keys.IsTextKey (type)), item.Render (), keyIndex, rank, movie);
+					break;
+			}
+
 			return true;
 		}
 
-		switch (field.Kind) {
-			case Mp4KeyedKind.Artwork: {
-					var pictures = new Mp4Picture[dataAtoms.Count];
-					for (var i = 0; i < pictures.Length; i++)
-						pictures[i] = Mp4Picture.FromDataAtom (dataAtoms[i]);
-					tag.SetKeyedPictures (pictures, type, item.Render ());
-					break;
-				}
-			case Mp4KeyedKind.Freeform:
-				tag.SetKeyedFreeform (field.Mean!, field.Name!, dataAtoms, type, item.Render ());
-				break;
-			default:
-				if (!tag.SetKeyedAtoms (field.AtomId, dataAtoms, type, keys.IsTextKey (type), item.Render ()))
-					tag.PreserveIlstAtom (item.Render ());
-				break;
+		var atomRank = movie ? Mp4SourceRank.Movie : Mp4SourceRank.Atom;
+		if (item.Type == Mp4AtomMapping.CoverArt) {
+			var pictures = PicturesOf (DataAtomsOf (item));
+			if (pictures is null)
+				return false;
+			tag.AddSourcePictures (pictures, item.Render (), 0, atomRank, movie);
+			return true;
 		}
 
+		if (item.Type == Mp4AtomMapping.FreeformAtom) {
+			if (!TryReadFreeform (item, out var mean, out var name, out var atoms))
+				return false;
+			tag.AddSourceFreeform (mean, name, atoms, item.Render (), 0, atomRank, movie);
+			return true;
+		}
+
+		if (!Mp4AtomMapping.IsTagAtom (item.Type))
+			return false;
+
+		var value = TagAtomValue (item);
+		if (value.Count == 0)
+			return false;
+		tag.AddSourceAtom (item.Type, value, item.Render (), 0, atomRank, movie);
 		return true;
+	}
+
+	static List<Mp4DataAtom> TagAtomValue (Mp4Box atomBox) =>
+		atomBox.Children.Count == 0 && Mp4AtomMapping.IsTagAtom (atomBox.Type)
+			? DataAtomsIn (atomBox.Data.Span)
+			: DataAtomsOf (atomBox);
+
+	static Mp4Picture[]? PicturesOf (List<Mp4DataAtom> dataAtoms)
+	{
+		if (dataAtoms.Count == 0)
+			return null;
+
+		var pictures = new Mp4Picture[dataAtoms.Count];
+		for (var i = 0; i < pictures.Length; i++)
+			pictures[i] = Mp4Picture.FromDataAtom (dataAtoms[i]);
+		return pictures;
 	}
 
 	static List<Mp4DataAtom> DataAtomsOf (Mp4Box box)
@@ -1128,31 +1183,38 @@ public sealed class Mp4File : IMediaFile
 
 	static void ParseFreeformAtom (Mp4Box freeformBox, Mp4Tag tag)
 	{
-		// Freeform atoms have mean, name, and data children. Mean and name are kept even when
-		// the data child is missing, so a later set can drop that preserved twin.
-		string? mean = null;
-		string? name = null;
-		var dataAtoms = new List<Mp4DataAtom> ();
-
-		foreach (var child in freeformBox.Children) {
-			if (child.Type == "mean" && child.Data.Length >= 4) {
-				// Skip version(1) + flags(3)
-				mean = child.Data.Slice (4).ToStringUtf8 ();
-			} else if (child.Type == "name" && child.Data.Length >= 4) {
-				// Skip version(1) + flags(3)
-				name = child.Data.Slice (4).ToStringUtf8 ();
-			} else if (child.Type == "data" && child.Data.Length >= 8) {
-				var dataAtom = Mp4DataAtom.Parse (child.Data.Span);
-				dataAtoms.Add (dataAtom);
-			}
-		}
-
-		if (string.IsNullOrEmpty (mean) || string.IsNullOrEmpty (name) || dataAtoms.Count == 0) {
+		// Mean and name are kept even when the data child is missing, so a later set can drop
+		// that preserved twin.
+		if (!TryReadFreeform (freeformBox, out var mean, out var name, out var dataAtoms)) {
 			tag.PreserveIlstAtom (freeformBox.Render (), mean, name);
 			return;
 		}
 
-		tag.SetFreeformAtoms (mean!, name!, dataAtoms);
+		tag.SetFreeformAtoms (mean, name, dataAtoms);
+	}
+
+	// Freeform atoms have mean, name, and data children.
+	static bool TryReadFreeform (Mp4Box freeformBox, out string mean, out string name, out List<Mp4DataAtom> dataAtoms)
+	{
+		string? meanText = null;
+		string? nameText = null;
+		dataAtoms = new List<Mp4DataAtom> ();
+
+		foreach (var child in freeformBox.Children) {
+			if (child.Type == "mean" && child.Data.Length >= 4) {
+				// Skip version(1) + flags(3)
+				meanText = child.Data.Slice (4).ToStringUtf8 ();
+			} else if (child.Type == "name" && child.Data.Length >= 4) {
+				// Skip version(1) + flags(3)
+				nameText = child.Data.Slice (4).ToStringUtf8 ();
+			} else if (child.Type == "data" && child.Data.Length >= 8) {
+				dataAtoms.Add (Mp4DataAtom.Parse (child.Data.Span));
+			}
+		}
+
+		mean = meanText!;
+		name = nameText!;
+		return !string.IsNullOrEmpty (meanText) && !string.IsNullOrEmpty (nameText) && dataAtoms.Count > 0;
 	}
 
 	/// <summary>
@@ -2079,9 +2141,9 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
-			if (inMovieMeta && !replacedMeta && child.Type == "meta") {
+			if (!replacedMeta && child.Type == "meta" && (inMovieMeta || Tag?.HasMovieMeta == true)) {
 				replacedMeta = true;
-				var (ilst, keys) = RenderTag (child);
+				var (ilst, keys) = inMovieMeta ? RenderTag (child) : (Tag!.RenderMovieIlst (), null);
 				var rebuilt = RebuildMeta (child, ilst, keys);
 				if (!rebuilt.IsEmpty)
 					moovContent.Add (rebuilt);

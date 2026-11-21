@@ -37,13 +37,15 @@ internal static class Mp4AtomMapping
 	// Other names that readers fold into a mapped field. A getter falls back to the alias and a
 	// setter removes it. QuickTime user data atoms:
 	// https://developer.apple.com/documentation/quicktime-file-format/user_data_atoms
-	// 3GPP asset atoms: 3GPP TS 26.244, section 8 (titl, albm, dscp).
+	// titl, albm and dscp are 3GPP asset names (TS 26.244 section 8.2), which ExifTool also reads
+	// as ilst items. 3GPP itself defines them as FullBoxes (language + string) directly under
+	// udta; those are not read, only the ilst items are.
 	public const string ComposerAlias = "©com"; // QuickTime "Name of composer"
 	public const string EncoderAlias = "©swr"; // QuickTime "Name and version number of the software"
 	public const string SubtitleAlias = "©st3"; // read as subtitle by ffprobe and ExifTool
-	public const string TitleAlias = "titl"; // 3GPP title
-	public const string AlbumAlias = "albm"; // 3GPP album title
-	public const string DescriptionAlias = "dscp"; // 3GPP description
+	public const string TitleAlias = "titl"; // ExifTool: ilst Title
+	public const string AlbumAlias = "albm"; // ExifTool: ilst Album
+	public const string DescriptionAlias = "dscp"; // ExifTool: ilst Description
 
 	static readonly HashSet<string> TagAtoms = new (StringComparer.Ordinal) {
 		Title, Artist, Album, Genre, GenreId3, Year, Comment, Composer, Grouping, Lyrics, Encoder,

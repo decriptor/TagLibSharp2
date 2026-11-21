@@ -67,15 +67,22 @@ public sealed class Mp4Tag : Tag
 	readonly Dictionary<(string Mean, string Name), List<int>> _preservedFreeformByKey = new ();
 
 	// Set when the ilst belongs to a QuickTime meta whose handler is "mdta". Items are then typed
-	// by key index, so each field remembers the key it was read from and new fields get a key.
+	// by key index, so a field remembers the key it was read from and a new field gets a key.
 	Mp4QuickTimeKeys? _keys;
-	readonly Dictionary<string, uint> _keyIndexByAtom = new (StringComparer.Ordinal);
-	readonly Dictionary<(string Mean, string Name), uint> _keyIndexByFreeform = new ();
-	uint _artworkKeyIndex;
+	readonly Dictionary<string, uint> _keyIndexByField = new (StringComparer.Ordinal);
 
-	// A second keyed item for a field (say "title" and "com.apple.quicktime.title"). The getter
-	// reads the first; these are kept as they are until the field is set, which drops them.
-	readonly Dictionary<string, List<uint>> _keyedTwins = new (StringComparer.Ordinal);
+	// Items a field was read from when they are kept byte for byte: every item of an "mdta" meta
+	// that names a field (keyed, iTunes-typed, or with a value the reader rejects), and the items
+	// of a second meta (moov/meta beside udta/meta). While a field's value comes from them, an
+	// unedited save writes them back as they were; setting the field drops all of them.
+	readonly Dictionary<string, List<(bool Movie, int Index)>> _sources = new (StringComparer.Ordinal);
+	readonly HashSet<string> _valueFromSources = new (StringComparer.Ordinal);
+	readonly Dictionary<string, Mp4SourceRank> _valueRank = new (StringComparer.Ordinal);
+	readonly Dictionary<string, int> _slotByField = new (StringComparer.Ordinal);
+
+	// Items of a second meta, in file order. Null marks one a set dropped.
+	readonly List<BinaryData?> _movieItems = new ();
+	bool _hasMovieMeta;
 
 	/// <inheritdoc/>
 	public override TagTypes TagType => TagTypes.Apple;
@@ -840,10 +847,12 @@ public sealed class Mp4Tag : Tag
 		_preservedByType.Clear ();
 		_preservedFreeformByKey.Clear ();
 		_keys?.Clear ();
-		_keyIndexByAtom.Clear ();
-		_keyIndexByFreeform.Clear ();
-		_artworkKeyIndex = 0;
-		_keyedTwins.Clear ();
+		_keyIndexByField.Clear ();
+		_sources.Clear ();
+		_valueFromSources.Clear ();
+		_valueRank.Clear ();
+		_slotByField.Clear ();
+		_movieItems.Clear ();
 	}
 
 	/// <inheritdoc/>
@@ -854,13 +863,18 @@ public sealed class Mp4Tag : Tag
 
 		using var builder = new BinaryDataBuilder ();
 
-		foreach (var kvp in _atoms)
-			RenderStandardAtom (builder, kvp.Key, kvp.Value);
+		// A field whose value still comes from kept items (in a second meta) is not written here.
+		foreach (var kvp in _atoms) {
+			if (!_valueFromSources.Contains (kvp.Key))
+				RenderStandardAtom (builder, kvp.Key, kvp.Value);
+		}
 
-		foreach (var field in _freeform)
-			RenderFreeformAtom (builder, field.Mean, field.Name, field.Atoms);
+		foreach (var field in _freeform) {
+			if (!_valueFromSources.Contains (FreeformId (field.Mean, field.Name)))
+				RenderFreeformAtom (builder, field.Mean, field.Name, field.Atoms);
+		}
 
-		if (_pictures.Count > 0)
+		if (_pictures.Count > 0 && !_valueFromSources.Contains (Mp4AtomMapping.CoverArt))
 			RenderPictures (builder);
 
 		foreach (var preserved in _preservedAtoms) {
@@ -872,129 +886,197 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <summary>
-	/// Records a value read from an item of an "mdta" meta. A text key's number or flag is converted
-	/// to the iTunes form here and back on render.
+	/// Converts a keyed item's data to the iTunes form of its field. A text key's number or flag is
+	/// read from its text, and a text field takes only UTF-8 values (value type 1).
 	/// </summary>
-	/// <returns>False when the text is not a value of that field; the caller keeps the item as it is.</returns>
-	internal bool SetKeyedAtoms (string atomId, List<Mp4DataAtom> dataAtoms, uint keyIndex, bool textKey, BinaryData item)
+	/// <returns>Empty when no data is a value of that field.</returns>
+	internal static List<Mp4DataAtom> FromKeyed (string atomId, List<Mp4DataAtom> dataAtoms, bool textKey)
 	{
-		var atoms = textKey ? FromKeyedText (atomId, dataAtoms) : dataAtoms;
+		if (!textKey)
+			return dataAtoms;
+		if (IsTextKeyedNumber (atomId))
+			return FromKeyedText (atomId, dataAtoms);
+		return dataAtoms.FindAll (atom => atom.TypeIndicator == Mp4AtomMapping.TypeUtf8);
+	}
 
-		// A text key's value is UTF-8 (value type 1). Other data under it is not this field's value.
-		if (textKey && !IsTextKeyedNumber (atomId))
-			atoms = atoms.FindAll (atom => atom.TypeIndicator == Mp4AtomMapping.TypeUtf8);
-		if (atoms.Count == 0)
-			return false;
+	/// <summary>
+	/// True when the tag has read a second meta (moov/meta beside udta/meta).
+	/// </summary>
+	internal bool HasMovieMeta => _hasMovieMeta;
 
-		if (_keyIndexByAtom.TryGetValue (atomId, out var first) && first != keyIndex && _atoms.ContainsKey (atomId)) {
-			KeepTwin (atomId, keyIndex, item);
-			return true;
+	internal void UseMovieMeta () => _hasMovieMeta = true;
+
+	/// <summary>
+	/// Keeps an item of the second meta that names no field.
+	/// </summary>
+	internal void AddMovieItem (BinaryData box) => _movieItems.Add (box);
+
+	/// <summary>
+	/// Records an item that names a field, keeping it byte for byte. <paramref name="value"/> is
+	/// null when the reader rejects it. The field's value is taken by rank: an iTunes atom beats a
+	/// keyed item (the last iTunes atom wins), the first keyed item beats the rest, and the second
+	/// meta is read only for a field the first lacks.
+	/// </summary>
+	internal void AddSourceAtom (string atomId, List<Mp4DataAtom>? value, BinaryData box, uint keyIndex, Mp4SourceRank rank, bool movie)
+	{
+		if (!AddSource (atomId, box, keyIndex, movie) || value is null || value.Count == 0 || !TakesValue (atomId, _atoms.ContainsKey (atomId), rank))
+			return;
+
+		_atoms[atomId] = value;
+		TookValue (atomId, rank);
+	}
+
+	internal void AddSourceFreeform (string mean, string name, List<Mp4DataAtom>? value, BinaryData box, uint keyIndex, Mp4SourceRank rank, bool movie)
+	{
+		var id = FreeformId (mean, name);
+		if (!AddSource (id, box, keyIndex, movie) || value is null || value.Count == 0 || !TakesValue (id, FindFreeform (mean, name) is not null, rank))
+			return;
+
+		if (_freeformByKey.TryGetValue ((mean, name), out var existing)) {
+			_freeform.Remove (existing);
+			_freeformByKey.Remove ((mean, name));
 		}
 
-		SetAtoms (atomId, atoms);
-		_keyIndexByAtom[atomId] = keyIndex;
+		_freeformByKey.Add ((mean, name), _freeform.AddLast (new FreeformField (mean, name, value)));
+		TookValue (id, rank);
+	}
+
+	internal void AddSourcePictures (Mp4Picture[]? value, BinaryData box, uint keyIndex, Mp4SourceRank rank, bool movie)
+	{
+		var id = Mp4AtomMapping.CoverArt;
+		if (!AddSource (id, box, keyIndex, movie) || value is null || value.Length == 0 || !TakesValue (id, _pictures.Count > 0, rank))
+			return;
+
+		_pictures.Clear ();
+		_pictures.AddRange (value);
+		TookValue (id, rank);
+	}
+
+	bool AddSource (string fieldId, BinaryData box, uint keyIndex, bool movie)
+	{
+		if (box.IsEmpty)
+			return false;
+
+		int index;
+		if (movie) {
+			index = _movieItems.Count;
+			_movieItems.Add (box);
+		} else {
+			index = PreserveIlstAtom (box);
+			if (!_slotByField.ContainsKey (fieldId))
+				_slotByField[fieldId] = index;
+			if (keyIndex != 0 && !_keyIndexByField.ContainsKey (fieldId))
+				_keyIndexByField[fieldId] = keyIndex;
+		}
+
+		if (!_sources.TryGetValue (fieldId, out var list)) {
+			list = new List<(bool, int)> ();
+			_sources[fieldId] = list;
+		}
+
+		list.Add ((movie, index));
 		return true;
 	}
 
-	internal void SetKeyedFreeform (string mean, string name, List<Mp4DataAtom> dataAtoms, uint keyIndex, BinaryData item)
+	bool TakesValue (string fieldId, bool hasValue, Mp4SourceRank rank)
 	{
-		if (_keyIndexByFreeform.TryGetValue ((mean, name), out var first) && first != keyIndex && FindFreeform (mean, name) is not null) {
-			KeepTwin (FreeformId (mean, name), keyIndex, item);
-			return;
-		}
-
-		SetFreeformAtoms (mean, name, dataAtoms);
-		_keyIndexByFreeform[(mean, name)] = keyIndex;
+		if (!hasValue)
+			return true;
+		if (rank == Mp4SourceRank.Movie || !_valueRank.TryGetValue (fieldId, out var current))
+			return false;
+		return rank == Mp4SourceRank.Atom ? current <= Mp4SourceRank.Atom : current < rank;
 	}
 
-	internal void SetKeyedPictures (Mp4Picture[] pictures, uint keyIndex, BinaryData item)
+	void TookValue (string fieldId, Mp4SourceRank rank)
 	{
-		if (_artworkKeyIndex != 0 && _artworkKeyIndex != keyIndex && _pictures.Count > 0) {
-			KeepTwin (Mp4AtomMapping.CoverArt, keyIndex, item);
-			return;
-		}
-
-		Pictures = pictures;
-		_artworkKeyIndex = keyIndex;
+		_valueRank[fieldId] = rank;
+		_valueFromSources.Add (fieldId);
 	}
 
-	void KeepTwin (string fieldId, uint keyIndex, BinaryData item)
+	// A set or a removal replaces every item the field was read from.
+	void DropSources (string fieldId)
 	{
-		PreserveIlstAtom (item);
-		if (!_keyedTwins.TryGetValue (fieldId, out var twins)) {
-			twins = new List<uint> ();
-			_keyedTwins[fieldId] = twins;
-		}
-
-		twins.Add (keyIndex);
-	}
-
-	void DropTwins (string fieldId)
-	{
-		if (!_keyedTwins.TryGetValue (fieldId, out var twins))
+		_valueFromSources.Remove (fieldId);
+		_valueRank.Remove (fieldId);
+		if (!_sources.TryGetValue (fieldId, out var list))
 			return;
 
-		_keyedTwins.Remove (fieldId);
-		foreach (var type in twins)
-			DropPreserved (type);
+		_sources.Remove (fieldId);
+		foreach (var (movie, index) in list) {
+			if (movie)
+				_movieItems[index] = null;
+			else
+				_preservedAtoms[index] = null;
+		}
+	}
+
+	/// <summary>
+	/// Renders the second meta's ilst: its items as they were, less those a set dropped.
+	/// </summary>
+	internal BinaryData RenderMovieIlst ()
+	{
+		using var builder = new BinaryDataBuilder ();
+		foreach (var item in _movieItems) {
+			if (item is not null)
+				builder.Add (item.Value);
+		}
+
+		return builder.ToBinaryData ();
 	}
 
 	static string FreeformId (string mean, string name) => Mp4AtomMapping.FreeformAtom + "\n" + mean + "\n" + name;
 
-	// Writes every field as an item typed by its key index, in index order, and never an iTunes
-	// atom type: "The atom type for each metadata item atom should be set equal to the index of the
-	// key" (https://developer.apple.com/documentation/quicktime-file-format/metadata_item_atom).
+	// Every item is written in file order. A kept item goes back as it was; a field that was set
+	// is written as an item typed by its key index, where its first item was, and never as an
+	// iTunes atom: "The atom type for each metadata item atom should be set equal to the index of
+	// the key" (https://developer.apple.com/documentation/quicktime-file-format/metadata_item_atom).
 	BinaryData RenderKeyed (Mp4QuickTimeKeys keys)
 	{
-		var items = new List<(uint Type, BinaryData Box)> ();
-		foreach (var kvp in _atoms) {
-			if (!_keyIndexByAtom.TryGetValue (kvp.Key, out var index)) {
-				index = keys.IndexFor (Mp4KeyedField.Atom (kvp.Key));
-				_keyIndexByAtom.Add (kvp.Key, index);
+		var items = new List<(long Order, BinaryData Box)> ();
+		var appended = 0L;
+		void Add (string fieldId, Mp4KeyedField field, Func<uint, List<Mp4DataAtom>> atomsFor)
+		{
+			if (_valueFromSources.Contains (fieldId))
+				return;
+
+			if (!_keyIndexByField.TryGetValue (fieldId, out var index)) {
+				index = keys.IndexFor (field);
+				_keyIndexByField[fieldId] = index;
 			}
 
-			var atoms = keys.IsTextKey (index) ? ToKeyedText (kvp.Key, kvp.Value) : kvp.Value;
-			items.Add ((index, RenderItem (index, atoms)));
+			var order = _slotByField.TryGetValue (fieldId, out var slot) ? (2L * slot) + 1 : long.MaxValue / 2 + appended++;
+			items.Add ((order, RenderItem (index, atomsFor (index))));
 		}
 
-		foreach (var field in _freeform) {
-			var key = (field.Mean, field.Name);
-			if (!_keyIndexByFreeform.TryGetValue (key, out var index)) {
-				index = keys.IndexFor (Mp4KeyedField.Freeform (field.Mean, field.Name));
-				_keyIndexByFreeform.Add (key, index);
-			}
+		foreach (var kvp in _atoms)
+			Add (kvp.Key, Mp4KeyedField.Atom (kvp.Key), index => keys.IsTextKey (index) ? ToKeyedText (kvp.Key, kvp.Value) : kvp.Value);
 
-			items.Add ((index, RenderItem (index, field.Atoms)));
-		}
+		foreach (var field in _freeform)
+			Add (FreeformId (field.Mean, field.Name), Mp4KeyedField.Freeform (field.Mean, field.Name), _ => field.Atoms);
 
 		if (_pictures.Count > 0) {
-			if (_artworkKeyIndex == 0)
-				_artworkKeyIndex = keys.IndexFor (Mp4KeyedField.Artwork ());
-
-			var covers = new List<Mp4DataAtom> (_pictures.Count);
-			foreach (var picture in _pictures)
-				covers.Add (new Mp4DataAtom (picture.RenderTypeIndicator, picture.PictureData, picture.RenderLocale));
-			items.Add ((_artworkKeyIndex, RenderItem (_artworkKeyIndex, covers)));
+			Add (Mp4AtomMapping.CoverArt, Mp4KeyedField.Artwork (), _ => {
+				var covers = new List<Mp4DataAtom> (_pictures.Count);
+				foreach (var picture in _pictures)
+					covers.Add (new Mp4DataAtom (picture.RenderTypeIndicator, picture.PictureData, picture.RenderLocale));
+				return covers;
+			});
 		}
 
 		// An item whose type is no key's index has no meaning. If a key added now took that index,
 		// the item would gain one, so it is dropped.
-		foreach (var preserved in _preservedAtoms) {
-			if (preserved is null)
-				continue;
-
-			var type = TypeKey (preserved.Box.Span);
-			if (!keys.IsAdded (type))
-				items.Add ((type, preserved.Box));
+		for (var i = 0; i < _preservedAtoms.Count; i++) {
+			var preserved = _preservedAtoms[i];
+			if (preserved is not null && !keys.IsAdded (TypeKey (preserved.Box.Span)))
+				items.Add ((2L * i, preserved.Box));
 		}
 
-		// Index order, and stable so items that share an index keep their order.
 		var order = new int[items.Count];
 		for (var i = 0; i < order.Length; i++)
 			order[i] = i;
 		Array.Sort (order, (x, y) => {
-			var byType = items[x].Type.CompareTo (items[y].Type);
-			return byType != 0 ? byType : x.CompareTo (y);
+			var byOrder = items[x].Order.CompareTo (items[y].Order);
+			return byOrder != 0 ? byOrder : x.CompareTo (y);
 		});
 
 		using var builder = new BinaryDataBuilder ();
@@ -1165,10 +1247,10 @@ public sealed class Mp4Tag : Tag
 		_atoms[atomId] = dataAtoms;
 	}
 
-	internal void PreserveIlstAtom (BinaryData box, string? mean = null, string? name = null)
+	internal int PreserveIlstAtom (BinaryData box, string? mean = null, string? name = null)
 	{
 		if (box.IsEmpty)
-			return;
+			return -1;
 
 		var typeKey = TypeKey (box.Span);
 		var index = _preservedAtoms.Count;
@@ -1181,7 +1263,7 @@ public sealed class Mp4Tag : Tag
 		indexes.Add (index);
 
 		if (mean is null || name is null)
-			return;
+			return index;
 
 		if (!_preservedFreeformByKey.TryGetValue ((mean, name), out var twins)) {
 			twins = new List<int> ();
@@ -1189,6 +1271,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		twins.Add (index);
+		return index;
 	}
 
 	void DropPreserved (string atomId)
@@ -1198,7 +1281,7 @@ public sealed class Mp4Tag : Tag
 			return;
 
 		DropPreserved (TypeKey (atomId));
-		DropTwins (atomId);
+		DropSources (atomId);
 	}
 
 	void DropPreserved (uint typeKey)
@@ -1224,7 +1307,7 @@ public sealed class Mp4Tag : Tag
 		_preservedFreeformByKey.Remove ((mean, name));
 	}
 
-	void DropFreeformTwins (string mean, string name) => DropTwins (FreeformId (mean, name));
+	void DropFreeformTwins (string mean, string name) => DropSources (FreeformId (mean, name));
 
 	static uint TypeKey (string atomId) =>
 		((uint)(byte)atomId[0] << 24) |
