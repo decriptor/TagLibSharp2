@@ -123,6 +123,29 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Read_ManyTrackEntries_ExposesABoundedListButRanksThemAll ()
+	{
+		// RFC 9559 sets no maxOccurs on TrackEntry, so the list is capped. Every entry still ranks,
+		// so an enabled audio track past the cap is still the main one.
+		var entries = new List<byte[]> ();
+		for (var i = 0; i < MatroskaFile.MaxTracks + 500; i++)
+			entries.Add (new byte[] { 0xAE, 0x80 });
+		entries.Insert (0, AudioEntry (1, 22050, Enabled (0)));
+		entries.Add (AudioEntry (2, 48000));
+		var tracks = Concat (entries.ToArray ());
+		var file = Concat (
+			Master (0x1A45DFA3, Element (0x4282, "matroska"u8)),
+			new byte[] { 0x18, 0x53, 0x80, 0x67, 0x10, 0, (byte)((tracks.Length + 8) >> 8), (byte)(tracks.Length + 8) },
+			new byte[] { 0x16, 0x54, 0xAE, 0x6B, 0x10, 0, (byte)(tracks.Length >> 8), (byte)tracks.Length },
+			tracks);
+		var parsed = MatroskaFile.Read (file).File!;
+
+		Assert.AreEqual (MatroskaFile.MaxTracks, parsed.Tracks.Count);
+		Assert.IsFalse (parsed.Tracks[0].IsEnabled);
+		Assert.AreEqual (48000, ((IMediaFile)parsed).AudioProperties!.SampleRate);
+	}
+
+	[TestMethod]
 	public void Read_NoTracks_IsEmpty ()
 	{
 		var parsed = MatroskaFile.Read (FileWith (Tags (Tag (50, Simple ("TITLE", "Movie"))))).File!;
@@ -192,6 +215,17 @@ public partial class MatroskaFileTests
 			(seekHead, positions) => Concat (seekHead, info, tracks, hole, tags, CueElement (positions[4]), cluster));
 	}
 
+	/// <summary>
+	/// An EBML header with DocTypeVersion 4, as muxers write it, and a Segment. A FlagEnabled insert
+	/// leaves such a header alone (RFC 9559 section 7 is already met).
+	/// </summary>
+	static byte[] TrackFile (params byte[][] segmentChildren) =>
+		TrackMatroska (Master (0x18538067, Concat (segmentChildren)));
+
+	static byte[] TrackMatroska (byte[] segment) => Concat (
+		Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), Element (0x4287, new byte[] { 4 }), Element (0x4285, new byte[] { 2 }))),
+		segment);
+
 	static byte[] MakeVoid (int total) =>
 		total == 2 ? new byte[] { 0xEC, 0x80 } : Element (0xEC, new byte[total - 2]);
 
@@ -211,7 +245,7 @@ public partial class MatroskaFileTests
 			for (var i = 0; i < ids.Length; i++)
 				found[i] = (ulong)FirstChild (body, ids[i]);
 			if (pass > 0 && found.AsSpan ().SequenceEqual (positions))
-				return FileWith (body);
+				return TrackFile (body);
 			positions = found;
 		}
 
