@@ -95,7 +95,26 @@ public class AudibleIntegrationTests : FileFormatTestBase
 		Assert.AreEqual (file.Properties, reread.Properties);
 		Assert.AreEqual ((long)file.DeclaredFileSize + delta, reread.DeclaredFileSize);
 		var end = (int)(dictionary.Offset + dictionary.Size);
-		CollectionAssert.AreEqual (bytes.AsSpan (end).ToArray (), output.AsSpan (end + delta).ToArray (), "bytes after the dictionary");
+		var expected = ExpectedTail (bytes, end, delta);
+		CollectionAssert.AreEqual (expected, output.AsSpan (end + delta).ToArray (), "bytes after the dictionary");
+	}
+
+	// Every byte after the dictionary is copied, except the cover chunk's absolute image position
+	// (chunk 11, offset 4), which moves with the chunk. A truncated file may end before the cover.
+	static byte[] ExpectedTail (byte[] original, int dictionaryEnd, int delta)
+	{
+		var tail = original.AsSpan (dictionaryEnd).ToArray ();
+		var count = (int)AudibleTestBuilder.ReadU32 (original, 8);
+		for (var i = 0; i < count; i++) {
+			var (type, offset, size) = AudibleTestBuilder.Toc (original, i);
+			if (type != 11 || size < 8 || offset < dictionaryEnd || offset + 8L > original.Length)
+				continue;
+			var field = (int)offset + 4 - dictionaryEnd;
+			var position = AudibleTestBuilder.ReadU32 (tail, field);
+			if (position >= offset && position <= offset + (long)size)
+				AudibleTestBuilder.SetU32 (tail, field, (uint)(position + delta));
+		}
+		return tail;
 	}
 
 	[TestMethod]
