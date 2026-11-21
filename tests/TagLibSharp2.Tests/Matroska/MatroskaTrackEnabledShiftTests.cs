@@ -182,6 +182,41 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (1, DifferingBytes (original, saved));
 	}
 
+	[TestMethod]
+	public void Save_InsertedFlag_RaisesEveryDocTypeVersionCopy ()
+	{
+		// DocTypeVersion has maxOccurs 1 (RFC 8794 §11.2.7), so two copies are invalid. Every copy below 2
+		// is raised, as every FlagEnabled copy is written, so no reader is left with an old value.
+		foreach (var second in new[] { new byte[] { 0x42, 0x87, 0x81, 0x04 }, new byte[] { 0x42, 0x87, 0x80 } }) {
+			var header = Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), Element (0x4287, new byte[] { 1 }), second));
+			var original = Concat (header, Master (0x18538067, Master (0x1654AE6B, AudioEntry (1, 22050)), MakeVoid (3), Master (0x1F43B675, ClusterMarker)));
+			var parsed = MatroskaFile.Read (original).File!;
+			parsed.Tracks[0].IsEnabled = false;
+
+			var saved = Save (parsed, original);
+
+			var copies = DocTypeVersions (saved);
+			Assert.AreEqual (2, copies.Count);
+			Assert.AreEqual (2ul, copies[0]);
+			Assert.AreEqual (second.Length == 3 ? 2ul : 4ul, copies[1]);
+			Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
+		}
+	}
+
+	static List<ulong> DocTypeVersions (byte[] file)
+	{
+		Assert.IsTrue (EbmlReader.TryRead (file, 0, file.Length, out var header));
+		var found = new List<ulong> ();
+		var offset = header.DataOffset;
+		while (offset < header.End && EbmlReader.TryRead (file, offset, header.End, out var child)) {
+			if (child.Id == MatroskaIds.DocTypeVersion)
+				found.Add (child.DataLength == 0 ? 1 : EbmlReader.ReadUInt (file.AsSpan (child.DataOffset, (int)child.DataLength)));
+			offset = child.End;
+		}
+
+		return found;
+	}
+
 	static void AssertDocTypeVersion (byte[] file, ulong expected)
 	{
 		Assert.IsTrue (EbmlReader.TryRead (file, 0, file.Length, out var header));
