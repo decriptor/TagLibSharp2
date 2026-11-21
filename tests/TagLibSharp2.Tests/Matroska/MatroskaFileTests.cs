@@ -742,6 +742,29 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void NewFields_AfterDiscNumber_GoToFfmpegsUntargetedTag ()
+	{
+		// The disc tag goes before ffmpeg's tag. Both are level 50, but TagLib drops a COMPOSER in the disc-only tag.
+		var original = FileWith (
+			Tags (Master (0x7373, Concat (
+				Master (0x63C0, Array.Empty<byte> ()),
+				Simple ("ARTIST", "Art"), Simple ("ALBUM", "Alb"), Simple ("GENRE", "Rock"), Simple ("PART_NUMBER", "4/12")))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.DiscNumber = 2;
+		parsed.Tag.Composers = ["Comp"];
+		parsed.Tag.Comment = "Note";
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		Assert.AreEqual (2u, again.DiscNumber);
+		Assert.AreEqual ("Comp", again.Composers.Single ());
+		Assert.AreEqual ("Note", again.Comment);
+		Assert.IsTrue (FileTargetHas (bytes, 50, "PART_NUMBER"));
+		Assert.IsFalse (FileTargetHas (bytes, 50, "COMPOSER"), "COMPOSER went into the disc-only tag");
+		Assert.IsFalse (FileTargetHas (bytes, 50, "COMMENT"), "COMMENT went into the disc-only tag");
+	}
+
+	[TestMethod]
 	public void Read_TagLibWrittenTotals_FollowTheSpecLevels ()
 	{
 		// TagLib writes the track total at 30 and the disc total at 50. The spec makes 50 the track total.

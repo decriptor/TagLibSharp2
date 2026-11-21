@@ -1038,15 +1038,11 @@ public sealed class MatroskaTag : Tag
 		}
 	}
 
-	TagBlock FileBlock (ulong level)
-	{
-		foreach (var block in _blocks) {
-			if (block.IsFileLevel && block.Level == level)
-				return block;
-		}
-
-		return AddFileBlock (new TagBlock (level));
-	}
+	// ffmpeg's untargeted tag is the file's level 50 tag. A disc-only 50 tag added before it is not the home of new fields.
+	TagBlock FileBlock (ulong level) =>
+		FirstBlock (block => block.IsFileLevel && block.Level == level && !block.HasTargetTypeValue)
+		?? FirstBlock (block => block.IsFileLevel && block.Level == level)
+		?? AddFileBlock (new TagBlock (level));
 
 	// A new target goes before the file's narrower targets, as in the spec's examples (70, 60, 50, 30).
 	// Readers that keep the last PART_NUMBER or TOTAL_PARTS they meet then still see the narrowest one.
