@@ -453,8 +453,13 @@ static class MatroskaRewrite
 		return RenderCueMaster (source, cues, plan);
 	}
 
+	/// <summary>
+	/// Writes one Cues-path master. Only the child that <see cref="CueChildMaster"/> names is walked,
+	/// so the recursion is at most four levels deep whatever the file nests.
+	/// </summary>
 	static byte[]? RenderCueMaster (ReadOnlySpan<byte> source, EbmlElement master, Plan plan)
 	{
+		var childMaster = CueChildMaster (master.Id);
 		using var payload = new BinaryDataBuilder ((int)master.DataLength + 16);
 		var crcHeader = -1;
 		var crcEnd = 0;
@@ -467,7 +472,7 @@ static class MatroskaRewrite
 				crcHeader = child.HeaderLength;
 				crcEnd = child.End - child.Position;
 				payload.Add (bytes);
-			} else if (IsCuePosition (child.Id)) {
+			} else if (IsCuePosition (master.Id, child.Id)) {
 				if (!TryMoveCueValue (source, child, plan, out var value, out var keep))
 					return null;
 				if (keep)
@@ -480,7 +485,7 @@ static class MatroskaRewrite
 					payload.Add (EncodeFittedSize ((ulong)width, SizeWidth (source, child)));
 					payload.Add (field);
 				}
-			} else if (IsCueMaster (child.Id)) {
+			} else if (child.Id == childMaster) {
 				var inner = RenderCueMaster (source, child, plan);
 				if (inner is null)
 					return null;
@@ -510,11 +515,29 @@ static class MatroskaRewrite
 			? element.HeaderLength - idWidth
 			: 1;
 
-	static bool IsCueMaster (ulong id) =>
-		id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions or MatroskaIds.CueReference;
+	/// <summary>
+	/// Gets the one master a Cues-path master holds, or 0. RFC 9559 section 5.1.5 fixes the paths:
+	/// <c>\Segment\Cues\CuePoint</c>, <c>...\CuePoint\CueTrackPositions</c> and
+	/// <c>...\CueTrackPositions\CueReference</c>. Any other nesting is not on a path, so it is copied as it is.
+	/// </summary>
+	static ulong CueChildMaster (ulong parent) => parent switch {
+		MatroskaIds.Cues => MatroskaIds.CuePoint,
+		MatroskaIds.CuePoint => MatroskaIds.CueTrackPositions,
+		MatroskaIds.CueTrackPositions => MatroskaIds.CueReference,
+		_ => 0
+	};
 
-	static bool IsCuePosition (ulong id) =>
-		id is MatroskaIds.CueClusterPosition or MatroskaIds.CueCodecState or MatroskaIds.CueRefCluster or MatroskaIds.CueRefCodecState;
+	/// <summary>
+	/// Gets a value indicating whether <paramref name="id"/> is a Segment Position in
+	/// <paramref name="parent"/>: CueClusterPosition and CueCodecState in CueTrackPositions
+	/// (RFC 9559 sections 5.1.5.1.2.2, 5.1.5.1.2.6), CueRefCluster and CueRefCodecState in
+	/// CueReference (Appendix A.37, A.39).
+	/// </summary>
+	static bool IsCuePosition (ulong parent, ulong id) => parent switch {
+		MatroskaIds.CueTrackPositions => id is MatroskaIds.CueClusterPosition or MatroskaIds.CueCodecState,
+		MatroskaIds.CueReference => id is MatroskaIds.CueRefCluster or MatroskaIds.CueRefCodecState,
+		_ => false
+	};
 
 	/// <summary>
 	/// Reads a Cues position and maps it. An empty or zero CueCodecState or CueRefCodecState names the
@@ -1285,7 +1308,7 @@ static class MatroskaRewrite
 		}
 
 		var changed = false;
-		if (!TryPatchCueValues (body, cues.DataOffset, cues.End, plan, ref changed, ref tooNarrow)) {
+		if (!TryPatchCueValues (body, MatroskaIds.Cues, cues.DataOffset, cues.End, plan, ref changed, ref tooNarrow)) {
 			error = "Matroska Cues cannot be updated";
 			return false;
 		}
@@ -1296,15 +1319,18 @@ static class MatroskaRewrite
 	}
 
 	/// <summary>
-	/// Moves every Cues position in place (see <see cref="RenderCues"/> for the list). A value that no
-	/// longer fits its field sets <paramref name="tooNarrow"/>. A malformed value fails.
+	/// Moves every Cues position in place in the children of a <paramref name="parent"/> master (see
+	/// <see cref="RenderCues"/> for the list). Only the child that <see cref="CueChildMaster"/> names is
+	/// walked, so the recursion is at most four levels deep. A value that no longer fits its field sets
+	/// <paramref name="tooNarrow"/>. A malformed value fails.
 	/// </summary>
-	static bool TryPatchCueValues (byte[] body, int offset, int end, Plan plan, ref bool changed, ref bool tooNarrow)
+	static bool TryPatchCueValues (byte[] body, ulong parent, int offset, int end, Plan plan, ref bool changed, ref bool tooNarrow)
 	{
+		var childMaster = CueChildMaster (parent);
 		while (offset < end) {
 			if (!EbmlReader.TryRead (body, offset, end, out var element) || element.UnknownSize)
 				return false;
-			if (IsCuePosition (element.Id)) {
+			if (IsCuePosition (parent, element.Id)) {
 				if (element.Id == MatroskaIds.CueClusterPosition && element.DataLength < 1)
 					return false;
 				if (!TryMoveCueValue (body, element, plan, out var updated, out var keep))
@@ -1315,14 +1341,13 @@ static class MatroskaRewrite
 					else
 						tooNarrow = true;
 				}
-			} else if (IsCueMaster (element.Id) || element.Id == MatroskaIds.Cues) {
+			} else if (element.Id == childMaster) {
 				var nested = false;
-				if (!TryPatchCueValues (body, element.DataOffset, element.End, plan, ref nested, ref tooNarrow))
+				if (!TryPatchCueValues (body, element.Id, element.DataOffset, element.End, plan, ref nested, ref tooNarrow))
 					return false;
 				if (nested) {
 					changed = true;
-					if (element.Id != MatroskaIds.Cues)
-						UpdateElementCrc (body, element.Position, element.End);
+					UpdateElementCrc (body, element.Position, element.End);
 				}
 			}
 

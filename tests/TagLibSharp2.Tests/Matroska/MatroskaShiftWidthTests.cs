@@ -409,21 +409,27 @@ public partial class MatroskaFileTests
 	static Dictionary<ulong, List<ulong>> CueValuesIn (ReadOnlySpan<byte> body)
 	{
 		var values = new Dictionary<ulong, List<ulong>> { [0xF1] = [], [0xEA] = [], [0x97] = [], [0xEB] = [] };
-		Collect (body, values, inCues: false);
+		Collect (body, values, parent: 0);
 		return values;
 	}
 
-	static void Collect (ReadOnlySpan<byte> body, Dictionary<ulong, List<ulong>> values, bool inCues)
+	/// <summary>
+	/// Reads the Cues positions on their RFC 9559 section 5.1.5 paths only: CueClusterPosition and
+	/// CueCodecState in CueTrackPositions, CueRefCluster and CueRefCodecState in CueReference.
+	/// </summary>
+	static void Collect (ReadOnlySpan<byte> body, Dictionary<ulong, List<ulong>> values, ulong parent)
 	{
+		ulong child = parent switch { 0 => MatroskaIds.Cues, MatroskaIds.Cues => 0xBB, 0xBB => 0xB7, 0xB7 => 0xDB, _ => ulong.MaxValue };
 		var offset = 0;
 		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element)) {
 			if (element.UnknownSize)
 				break;
 			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
-			if (element.Id == MatroskaIds.Cues || (inCues && element.Id is 0xBB or 0xB7 or 0xDB))
-				Collect (payload, values, inCues: true);
-			else if (inCues && values.TryGetValue (element.Id, out var list))
-				list.Add (EbmlReader.ReadUInt (payload));
+			var isPosition = (parent == 0xB7 && element.Id is 0xF1 or 0xEA) || (parent == 0xDB && element.Id is 0x97 or 0xEB);
+			if (element.Id == child)
+				Collect (payload, values, element.Id);
+			else if (isPosition)
+				values[element.Id].Add (EbmlReader.ReadUInt (payload));
 			offset = element.End;
 		}
 	}
