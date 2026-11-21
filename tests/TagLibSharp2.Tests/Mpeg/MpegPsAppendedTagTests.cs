@@ -83,10 +83,15 @@ public sealed class MpegPsAppendedTagTests
 	}
 
 	[TestMethod]
-	public void Read_FooterWithoutAMatchingHeader_IsStreamData ()
+	[DataRow (0, (byte)'X')]
+	[DataRow (3, (byte)3)]
+	[DataRow (9, (byte)0x7F)]
+	public void Read_FooterWithoutAMatchingHeader_IsStreamData (int offset, byte value)
 	{
+		// The footer is "a copy of the header" (3.4): no "ID3" there, or a header that says v2.3
+		// or another size, means the bytes are not that tag.
 		var tag = Appended ("Broken");
-		tag[0] = (byte)'X';
+		tag[offset] = value;
 		var data = Concat (ProgramStream (), tag);
 
 		var file = MpegPsFile.Read (data).File!;
@@ -94,6 +99,99 @@ public sealed class MpegPsAppendedTagTests
 		Assert.IsNull (file.Tag);
 		var rendered = file.Render (data).ToArray ();
 		CollectionAssert.AreEqual (data, rendered);
+	}
+
+	[TestMethod]
+	public void Read_V23TagWithAFooter_IsStreamData ()
+	{
+		// Only v2.4 has a footer (3.4); a v2.3 header has no footer flag to set.
+		var tag = Appended ("Three");
+		tag[3] = 3;
+		tag[^7] = 3;
+		var data = Concat (ProgramStream (), tag);
+
+		Assert.IsNull (MpegPsFile.Read (data).File!.Tag);
+	}
+
+	[TestMethod]
+	public void Read_ApeSizeLongerThanTheFile_FindsNoAppendedTag ()
+	{
+		var ape = TestBuilders.Ape.CreateTag (title: "Ape");
+		// TagSize in the APE footer (bytes 12 to 15 of the last 32) claims 2 GiB.
+		ape[^20] = 0x00;
+		ape[^19] = 0x00;
+		ape[^18] = 0x00;
+		ape[^17] = 0x80;
+		var data = Concat (ProgramStream (), Appended ("Lost"), ape);
+
+		var result = MpegPsFile.Read (data);
+		var streamed = MediaFile.Read (new MemoryStream (data), "clip.mpg");
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNull (result.File!.Tag);
+		Assert.IsNull (streamed.Tag);
+	}
+
+	[TestMethod]
+	public void Read_ApeHeaderAtTheEnd_IsNotAnApeFooter ()
+	{
+		// 32 bytes with the APE header bit (29) set, sized as if they were a whole tag. A header
+		// has a footer's layout but is not one, so nothing before it is an appended tag.
+		var header = new byte[32];
+		"APETAGEX"u8.CopyTo (header);
+		header[8] = 0xD0;
+		header[9] = 0x07;
+		header[12] = 32;
+		header[23] = 0x20;
+		var data = Concat (ProgramStream (), Appended ("Hidden"), header);
+
+		Assert.IsNull (MpegPsFile.Read (data).File!.Tag);
+	}
+
+	[TestMethod]
+	public void Read_FooterWithoutTheFooterFlag_IsStreamData ()
+	{
+		// Header flag d (3.1) says a footer is present; a "3DI" copy of a header without it is not a footer.
+		var tag = Appended ("Flagless");
+		tag[5] = 0x00;
+		tag[^5] = 0x00;
+		var data = Concat (ProgramStream (), tag);
+
+		Assert.IsNull (MpegPsFile.Read (data).File!.Tag);
+	}
+
+	[TestMethod]
+	public void Read_FooterReachingIntoThePrependedTag_IsIgnored ()
+	{
+		// A prepended tag whose PRIV frame holds bytes that look like an appended tag's header,
+		// and a footer at the end of the file that measures back to them. The appended tag may
+		// not start before the stream, so the footer is stream data.
+		var stream = ProgramStream ();
+		byte[] owner = [(byte)'x', 0x00];
+		byte[] fake = [0x49, 0x44, 0x33, 0x04, 0x00, 0x10, 0, 0, 0, 0];
+		var frameSize = owner.Length + fake.Length;
+		byte[] frameHeader = [(byte)'P', (byte)'R', (byte)'I', (byte)'V', 0, 0, 0, (byte)frameSize, 0, 0];
+		var bodySize = frameHeader.Length + frameSize;
+		byte[] tagHeader = [0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0, 0, 0, (byte)bodySize];
+		var fakeAt = tagHeader.Length + frameHeader.Length + owner.Length;
+		var length = tagHeader.Length + bodySize + stream.Length + 10;
+		var size = length - fakeAt - 20;
+		byte[] syncsafe = [(byte)((size >> 21) & 0x7F), (byte)((size >> 14) & 0x7F), (byte)((size >> 7) & 0x7F), (byte)(size & 0x7F)];
+		syncsafe.CopyTo (fake, 6);
+		var footer = (byte[])fake.Clone ();
+		footer[0] = (byte)'3';
+		footer[1] = (byte)'D';
+		footer[2] = (byte)'I';
+		var data = Concat (tagHeader, frameHeader, owner, fake, stream, footer);
+		Assert.AreEqual (length, data.Length);
+
+		var result = MpegPsFile.Read (data);
+		var streamed = MediaFile.Read (new MemoryStream (data), "clip.mpg");
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsTrue (streamed.IsSuccess, streamed.Error);
+		Assert.AreEqual (TimeSpan.FromSeconds (2), result.File!.Duration);
+		CollectionAssert.AreEqual (data, result.File.Render (data).ToArray ());
 	}
 
 	[TestMethod]
