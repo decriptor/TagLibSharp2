@@ -41,6 +41,7 @@ static class MatroskaIds
 	public const ulong FileMimeType = 0x4660;
 	public const ulong FileData = 0x465C;
 	public const ulong Cluster = 0x1F43B675;
+	public const ulong Position = 0xA7;
 	public const ulong Cues = 0x1C53BB6B;
 	public const ulong Seek = 0x4DBB;
 	public const ulong SeekId = 0x53AB;
@@ -48,6 +49,7 @@ static class MatroskaIds
 	public const ulong CuePoint = 0xBB;
 	public const ulong CueTrackPositions = 0xB7;
 	public const ulong CueClusterPosition = 0xF1;
+	public const ulong CueCodecState = 0xEA;
 	public const ulong Attachments = 0x1941A469;
 	public const ulong Chapters = 0x1043A770;
 	public const ulong Tags = 0x1254C367;
