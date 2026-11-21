@@ -162,12 +162,15 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 			if (stbl is null)
 				continue;
 
-			var stsz = stbl.FindChild ("stsz")!.Data.Span;
+			// stsz (§8.7.3.2) or the compact stz2 (§8.7.3.3: 4-, 8-, or 16-bit entries).
+			var stz2 = stbl.FindChild ("stz2");
+			var stsz = (stbl.FindChild ("stsz") ?? stz2)!.Data.Span;
+			var bits = stz2 is null ? 32 : stsz[7];
 			var stsc = stbl.FindChild ("stsc")!.Data.Span;
 			var co64 = stbl.FindChild ("co64");
 			var stco = co64?.Data ?? stbl.FindChild ("stco")!.Data;
 			var width = co64 is null ? 4 : 8;
-			var constant = BinaryPrimitives.ReadUInt32BigEndian (stsz.Slice (4));
+			var constant = stz2 is null ? BinaryPrimitives.ReadUInt32BigEndian (stsz.Slice (4)) : 0;
 			var count = (int)BinaryPrimitives.ReadUInt32BigEndian (stsz.Slice (8));
 			var chunks = (int)BinaryPrimitives.ReadUInt32BigEndian (stco.Span.Slice (4));
 			var rows = (int)BinaryPrimitives.ReadUInt32BigEndian (stsc.Slice (4));
@@ -183,7 +186,12 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 					? BinaryPrimitives.ReadUInt32BigEndian (stco.Span.Slice (8 + ((chunk - 1) * 4)))
 					: (long)BinaryPrimitives.ReadUInt64BigEndian (stco.Span.Slice (8 + ((chunk - 1) * 8)));
 				for (var k = 0; k < perChunk && sample < count; k++, sample++) {
-					var size = constant != 0 ? constant : BinaryPrimitives.ReadUInt32BigEndian (stsz.Slice (12 + (sample * 4)));
+					var size = constant != 0 ? constant : bits switch {
+						32 => BinaryPrimitives.ReadUInt32BigEndian (stsz.Slice (12 + (sample * 4))),
+						16 => BinaryPrimitives.ReadUInt16BigEndian (stsz.Slice (12 + (sample * 2))),
+						8 => stsz[12 + sample],
+						_ => (uint)((sample & 1) == 0 ? stsz[12 + (sample / 2)] >> 4 : stsz[12 + (sample / 2)] & 0x0F),
+					};
 					// A truncated file ends mid-track. Every offset moves by the same amount, so the same
 					// samples stay inside the file before and after a save.
 					if (at + size > file.Length)
