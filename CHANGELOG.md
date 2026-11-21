@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by a `tref`/`chap` reference), then the Nero `chpl` box. Saving writes both: `chpl` (first 255 chapters) and
   the chapter track (an existing one keeps its track ID; otherwise a new disabled text track is added and
   referenced from every sound and video track). New chapter samples go in their own `mdat` after `moov`, and
-  every other track's chunk offsets move with them. A save that leaves the list alone keeps the chapter bytes.
+  every other track's chunk offsets move with them. That `mdat` replaces the one an earlier chapter save wrote,
+  so repeated edits do not grow the file. A save that leaves the list alone keeps the chapter bytes.
 
 ### Fixed
 

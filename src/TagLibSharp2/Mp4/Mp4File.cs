@@ -674,15 +674,20 @@ public sealed class Mp4File : IMediaFile
 	/// written: <c>chpl</c> gets the first 255 chapters with titles cut to 255 UTF-8 bytes, and the chapter
 	/// track gets every chapter. An existing chapter track is replaced under its track_ID; otherwise a new
 	/// disabled text track is added and every sound and video track references it (except a track that is
-	/// itself chapter media, such as Apple chapter images). The track's first sample
-	/// starts at zero, as a QuickTime chapter list covers the whole timeline. The new samples go in their own
-	/// <c>mdat</c> right after <c>moov</c>, and every chunk offset after it moves in the same update that a tag
-	/// edit makes. The old chapter samples stay in the file unreferenced. No track is added to a fragmented
-	/// movie or to a file with no track; <c>chpl</c> carries the list alone there.
+	/// itself chapter media, such as Apple chapter images). The track's first sample starts at zero, as a
+	/// QuickTime chapter list covers the whole timeline.
 	/// </para>
 	/// <para>
-	/// An empty list removes <c>chpl</c>, every text track a <c>chap</c> reference names, and those references. A save that leaves the list
-	/// as read, or sets it to the list the file already holds, keeps the chapter bytes unchanged.
+	/// The new samples go in their own <c>mdat</c> right after <c>moov</c>, and every chunk offset after it
+	/// moves in the same update that a tag edit makes. That <c>mdat</c> replaces the one an earlier chapter save
+	/// wrote, so repeated edits do not grow the file. Old chapter samples that share an <c>mdat</c> with other
+	/// media stay there unreferenced. No track is added to a fragmented movie or to a file with no track;
+	/// <c>chpl</c> carries the list alone there.
+	/// </para>
+	/// <para>
+	/// An empty list removes <c>chpl</c>, every text track a <c>chap</c> reference names, and those
+	/// references. A save that leaves the list as read, or sets it to the list the file already holds, keeps
+	/// the chapter bytes unchanged.
 	/// </para>
 	/// </remarks>
 	/// <exception cref="ArgumentException">The list contains a null chapter.</exception>
@@ -1384,8 +1389,12 @@ public sealed class Mp4File : IMediaFile
 		var chapterData = chapterPlan is null || chapterPlan.TrackId == 0
 			? BinaryData.Empty
 			: WrapBox ("mdat", new BinaryData (chapterPlan.SampleData));
-		var delta = newMoov.Length + chapterData.Length - oldMoovLength;
-		var oldMoovEnd = oldMoovStart + oldMoovLength;
+		// The mdat an earlier chapter save wrote sits right after moov and holds only the samples this save
+		// replaces. It goes, so repeated chapter edits do not leave a dead copy each time.
+		var droppedIndex = FindReplacedChapterData (boxes, moovIndex, chapterPlan);
+		var replacedLength = oldMoovLength + (droppedIndex < 0 ? 0 : boxes[droppedIndex].Length);
+		var delta = newMoov.Length + chapterData.Length - replacedLength;
+		var oldMoovEnd = oldMoovStart + replacedLength;
 		// Offsets are absolute file positions. Anything at or after the old moov moves with it,
 		// including media that is not stored in a box named mdat. Entries inside moov stay put.
 		if (delta != 0)
@@ -1405,6 +1414,8 @@ public sealed class Mp4File : IMediaFile
 			if (i == moovIndex) {
 				builder.Add (newMoov);
 				builder.Add (chapterData);
+			} else if (i == droppedIndex) {
+				continue;
 			} else {
 				var (box, start, length) = boxes[i];
 				var slice = originalData.Slice (start, length);
@@ -2084,6 +2095,26 @@ public sealed class Mp4File : IMediaFile
 
 			return !External[dataReference - 1];
 		}
+	}
+
+	/// <summary>
+	/// The index of the top-level mdat right after moov when it holds only the old samples of the chapter
+	/// tracks <paramref name="plan"/> replaces, or -1. An mdat whose old chapter samples share it with other
+	/// media is kept, and those samples stay in the file unreferenced.
+	/// </summary>
+	static int FindReplacedChapterData (
+		List<(Mp4Box Box, int Start, int Length)> boxes,
+		int moovIndex,
+		Mp4ChapterCodec.ChapterPlan? plan)
+	{
+		var next = moovIndex + 1;
+		if (plan is null || next >= boxes.Count || boxes[next].Box.Type != "mdat")
+			return -1;
+
+		var (box, start, length) = boxes[next];
+		var header = box.UsesExtendedSize ? Mp4Box.ExtendedHeaderSize : Mp4Box.HeaderSize;
+		var moov = boxes[moovIndex].Box;
+		return Mp4ChapterCodec.HoldsOnlyReplacedSamples (moov, plan, start, start + header, start + length) ? next : -1;
 	}
 
 	/// <summary>

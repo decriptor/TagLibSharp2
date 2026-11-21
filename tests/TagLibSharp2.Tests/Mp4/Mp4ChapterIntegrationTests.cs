@@ -71,6 +71,35 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 	}
 
 	[TestMethod]
+	public void RealFile_FiveChapterEdits_KeepTheSizeOfTheFirst ()
+	{
+		var (data, _) = Open ();
+		var before = SampleHashes (data);
+		var sizes = new List<int> ();
+		var current = data;
+		for (var round = 1; round <= 5; round++) {
+			var file = Mp4File.Read (current).File!;
+			file.Chapters = [
+				new (TimeSpan.Zero, $"Opening {round}"),
+				new (TimeSpan.FromSeconds (2 + (round % 2)), $"Middle {round}"),
+				new (TimeSpan.FromSeconds (4.5), $"Closing {round}"),
+			];
+			current = file.Render (current).ToArray ();
+			sizes.Add (current.Length);
+			Assert.AreEqual ($"Middle {round}", Mp4File.Read (current).File!.Chapters[1].Title);
+		}
+
+		Console.WriteLine ($"sizes: {data.Length} -> {string.Join (", ", sizes)}");
+		Assert.IsTrue (sizes.All (size => size == sizes[0]), string.Join (", ", sizes));
+		var after = SampleHashes (current);
+		var chapterTrack = Mp4ChapterCodec.FindChapterTrack (Mp4ChapterTestBuilder.Moov (current))!.Id;
+		foreach (var (id, hash) in before) {
+			if (id != chapterTrack && after.TryGetValue (id, out var now))
+				Assert.AreEqual (hash, now, $"track {id} samples unchanged");
+		}
+	}
+
+	[TestMethod]
 	public void RealFile_ClearChapters_RemovesBothForms ()
 	{
 		var (data, file) = Open ();
