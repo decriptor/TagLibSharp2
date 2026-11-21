@@ -141,7 +141,7 @@ public partial class MatroskaFileTests
 		var parsed = MatroskaFile.Read (file).File!;
 
 		Assert.AreEqual (MatroskaFile.MaxTracks, parsed.Tracks.Count);
-		Assert.IsTrue (parsed.TracksTruncated);
+		Assert.IsTrue (parsed.IsTrackListTruncated);
 		Assert.IsFalse (parsed.Tracks[0].IsEnabled);
 		Assert.AreEqual (48000, ((IMediaFile)parsed).AudioProperties!.SampleRate);
 	}
@@ -161,8 +161,8 @@ public partial class MatroskaFileTests
 		var parsed = MatroskaFile.Read (file).File!;
 
 		Assert.AreEqual (MatroskaFile.MaxTracks, parsed.Tracks.Count);
-		Assert.IsFalse (parsed.TracksTruncated);
-		Assert.IsFalse (MatroskaFile.Read (TracksFile (AudioEntry (1, 22050), withVoid: 0)).File!.TracksTruncated);
+		Assert.IsFalse (parsed.IsTrackListTruncated);
+		Assert.IsFalse (MatroskaFile.Read (TracksFile (AudioEntry (1, 22050), withVoid: 0)).File!.IsTrackListTruncated);
 	}
 
 	[TestMethod]
