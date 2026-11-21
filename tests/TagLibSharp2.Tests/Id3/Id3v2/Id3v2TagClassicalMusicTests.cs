@@ -204,11 +204,14 @@ public sealed class Id3v2TagClassicalMusicTests
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		var tag = result.Tag!;
 
+		Assert.IsNull (tag.GetUserText ("MOVEMENTNUMBER"));
+
 		tag.MovementTotal = null;
 
 		Assert.AreEqual (2u, tag.MovementNumber);
 		Assert.IsNull (tag.MovementTotal);
 		Assert.AreEqual ("2", tag.GetTextFrame ("MVIN"));
+		Assert.AreEqual ("2", tag.GetUserText ("MOVEMENTNUMBER"));
 
 		var reparsed = Id3v2Tag.Read (tag.Render ().Span);
 		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
