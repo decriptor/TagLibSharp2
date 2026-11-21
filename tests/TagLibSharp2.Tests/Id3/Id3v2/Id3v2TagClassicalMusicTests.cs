@@ -155,18 +155,65 @@ public sealed class Id3v2TagClassicalMusicTests
 		Assert.AreEqual (9u, indexed.Tag.MovementNumber);
 		Assert.AreEqual (4u, indexed.Tag.MovementTotal);
 
-		indexed.Tag.MovementTotal = 9;
+		indexed.Tag.MovementTotal = 12;
 		Assert.AreEqual (9u, indexed.Tag.MovementNumber);
-		Assert.AreEqual (9u, indexed.Tag.MovementTotal);
+		Assert.AreEqual (12u, indexed.Tag.MovementTotal);
+		Assert.AreEqual ("9/12", indexed.Tag.GetTextFrame ("MVIN"));
 
 		indexed.Tag.MovementNumber = null;
 		Assert.IsNull (indexed.Tag.MovementNumber);
-		Assert.AreEqual (9u, indexed.Tag.MovementTotal);
+		Assert.AreEqual (12u, indexed.Tag.MovementTotal);
 
 		indexed.Tag.MovementTotal = null;
 		Assert.IsNull (indexed.Tag.MovementNumber);
 		Assert.IsNull (indexed.Tag.MovementTotal);
 		Assert.IsNull (indexed.Tag.GetTextFrame ("MVIN"));
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version3)]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	public void MovementNumber_ClearFromIndexOnly_KeepsTotalFromIndex (byte version)
+	{
+		// MVIN alone holds both halves. Clearing the number removes MVIN, so the total
+		// must be written to TXXX:MOVEMENTTOTAL first or it is lost.
+		var result = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("MVIN", "1/4", version));
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		var tag = result.Tag!;
+		Assert.IsNull (tag.GetUserText ("MOVEMENTTOTAL"));
+
+		tag.MovementNumber = null;
+
+		Assert.IsNull (tag.MovementNumber);
+		Assert.AreEqual (4u, tag.MovementTotal);
+		Assert.IsNull (tag.GetTextFrame ("MVIN"));
+		Assert.AreEqual ("4", tag.GetUserText ("MOVEMENTTOTAL"));
+
+		var reparsed = Id3v2Tag.Read (tag.Render ().Span);
+		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
+		Assert.IsNull (reparsed.Tag!.MovementNumber);
+		Assert.AreEqual (4u, reparsed.Tag.MovementTotal);
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version3)]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	public void MovementTotal_ClearFromIndexOnly_KeepsNumberFromIndex (byte version)
+	{
+		var result = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("MVIN", "2/5", version));
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		var tag = result.Tag!;
+
+		tag.MovementTotal = null;
+
+		Assert.AreEqual (2u, tag.MovementNumber);
+		Assert.IsNull (tag.MovementTotal);
+		Assert.AreEqual ("2", tag.GetTextFrame ("MVIN"));
+
+		var reparsed = Id3v2Tag.Read (tag.Render ().Span);
+		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
+		Assert.AreEqual (2u, reparsed.Tag!.MovementNumber);
+		Assert.IsNull (reparsed.Tag.MovementTotal);
 	}
 
 	[TestMethod]
