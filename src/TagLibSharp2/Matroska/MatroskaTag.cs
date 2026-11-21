@@ -321,12 +321,19 @@ public sealed class MatroskaTag : Tag
 	/// <para>
 	/// Setting this property makes the next save rewrite the image attachments. An attachment that
 	/// matches a picture by media type, type, description and bytes keeps its <c>FileName</c>,
-	/// <c>FileUID</c> and element bytes, and its place in storage order. A removed picture removes only
-	/// its attachment. A new front cover is named <c>cover.jpg</c> or <c>cover.png</c> after its media
-	/// type and goes first, as the cover art guidance asks. Another new picture is named after its
-	/// type, such as <c>back.jpg</c> or <c>artist.png</c>, and goes after the existing attachments.
-	/// The description is written to <c>FileDescription</c>. Reading maps those names back to the
-	/// picture type.
+	/// <c>FileUID</c> and element bytes, and its place in storage order. The match uses the media type
+	/// as stored, so every picture read from the file matches its own attachment. A removed picture
+	/// removes only its attachment. <see cref="Clear"/> removes every picture, so the next save
+	/// removes the image attachments too.
+	/// </para>
+	/// <para>
+	/// A new front cover is named <c>cover.jpg</c> or <c>cover.png</c> after its media type; another
+	/// image type keeps its own extension, such as <c>cover.gif</c>. It goes first, as the cover art
+	/// guidance asks, unless the file keeps a front cover, which stays first. Another new picture is
+	/// named after its type, such as <c>back.jpg</c> or <c>artist.png</c>, and goes after the existing
+	/// attachments. The description is written to <c>FileDescription</c>, and reading maps those names
+	/// back to the picture type. A new <c>FileUID</c> is random, nonzero and unlike every
+	/// <c>FileUID</c> in the file.
 	/// </para>
 	/// <para>
 	/// A picture must have an <c>image/</c> media type; an empty one is detected from the bytes.
