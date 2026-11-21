@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Text;
 using TagLibSharp2.Core;
 using TagLibSharp2.Matroska;
 using TagLibSharp2.Tests.Core;
@@ -317,6 +318,109 @@ public partial class MatroskaFileTests
 
 		Assert.AreEqual ("band", target.AlbumArtistSort);
 		Assert.AreEqual ("bach", target.ComposerSort);
+	}
+
+	// The real-file round trip in MatroskaIntegrationTests, run on built files so CI covers it.
+	static readonly byte[] SortClusterMarker = [0x5A, 0xA5, 0x5A, 0xA5, 0x5A];
+
+	static byte[] NestedSortFile () => FileWith (
+		Tags (
+			Tag (50, Simple ("TITLE", "The Album"), SimpleSorted ("ARTIST", "The Band", "band")),
+			Tag (30,
+				Simple ("TITLE", "The Song"),
+				SimpleSorted ("ARTIST", "Ada", "ada"),
+				SimpleSorted ("COMPOSER", "Bach", "bach"))),
+		Master (0x1F43B675, SortClusterMarker));
+
+	static byte[] FlatSortFile () => FileWith (
+		Tags (
+			Tag (50, Simple ("TITLE", "The Album"), Simple ("ARTIST", "The Band"), Simple ("ALBUM_ARTIST_SORT", "band")),
+			Tag (30, Simple ("TITLE", "The Song"), Simple ("COMPOSER", "Bach"), Simple ("COMPOSER_SORT", "bach"))),
+		Master (0x1F43B675, SortClusterMarker));
+
+	static void AssertNestedSortSaved (byte[] saved)
+	{
+		Assert.AreEqual (1, CountOf (saved, SortClusterMarker));
+		Assert.AreEqual (0, CountOf (saved, "ALBUM_ARTIST_SORT"u8.ToArray ()));
+		Assert.AreEqual (0, CountOf (saved, "COMPOSER_SORT"u8.ToArray ()));
+		Assert.AreEqual (3, CountOf (saved, "SORT_WITH"u8.ToArray ()));
+		Assert.AreEqual (1, CountOf (saved, Encoding.UTF8.GetBytes (MatroskaSortRoundTrip.AlbumArtistSort)));
+		Assert.AreEqual (1, CountOf (saved, Encoding.UTF8.GetBytes (MatroskaSortRoundTrip.ComposerSort)));
+		Assert.AreEqual (1, CountOf (saved, "ada"u8.ToArray ()));
+	}
+
+	static void AssertFlatSortSaved (byte[] saved)
+	{
+		Assert.AreEqual (1, CountOf (saved, SortClusterMarker));
+		Assert.AreEqual (1, CountOf (saved, "ALBUM_ARTIST_SORT"u8.ToArray ()));
+		Assert.AreEqual (1, CountOf (saved, "COMPOSER_SORT"u8.ToArray ()));
+		Assert.AreEqual (0, CountOf (saved, "SORT_WITH"u8.ToArray ()));
+		Assert.AreEqual (1, CountOf (saved, Encoding.UTF8.GetBytes (MatroskaSortRoundTrip.AlbumArtistSort)));
+		Assert.AreEqual (1, CountOf (saved, Encoding.UTF8.GetBytes (MatroskaSortRoundTrip.ComposerSort)));
+	}
+
+	static string WriteTempMatroska (byte[] data)
+	{
+		var path = Path.Combine (Path.GetTempPath (), $"taglibsharp2-built-{Guid.NewGuid ():N}.mkv");
+		File.WriteAllBytes (path, data);
+		return path;
+	}
+
+	[TestMethod]
+	public void RoundTrip_NestedSortWith_OnDisk ()
+	{
+		var path = WriteTempMatroska (NestedSortFile ());
+		try {
+			MatroskaSortRoundTrip.VerifyOnCopy (path, AssertNestedSortSaved);
+		} finally {
+			File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public async Task RoundTrip_NestedSortWith_OnDiskAsync ()
+	{
+		var path = WriteTempMatroska (NestedSortFile ());
+		try {
+			await MatroskaSortRoundTrip.VerifyOnCopyAsync (path, AssertNestedSortSaved);
+		} finally {
+			File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public void RoundTrip_FlatSortNames_OnDisk ()
+	{
+		var path = WriteTempMatroska (FlatSortFile ());
+		try {
+			MatroskaSortRoundTrip.VerifyOnCopy (path, AssertFlatSortSaved);
+		} finally {
+			File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public async Task RoundTrip_FlatSortNames_OnDiskAsync ()
+	{
+		var path = WriteTempMatroska (FlatSortFile ());
+		try {
+			await MatroskaSortRoundTrip.VerifyOnCopyAsync (path, AssertFlatSortSaved);
+		} finally {
+			File.Delete (path);
+		}
+	}
+
+	[TestMethod]
+	public void RoundTrip_WithoutParents_OnDisk ()
+	{
+		var path = WriteTempMatroska (FileWith (
+			Tags (Tag (30, Simple ("TITLE", "The Song"))),
+			Master (0x1F43B675, SortClusterMarker)));
+		try {
+			MatroskaSortRoundTrip.VerifyOnCopy (path, AssertFlatSortSaved);
+		} finally {
+			File.Delete (path);
+		}
 	}
 
 	static MatroskaFile SaveAndRead (MatroskaFile parsed, byte[] original)
