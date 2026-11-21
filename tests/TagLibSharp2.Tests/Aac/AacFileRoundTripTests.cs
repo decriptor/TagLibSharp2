@@ -118,6 +118,62 @@ public class AacFileRoundTripTests
 		CollectionAssert.AreEqual (original, saved);
 	}
 
+	static bool HasApeHeader (byte[] saved)
+	{
+		var at = IndexOf (saved, "APETAGEX"u8.ToArray ());
+		if (at < 0)
+			return false;
+		// A header has bit 29 set (the structure is the header) and bit 31 (a header is present).
+		var flags = BitConverter.ToUInt32 (saved, at + 20);
+		return (flags & 0xA0000000) == 0xA0000000;
+	}
+
+	[TestMethod]
+	public void Save_ApeTagWithAHeader_KeepsTheHeader ()
+	{
+		// ffmpeg -write_apetag 1 writes a header and a footer. Some readers need the header.
+		var frames = Frames ();
+		var ape = new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ();
+		var original = Concat (frames, ape);
+		Assert.IsTrue (HasApeHeader (original));
+		var file = Open (original);
+
+		file.Tag!.Title = "Edited";
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsTrue (HasApeHeader (saved), "the APEv2 header was dropped");
+		Assert.AreEqual ("Edited", Open (saved).ApeTag!.Title);
+		AssertFramesKept (saved, frames);
+		CollectionAssert.AreEqual (original, Open (original).Render (original).ToArray (), "an unchanged save must reproduce the tag");
+	}
+
+	[TestMethod]
+	public void Save_NewApeTag_WritesAHeader ()
+	{
+		var frames = Frames ();
+		var file = Open (frames);
+
+		file.ApeTag = new TagLibSharp2.Ape.ApeTag { Title = "New" };
+		var saved = file.Render (frames).ToArray ();
+
+		Assert.IsTrue (HasApeHeader (saved));
+		Assert.AreEqual ("New", Open (saved).ApeTag!.Title);
+	}
+
+	[TestMethod]
+	public void Save_FooterOnlyApeTag_StaysFooterOnly ()
+	{
+		var frames = Frames ();
+		var original = Concat (frames, ApeBytes ("Ape"));
+		var file = Open (original);
+
+		file.Tag!.Title = "Edited";
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsFalse (HasApeHeader (saved));
+		Assert.AreEqual ("Edited", Open (saved).ApeTag!.Title);
+	}
+
 	[TestMethod]
 	public void Save_UnreadableId3v2_KeepsItsBytesAsData ()
 	{
