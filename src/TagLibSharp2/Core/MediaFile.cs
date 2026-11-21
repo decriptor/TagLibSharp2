@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Buffers.Binary;
+using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
@@ -39,6 +40,7 @@ namespace TagLibSharp2.Core;
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
 /// <item>Matroska/WebM (Matroska tags)</item>
 /// <item>MPEG program streams and MPEG video elementary streams (ID3v2, ID3v1)</item>
+/// <item>AAC (raw ADTS or ADIF - ID3v2, APEv2, ID3v1)</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -320,12 +322,12 @@ public static class MediaFile
 		if (IsRiffWave (peek))
 			return RiffDataStartsWithWavPack (stream) ? MediaFormat.WavPack : MediaFormat.Wav;
 
-		// The peek holds the ID3v2 header but not what follows the tag.
-		// A program stream behind the tag is not MP3.
-		var format = DetectFormat (peek, pathHint);
-		if (format == MediaFormat.Mp3 && StartsWithId3 (peek) && MpegPsFile.StartsAfterId3v2 (stream))
+		// The peek holds the ID3v2 header but not what follows the tag. A program stream behind the
+		// tag is MPEG-PS, checked first: its PES packets may carry ADTS audio, which is not a raw AAC file.
+		if (StartsWithId3 (peek) && MpegPsFile.StartsAfterId3v2 (stream))
 			return MediaFormat.MpegPs;
-		return format;
+
+		return DetectFormat (peek, pathHint, stream);
 	}
 
 	static bool StartsWithId3 (ReadOnlySpan<byte> data) =>
@@ -431,6 +433,7 @@ public static class MediaFile
 			MediaFormat.Dff => FromDff (DffFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Asf => FromAsf (AsfFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.MpegPs => FromMpegPs (MpegPsFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Aac => FromAac (AacFile.Read (stream, sourcePath, fileSystem)),
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
@@ -547,6 +550,13 @@ public static class MediaFile
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.MpegPs);
 	}
 
+	static MediaFileResult FromAac (AacFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse AAC file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Aac);
+	}
+
 	static MediaFileResult FromWav (WavFileReadResult result)
 	{
 		if (!result.IsSuccess || result.File is null)
@@ -588,6 +598,7 @@ public static class MediaFile
 			MediaFormat.Musepack => OpenMusepack (data),
 			MediaFormat.Matroska => OpenMatroska (data),
 			MediaFormat.MpegPs => FromMpegPs (MpegPsFile.Read (data.Span)),
+			MediaFormat.Aac => FromAac (AacFile.Read (data)),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 
@@ -600,7 +611,12 @@ public static class MediaFile
 	/// <param name="data">The file data (at least first 12 bytes).</param>
 	/// <param name="pathHint">Optional file path for extension fallback.</param>
 	/// <returns>The detected format.</returns>
-	public static MediaFormat DetectFormat (ReadOnlySpan<byte> data, string? pathHint = null)
+	public static MediaFormat DetectFormat (ReadOnlySpan<byte> data, string? pathHint = null) =>
+		DetectFormat (data, pathHint, stream: null);
+
+	// A seekable stream answers the AAC question from the whole file. The peek alone holds
+	// neither the bytes after a long ID3v2 tag nor the header after the first ADTS frame.
+	static MediaFormat DetectFormat (ReadOnlySpan<byte> data, string? pathHint, Stream? stream)
 	{
 		// Check magic bytes first
 		if (data.Length >= 4) {
@@ -683,11 +699,17 @@ public static class MediaFile
 		if (data.Length >= 16 && data.Slice (0, 16).SequenceEqual (AsfMagic))
 			return MediaFormat.Asf;
 
-		if (data.Length >= 3) {
-			// ID3v2: starts with "ID3". A program stream may follow the tag instead of MPEG audio.
-			if (data[0] == Id3Magic[0] && data[1] == Id3Magic[1] && data[2] == Id3Magic[2])
-				return MpegPsFile.IsValidFormat (data) ? MediaFormat.MpegPs : MediaFormat.Mp3;
+		// ID3v2: starts with "ID3". The stream after the tag decides: a program stream is MPEG-PS; an ADTS
+		// sync (layer '00') or "ADIF" is AAC (ISO/IEC 13818-7 §6.1, §6.2). Anything else stays MP3.
+		if (data.Length >= 3 && data[0] == Id3Magic[0] && data[1] == Id3Magic[1] && data[2] == Id3Magic[2]) {
+			if (MpegPsFile.IsValidFormat (data))
+				return MediaFormat.MpegPs;
+			return IsAac (data, stream) ? MediaFormat.Aac : MediaFormat.Mp3;
 		}
+
+		// Bare ADTS or ADIF. An MPEG audio sync has layer bits other than '00' and falls through.
+		if (IsAac (data, stream))
+			return MediaFormat.Aac;
 
 		// A bare sync (0xFF plus the top 3 bits) also matches a UTF-16 LE BOM (FF FE).
 		if (MpegFrame.IsStartOfAudio (data))
@@ -713,12 +735,16 @@ public static class MediaFile
 				".MPC" or ".MP+" or ".MPP" => MediaFormat.Musepack,
 				".MKV" or ".MKA" or ".MKS" or ".MK3D" or ".WEBM" => MediaFormat.Matroska,
 				".MPG" or ".MPEG" or ".MPE" or ".VOB" or ".MPV" or ".M1V" or ".M2V" => MediaFormat.MpegPs,
+				".AAC" => MediaFormat.Aac,
 				_ => MediaFormat.Unknown
 			};
 		}
 
 		return MediaFormat.Unknown;
 	}
+
+	static bool IsAac (ReadOnlySpan<byte> data, Stream? stream) =>
+		stream is null ? AacFile.IsValidFormat (data) : AacFile.IsValidFormat (stream);
 
 	/// <summary>
 	/// Detects the specific codec inside an Ogg container by examining the first packet.
@@ -1062,5 +1088,10 @@ public enum MediaFormat
 	/// MPEG-1 and MPEG-2 program streams (.mpg, .mpeg, .mpe, .vob) and MPEG video elementary
 	/// streams (.mpv, .m1v, .m2v).
 	/// </summary>
-	MpegPs
+	MpegPs,
+
+	/// <summary>
+	/// Raw AAC in an ADTS or ADIF stream (.aac). AAC inside MP4 is <see cref="Mp4"/>.
+	/// </summary>
+	Aac
 }
