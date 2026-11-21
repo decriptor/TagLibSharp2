@@ -245,7 +245,7 @@ public sealed class ApeTag : Tag
 			return string.IsNullOrEmpty (date) ? year ?? date : date;
 		}
 		set {
-			if (IsUnchanged (value, Year))
+			if (IsWriteBack (value, Year))
 				return;
 
 			if (string.IsNullOrEmpty (value)) {
@@ -920,20 +920,15 @@ public sealed class ApeTag : Tag
 	/// <summary>
 	/// Writes a single-value property. Writing back the value its getter returned is a no-op, so a
 	/// text item that holds several values (APEv2 items separate them with a zero byte), an empty item,
-	/// or the alias item the getter read stays as it is. Any other value goes through <see cref="SetOrRemove"/>.
+	/// or the alias item the getter read stays as it is (<see cref="Tag.IsWriteBack(string?, string?)"/>).
+	/// Any other value goes through <see cref="SetOrRemove"/>. The getters skip empty values, so they return ""
+	/// only when no value holds text, and "" over a list with text is not a write-back.
 	/// </summary>
 	void SetOrRemoveProperty (string key, string? value, string? current, string? alias = null)
 	{
-		if (!IsUnchanged (value, current))
+		if (!IsWriteBack (value, current))
 			SetOrRemove (key, value, alias);
 	}
-
-	/// <summary>
-	/// True when <paramref name="value"/> is exactly what the getter returned, including an empty string.
-	/// A null value is always a clear.
-	/// </summary>
-	static bool IsUnchanged (string? value, string? current) =>
-		value is not null && string.Equals (value, current, StringComparison.Ordinal);
 
 	/// <summary>
 	/// Removes an item by key.

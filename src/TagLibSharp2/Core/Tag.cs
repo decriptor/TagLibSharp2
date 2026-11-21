@@ -80,6 +80,23 @@ public enum TagTypes
 /// </summary>
 public abstract class Tag
 {
+	[ThreadStatic]
+	static int t_copyDepth;
+
+	/// <summary>
+	/// True when a setter is handed exactly the value its getter returned, compared ordinally, as when an
+	/// editor writes back what it read. The setter then leaves the tag alone, so the other values of a
+	/// multi-value field and any fallback field stay. Never true for null, which always clears, or while
+	/// <see cref="CopyTo"/> runs on this thread: a copy replaces the target's value even when it equals the
+	/// target's first value.
+	/// </summary>
+	internal static bool IsWriteBack (string? value, string? current) =>
+		t_copyDepth == 0 && value is not null && string.Equals (value, current, StringComparison.Ordinal);
+
+	/// <inheritdoc cref="IsWriteBack(string?, string?)"/>
+	internal static bool IsWriteBack (uint? value, uint? current) =>
+		t_copyDepth == 0 && value is not null && value == current;
+
 	/// <summary>
 	/// Gets the type of tag represented by this instance.
 	/// </summary>
@@ -102,7 +119,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// <para>This returns the first performer. For multiple performers, use <see cref="Performers"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.</para>
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.</para>
 	/// <para>Format-specific limitations:</para>
 	/// <list type="bullet">
 	/// <item><description>ID3v1: Truncated to 30 bytes. Latin-1 encoding only (Unicode characters are lost).</description></item>
@@ -199,7 +216,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// <para>This returns the first genre. For multiple genres, use <see cref="Genres"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.</para>
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.</para>
 	/// <para>Format-specific limitations:</para>
 	/// <list type="bullet">
 	/// <item><description>ID3v1: Single genre only, must match one of 192 predefined genres. Custom genres not supported.</description></item>
@@ -246,7 +263,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// This returns the first album artist. For multiple album artists, use <see cref="AlbumArtists"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </remarks>
 	public virtual string? AlbumArtist { get => null; set { } }
@@ -285,7 +302,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// This returns the first composer. For multiple composers, use <see cref="Composers"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value replaces the list.
+	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </remarks>
 	public virtual string? Composer { get => null; set { } }
@@ -1162,7 +1179,9 @@ public abstract class Tag
 	/// <remarks>
 	/// <para>
 	/// Only non-null values are copied. The target tag's existing values are overwritten
-	/// for any property that has a non-null value in the source.
+	/// for any property that has a non-null value in the source. A source value that equals the
+	/// target's first value still replaces the target's list: the setters' write-back no-op does not
+	/// apply during a copy.
 	/// </para>
 	/// <para>
 	/// This is useful for converting between tag formats or synchronizing metadata
@@ -1200,6 +1219,18 @@ public abstract class Tag
 		ArgumentNullException.ThrowIfNull (target);
 #endif
 
+		// A copy makes the target hold the source's value, so the write-back no-op in the setters
+		// (IsWriteBack) is off for the duration, also for tags a wrapper target forwards to.
+		t_copyDepth++;
+		try {
+			CopyValuesTo (target, options);
+		} finally {
+			t_copyDepth--;
+		}
+	}
+
+	void CopyValuesTo (Tag target, TagCopyOptions options)
+	{
 		// Basic metadata (always copied unless explicitly excluded)
 		if ((options & TagCopyOptions.Basic) != 0) {
 			if (Title is not null)

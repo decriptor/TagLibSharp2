@@ -65,7 +65,7 @@ public class Id3v2WriteBackTests
 	[DataRow (Id3v2Version.V24, "V1\0V2")]
 	[DataRow (Id3v2Version.V23, "\0V2")]
 	[DataRow (Id3v2Version.V24, "\0V2")]
-	public void EveryStringProperty_UnchangedWriteBack_KeepsEveryValue (Id3v2Version version, string raw)
+	public void EveryStringProperty_UnchangedWriteBack_KeepsEveryValue_AndAnEditReplaces (Id3v2Version version, string raw)
 	{
 		var covered = new List<string> ();
 		var failures = new List<string> ();
@@ -76,17 +76,118 @@ public class Id3v2WriteBackTests
 			covered.Add (property.Name);
 
 			var before = Snapshot (tag);
-			property.SetValue (tag, property.GetValue (tag));
+			var read = (string?)property.GetValue (tag);
+			property.SetValue (tag, read);
 			var after = Snapshot (Reparse (tag));
 
-			if (!before.SequenceEqual (after))
+			// "" is a write-back only when no value holds text: the getter reports an empty first
+			// value as "", and "" over a list with text clears it, as in APE.
+			var clears = read == "" && before.Any (r => r.Contains ("V2", StringComparison.Ordinal));
+			if (clears ? after.Any (r => r.Contains ("V2", StringComparison.Ordinal)) : !before.SequenceEqual (after))
 				failures.Add ($"{property.Name}: [{string.Join (" | ", before)}] -> [{string.Join (" | ", after)}]");
+
+			// A case-only edit, or "" over a list whose later values hold text, is not a write-back.
+			var current = (string?)property.GetValue (tag);
+			var edit = string.IsNullOrEmpty (current) ? "" : current!.ToLowerInvariant ();
+			property.SetValue (tag, edit);
+			var edited = Snapshot (Reparse (tag));
+			if (edited.Any (r => r.Contains ("V2", StringComparison.Ordinal)) || (edit.Length != 0 && !Equals (property.GetValue (tag), edit)))
+				failures.Add ($"{property.Name} edit {edit}: [{string.Join (" | ", edited)}]");
 		}
 
 		Assert.IsEmpty (failures, string.Join ("\n", failures).Replace ("\0", "\\0", StringComparison.Ordinal));
 		foreach (var name in ListFields)
 			Assert.Contains (name, covered);
 		Assert.IsGreaterThanOrEqualTo (45, covered.Count, string.Join (",", covered));
+	}
+
+	/// <summary>
+	/// Values a property may need before its getter reads them back: a name, a year, a date, a URL, an identifier.
+	/// </summary>
+	static readonly string[] Candidates = ["V1", "2001", "2001-05-03", "http://example.com/feed", "b10b5bd8-0000-4000-8000-000000000001"];
+
+	/// <summary>
+	/// COMM and USLT can hold several frames that differ by language and description; their single-value
+	/// setters replace that set and are outside the write-back rule.
+	/// </summary>
+	static readonly string[] NotWriteBackSafe = ["Comment", "Lyrics"];
+
+	[TestMethod]
+	[DataRow (Id3v2Version.V23)]
+	[DataRow (Id3v2Version.V24)]
+	public void EveryStringProperty_WriteBackOfTheValueRead_IsByteIdentical (Id3v2Version version)
+	{
+		var failures = new List<string> ();
+		var uncovered = new List<string> ();
+		foreach (var property in StringProperties ()) {
+			Id3v2Tag? tag = null;
+			foreach (var candidate in Candidates) {
+				var probe = new Id3v2Tag (version);
+				property.SetValue (probe, candidate);
+				// A later frame, so a setter that rewrites its frame moves it and changes the bytes.
+				probe.SetTextFrameValues (property.Name == "Album" ? "TIT2" : "TALB", ["after"]);
+				probe = Reparse (probe);
+				if (Equals (property.GetValue (probe), candidate)) {
+					tag = probe;
+					break;
+				}
+			}
+			if (tag is null) {
+				uncovered.Add (property.Name);
+				continue;
+			}
+			if (NotWriteBackSafe.Contains (property.Name))
+				continue;
+
+			var before = tag.Render ().ToArray ();
+			property.SetValue (tag, property.GetValue (tag));
+			if (!before.AsSpan ().SequenceEqual (tag.Render ().Span))
+				failures.Add (property.Name);
+		}
+
+		Assert.IsEmpty (failures, string.Join (",", failures));
+		Assert.IsEmpty (uncovered, string.Join (",", uncovered));
+	}
+
+	[TestMethod]
+	public void Year_V23WriteBack_KeepsTheOriginalEncoding ()
+	{
+		var result = Id3v2Tag.Read (TestBuilders.Id3v2.CreateTagWithTextFrame ("TYER", "2001", TestConstants.Id3v2.Version3));
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		var tag = result.Tag!;
+		var before = tag.Render ().ToArray ();
+
+		tag.Year = tag.Year;
+
+		CollectionAssert.AreEqual (before, tag.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	[DataRow (Id3v2Version.V23)]
+	[DataRow (Id3v2Version.V24)]
+	public void EmptyString_OverAListWithText_ClearsIt (Id3v2Version version)
+	{
+		var tag = new Id3v2Tag (version);
+		tag.Artist = "x";
+		tag.Genre = "x";
+		tag.Movement = "x";
+		foreach (var f in tag.Frames)
+			f.Text = "\0V2";
+		foreach (var f in tag.UserTextFrames)
+			f.Value = "\0V2";
+		tag = Reparse (tag);
+		Assert.AreEqual ("", tag.Artist);
+		Assert.AreEqual ("", tag.Genre);
+		Assert.AreEqual ("", tag.Movement);
+
+		tag.Artist = "";
+		tag.Genre = "";
+		tag.Movement = "";
+
+		Assert.IsNull (tag.GetTextFrame ("TPE1"));
+		Assert.IsNull (tag.GetTextFrame ("TCON"));
+		Assert.IsNull (tag.GetTextFrame ("MVNM"));
+		Assert.IsNull (tag.GetUserText ("MOVEMENT"));
 	}
 
 	[TestMethod]
@@ -187,18 +288,23 @@ public class Id3v2WriteBackTests
 	}
 
 	[TestMethod]
-	[DataRow ("\0Pop")]
-	[DataRow ("")]
-	public void Genre_EmptyFirstValue_ReadsEmptyAndWriteBackKeepsFrame (string raw)
+	public void Genre_EmptyFirstValue_ReadsEmpty ()
 	{
+		// An empty first value reads "", like every other text frame. Writing "" back keeps a frame
+		// whose values are all empty and clears one whose later values hold text.
 		var tag = new Id3v2Tag (Id3v2Version.V24);
 		tag.Genre = "Rock";
-		tag.Frames.First (f => f.Id == "TCON").Text = raw;
-
+		tag.Frames.First (f => f.Id == "TCON").Text = "";
 		Assert.AreEqual ("", tag.Genre);
 		tag.Genre = tag.Genre;
-		Assert.AreEqual (raw, tag.Frames.First (f => f.Id == "TCON").Text);
+		Assert.AreEqual ("", tag.Frames.First (f => f.Id == "TCON").Text);
 
+		tag.Frames.First (f => f.Id == "TCON").Text = "\0Pop";
+		Assert.AreEqual ("", tag.Genre);
+		tag.Genre = tag.Genre;
+		Assert.IsNull (tag.GetTextFrame ("TCON"));
+
+		tag.Genre = "Rock";
 		tag.Genre = null;
 		Assert.IsNull (tag.GetTextFrame ("TCON"));
 	}
