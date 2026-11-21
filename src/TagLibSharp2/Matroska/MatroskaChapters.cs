@@ -162,9 +162,9 @@ public sealed class MatroskaChapters
 	internal bool IsModified {
 		get {
 			// A Chapters element with only a Void or other unmodelled children has nothing to compare, so Clear says it.
-			var modified = !SameItems (_editions, _readEditions) || _kept.Count != _readKept || (_cleared && _hadElement);
+			var modified = !SameEditions () || (_cleared && _hadElement);
 			foreach (var edition in _editions) {
-				if (edition is not null && !edition.Prepare (IsWebM))
+				if (edition is not null && !IsUnwritten (edition) && !edition.Prepare (IsWebM))
 					modified = true;
 			}
 
@@ -172,15 +172,36 @@ public sealed class MatroskaChapters
 		}
 	}
 
-	int _readKept;
+	/// <summary>An edition added in code without a chapter is never written, so it is not an edit.</summary>
+	static bool IsUnwritten (MatroskaEdition edition) => !((IReadFromFile)edition).IsFromFile && !edition.HasAtoms;
+
+	/// <summary>
+	/// Compares the edition list with the one read. An added edition without chapters is never written,
+	/// so it is left out; a removed edition read from the file still counts.
+	/// </summary>
+	bool SameEditions ()
+	{
+		var read = 0;
+		foreach (var edition in _editions) {
+			if (edition is not null && IsUnwritten (edition))
+				continue;
+			if (read >= _readEditions.Length || !ReferenceEquals (edition, _readEditions[read]))
+				return false;
+			read++;
+		}
+
+		return read == _readEditions.Length;
+	}
 
 	/// <summary>
 	/// Checks the RFC 9559 rules on chapter times for every chapter this save adds or changes: an end is
 	/// not before its start (section 20.2.2), a nested chapter starts inside its parent (section 20.2.3),
 	/// and every lowest-level chapter of an ordered edition has an end (section 20.2.4 and Table 29).
 	/// A chapter that was not changed is not checked, so a bad chapter written by another tool does not
-	/// block other edits; in a Matroska file it is written back as it was. An edition that is new or whose
-	/// own values changed has all its chapters checked. The error names the chapter by position and UID.
+	/// block other edits; in a Matroska file it is written back as it was. A chapter whose context changed
+	/// is checked with everything nested in it: one that is new, moved to another edition or parent, or in
+	/// an edition that is new or whose own values (such as the ordered flag) changed. The error names the
+	/// chapter by position and UID.
 	/// </summary>
 	internal bool TryValidate (out string error)
 	{
@@ -194,7 +215,7 @@ public sealed class MatroskaChapters
 				var path = "edition " + (e + 1).ToString (System.Globalization.CultureInfo.InvariantCulture)
 					+ ", chapter " + (c + 1).ToString (System.Globalization.CultureInfo.InvariantCulture);
 				// WebM stores no EditionFlagOrdered, so its editions are never ordered.
-				if (chapters[c] is { } chapter && !chapter.TryValidate (!IsWebM && edition.IsOrdered, all, null, false, path, 1, IsWebM, out error))
+				if (chapters[c] is { } chapter && !chapter.TryValidate (!IsWebM && edition.IsOrdered, all, edition, null, false, path, 1, IsWebM, out error))
 					return false;
 			}
 		}
@@ -281,7 +302,6 @@ public sealed class MatroskaChapters
 		}
 
 		chapters._readEditions = chapters._editions.ToArray ();
-		chapters._readKept = chapters._kept.Count;
 		return chapters;
 	}
 
@@ -574,7 +594,7 @@ public sealed class MatroskaEdition : IReadFromFile
 					edition.IsOrdered = MatroskaChapters.ReadFlag (payload, false);
 					break;
 				case MatroskaIds.ChapterAtom:
-					edition._chapters.Add (MatroskaChapter.Read (source, bodyAt, element, 1, isWebM, ref budget));
+					edition._chapters.Add (MatroskaChapter.Read (source, bodyAt, element, 1, isWebM, ref budget, edition));
 					break;
 				default:
 					MatroskaChapters.KeepUnknown (edition._kept, body, element);
@@ -613,6 +633,9 @@ public sealed class MatroskaChapter : IReadFromFile
 	string?[] _readDisplays = [];
 	MatroskaChapter?[] _readChapters = [];
 	bool _unchanged;
+
+	// The edition or chapter this one was read inside, so a move to another one counts as a change of context.
+	object? _readContainer;
 
 	void MarkRead (bool isWebM)
 	{
@@ -813,10 +836,11 @@ public sealed class MatroskaChapter : IReadFromFile
 		writer.End ();
 	}
 
-	internal static MatroskaChapter Read (byte[] source, int parentAt, EbmlElement atom, int depth, bool isWebM, ref int budget)
+	internal static MatroskaChapter Read (byte[] source, int parentAt, EbmlElement atom, int depth, bool isWebM, ref int budget, object container)
 	{
 		ulong uid = 0;
 		var chapter = new MatroskaChapter (0) {
+			_readContainer = container,
 			_fromFile = true,
 			_source = source,
 			_sourceAt = parentAt + atom.Position,
@@ -850,7 +874,7 @@ public sealed class MatroskaChapter : IReadFromFile
 					chapter._displays.Add (MatroskaChapterDisplay.Read (payload, ref budget));
 					break;
 				case MatroskaIds.ChapterAtom when depth < MatroskaChapters.MaxDepth:
-					chapter._chapters.Add (Read (source, bodyAt, element, depth + 1, isWebM, ref budget));
+					chapter._chapters.Add (Read (source, bodyAt, element, depth + 1, isWebM, ref budget, chapter));
 					break;
 				default:
 					// Too deep or not modelled: the bytes go back as they were.
@@ -878,15 +902,20 @@ public sealed class MatroskaChapter : IReadFromFile
 
 	/// <param name="ordered">Whether the edition is ordered.</param>
 	/// <param name="all">Whether to check this chapter even if it did not change (its edition is new or changed).</param>
+	/// <param name="container">The edition or chapter that holds this one now.</param>
 	/// <param name="parent">The parent chapter, or null at the top.</param>
 	/// <param name="parentChanged">Whether the parent's own values changed, which puts the nesting rule back in play.</param>
 	/// <param name="path">The chapter's position, such as "edition 1, chapter 2.1".</param>
 	/// <param name="depth">The nesting depth.</param>
 	/// <param name="isWebM">Whether the file is WebM, which does not store the chapter flags.</param>
 	/// <param name="error">The rule that failed, naming the chapter.</param>
-	internal bool TryValidate (bool ordered, bool all, MatroskaChapter? parent, bool parentChanged, string path, int depth, bool isWebM, out string error)
+	internal bool TryValidate (bool ordered, bool all, object container, MatroskaChapter? parent, bool parentChanged, string path, int depth, bool isWebM, out string error)
 	{
 		error = "";
+
+		// A chapter that is new or moved has a new context: it and everything nested in it are checked
+		// (RFC 9559 section 20.2.4 applies to a leaf moved into an ordered edition).
+		all |= !ReferenceEquals (_readContainer, container);
 		var changed = all || OwnChanged (isWebM);
 		var name = "Matroska chapter (" + path + ", UID " + _uid.ToString (System.Globalization.CultureInfo.InvariantCulture) + ")";
 		if (changed && EndNanoseconds is ulong end && end < StartNanoseconds) {
@@ -908,7 +937,7 @@ public sealed class MatroskaChapter : IReadFromFile
 					continue;
 				nested = true;
 				var childPath = path + "." + (i + 1).ToString (System.Globalization.CultureInfo.InvariantCulture);
-				if (!chapter.TryValidate (ordered, all, this, changed, childPath, depth + 1, isWebM, out error))
+				if (!chapter.TryValidate (ordered, all, this, this, changed, childPath, depth + 1, isWebM, out error))
 					return false;
 			}
 		}
