@@ -4,6 +4,7 @@
 using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
+using TagLibSharp2.Audible;
 using TagLibSharp2.Core;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
@@ -1146,6 +1147,64 @@ public class MalformedInputTests
 				_ = MediaFile.ReadFromData (prefix, "cut.aac");
 				_ = MediaFile.Read (new MemoryStream (prefix), "cut.aac");
 			}
+		}
+	}
+
+	[TestMethod]
+	public void AudibleFile_EmptyInput_ReturnsFailure ()
+	{
+		var result = AudibleFile.Read ([]);
+		Assert.IsFalse (result.IsSuccess, "Empty input should return failure, not crash");
+	}
+
+	[TestMethod]
+	public void AudibleFile_TruncatedHeader_ReturnsFailure ()
+	{
+		byte[] data = [0x00, 0x00, 0x10, 0x00, 0x57, 0x90, 0x75, 0x36, 0x00, 0x00, 0x00];
+		Assert.IsFalse (AudibleFile.Read (data).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AudibleFile_WrongMagic_ReturnsFailure ()
+	{
+		var data = new byte[200];
+		data[4] = 0x57;
+		Assert.IsFalse (AudibleFile.Read (data).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AudibleFile_OversizedTocCount_DoesNotAllocate ()
+	{
+		// The count claims four billion entries; the reader must reject it before sizing anything.
+		byte[] data = [0x00, 0x00, 0x00, 0x20, 0x57, 0x90, 0x75, 0x36, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+		Assert.IsFalse (AudibleFile.Read (data).IsSuccess);
+		Assert.IsFalse (MediaFile.Read (new MemoryStream (data)).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AudibleFile_AllZerosAndAllOnes_ReturnFailure ()
+	{
+		Assert.IsFalse (AudibleFile.Read (new byte[1024]).IsSuccess);
+		Assert.IsFalse (AudibleFile.Read (Enumerable.Repeat ((byte)0xFF, 1024).ToArray ()).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AudibleFile_RandomDataWithMagic_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		for (var i = 0; i < 500; i++) {
+			var data = new byte[random.Next (16, 600)];
+			random.NextBytes (data);
+			data[4] = 0x57;
+			data[5] = 0x90;
+			data[6] = 0x75;
+			data[7] = 0x36;
+			data[8] = 0;
+			data[9] = 0;
+			data[10] = 0;
+			data[11] = (byte)random.Next (1, 16);
+			_ = AudibleFile.Read (data);
+			_ = MediaFile.Read (new MemoryStream (data));
 		}
 	}
 }
