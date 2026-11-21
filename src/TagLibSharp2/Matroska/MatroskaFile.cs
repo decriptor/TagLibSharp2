@@ -80,7 +80,7 @@ public sealed class MatroskaFile : IMediaFile
 		_frameRate = layout.FrameRate;
 		_videoCodec = layout.VideoCodec;
 		Tracks = layout.Tracks is null ? [] : layout.Tracks.ToArray ();
-		TracksTruncated = layout.TracksTruncated;
+		IsTrackListTruncated = layout.IsTrackListTruncated;
 	}
 
 	readonly int _sampleRate;
@@ -110,7 +110,7 @@ public sealed class MatroskaFile : IMediaFile
 	/// <remarks>
 	/// RFC 9559 sets no limit on the number of TrackEntry elements, so the list stops at 4096 to bound
 	/// what a crafted file can allocate. Entries past it still count when the main audio and video track
-	/// is chosen. <see cref="TracksTruncated"/> tells when entries were left out.
+	/// is chosen. <see cref="IsTrackListTruncated"/> tells when entries were left out.
 	/// </remarks>
 	public IReadOnlyList<MatroskaTrack> Tracks { get; }
 
@@ -118,7 +118,7 @@ public sealed class MatroskaFile : IMediaFile
 	/// Gets a value indicating whether the file has more known-size <c>TrackEntry</c> elements than
 	/// <see cref="Tracks"/> lists (more than 4096).
 	/// </summary>
-	public bool TracksTruncated { get; }
+	public bool IsTrackListTruncated { get; }
 
 	IMediaProperties? IMediaFile.AudioProperties =>
 		(MediaTypes & MediaTypes.Audio) != 0
@@ -641,7 +641,7 @@ public sealed class MatroskaFile : IMediaFile
 		var codec = CodecLabel (codecId, codecName, codecPrivate);
 		layout.Tracks ??= new List<MatroskaTrack> ();
 		if (layout.Tracks.Count >= MaxTracks)
-			layout.TracksTruncated = true;
+			layout.IsTrackListTruncated = true;
 		else
 			layout.Tracks.Add (new MatroskaTrack (layout.Tracks.Count, number, uid, kind, codecId, isDefault, isEnabled));
 		// FlagEnabled and FlagDefault both default to 1 (RFC 9559 §5.1.4.1.4, §5.1.4.1.5).
@@ -824,7 +824,7 @@ public sealed class MatroskaFile : IMediaFile
 	struct TrackLayout
 	{
 		public List<MatroskaTrack>? Tracks;
-		public bool TracksTruncated;
+		public bool IsTrackListTruncated;
 		public MediaTypes Types;
 		public int SampleRate;
 		public int Channels;

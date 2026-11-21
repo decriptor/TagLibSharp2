@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `MatroskaFile.Tracks` lists the first 4096 known-size `TrackEntry` elements as `MatroskaTrack` objects, and `MatroskaFile.TracksTruncated` tells when a file had more. Each track has `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
+- `MatroskaFile.Tracks` lists the first 4096 known-size `TrackEntry` elements as `MatroskaTrack` objects, and `MatroskaFile.IsTrackListTruncated` tells when a file had more. Each track has `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
 - `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry` when the `Void` right after `Tracks` has room, so no element moves; otherwise the save fails and nothing is written. Adding a FlagEnabled (minver 2) also makes the EBML header's `DocTypeVersion` at least 2: a stored lower value is raised, and an empty or missing one is written (RFC 9559 section 7); no Segment Position moves. A track the caller did not set keeps its bytes.
 
 ### Fixed
