@@ -8,7 +8,7 @@ namespace TagLibSharp2.Ape;
 /// <summary>
 /// Reads an APEv2 tag from the end of a seekable stream without the audio in front of it.
 /// Placement matches <see cref="ApeTagLocation.Locate"/>: a footer at EOF, a footer before
-/// Lyrics3 v1 or v2, or the 32 bytes at EOF-160 when no Lyrics3 block is present.
+/// Lyrics3 v1 or v2, or the 32 bytes at EOF-160 when ID3v1 follows and no Lyrics3 block is present.
 /// </summary>
 internal static class ApeTagTail
 {

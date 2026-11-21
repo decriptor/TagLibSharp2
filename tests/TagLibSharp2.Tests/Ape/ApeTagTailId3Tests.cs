@@ -59,7 +59,7 @@ public class ApeTagTailId3Tests
 	[DataRow ("mpc", "v1")]
 	public async Task Open_Lyrics3BetweenApeAndId3_KeepsArtistWhenAlbumIsSaved (string extension, string lyricsVersion)
 	{
-		var lyrics = lyricsVersion == "v1" ? Lyrics3V1 () : Lyrics3V2 ();
+		var lyrics = lyricsVersion == "v1" ? Lyrics3V1 ("Line") : Lyrics3V2 ();
 		var data = AudioWithApeLyricsAndId3 (extension, lyrics);
 		var name = "/song." + extension;
 
@@ -95,9 +95,9 @@ public class ApeTagTailId3Tests
 	[DataRow ("wv")]
 	[DataRow ("ape")]
 	[DataRow ("mpc")]
-	public void Open_Footer160BytesBeforeEofWithoutId3v1_ReadsArtist (string extension)
+	public void Open_Footer160BytesBeforeEofWithoutId3v1_DoesNotReadArtist (string extension)
 	{
-		// EOF-160 is the no-Lyrics3 footer. The 128 bytes after it are not "TAG".
+		// EOF-160 is a footer only when the file ends in "TAG". These 128 bytes do not.
 		var audio = Audio (extension);
 		var ape = new ApeTag { Artist = "Legacy Artist" }.RenderWithOptions (includeHeader: true).ToArray ();
 		var gap = new byte[ApeTagLocation.Id3v1Size];
@@ -111,16 +111,79 @@ public class ApeTagTailId3Tests
 		Assert.IsFalse (data.AsSpan (data.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
 
 		var parsed = ApeTag.Parse (data);
-		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
-		Assert.AreEqual ("Legacy Artist", parsed.Tag!.Artist);
+		Assert.IsFalse (parsed.IsSuccess);
+		Assert.IsNull (parsed.Tag);
 
 		var opened = MediaFile.Read (new MemoryStream (data), "/song." + extension);
-		Assert.AreEqual ("Legacy Artist", opened.Tag?.Artist, opened.Error);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.IsNull (opened.Tag?.Artist);
 
 		var fs = new MockFileSystem ();
 		fs.AddFile ("/song." + extension, data);
 		var fromPath = MediaFile.Read ("/song." + extension, fs);
-		Assert.AreEqual ("Legacy Artist", fromPath.Tag?.Artist, fromPath.Error);
+		Assert.IsTrue (fromPath.IsSuccess, fromPath.Error);
+		Assert.IsNull (fromPath.Tag?.Artist);
+
+		var location = ApeTagLocation.Locate (data);
+		Assert.IsFalse (location.Found);
+		Assert.AreEqual (-1, location.Id3v1Offset);
+		Assert.AreEqual (data.Length, location.AudioEnd);
+
+		var rewritten = ApeTagLocation.Rewrite (data, location, new ApeTag { Album = "New Album" }.Render ());
+		Assert.IsTrue (rewritten.AsSpan (audio.Length, ape.Length).SequenceEqual (ape));
+		Assert.IsFalse (rewritten.AsSpan (rewritten.Length - ApeTagLocation.Id3v1Size, 3).SequenceEqual ("TAG"u8));
+		CollectionAssert.AreEqual (gap, rewritten.AsSpan (audio.Length + ape.Length, gap.Length).ToArray ());
+	}
+
+	[TestMethod]
+	[DataRow ("wv")]
+	[DataRow ("ape")]
+	[DataRow ("mpc")]
+	public async Task Open_Lyrics3V1LongerThanOneKilobyte_KeepsArtistWhenAlbumIsSaved (string extension)
+	{
+		// The v1 search is 64 KB. A 1 KB window would miss LYRICSBEGIN.
+		var lyrics = Lyrics3V1 (new string ('L', 2048));
+		var data = AudioWithApeLyricsAndId3 (extension, lyrics);
+		var name = "/song." + extension;
+
+		var parsed = ApeTag.Parse (data);
+		Assert.AreEqual ("Legacy Artist", parsed.Tag?.Artist, parsed.Error);
+
+		var viaStream = MediaFile.Read (new MemoryStream (data), name);
+		Assert.AreEqual ("Legacy Artist", viaStream.Tag?.Artist, viaStream.Error);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile (name, data);
+		var opened = MediaFile.Read (name, fs);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		opened.Tag!.Album = "New Album";
+		var save = Save (opened, fs);
+		Assert.IsTrue (save.IsSuccess, save.Error);
+
+		var again = MediaFile.Read (name, fs);
+		Assert.AreEqual ("Legacy Artist", again.Tag?.Artist, again.Error);
+		Assert.AreEqual ("New Album", again.Tag!.Album);
+		Assert.IsTrue (fs.ReadAllBytes (name).AsSpan ().IndexOf (lyrics) >= 0);
+	}
+
+	[TestMethod]
+	[DataRow ("wv")]
+	[DataRow ("ape")]
+	[DataRow ("mpc")]
+	public void Open_Lyrics3V1LongerThanTheSearchWindow_DoesNotReadArtist (string extension)
+	{
+		// LYRICSBEGIN is more than 64 KB before LYRICSEND, so the block stays audio.
+		var lyrics = Lyrics3V1 (new string ('L', (64 * 1024) + 11));
+		var data = AudioWithApeLyricsAndId3 (extension, lyrics);
+		var name = "/song." + extension;
+
+		var parsed = ApeTag.Parse (data);
+		Assert.IsFalse (parsed.IsSuccess);
+		Assert.IsNull (parsed.Tag);
+
+		var opened = MediaFile.Read (new MemoryStream (data), name);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.IsNull (opened.Tag?.Artist);
 	}
 
 	static FileWriteResult Save (MediaFileResult opened, MockFileSystem fs) =>
@@ -168,13 +231,13 @@ public class ApeTagTailId3Tests
 	}
 
 	/// <summary>Lyrics3 v1: LYRICSBEGIN, the text, and LYRICSEND. There is no size field.</summary>
-	static byte[] Lyrics3V1 ()
+	static byte[] Lyrics3V1 (string text)
 	{
-		ReadOnlySpan<byte> text = "Line"u8;
-		var block = new byte[11 + text.Length + 9];
+		var body = System.Text.Encoding.ASCII.GetBytes (text);
+		var block = new byte[11 + body.Length + 9];
 		"LYRICSBEGIN"u8.CopyTo (block);
-		text.CopyTo (block.AsSpan (11));
-		"LYRICSEND"u8.CopyTo (block.AsSpan (11 + text.Length));
+		body.CopyTo (block.AsSpan (11));
+		"LYRICSEND"u8.CopyTo (block.AsSpan (11 + body.Length));
 		return block;
 	}
 

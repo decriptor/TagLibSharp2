@@ -17,7 +17,7 @@ namespace TagLibSharp2.Ape;
 /// LYRICSBEGIN is within 64 KB before that marker. v1 has no size field.
 /// The APE footer, if any, is the 32 bytes immediately before LYRICSBEGIN.
 /// With no Lyrics3 block, the footer is the 32 bytes at EOF-160.
-/// Those 128 bytes are not required to start with "TAG".
+/// That placement applies only when those 128 bytes start with "TAG".
 /// When that structure is not a footer, its size does not fit, or the bytes at the size's start
 /// do not parse as the tag, the suffix is still ID3v1 and audio ends at length-128,
 /// or at LYRICSBEGIN when a Lyrics3 block is present. An unparseable tag with a size that fits
@@ -180,14 +180,6 @@ internal readonly struct ApeTagLocation
 			return Id3Only (data.Length, error);
 		}
 
-		// No ID3v1 and no footer at EOF. The no-Lyrics3 footer still starts at EOF-160.
-		if (data.Length >= Id3v1Size + ApeTagFooter.Size) {
-			var footerOffset = data.Length - Id3v1Size - ApeTagFooter.Size;
-			var gapFooter = ApeTagFooter.Parse (data.Slice (footerOffset, ApeTagFooter.Size));
-			if (IsFooter (gapFooter))
-				return FoundAt (data, gapFooter.Footer!, footerOffset);
-		}
-
 		return Missing (
 			data.Length,
 			eofFooter.IsSuccess
@@ -223,12 +215,6 @@ internal readonly struct ApeTagLocation
 			}
 
 			return false;
-		}
-
-		var beforeGap = stream.Length - Id3v1Size;
-		if (IsFooterAt (stream, beforeGap)) {
-			tagEnd = beforeGap;
-			return true;
 		}
 
 		return false;
