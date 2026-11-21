@@ -9,7 +9,8 @@ namespace TagLibSharp2.Aiff;
 /// Decodes AIFF text without the Macintosh code page.
 /// Bytes 0x00-0x7F are ASCII. Bytes 0x80-0xFF are Mac OS Roman
 /// (0x85 is Ö, 0xA0 is dagger) unless the whole value is valid UTF-8
-/// and contains a multibyte sequence.
+/// (RFC 3629 section 4) and contains a multibyte sequence. Nothing is
+/// encoded back: edited text goes to ID3, and unedited native bytes are kept.
 /// </summary>
 static class MacRoman
 {
@@ -57,45 +58,6 @@ static class MacRoman
 		}
 
 		return new string (chars);
-	}
-
-	static readonly Dictionary<char, byte> ToByte = BuildMap ();
-
-	static Dictionary<char, byte> BuildMap ()
-	{
-		var map = new Dictionary<char, byte> (High.Length);
-		for (var i = 0; i < High.Length; i++) {
-			if (!map.ContainsKey (High[i]))
-				map[High[i]] = (byte)(i + 0x80);
-		}
-
-		return map;
-	}
-
-	/// <summary>
-	/// Encodes text for a native chunk using the same Mac OS Roman table as <see cref="Decode"/>.
-	/// ASCII stays ASCII. A character that is not in the table returns false so the caller
-	/// can store the value in ID3 instead of writing a different encoding.
-	/// </summary>
-	public static bool TryEncode (string text, out byte[] bytes)
-	{
-		bytes = new byte[text.Length];
-		for (var i = 0; i < text.Length; i++) {
-			var ch = text[i];
-			if (ch <= '\u007F') {
-				bytes[i] = (byte)ch;
-				continue;
-			}
-
-			if (!ToByte.TryGetValue (ch, out var mapped)) {
-				bytes = [];
-				return false;
-			}
-
-			bytes[i] = mapped;
-		}
-
-		return true;
 	}
 
 	static bool TryUtf8 (ReadOnlySpan<byte> data, out string? text)
