@@ -41,7 +41,11 @@ tagsharp/
 │       │   ├── AiffFile.cs        # AIFF/AIFC container parser
 │       │   ├── AiffChunk.cs       # AIFF chunk (FourCC + data, big-endian)
 │       │   └── AiffAudioProperties.cs # COMM chunk parser
-│       └── Riff/                  # RIFF container support
+│       └── Riff/                  # RIFF container support (WAV, AVI)
+│           ├── AviFile.cs         # AVI file handler (RIFF 'AVI ', OpenDML)
+│           ├── AviChunks.cs       # First-form chunk walk, allocation-free
+│           ├── AviHeaders.cs      # hdrl: avih, strh/strf, dmlh -> properties
+│           ├── AviRewrite.cs      # Tag save: reuse JUNK, or move and patch idx1/indx/ix##
 │           ├── RiffChunk.cs       # RIFF chunk (FourCC + data)
 │           ├── RiffFile.cs        # RIFF container parser
 │           ├── RiffInfoTag.cs     # LIST INFO metadata
