@@ -1052,8 +1052,8 @@ internal static class Mp4ChapterCodec
 	/// <summary>
 	/// Every file range the movie references outside the replaced traks: the other traks' chunks and every iloc
 	/// item extent under <paramref name="topLevel"/>. False when any of them cannot be computed: an unread moov
-	/// tail (it can hold a trak), a trak whose tables cannot be read, a meta or an iloc that does not parse, or
-	/// an unread box tail that names a meta or an iloc.
+	/// tail (it can hold a trak), a trak whose tables cannot be read, an iloc that does not parse, or an unread
+	/// box tail that holds an iloc.
 	/// </summary>
 	static bool TryCollectReferences (Mp4Box moov, IReadOnlyList<Mp4Box> topLevel, List<ChapterTrack> replaced, List<(long Start, long End)> ranges)
 	{
@@ -1214,8 +1214,10 @@ internal static class Mp4ChapterCodec
 
 	/// <summary>
 	/// Adds the file extents of every iloc under <paramref name="box"/>. A meta without an iloc references
-	/// nothing. False when a meta, or the box an iloc would sit in, stops parsing (its unread tail could hold
-	/// the iloc), when an unread tail anywhere names an iloc or a meta, or when an iloc does not parse.
+	/// nothing. False when an iloc does not parse, or when the unread tail of a box that stopped parsing holds
+	/// the bytes "iloc": an iloc there cannot be read. Unread bytes without them cannot hold an iloc, since
+	/// every box carries its type code; that keeps a meta with stray trailing bytes (seen in iTunes files)
+	/// from blocking.
 	/// </summary>
 	static bool TryItemRanges (Mp4Box box, List<(long Start, long End)> ranges, int depth)
 	{
@@ -1223,7 +1225,7 @@ internal static class Mp4ChapterCodec
 			return false;
 
 		var tail = box.UnparsedTail.Span;
-		if (tail.Length > 0 && (box.Type == "meta" || tail.IndexOf ("iloc"u8) >= 0 || tail.IndexOf ("meta"u8) >= 0))
+		if (tail.IndexOf ("iloc"u8) >= 0)
 			return false;
 
 		foreach (var child in box.Children) {
