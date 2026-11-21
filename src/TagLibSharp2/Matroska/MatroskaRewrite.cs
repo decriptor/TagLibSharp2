@@ -11,7 +11,7 @@ namespace TagLibSharp2.Matroska;
 /// An unknown-size element is copied only when its end is a parsed sibling or the parent end.
 /// Bytes that do not parse are not scanned once a real element has been seen.
 /// </summary>
-static class MatroskaRewrite
+static partial class MatroskaRewrite
 {
 	public static bool TryRewrite (ReadOnlySpan<byte> data, MatroskaTag tag, out byte[] rewritten, out string error)
 	{

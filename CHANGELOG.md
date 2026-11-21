@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Matroska: setting `Pictures` writes image attachments (RFC 9559 sections 5.1.6 and 21.1). A new front cover is `cover.jpg` or `cover.png` and goes first; other picture types get names such as `back.jpg` or `artist.png`, which read back as their type. The description goes in `FileDescription`. An attachment that matches a picture keeps its `FileName`, `FileUID` and bytes. Fonts and other non-image attachments are kept. Removing a picture removes only its attachment and any tag that targeted only that attachment.
 - Matroska: a new or moved `Attachments` element goes after the last Cluster or in a Void, and gets an entry in the first SeekHead. The SeekHead can widen its size field to grow into the Void after it.
+- `MatroskaFile.Tracks` lists every `TrackEntry` as a `MatroskaTrack` with `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
+- `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry` when the `Void` right after `Tracks` has room, so no element moves; otherwise the save fails and nothing is written. A track the caller did not set keeps its bytes.
 
 ### Changed
 
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Matroska: an edited or added top-level element stays listed in the SeekHead (RFC 9559 section 6.1). When the SeekHead has no room for its Seek, or its Seek cannot hold the new offset, the element goes right after the first SeekHead. The SeekHead is written again with every Seek at the width it needs, and everything after it moves once. Cues `CueClusterPosition`, Cluster `Position` and CRC-32 values follow. Without a SeekHead the element goes before the first Cluster. Before this, an artist edit or a no-op save on `test1.mkv` or `test6.mkv` dropped the Tags Seek, and ffprobe and mediainfo lost the tags. The move is refused when it would void another element's Seek.
+- Matroska: a track with `FlagEnabled` 0 is no longer chosen as the main audio or video track while an enabled track of that type exists (#117).
 
 ## [0.6.0] - 2026-01-05
 
