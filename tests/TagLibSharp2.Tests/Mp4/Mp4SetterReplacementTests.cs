@@ -49,6 +49,7 @@ public class Mp4SetterReplacementTests
 		var rendered = file.Render (data).ToArray ();
 		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Old-"u8), "an old value is still written");
 		Assert.AreEqual (0, Count (rendered, "gnre"u8));
+		Mp4QuickTimeKeysTests.AssertOnlyKeyedItems (rendered, keyCount: 2);
 		Assert.AreEqual (1, Count (rendered, Location));
 		Assert.AreEqual ("New", Get (Mp4File.Read (rendered).File!.Tag!, property));
 
@@ -109,10 +110,13 @@ public class Mp4SetterReplacementTests
 		var file = Mp4File.Read (data).File!;
 		Assert.IsNull (file.Title);
 
+		// Unmapped items are kept. Item 3 has no key, and the new title key takes index 3, so it goes.
 		file.Title = "New";
 		var rendered = file.Render (data).ToArray ();
-		foreach (var item in items)
-			Assert.AreEqual (1, Count (rendered, item));
+		Assert.AreEqual (1, Count (rendered, items[0]));
+		Assert.AreEqual (1, Count (rendered, items[1]));
+		Assert.AreEqual (0, Count (rendered, items[2]));
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
 	}
 
 	[TestMethod]
@@ -127,6 +131,69 @@ public class Mp4SetterReplacementTests
 		var rendered = file.Render (data).ToArray ();
 		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Old-"u8));
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
+	}
+
+	// Aliases: QuickTime user data atoms (©com composer, ©swr software), 3GPP TS 26.244 asset atoms
+	// (titl, albm, dscp), and ©st3, which ffprobe and ExifTool both read as the subtitle.
+	[TestMethod]
+	[DataRow ("Title", "©nam", "titl")]
+	[DataRow ("Album", "©alb", "albm")]
+	[DataRow ("Description", "desc", "dscp")]
+	[DataRow ("Composer", "©wrt", "©com")]
+	[DataRow ("EncoderSettings", "©too", "©swr")]
+	public void AliasAtom_IsReadAndReplaced (string property, string atom, string alias)
+	{
+		var aliasOnly = TestBuilders.Mp4.CreateWithIlstAtoms (Text (alias, "Old-alias"));
+		var file = Mp4File.Read (aliasOnly).File!;
+		Assert.AreEqual ("Old-alias", Get (file.Tag!, property));
+		var unedited = file.Render (aliasOnly).ToArray ();
+		Assert.AreEqual (1, Count (unedited, Text (alias, "Old-alias")));
+
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (Text (alias, "Old-alias"), Text (atom, "Old-main"));
+		file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("Old-main", Get (file.Tag!, property));
+
+		Set (file.Tag!, property, "New");
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Old-"u8));
+		Assert.AreEqual (0, Count (rendered, Type (alias)));
+		Assert.AreEqual ("New", Get (Mp4File.Read (rendered).File!.Tag!, property));
+
+		Set (file.Tag!, property, null);
+		var cleared = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (cleared, Type (alias)));
+		Assert.AreEqual (0, Count (cleared, Type (atom)));
+	}
+
+	[TestMethod]
+	public void SubtitleAlias_IsReadAndReplaced ()
+	{
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (Text ("©st3", "Old-alias"));
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("Old-alias", file.Tag!.Subtitle);
+
+		file.Tag.Subtitle = "New";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, Type ("©st3")));
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Tag!.Subtitle);
+	}
+
+	// Not aliases: Apple names ©aut (author) and ©inf (information) apart from artist and comment,
+	// and only ExifTool folds ©des and grup into a mapped field. They are kept as they are.
+	[TestMethod]
+	[DataRow ("Artist", "©aut")]
+	[DataRow ("Comment", "©inf")]
+	[DataRow ("Description", "©des")]
+	[DataRow ("Grouping", "grup")]
+	public void NonAliasAtom_IsKept (string property, string atom)
+	{
+		var kept = Text (atom, "Kept");
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (kept);
+		var file = Mp4File.Read (data).File!;
+		Assert.IsNull (Get (file.Tag!, property));
+
+		Set (file.Tag!, property, "New");
+		Assert.AreEqual (1, Count (file.Render (data).ToArray (), kept));
 	}
 
 	// Properties whose getter reads one iTunes atom. A malformed atom of the same type is kept on

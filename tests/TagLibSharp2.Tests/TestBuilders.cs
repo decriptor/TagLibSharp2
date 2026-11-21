@@ -2673,7 +2673,44 @@ public static class TestBuilders
 		/// <summary>
 		/// Creates an MP4 file whose udta/meta has a keys atom and the given handler type.
 		/// </summary>
-		public static byte[] CreateWithKeyedIlst (string handler, string[] keys, params byte[][] items)
+		public static byte[] CreateWithKeyedIlst (string handler, string[] keys, params byte[][] items) =>
+			CreateWithKeyedMeta (handler, KeysPayload (keys), items, inMovie: false, udtaExtra: null);
+
+		/// <summary>
+		/// Creates the payload of a keys atom: version and flags, entry count, then size + namespace + value
+		/// for each key, all in the "mdta" namespace.
+		/// </summary>
+		public static byte[] KeysPayload (params string[] keys)
+		{
+			var entries = new (string, byte[])[keys.Length];
+			for (var i = 0; i < keys.Length; i++)
+				entries[i] = ("mdta", Encoding.UTF8.GetBytes (keys[i]));
+			return KeysPayload (entries);
+		}
+
+		/// <summary>
+		/// Creates the payload of a keys atom with an explicit namespace per key.
+		/// </summary>
+		public static byte[] KeysPayload (params (string Namespace, byte[] Value)[] keys)
+		{
+			var keysContent = new BinaryDataBuilder ();
+			keysContent.AddUInt32BE (0);
+			keysContent.AddUInt32BE ((uint)keys.Length);
+			foreach (var (ns, value) in keys) {
+				keysContent.AddUInt32BE ((uint)(8 + value.Length));
+				keysContent.AddStringLatin1 (ns);
+				keysContent.Add (value);
+			}
+
+			return keysContent.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file with a keyed meta. <paramref name="inMovie"/> puts it in moov/meta as
+		/// QuickTime does (a plain atom, no version and flags); otherwise it is udta/meta as ffmpeg
+		/// writes it (a full atom). <paramref name="udtaExtra"/> adds a udta holding those bytes.
+		/// </summary>
+		public static byte[] CreateWithKeyedMeta (string handler, byte[]? keysPayload, byte[][] items, bool inMovie, byte[]? udtaExtra)
 		{
 			var builder = new BinaryDataBuilder ();
 			builder.Add (CreateFtyp ("M4A "));
@@ -2689,27 +2726,27 @@ public static class TestBuilders
 			hdlr.AddZeros (12);
 			hdlr.Add ((byte)0);
 
-			var keysContent = new BinaryDataBuilder ();
-			keysContent.AddUInt32BE (0);
-			keysContent.AddUInt32BE ((uint)keys.Length);
-			foreach (var key in keys) {
-				var value = Encoding.UTF8.GetBytes (key);
-				keysContent.AddUInt32BE ((uint)(8 + value.Length));
-				keysContent.AddStringLatin1 ("mdta");
-				keysContent.Add (value);
-			}
-
 			var ilstContent = new BinaryDataBuilder ();
 			foreach (var item in items)
 				ilstContent.Add (item);
 
 			var metaContent = new BinaryDataBuilder ();
-			metaContent.AddUInt32BE (0);
+			if (!inMovie)
+				metaContent.AddUInt32BE (0);
 			metaContent.Add (CreateBox ("hdlr", hdlr.ToArray ()));
-			metaContent.Add (CreateBox ("keys", keysContent.ToArray ()));
+			if (keysPayload is not null)
+				metaContent.Add (CreateBox ("keys", keysPayload));
 			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			var meta = CreateBox ("meta", metaContent.ToArray ());
 
-			moovContent.Add (CreateBox ("udta", CreateBox ("meta", metaContent.ToArray ())));
+			if (inMovie) {
+				moovContent.Add (meta);
+				if (udtaExtra is not null)
+					moovContent.Add (CreateBox ("udta", udtaExtra));
+			} else {
+				moovContent.Add (CreateBox ("udta", [.. udtaExtra ?? [], .. meta]));
+			}
+
 			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
 			builder.Add (CreateBox ("mdat", new byte[4]));
 			return builder.ToArray ();
@@ -2718,10 +2755,16 @@ public static class TestBuilders
 		/// <summary>
 		/// Creates an mdta ilst item: its type is the 1-based key index, and it holds one UTF-8 data atom.
 		/// </summary>
-		public static byte[] CreateMdtaItem (uint keyIndex, string value)
+		public static byte[] CreateMdtaItem (uint keyIndex, string value) =>
+			CreateMdtaItem (keyIndex, 1, Encoding.UTF8.GetBytes (value));
+
+		/// <summary>
+		/// Creates an mdta ilst item holding one data atom with the given type code.
+		/// </summary>
+		public static byte[] CreateMdtaItem (uint keyIndex, int typeIndicator, byte[] payload)
 		{
 			var type = new string ([(char)(keyIndex >> 24), (char)((keyIndex >> 16) & 0xFF), (char)((keyIndex >> 8) & 0xFF), (char)(keyIndex & 0xFF)]);
-			return CreateIlstChild (type, 1, Encoding.UTF8.GetBytes (value));
+			return CreateIlstChild (type, typeIndicator, payload);
 		}
 
 		/// <summary>
