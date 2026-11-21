@@ -484,6 +484,58 @@ And no metadata should be lost
 
 ---
 
+### Feature: Chapters
+
+An MP4 file stores chapters in two places, and `Mp4File.Chapters` reads and replaces both:
+
+- **QuickTime chapter track**: a disabled text track that a sound or video track names in its `tref`/`chap`
+  reference (ISO 14496-12 §8.3.3; QuickTime File Format). Each sample is one title: a 16-bit length, then UTF-8
+  (or UTF-16 with a byte order mark), then optional modifier boxes such as `encd` (3GPP TS 26.245 §5.17).
+  Times come from `stts` in the `mdhd` timescale, positions from `stsc`/`stsz`/`stco`/`co64`, and an edit
+  list's empty edit delays the track.
+- **Nero `chpl`** in `moov/udta`: version 1, 4 reserved bytes, an 8-bit count (at most 255 entries), and per entry
+  a 64-bit start in 100 ns units, an 8-bit length, and a UTF-8 title. There is no published specification; the
+  layout is the one ffmpeg writes and ffprobe and MediaInfo read back.
+
+#### Scenario: Read chapters
+```gherkin
+Given an M4B file with a chapter track, a chpl box, or both
+When I read the file
+Then Chapters lists each start time and title in order
+And each EndTime is the next start, or the track or file end for the last chapter
+And the chapter track wins when the two forms disagree (as ffprobe reads it)
+And chpl start times are used when both forms hold the same titles (100 ns precision)
+```
+
+#### Scenario: Replace chapters
+```gherkin
+Given an MP4 file with or without chapters
+When I set Chapters and save
+Then chpl holds the first 255 chapters, titles cut to 255 UTF-8 bytes on a character boundary
+And the chapter track holds every chapter: an existing track keeps its track_ID, otherwise a new one is added
+  and every sound and video track gets a chap reference to it
+And the new samples sit in their own mdat right after moov
+And every other track's chunk offsets move with the same update a tag edit makes
+And ffprobe, MediaInfo, and TagLibSharp2 read the same list back
+```
+
+#### Scenario: Remove chapters
+```gherkin
+Given an MP4 file with chapters
+When I set Chapters to an empty list and save
+Then chpl, the chapter track, and the chap references to it are removed
+And other chap references (chapter images) are kept
+```
+
+#### Scenario: Leave chapters alone
+```gherkin
+Given an MP4 file with chapters
+When I save without setting Chapters, or set the list the file already holds
+Then the chpl bytes and the chapter samples are unchanged
+```
+
+---
+
 ### Feature: Large File Support
 
 #### Scenario: Handle 5GB M4B file
@@ -622,12 +674,11 @@ The following features are explicitly **NOT** included in v0.4.0:
 
 **Rationale:** Streaming formats use different structures. Initial release focuses on traditional M4A files.
 
-### Chapter Support (Deferred to v0.4.1)
-- Chapter list (chpl) atom
-- Chapter markers for audiobooks
-- Timed text tracks
-
-**Rationale:** Chapter support is important but can be added in a point release after core functionality is stable.
+### Chapter Support (Delivered after v0.4.0)
+Chapter support was deferred from v0.4.0 and is now delivered: see
+[Feature: Chapters](#feature-chapters). Still out of scope: chapter images (an Apple video track that a
+`chap` reference names) and chapter URLs are kept as they are but are not edited, and no chapter track is
+added to a fragmented movie (`mvex` needs a `trex` per track) or to a file with no track.
 
 ### Advanced Metadata
 - TV show metadata (tvsh, tven, tvnn)

@@ -5,6 +5,22 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **MP4 chapters** (#113): `Mp4File.Chapters` reads and replaces the chapter list, with the new `Mp4Chapter`
+  type (start time, title, derived end time). Reading takes the QuickTime chapter track (the text track named
+  by a `tref`/`chap` reference), then the Nero `chpl` box. Saving writes both: `chpl` (first 255 chapters) and
+  the chapter track (an existing one keeps its track ID; otherwise a new disabled text track is added and
+  referenced from every sound and video track). New chapter samples go in their own `mdat` after `moov`, and
+  every other track's chunk offsets move with them. A save that leaves the list alone keeps the chapter bytes.
+
+### Fixed
+
+- **MP4**: A version 1 `mvhd` or `mdhd` whose 64-bit duration is past `TimeSpan.MaxValue` no longer throws
+  out of `Mp4File.Read` or `Mp4AudioPropertiesParser.Parse`; the duration saturates.
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes
