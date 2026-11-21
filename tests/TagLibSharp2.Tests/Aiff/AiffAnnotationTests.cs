@@ -528,6 +528,31 @@ public partial class AiffAnnotationTests
 	}
 
 	[TestMethod]
+	public void SetComment_KeepsEveryMarkerNoteByteForByte ()
+	{
+		// A comment edit rewrites COMT without the marker-0 entry. The other notes were not
+		// edited, so their bytes stay as read: UTF-8, Mac OS Roman, and a trailing NUL.
+		var cafe = new byte[] { 0x43, 0x61, 0x66, 0xC3, 0xA9 };
+		var ost = new byte[] { 0x85, 0x73, 0x74 };
+		var cue = new byte[] { 0x63, 0x75, 0x65, 0x00 };
+		var file = ReadAiff (Form (
+			ComtEntries ((0, 0, System.Text.Encoding.Latin1.GetBytes ("File")), (11, 3, cafe), (12, 4, ost), (13, 5, cue)),
+			Comm (),
+			Ssnd ()));
+		Assert.AreEqual ("File", file.Tag!.Comment);
+
+		file.Tag.Comment = "Edited";
+
+		var again = ReadAiff (file.Render ().ToArray ());
+		Assert.AreEqual ("Edited", again.Id3v2Tag!.Comment);
+		var notes = ReadNotes (again.GetChunk ("COMT")!.Data);
+		Assert.AreEqual (3, notes.Count);
+		AssertNote (notes[0], 11, 3, cafe);
+		AssertNote (notes[1], 12, 4, ost);
+		AssertNote (notes[2], 13, 5, cue);
+	}
+
+	[TestMethod]
 	[DataRow (new byte[] { 0x41, 0xC3 }, "A\u221A", DisplayName = "two-byte lead at the end")]
 	[DataRow (new byte[] { 0x41, 0xE1, 0x80 }, "A\u00B7\u00C4", DisplayName = "three-byte lead, one continuation at the end")]
 	[DataRow (new byte[] { 0x41, 0xF1, 0x80, 0x80 }, "A\u00D2\u00C4\u00C4", DisplayName = "four-byte lead, two continuations at the end")]
@@ -833,6 +858,44 @@ public partial class AiffAnnotationTests
 		if ((text.Length & 1) == 1)
 			body.Add (0);
 		return Chunk ("COMT", body.ToArray ());
+	}
+
+	static byte[] ComtEntries (params (uint Timestamp, ushort Marker, byte[] Text)[] entries)
+	{
+		using var body = new BinaryDataBuilder ();
+		body.AddUInt16BE ((ushort)entries.Length);
+		foreach (var (timestamp, marker, text) in entries) {
+			body.AddUInt32BE (timestamp);
+			body.AddUInt16BE (marker);
+			body.AddUInt16BE ((ushort)text.Length);
+			if (text.Length > 0)
+				body.Add (text);
+			if ((text.Length & 1) == 1)
+				body.Add (0);
+		}
+
+		return Chunk ("COMT", body.ToArray ());
+	}
+
+	static List<(uint Timestamp, ushort Marker, byte[] Text)> ReadNotes (BinaryData data)
+	{
+		var notes = new List<(uint, ushort, byte[])> ();
+		var count = data.ToUInt16BE ();
+		var offset = 2;
+		for (var i = 0; i < count; i++) {
+			var length = data.ToUInt16BE (offset + 6);
+			notes.Add ((data.ToUInt32BE (offset), data.ToUInt16BE (offset + 4), data.Slice (offset + 8, length).ToArray ()));
+			offset += 8 + length + (length & 1);
+		}
+
+		return notes;
+	}
+
+	static void AssertNote ((uint Timestamp, ushort Marker, byte[] Text) note, uint timestamp, ushort marker, byte[] text)
+	{
+		Assert.AreEqual (timestamp, note.Timestamp);
+		Assert.AreEqual (marker, note.Marker);
+		CollectionAssert.AreEqual (text, note.Text, BitConverter.ToString (note.Text));
 	}
 
 	static bool HasId3 (byte[] data)
