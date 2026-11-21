@@ -45,20 +45,22 @@ internal static class EbmlWriter
 		return bytes;
 	}
 
-	static byte[] Size (int value)
+	/// <summary>
+	/// The shortest size that is not the all-ones unknown size (RFC 8794 section 6.2).
+	/// </summary>
+	internal static byte[] Size (int value)
 	{
-		if (value < 0x7F)
-			return new[] { (byte)(0x80 | value) };
-		if (value < 0x3FFF)
-			return new[] { (byte)(0x40 | (value >> 8)), (byte)value };
-		if (value < 0x1FFFFF)
-			return new[] { (byte)(0x20 | (value >> 16)), (byte)(value >> 8), (byte)value };
-		return new[] {
-			(byte)(0x10 | (value >> 24)),
-			(byte)(value >> 16),
-			(byte)(value >> 8),
-			(byte)value
-		};
+		var width = 1;
+		while (width < 8 && (ulong)value > (1UL << (7 * width)) - 2)
+			width++;
+		var raw = (1UL << (7 * width)) | (uint)value;
+		var bytes = new byte[width];
+		for (var i = width - 1; i >= 0; i--) {
+			bytes[i] = (byte)raw;
+			raw >>= 8;
+		}
+
+		return bytes;
 	}
 
 	static int WidthOf (ulong value)
