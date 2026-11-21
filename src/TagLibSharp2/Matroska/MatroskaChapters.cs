@@ -28,10 +28,15 @@ namespace TagLibSharp2.Matroska;
 /// </para>
 /// <para>
 /// A chapter title names a chapter, not the file, so it never becomes <see cref="MatroskaTag.Title"/>.
-/// A save writes <c>Chapters</c> again only when the editions differ from what was read.
+/// A save writes <c>Chapters</c> again only when an edition or chapter was added, removed, or given a
+/// value other than the one read. In a Matroska file, every edition and chapter that was not changed is
+/// then written back byte for byte; a WebM file is rewritten to the WebM subset.
 /// Otherwise the original element bytes stay where they are.
-/// Child elements this type does not model are kept and written back, without Void and CRC-32.
-/// A save fails, writing nothing, when an edited chapter breaks an RFC 9559 timing rule.
+/// Child elements this type does not model are kept and written back; a rewritten parent drops its Void and CRC-32.
+/// A save fails, writing nothing, when a chapter it adds or changes breaks an RFC 9559 timing rule, or
+/// any chapter of an edition whose own values (UID, flags) changed does. The error names the chapter by
+/// position and UID. A chapter that was not changed is not checked, so a bad one from another tool does
+/// not block other edits.
 /// </para>
 /// <para>
 /// Untrusted input is bounded: atoms nest at most <c>32</c> levels, and at most 65,536 child elements are
