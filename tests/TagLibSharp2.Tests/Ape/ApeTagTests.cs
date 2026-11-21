@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Globalization;
+using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
@@ -1655,6 +1656,84 @@ public class ApeTagTests
 		_ = failure.GetHashCode ();
 		Assert.IsFalse (result.Equals ((object?)null));
 		Assert.IsTrue (failure.Equals ((object)failure));
+	}
+
+	[TestMethod]
+	public void TextLists_RoundTrip_KeepsEveryNameWithoutAnExtraNul ()
+	{
+		var tag = new ApeTag {
+			Performers = ["Eve", "Fay"],
+			AlbumArtists = ["Ada", "Bea"],
+			Composers = ["Cara", "Dan"],
+			Genres = ["Jazz", "Soul"]
+		};
+
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("Fay", tag.Performers[1]);
+		Assert.HasCount (2, tag.AlbumArtists);
+		Assert.AreEqual ("Bea", tag.AlbumArtists[1]);
+		Assert.HasCount (2, tag.Composers);
+		Assert.AreEqual ("Dan", tag.Composers[1]);
+		Assert.HasCount (2, tag.Genres);
+		Assert.AreEqual ("Soul", tag.Genres[1]);
+		AssertRaw (tag, "Artist", "Eve\0Fay");
+		AssertRaw (tag, "Album Artist", "Ada\0Bea");
+		AssertRaw (tag, "Composer", "Cara\0Dan");
+		AssertRaw (tag, "Genre", "Jazz\0Soul");
+
+		var parsedMany = ApeTag.Parse (tag.Render ().Span);
+		Assert.IsTrue (parsedMany.IsSuccess, parsedMany.Error);
+		Assert.HasCount (2, parsedMany.Tag!.AlbumArtists);
+		Assert.AreEqual ("Ada", parsedMany.Tag.AlbumArtists[0]);
+		Assert.AreEqual ("Bea", parsedMany.Tag.AlbumArtists[1]);
+		Assert.HasCount (2, parsedMany.Tag.Composers);
+		Assert.HasCount (2, parsedMany.Tag.Performers);
+		Assert.HasCount (2, parsedMany.Tag.Genres);
+
+		tag.Performers = ["Eve"];
+		tag.AlbumArtists = ["Ada"];
+		tag.Composers = ["Cara"];
+		tag.Genres = ["Jazz"];
+		AssertRaw (tag, "Artist", "Eve");
+		AssertRaw (tag, "Album Artist", "Ada");
+		AssertRaw (tag, "Composer", "Cara");
+		AssertRaw (tag, "Genre", "Jazz");
+
+		var parsed = ApeTag.Parse (tag.Render ().Span);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.HasCount (1, parsed.Tag!.Performers);
+		Assert.AreEqual ("Eve", parsed.Tag.Performers[0]);
+		Assert.AreEqual ("Ada", parsed.Tag.AlbumArtists[0]);
+		Assert.AreEqual ("Cara", parsed.Tag.Composers[0]);
+		Assert.AreEqual ("Jazz", parsed.Tag.Genres[0]);
+
+		var alias = new ApeTag ();
+		alias.SetValue ("ALBUMARTIST", "Ada\0Bea");
+		Assert.HasCount (2, alias.AlbumArtists);
+		Assert.AreEqual ("Ada", alias.AlbumArtists[0]);
+		Assert.AreEqual ("Bea", alias.AlbumArtists[1]);
+	}
+
+	static void AssertRaw (ApeTag tag, string key, string expected)
+	{
+		var raw = RawText (tag, key);
+		CollectionAssert.AreEqual (Encoding.UTF8.GetBytes (expected), raw);
+	}
+
+	static byte[] RawText (ApeTag tag, string key)
+	{
+		var bytes = tag.Render ().ToArray ();
+		var items = bytes.AsSpan (0, bytes.Length - ApeTagFooter.Size);
+		while (!items.IsEmpty) {
+			var parsed = ApeTagItem.Parse (items);
+			Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+			if (string.Equals (parsed.Item!.Key, key, StringComparison.OrdinalIgnoreCase))
+				return parsed.Item.RawValue;
+			items = items.Slice (parsed.BytesConsumed);
+		}
+
+		Assert.Fail ("Missing " + key);
+		return [];
 	}
 
 	[TestMethod]

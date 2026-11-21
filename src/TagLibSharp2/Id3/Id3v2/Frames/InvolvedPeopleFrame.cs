@@ -346,7 +346,7 @@ public sealed class InvolvedPeopleFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
-		// Each role or person is already split. Drop only that piece's trailing terminator.
+		// The last unterminated piece can end on a lone byte. Do not let that byte eat the character.
 		data = Id3Text.TrimTrailingTerminator (data, encoding);
 
 		return encoding switch {

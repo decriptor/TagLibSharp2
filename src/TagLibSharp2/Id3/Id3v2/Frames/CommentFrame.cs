@@ -201,8 +201,8 @@ public sealed class CommentFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
-		// A comment is one string. Drop only a trailing terminator.
-		data = Id3Text.TrimTrailingTerminator (data, encoding);
+		// A comment is one string. An internal NUL ends it.
+		data = Id3Text.CutAtFirstNul (data, encoding);
 
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
