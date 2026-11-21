@@ -658,6 +658,96 @@ namespace TagLibSharp2.Asf
         public TagLibSharp2.Core.BinaryData RenderContentDescription() { }
     }
 }
+namespace TagLibSharp2.Audible
+{
+    public sealed class AudibleFile : System.IDisposable, TagLibSharp2.Core.IMediaFile
+    {
+        public const uint Magic = 1469084982u;
+        public uint DeclaredFileSize { get; }
+        public TagLibSharp2.Core.MediaFormat Format { get; }
+        public TagLibSharp2.Core.AudioProperties Properties { get; }
+        public string? SourcePath { get; }
+        public TagLibSharp2.Audible.AudibleTag Tag { get; }
+        public void Dispose() { }
+        public TagLibSharp2.Core.BinaryData Render(System.ReadOnlySpan<byte> originalData) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, System.ReadOnlySpan<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, System.ReadOnlyMemory<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool IsValidFormat(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Audible.AudibleFileReadResult Read(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Audible.AudibleFileReadResult ReadFromFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public static System.Threading.Tasks.Task<TagLibSharp2.Audible.AudibleFileReadResult> ReadFromFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool TryRead(System.ReadOnlySpan<byte> data, out TagLibSharp2.Audible.AudibleFile? file) { }
+    }
+    public readonly struct AudibleFileReadResult : System.IEquatable<TagLibSharp2.Audible.AudibleFileReadResult>
+    {
+        public string? Error { get; }
+        public TagLibSharp2.Audible.AudibleFile? File { get; }
+        public bool IsSuccess { get; }
+        public bool Equals(TagLibSharp2.Audible.AudibleFileReadResult other) { }
+        public override bool Equals(object? obj) { }
+        public override int GetHashCode() { }
+        public static TagLibSharp2.Audible.AudibleFileReadResult Failure(string error) { }
+        public static TagLibSharp2.Audible.AudibleFileReadResult Success(TagLibSharp2.Audible.AudibleFile file) { }
+        public static bool operator !=(TagLibSharp2.Audible.AudibleFileReadResult left, TagLibSharp2.Audible.AudibleFileReadResult right) { }
+        public static bool operator ==(TagLibSharp2.Audible.AudibleFileReadResult left, TagLibSharp2.Audible.AudibleFileReadResult right) { }
+    }
+    public sealed class AudibleTag : TagLibSharp2.Core.Tag
+    {
+        public const string AuthorKey = "author";
+        public const string CodecKey = "codec";
+        public const string CopyrightKey = "copyright";
+        public const string DescriptionKey = "description";
+        public const string KeywordsKey = "keywords";
+        public const string LongDescriptionKey = "long_description";
+        public const string NarratorKey = "narrator";
+        public const string ParentShortTitleKey = "parent_short_title";
+        public const string ParentTitleKey = "parent_title";
+        public const string PriceKey = "price";
+        public const string ProductIdKey = "product_id";
+        public const string ProviderKey = "provider";
+        public const string PublishDateKey = "pubdate";
+        public const string PublishDateStartKey = "pub_date_start";
+        public const string ShortDescriptionKey = "short_description";
+        public const string ShortTitleKey = "short_title";
+        public const string TitleIdKey = "title_id";
+        public const string TitleKey = "title";
+        public AudibleTag() { }
+        public override string? Album { get; set; }
+        public override string? Artist { get; set; }
+        public string? Author { get; set; }
+        public string? Codec { get; }
+        public override string? Comment { get; set; }
+        public override string? Copyright { get; set; }
+        public override string? Description { get; set; }
+        public override string? Genre { get; set; }
+        public override bool IsEmpty { get; }
+        public System.Collections.Generic.IReadOnlyList<string> Keys { get; }
+        public string? Keywords { get; set; }
+        public string? LongDescription { get; set; }
+        public string? Narrator { get; set; }
+        public string? ParentShortTitle { get; set; }
+        public string? ParentTitle { get; set; }
+        public override TagLibSharp2.Core.IPicture[] Pictures { get; set; }
+        public string? ProductId { get; set; }
+        public string? Provider { get; set; }
+        public string? PublishDate { get; set; }
+        public string? ShortTitle { get; set; }
+        public override TagLibSharp2.Core.TagTypes TagType { get; }
+        public override string? Title { get; set; }
+        public string? TitleId { get; set; }
+        public override uint? Track { get; set; }
+        public override string? Year { get; set; }
+        public override void Clear() { }
+        public string? GetValue(string key) { }
+        public override TagLibSharp2.Core.BinaryData Render() { }
+        public void SetValue(string key, string? value) { }
+        public static TagLibSharp2.Core.TagReadResult<TagLibSharp2.Audible.AudibleTag> Parse(System.ReadOnlySpan<byte> data) { }
+    }
+}
 namespace TagLibSharp2.Core
 {
     public static class AtomicFileWriter
@@ -1101,6 +1191,7 @@ namespace TagLibSharp2.Core
         Asf = 13,
         Musepack = 14,
         Matroska = 15,
+        Audible = 16,
     }
     [System.Flags]
     public enum MediaTypes
@@ -1275,6 +1366,7 @@ namespace TagLibSharp2.Core
         Matroska = 128,
         FlacMetadata = 256,
         Xmp = 512,
+        Audible = 1024,
         AllTags = -1,
     }
     public sealed class ValidationIssue
