@@ -766,6 +766,97 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_EmptyClusterPosition_KeepsThePayloadWhenTheClusterGrows ()
+	{
+		var marker = new byte[] { 0xE1, 0xE2, 0xE3, 0xE4 };
+		var info = Master (0x1549A966, Element (0x7BA9, "Live"u8));
+		var position = EmptyElement (MatroskaIds.Position);
+		var cluster = Unknown (0x1F43B675, Concat (position, Element (0xEC, marker)));
+		var original = FileWith (info, cluster);
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Shifted";
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/empty-pos.mkv", original);
+		var saved = parsed.SaveToFile ("/empty-pos.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/empty-pos.mkv");
+		Assert.AreEqual ("Shifted", MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		Assert.AreEqual (1, CountOf (bytes, position));
+	}
+
+	[TestMethod]
+	public void Save_PositionPastOneByte_VoidsTheElementAndKeepsThePayload ()
+	{
+		var marker = new byte[] { 0xD1, 0xD2, 0xD3, 0xD4 };
+		var info = Master (0x1549A966, Element (0x7BA9, "Live"u8));
+		var clusterPos = (ulong)info.Length;
+		Assert.IsTrue (clusterPos <= 0x7F);
+		var position = Element (MatroskaIds.Position, new[] { (byte)clusterPos });
+		var cluster = Unknown (0x1F43B675, Concat (position, Element (0xEC, marker)));
+		var original = FileWith (info, cluster);
+		Assert.IsTrue (IsElementAt (original, clusterPos, MatroskaIds.Cluster));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = new string ('N', 400);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/wide-pos.mkv", original);
+		var saved = parsed.SaveToFile ("/wide-pos.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/wide-pos.mkv");
+		Assert.AreEqual (new string ('N', 400), MatroskaFile.Read (bytes).File!.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		var moved = SegmentOffsetOf (bytes, marker);
+		Assert.IsTrue (moved > 0xFF, "the shifted cluster offset must not fit in the old Position");
+		Assert.IsTrue (IsElementAt (bytes, (ulong)moved, MatroskaIds.Cluster));
+		Assert.AreEqual (0, CountOf (bytes, position));
+		Assert.IsFalse (ClusterHasPosition (bytes));
+	}
+
+	[TestMethod]
+	public void Save_CueCodecStatePastOneByte_IsVoidedAndCueClusterPositionStillMoves ()
+	{
+		var marker = new byte[] { 0xC1, 0xC2, 0xC3, 0xC4 };
+		var info = Master (0x1549A966, Element (0x7BA9, "Live"u8));
+		var cues = Array.Empty<byte> ();
+		byte[] codecState = [];
+		ulong clusterPos = 0;
+		for (var i = 0; i < 6; i++) {
+			clusterPos = (ulong)(info.Length + cues.Length);
+			codecState = Element (MatroskaIds.CueCodecState, new[] { (byte)clusterPos });
+			var wide = Element (MatroskaIds.CueClusterPosition, new byte[] { (byte)(clusterPos >> 8), (byte)clusterPos });
+			var point = Master (0xBB, Concat (
+				Element (0xB3, new byte[] { 0 }),
+				Master (0xB7, Concat (Element (0xF7, new byte[] { 1 }), wide, codecState))));
+			cues = WithCrc (MatroskaIds.Cues, point);
+		}
+
+		Assert.IsTrue (clusterPos <= 0x7F, "fixture CueCodecState must stay one octet wide");
+		Assert.AreEqual (clusterPos, (ulong)(info.Length + cues.Length));
+		var cluster = Unknown (0x1F43B675, Element (0xEC, marker));
+		var original = FileWith (info, cues, cluster);
+		Assert.IsTrue (IsElementAt (original, clusterPos, MatroskaIds.Cluster));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = new string ('N', 400);
+
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/wide-state.mkv", original);
+		var saved = parsed.SaveToFile ("/wide-state.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/wide-state.mkv");
+		Assert.AreEqual (1, CountOf (bytes, marker));
+		Assert.AreEqual (0, CountOf (bytes, codecState));
+		Assert.IsTrue (TryReadCueClusterPosition (bytes, out var position, out var crcOk));
+		Assert.IsTrue (crcOk);
+		Assert.IsTrue (position > 0xFF);
+		Assert.IsTrue (IsElementAt (bytes, position, MatroskaIds.Cluster));
+	}
+
+	[TestMethod]
 	public void Save_AppendedTags_DoNotChangeClusterPosition ()
 	{
 		var marker = new byte[] { 0x0D, 0x1C };
@@ -1151,6 +1242,61 @@ public partial class MatroskaFileTests
 		if (value <= 0xFFFF)
 			return new[] { (byte)(value >> 8), (byte)value };
 		return new[] { (byte)(value >> 16), (byte)(value >> 8), (byte)value };
+	}
+
+	static byte[] EmptyElement (ulong id)
+	{
+		var idBytes = Id (id);
+		var result = new byte[idBytes.Length + 1];
+		idBytes.CopyTo (result, 0);
+		result[idBytes.Length] = 0x80;
+		return result;
+	}
+
+	static int SegmentOffsetOf (byte[] file, byte[] marker)
+	{
+		if (!TrySegmentBody (file, out var body, out _))
+			return -1;
+		var at = body.AsSpan ().IndexOf (marker);
+		if (at < 0)
+			return -1;
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element)) {
+			var end = element.UnknownSize ? body.Length : element.End;
+			if (at >= element.Position && at < end)
+				return element.Position;
+			if (element.UnknownSize)
+				break;
+			offset = element.End;
+		}
+
+		return -1;
+	}
+
+	static bool ClusterHasPosition (byte[] file)
+	{
+		if (!TrySegmentBody (file, out var body, out _))
+			return false;
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element)) {
+			if (element.Id == MatroskaIds.Cluster) {
+				var end = element.UnknownSize ? body.Length : element.End;
+				var cursor = element.DataOffset;
+				while (cursor < end && EbmlReader.TryRead (body, cursor, end, out var child) && !child.UnknownSize) {
+					if (child.Id == MatroskaIds.Position)
+						return true;
+					cursor = child.End;
+				}
+
+				return false;
+			}
+
+			if (element.UnknownSize)
+				return false;
+			offset = element.End;
+		}
+
+		return false;
 	}
 
 	static byte[] CueElement (ulong clusterPos, params byte[][] extra)
