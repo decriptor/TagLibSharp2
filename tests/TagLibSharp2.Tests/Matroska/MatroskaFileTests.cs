@@ -783,6 +783,22 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void TotalTracks_Clear_RemovesAnUntargetedTotal ()
+	{
+		var original = FileWith (
+			Tags (Master (0x7373, Concat (Master (0x63C0, Array.Empty<byte> ()), Simple ("PART_NUMBER", "7"), Simple ("TOTAL_PARTS", "12")))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (12u, parsed.Tag.TotalTracks);
+		parsed.Tag.TotalTracks = null;
+		Assert.IsNull (parsed.Tag.TotalTracks);
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		AssertNumbers (again, 7, null, null, null, "cleared");
+		Assert.IsFalse (HasTagName (bytes, "TOTAL_PARTS"));
+	}
+
+	[TestMethod]
 	public void Read_TagLibWrittenTotals_FollowTheSpecLevels ()
 	{
 		// TagLib writes the track total at 30 and the disc total at 50. The spec makes 50 the track total.

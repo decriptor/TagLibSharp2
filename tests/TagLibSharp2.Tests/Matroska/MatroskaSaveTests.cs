@@ -799,6 +799,8 @@ public partial class MatroskaFileTests
 
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		// The linear walk sums the segment about twice (2 * pieces). The quadratic one is about 10,000 * pieces.
+		// The lower bound keeps the counter honest: a save that stops counting would pass the upper bound blind.
+		Assert.IsTrue (steps >= children.Count, $"summed only {steps} pieces for {children.Count}; the counter is not counting");
 		Assert.IsTrue (steps <= 8L * children.Count, $"summed {steps} pieces for {children.Count}; the offset walk is not linear");
 		var bytes = fs.ReadAllBytes ("/many-fast.mkv");
 		Assert.AreEqual ("Moved", MatroskaFile.Read (bytes).File!.Tag.Title);
