@@ -2231,6 +2231,7 @@ namespace TagLibSharp2.Matroska
         public string? SourcePath { get; }
         public TagLibSharp2.Matroska.MatroskaTag Tag { get; }
         public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Matroska.MatroskaTrack> Tracks { get; }
+        public bool TracksTruncated { get; }
         public void Dispose() { }
         public TagLibSharp2.Core.BinaryData Render(System.ReadOnlySpan<byte> originalData) { }
         public TagLibSharp2.Core.FileWriteResult SaveToFile(TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
