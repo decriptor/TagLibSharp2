@@ -53,6 +53,8 @@ internal static class Mp4AtomMapping
 		DescriptionAlias, "aART", "trkn", "disk", "tmpo", "cpil", "pgap", "rtng", "covr",
 		"soal", "soaa", "soar", "soco", "sonm", "©mvn", "©mvi", "©mvc", "©wrk", "shwm",
 		"purl", "egid", "catg", "keyw", "pcst", "©pub", "©enc", "desc", "ldes",
+		Narrator, AudibleShortTitle, AudibleParentTitle, AudibleParentShortTitle,
+		AudibleParentProductId, AudibleProductId, AudibleReleaseDate, AudibleProductVersion,
 	};
 
 	/// <summary>
@@ -104,6 +106,17 @@ internal static class Mp4AtomMapping
 	public const string EncodedBy = "©enc";
 	public const string Description = "desc";
 	public const string LongDescription = "ldes";
+
+	// Audiobook atoms written by Audible in .aax files. The atom codes are the ones ExifTool names
+	// (exiftool -listx -QuickTime:ItemList:all); '@' is a literal 0x40, not the 0xA9 copyright sign.
+	public const string Narrator = "©nrt";
+	public const string AudibleShortTitle = "@sti";
+	public const string AudibleParentTitle = "@pti";
+	public const string AudibleParentShortTitle = "@PST";
+	public const string AudibleParentProductId = "@ppi";
+	public const string AudibleProductId = "prID";
+	public const string AudibleReleaseDate = "rldt";
+	public const string AudibleProductVersion = "VERS";
 
 	// Freeform metadata namespace
 	public const string FreeformAtom = "----";
