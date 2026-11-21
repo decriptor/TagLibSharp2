@@ -2807,7 +2807,7 @@ public static class TestBuilders
 		/// <summary>
 		/// Creates covr atom.
 		/// </summary>
-		static byte[] CreateCovrAtom (byte[] imageData, int typeIndicator)
+		public static byte[] CreateCovrAtom (byte[] imageData, int typeIndicator)
 		{
 			var builder = new BinaryDataBuilder ();
 
