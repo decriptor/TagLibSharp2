@@ -113,6 +113,7 @@ namespace TagLibSharp2.Ape
         public override string? Album { get; set; }
         public override string? AlbumArtist { get; set; }
         public override string? AlbumArtistSort { get; set; }
+        public override string[] AlbumArtists { get; set; }
         public override string? AlbumSort { get; set; }
         public override string? AmazonId { get; set; }
         public override string? Artist { get; set; }
@@ -123,6 +124,7 @@ namespace TagLibSharp2.Ape
         public override string? Comment { get; set; }
         public override string? Composer { get; set; }
         public override string? ComposerSort { get; set; }
+        public override string[] Composers { get; set; }
         public override string? Conductor { get; set; }
         public override string? Copyright { get; set; }
         public override string? DateTagged { get; set; }
@@ -133,6 +135,7 @@ namespace TagLibSharp2.Ape
         public override string? EncodedBy { get; set; }
         public override string? EncoderSettings { get; set; }
         public override string? Genre { get; set; }
+        public override string[] Genres { get; set; }
         public override string? Grouping { get; set; }
         public override string? InitialKey { get; set; }
         public override bool IsCompilation { get; set; }
@@ -157,6 +160,7 @@ namespace TagLibSharp2.Ape
         public override string? MusicBrainzTrackId { get; set; }
         public override string? MusicBrainzWorkId { get; set; }
         public override string? OriginalReleaseDate { get; set; }
+        public override string[] Performers { get; set; }
         public override TagLibSharp2.Core.IPicture[] Pictures { get; set; }
         public override string? PodcastFeedUrl { get; set; }
         public override string? Publisher { get; set; }

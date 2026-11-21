@@ -201,6 +201,9 @@ public sealed class CommentFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
+		// A comment is one string. An internal NUL ends it.
+		data = Id3Text.CutAtFirstNul (data, encoding);
+
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),

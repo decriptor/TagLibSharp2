@@ -156,34 +156,15 @@ public sealed class UserTextFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
+		data = Id3Text.TrimTrailingTerminator (data, encoding);
+
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),
-			TextEncodingType.Utf16WithBom => DecodeUtf16WithBom (data),
+			TextEncodingType.Utf16WithBom => Id3Text.DecodeUtf16BomText (data),
 			TextEncodingType.Utf16BE => System.Text.Encoding.BigEndianUnicode.GetString (data),
 			_ => string.Empty
 		};
-	}
-
-	static string DecodeUtf16WithBom (ReadOnlySpan<byte> data)
-	{
-		if (data.Length < 2)
-			return string.Empty;
-
-		// Check BOM
-		var isLittleEndian = data[0] == 0xFF && data[1] == 0xFE;
-		var isBigEndian = data[0] == 0xFE && data[1] == 0xFF;
-
-		if (!isLittleEndian && !isBigEndian)
-			return System.Text.Encoding.Unicode.GetString (data); // Default to LE if no BOM
-
-		// Skip BOM and decode
-		data = data.Slice (2);
-		var encoding = isLittleEndian
-			? System.Text.Encoding.Unicode
-			: System.Text.Encoding.BigEndianUnicode;
-
-		return encoding.GetString (data);
 	}
 
 	static BinaryData EncodeText (string text, TextEncodingType encoding)

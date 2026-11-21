@@ -346,6 +346,9 @@ public sealed class InvolvedPeopleFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
+		// The last unterminated piece can end on a lone byte. Do not let that byte eat the character.
+		data = Id3Text.TrimTrailingTerminator (data, encoding);
+
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),

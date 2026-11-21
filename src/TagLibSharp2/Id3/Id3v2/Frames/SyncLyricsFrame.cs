@@ -251,7 +251,7 @@ public sealed class SyncLyricsFrame
 			Description = description
 		};
 
-		// Read synchronized items
+		// A NUL ends that line only. Later timestamps are still read.
 		while (remaining.Length > 4) {
 			var (text, textBytes) = ReadNullTerminatedString (remaining, encoding);
 			remaining = remaining.Slice (textBytes);
@@ -374,6 +374,7 @@ public sealed class SyncLyricsFrame
 		if (data.IsEmpty)
 			return string.Empty;
 
+		// ReadNullTerminatedString already ended this line at the first NUL.
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),

@@ -105,42 +105,18 @@ public sealed class TextFrame
 
 	static string DecodeTextLatin1 (ReadOnlySpan<byte> data)
 	{
-		// Strip trailing null bytes only (preserve internal nulls for multi-value support)
-		while (data.Length > 0 && data[data.Length - 1] == 0)
-			data = data.Slice (0, data.Length - 1);
-
+		data = Id3Text.TrimTrailingTerminator (data, TextEncodingType.Latin1);
 		return Polyfills.Latin1.GetString (data);
 	}
 
 	static string DecodeTextUtf8 (ReadOnlySpan<byte> data)
 	{
-		// Strip trailing null bytes only (preserve internal nulls for multi-value support)
-		while (data.Length > 0 && data[data.Length - 1] == 0)
-			data = data.Slice (0, data.Length - 1);
-
+		data = Id3Text.TrimTrailingTerminator (data, TextEncodingType.Utf8);
 		return System.Text.Encoding.UTF8.GetString (data);
 	}
 
-	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data)
-	{
-		if (data.Length < 2)
-			return string.Empty;
-
-		// Check BOM to determine endianness
-		var isLittleEndian = data[0] == 0xFF && data[1] == 0xFE;
-		var isBigEndian = data[0] == 0xFE && data[1] == 0xFF;
-
-		if (!isLittleEndian && !isBigEndian) {
-			// No BOM found - fall back to little-endian (Windows default)
-			// This handles buggy taggers that don't write BOM
-			return DecodeTextUtf16 (data, isLittleEndian: true);
-		}
-
-		// Skip BOM
-		data = data.Slice (2);
-
-		return DecodeTextUtf16 (data, isLittleEndian);
-	}
+	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data) =>
+		Id3Text.DecodeUtf16BomText (data);
 
 	static string DecodeTextUtf16BE (ReadOnlySpan<byte> data)
 	{
@@ -149,9 +125,8 @@ public sealed class TextFrame
 
 	static string DecodeTextUtf16 (ReadOnlySpan<byte> data, bool isLittleEndian)
 	{
-		// Strip trailing double-null bytes only (preserve internal nulls for multi-value support)
-		while (data.Length >= 2 && data[data.Length - 2] == 0 && data[data.Length - 1] == 0)
-			data = data.Slice (0, data.Length - 2);
+		// Width only: both UTF-16 encodings use a 2-byte terminator.
+		data = Id3Text.TrimTrailingTerminator (data, TextEncodingType.Utf16WithBom);
 
 		var encoding = isLittleEndian
 			? System.Text.Encoding.Unicode

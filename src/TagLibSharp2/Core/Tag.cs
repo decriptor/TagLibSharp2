@@ -342,8 +342,10 @@ public abstract class Tag
 	/// Used in conjunction with <see cref="Work"/> to describe the full piece.
 	/// </para>
 	/// <para>
-	/// In ID3v2, this is stored in a TXXX frame with description "MOVEMENT".
-	/// In Vorbis Comments, this is stored as MOVEMENT or MOVEMENTNAME.
+	/// In ID3v2, this is read from Apple's MVNM frame, then a TXXX frame with description "MOVEMENT".
+	/// A write stores the name in both, and a clear removes both.
+	/// In Vorbis Comments, this is stored as MOVEMENT or MOVEMENTNAME; a new value also replaces an
+	/// existing MOVEMENTNAME, and writing back the value already read changes nothing.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </para>
 	/// </remarks>
@@ -358,7 +360,8 @@ public abstract class Tag
 	/// Used with <see cref="MovementTotal"/> to show position like "Movement 2 of 4".
 	/// </para>
 	/// <para>
-	/// In ID3v2, this is stored in a TXXX frame with description "MOVEMENTNUMBER".
+	/// In ID3v2, this is read from the index half of Apple's MVIN frame ("2/4"), then a TXXX frame
+	/// with description "MOVEMENTNUMBER". A write updates both and keeps the total half of MVIN.
 	/// In Vorbis Comments, this is stored as MOVEMENTNUMBER.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </para>
@@ -374,7 +377,8 @@ public abstract class Tag
 	/// Used with <see cref="MovementNumber"/> to show position like "Movement 2 of 4".
 	/// </para>
 	/// <para>
-	/// In ID3v2, this is stored in a TXXX frame with description "MOVEMENTTOTAL".
+	/// In ID3v2, this is read from the total half of Apple's MVIN frame ("2/4"), then a TXXX frame
+	/// with description "MOVEMENTTOTAL". A write updates both and keeps the index half of MVIN.
 	/// In Vorbis Comments, this is stored as MOVEMENTTOTAL or MOVEMENTCOUNT.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </para>
@@ -1224,9 +1228,11 @@ public abstract class Tag
 				target.Genres = Genres;
 
 			// Extended single values
-			if (AlbumArtist is not null)
+			// The singular value is the first entry. Writing it after the array
+			// replaces the whole list with that one name.
+			if (AlbumArtist is not null && AlbumArtists is not { Length: > 0 })
 				target.AlbumArtist = AlbumArtist;
-			if (Composer is not null)
+			if (Composer is not null && Composers is not { Length: > 0 })
 				target.Composer = Composer;
 			if (Conductor is not null)
 				target.Conductor = Conductor;

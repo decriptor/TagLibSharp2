@@ -248,6 +248,7 @@ public sealed class Id3v2Tag : Tag
 	/// In ID3v2.4, uses the TDOR (Original Release Time) frame.
 	/// In ID3v2.3, uses the TORY (Original Release Year) frame.
 	/// When reading, falls back to the other version's frame if the primary is not found.
+	/// Setting or clearing removes both frames, then writes the frame for this version.
 	/// </remarks>
 	public override string? OriginalReleaseDate {
 		get {
@@ -264,7 +265,12 @@ public sealed class Id3v2Tag : Tag
 				return NormalizeYear (tory);
 			return NormalizeReleaseTimestamp (GetTextFrame ("TDOR"));
 		}
-		set => SetDateFrame (Version == 4 ? "TDOR" : "TORY", value, Version == 4, keepMatchingYear: false);
+		set => SetDateFrame (
+			Version == 4 ? "TDOR" : "TORY",
+			value,
+			Version == 4,
+			keepMatchingYear: false,
+			alsoClear: Version == 4 ? "TORY" : "TDOR");
 	}
 
 	/// <inheritdoc/>
@@ -991,17 +997,20 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Reads from Apple's MVNM frame first, then falls back to TXXX:MOVEMENT.
-	/// Writes to TXXX:MOVEMENT for compatibility with non-Apple software.
+	/// A write stores the same value in both, and a clear removes both.
 	/// </remarks>
 	public override string? Movement {
 		get => GetTextFrame ("MVNM") ?? GetUserText ("MOVEMENT");
-		set => SetUserText ("MOVEMENT", value);
+		set {
+			SetTextFrame ("MVNM", value);
+			SetUserText ("MOVEMENT", value);
+		}
 	}
 
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Reads from Apple's MVIN frame first (index part), then falls back to TXXX:MOVEMENTNUMBER.
-	/// Writes to TXXX:MOVEMENTNUMBER for compatibility with non-Apple software.
+	/// A write updates MVIN and the TXXX field together so the other half of MVIN is kept.
 	/// </remarks>
 	public override uint? MovementNumber {
 		get {
@@ -1016,13 +1025,19 @@ public sealed class Id3v2Tag : Tag
 			var value = GetUserText ("MOVEMENTNUMBER");
 			return uint.TryParse (value, out var result) ? result : null;
 		}
-		set => SetUserText ("MOVEMENTNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+		set {
+			var total = MovementTotal;
+			SetUserText ("MOVEMENTNUMBER", value?.ToString (CultureInfo.InvariantCulture));
+			if (total is not null)
+				SetUserText ("MOVEMENTTOTAL", total.Value.ToString (CultureInfo.InvariantCulture));
+			WriteMovementIndex (value, total);
+		}
 	}
 
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Reads from Apple's MVIN frame first (total part), then falls back to TXXX:MOVEMENTTOTAL.
-	/// Writes to TXXX:MOVEMENTTOTAL for compatibility with non-Apple software.
+	/// A write updates MVIN and the TXXX field together so the index half of MVIN is kept.
 	/// </remarks>
 	public override uint? MovementTotal {
 		get {
@@ -1037,7 +1052,30 @@ public sealed class Id3v2Tag : Tag
 			var value = GetUserText ("MOVEMENTTOTAL");
 			return uint.TryParse (value, out var result) ? result : null;
 		}
-		set => SetUserText ("MOVEMENTTOTAL", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+		set {
+			var number = MovementNumber;
+			SetUserText ("MOVEMENTTOTAL", value?.ToString (CultureInfo.InvariantCulture));
+			if (number is not null)
+				SetUserText ("MOVEMENTNUMBER", number.Value.ToString (CultureInfo.InvariantCulture));
+			WriteMovementIndex (number, value);
+		}
+	}
+
+	/// <summary>
+	/// Stores the movement index in MVIN. A null index removes MVIN; the total then lives
+	/// only in TXXX:MOVEMENTTOTAL, which the getter already reads.
+	/// </summary>
+	void WriteMovementIndex (uint? number, uint? total)
+	{
+		if (number is null) {
+			SetTextFrame ("MVIN", null);
+			return;
+		}
+
+		var index = number.Value.ToString (CultureInfo.InvariantCulture);
+		SetTextFrame ("MVIN", total is null
+			? index
+			: index + "/" + total.Value.ToString (CultureInfo.InvariantCulture));
 	}
 
 	/// <summary>
@@ -1447,11 +1485,26 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <summary>
-	/// Gets the value of a text frame by ID.
+	/// Gets the first value of a text frame by ID.
 	/// </summary>
 	/// <param name="frameId">The frame ID (e.g., TIT2, TPE1).</param>
-	/// <returns>The text value, or null if not found.</returns>
+	/// <returns>
+	/// The first value, even when that value is empty, or null when the frame is absent.
+	/// A NUL separates further values and is not included. A slash is not a separator here.
+	/// </returns>
 	public string? GetTextFrame (string frameId)
+	{
+		var text = GetRawTextFrame (frameId);
+		if (text is null)
+			return null;
+
+		return FirstTextValue (text);
+	}
+
+	/// <summary>
+	/// Gets the stored frame text, including NUL separators between values.
+	/// </summary>
+	string? GetRawTextFrame (string frameId)
 	{
 		// Use for loop instead of LINQ for better performance
 		for (var i = 0; i < _frames.Count; i++) {
@@ -1459,6 +1512,19 @@ public sealed class Id3v2Tag : Tag
 				return _frames[i].Text;
 		}
 		return null;
+	}
+
+	/// <summary>
+	/// Returns the text before the first NUL. A leading NUL is an empty value, not a reason to skip ahead.
+	/// </summary>
+	static string FirstTextValue (string text)
+	{
+		for (var i = 0; i < text.Length; i++) {
+			if (text[i] == '\0')
+				return text.Substring (0, i);
+		}
+
+		return text;
 	}
 
 	/// <summary>
@@ -1472,7 +1538,8 @@ public sealed class Id3v2Tag : Tag
 	/// </remarks>
 	public IReadOnlyList<string> GetTextFrameValues (string frameId)
 	{
-		var text = GetTextFrame (frameId);
+		// Raw text. GetTextFrame returns only the first value, which would drop the rest.
+		var text = GetRawTextFrame (frameId);
 		if (string.IsNullOrEmpty (text))
 			return Array.Empty<string> ();
 
@@ -1635,10 +1702,12 @@ public sealed class Id3v2Tag : Tag
 	/// leaves the timestamp in place. An invalid value also leaves the existing frame.
 	/// Null or empty still clears it.
 	/// </remarks>
-	void SetDateFrame (string frameId, string? value, bool timestamp, bool keepMatchingYear)
+	void SetDateFrame (string frameId, string? value, bool timestamp, bool keepMatchingYear, string? alsoClear = null)
 	{
 		if (value is null || value.Length == 0) {
 			SetTextFrame (frameId, null);
+			if (alsoClear is not null)
+				SetTextFrame (alsoClear, null);
 			return;
 		}
 
@@ -1652,6 +1721,8 @@ public sealed class Id3v2Tag : Tag
 		if (normalized is null)
 			return;
 
+		if (alsoClear is not null)
+			SetTextFrame (alsoClear, null);
 		SetTextFrame (frameId, normalized);
 	}
 
@@ -2052,12 +2123,15 @@ public sealed class Id3v2Tag : Tag
 	/// Gets the value of a user-defined text frame (TXXX) by description.
 	/// </summary>
 	/// <param name="description">The description (key) of the TXXX frame.</param>
-	/// <returns>The value, or null if not found.</returns>
+	/// <returns>
+	/// The first value, even when that value is empty, or null when the frame is absent.
+	/// An embedded NUL is not included. The frame still stores the rest of the text.
+	/// </returns>
 	public string? GetUserText (string description)
 	{
 		for (var i = 0; i < _userTextFrames.Count; i++) {
 			if (string.Equals (_userTextFrames[i].Description, description, StringComparison.OrdinalIgnoreCase))
-				return _userTextFrames[i].Value;
+				return FirstTextValue (_userTextFrames[i].Value);
 		}
 		return null;
 	}

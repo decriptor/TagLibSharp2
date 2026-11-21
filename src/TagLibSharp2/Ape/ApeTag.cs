@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using TagLibSharp2.Core;
 
 #pragma warning disable CA1307 // Specify StringComparison for clarity - IndexOf with char doesn't need it
@@ -91,6 +92,7 @@ public sealed class ApeTag : Tag
 		public const string Artist = "Artist";
 		public const string Album = "Album";
 		public const string AlbumArtist = "Album Artist";
+		public const string AlbumArtistAlias = "ALBUMARTIST";
 		public const string Year = "Year";
 		public const string Date = "Date"; // Alternative to Year
 		public const string Comment = "Comment";
@@ -176,10 +178,24 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// The first performer. Other names stay on <see cref="Performers"/>; a comma does not join them.
+	/// </remarks>
 	public override string? Artist {
-		get => GetValue (Keys.Artist);
+		get => ReadFirstName (Keys.Artist);
 		set => SetOrRemove (Keys.Artist, value);
 	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one item. A NUL separates them, and a single name has no extra NUL.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] Performers {
+		get => GetTextList (Keys.Artist);
+		set => SetTextList (Keys.Artist, value);
+	}
+#pragma warning restore CA1819
 
 	/// <inheritdoc/>
 	public override string? Album {
@@ -191,18 +207,51 @@ public sealed class ApeTag : Tag
 	/// Gets or sets the album artist.
 	/// </summary>
 	/// <remarks>
-	/// Reads from "Album Artist" with fallback to "ALBUMARTIST" for compatibility.
-	/// Writes to "Album Artist".
+	/// The first album artist. A text name on "Album Artist" wins, then a text name on
+	/// "ALBUMARTIST". A locator is used only when neither item has text.
+	/// Setting or clearing removes both items and stores the name in "Album Artist".
 	/// </remarks>
 	public override string? AlbumArtist {
-		get => GetValue (Keys.AlbumArtist) ?? GetValue ("ALBUMARTIST");
-		set => SetOrRemove (Keys.AlbumArtist, value);
+		get => ReadFirstName (Keys.AlbumArtist, Keys.AlbumArtistAlias);
+		set => SetOrRemove (Keys.AlbumArtist, value, Keys.AlbumArtistAlias);
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one "Album Artist" item, separated by NUL. A single name has no extra NUL.
+	/// Reading also accepts "ALBUMARTIST". Setting or clearing removes both items.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] AlbumArtists {
+		get {
+			var values = GetTextList (Keys.AlbumArtist);
+			return values.Length > 0 ? values : GetTextList (Keys.AlbumArtistAlias);
+		}
+		set => SetTextList (Keys.AlbumArtist, value, Keys.AlbumArtistAlias);
+	}
+#pragma warning restore CA1819
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads "Year", then "Date". Writing back the value already read changes nothing.
+	/// A new value is written to "Year" and to an existing "Date". Clearing removes both.
+	/// </remarks>
 	public override string? Year {
 		get => GetValue (Keys.Year) ?? GetValue (Keys.Date);
-		set => SetOrRemove (Keys.Year, value);
+		set {
+			if (string.IsNullOrEmpty (value)) {
+				_items.Remove (Keys.Year);
+				_items.Remove (Keys.Date);
+				return;
+			}
+
+			if (string.Equals (Year, value, StringComparison.Ordinal))
+				return;
+
+			SetValue (Keys.Year, value!);
+			if (_items.ContainsKey (Keys.Date))
+				SetValue (Keys.Date, value!);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -212,10 +261,24 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// The first genre. Other names stay on <see cref="Genres"/>; a comma does not join them.
+	/// </remarks>
 	public override string? Genre {
-		get => GetValue (Keys.Genre);
+		get => ReadFirstName (Keys.Genre);
 		set => SetOrRemove (Keys.Genre, value);
 	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one item. A NUL separates them, and a single name has no extra NUL.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] Genres {
+		get => GetTextList (Keys.Genre);
+		set => SetTextList (Keys.Genre, value);
+	}
+#pragma warning restore CA1819
 
 	/// <inheritdoc/>
 	public override uint? Track {
@@ -292,10 +355,24 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// The first composer. Other names stay on <see cref="Composers"/>; a comma does not join them.
+	/// </remarks>
 	public override string? Composer {
-		get => GetValue (Keys.Composer);
+		get => ReadFirstName (Keys.Composer);
 		set => SetOrRemove (Keys.Composer, value);
 	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Names share one item. A NUL separates them, and a single name has no extra NUL.
+	/// </remarks>
+#pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
+	public override string[] Composers {
+		get => GetTextList (Keys.Composer);
+		set => SetTextList (Keys.Composer, value);
+	}
+#pragma warning restore CA1819
 
 	/// <inheritdoc/>
 	public override string? Conductor {
@@ -729,6 +806,96 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <summary>
+	/// Reads every non-empty NUL-separated value. Internal NULs are separators, not stripped text.
+	/// </summary>
+	string[] GetTextList (string key)
+	{
+		if (!_items.TryGetValue (key, out var item) || item.ItemType != ApeItemType.Text)
+			return [];
+
+		var text = Encoding.UTF8.GetString (item.RawValue);
+		if (text.Length == 0)
+			return [];
+
+		var parts = text.Split ('\0');
+		var result = new List<string> (parts.Length);
+		for (var i = 0; i < parts.Length; i++) {
+			if (parts[i].Length != 0)
+				result.Add (parts[i]);
+		}
+
+		return result.Count == 0 ? [] : result.ToArray ();
+	}
+
+	/// <summary>
+	/// The first text name on <paramref name="key"/>, or on <paramref name="alias"/>
+	/// when the primary item has none. A locator, an empty text item, or a binary
+	/// item is used only when neither key has a text name, and then it matches
+	/// <see cref="GetValue"/>.
+	/// </summary>
+	string? ReadFirstName (string key, string? alias = null)
+	{
+		var text = FirstTextName (key);
+		if (text is null && alias is not null)
+			text = FirstTextName (alias);
+		if (text is not null)
+			return text;
+
+		var primary = ReadListedOrRaw (key);
+		if (!string.IsNullOrEmpty (primary) || alias is null)
+			return primary;
+
+		var secondary = ReadListedOrRaw (alias);
+		return string.IsNullOrEmpty (secondary) ? primary ?? secondary : secondary;
+	}
+
+	string? FirstTextName (string key)
+	{
+		var names = GetTextList (key);
+		return names.Length == 0 ? null : names[0];
+	}
+
+	string? ReadListedOrRaw (string key)
+	{
+		if (!_items.TryGetValue (key, out var item))
+			return null;
+
+		if (item.ItemType == ApeItemType.Text) {
+			var names = GetTextList (key);
+			if (names.Length > 0)
+				return names[0];
+		}
+
+		return item.ValueAsString;
+	}
+
+	/// <summary>
+	/// Stores names in one item. A single name has no extra NUL.
+	/// <paramref name="alias"/> is removed on set and on clear so a second item cannot outlive the write.
+	/// </summary>
+	void SetTextList (string key, string[]? values, string? alias = null)
+	{
+		if (alias is not null)
+			_items.Remove (alias);
+
+		if (values is null || values.Length == 0) {
+			_items.Remove (key);
+			return;
+		}
+
+		var kept = new List<string> (values.Length);
+		for (var i = 0; i < values.Length; i++) {
+			if (!string.IsNullOrEmpty (values[i]))
+				kept.Add (values[i]);
+		}
+
+		if (kept.Count == 0)
+			_items.Remove (key);
+		else
+			SetValue (key, string.Join ("\0", kept));
+	}
+
+	/// <summary>
 	/// Gets a binary item by key (e.g., cover art).
 	/// </summary>
 	public ApeBinaryData? GetBinaryItem (string key)
@@ -749,8 +916,11 @@ public sealed class ApeTag : Tag
 	/// </summary>
 	public bool Remove (string key) => _items.Remove (key);
 
-	private void SetOrRemove (string key, string? value)
+	private void SetOrRemove (string key, string? value, string? alias = null)
 	{
+		if (alias is not null)
+			_items.Remove (alias);
+
 		if (string.IsNullOrEmpty (value)) {
 			_items.Remove (key);
 		} else {

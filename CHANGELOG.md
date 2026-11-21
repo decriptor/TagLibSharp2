@@ -5,6 +5,16 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- An APE artist, album artist, composer, or genre is the first name. It is not a comma-joined string. A Basic copy from APE into MP4, ASF, RIFF INFO, or ID3v1 keeps that first name. A copy into ID3v2 keeps the full list.
+- Clearing an APE year also removes `Date`, and setting a new year also writes it to an existing `Date`. A locator reads as the same string a title locator reads. An empty text item reads as an empty string, and a binary item reads as null, for a name and for a title.
+- Clearing a Vorbis original release date also removes `ORIGINALYEAR`, and setting a new date rewrites an existing `ORIGINALYEAR` to its four-digit year. Clearing a movement also removes `MOVEMENTNAME`, and setting a new movement also writes it to an existing `MOVEMENTNAME`. Writing back the APE year, Vorbis original release date, or Vorbis movement already read changes nothing, so a Picard or Mp3tag tag keeps every field.
+- An ID3v2 movement write now also stores the name in Apple's `MVNM` frame, and a movement number or total also updates `MVIN`, keeping the other half. Clearing removes those frames too.
+- Setting or clearing an ID3v2 original release date removes both `TDOR` and `TORY`, then writes the frame for the tag's version, so the other version's frame cannot come back.
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes

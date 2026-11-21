@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Globalization;
+using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
@@ -1655,6 +1656,343 @@ public class ApeTagTests
 		_ = failure.GetHashCode ();
 		Assert.IsFalse (result.Equals ((object?)null));
 		Assert.IsTrue (failure.Equals ((object)failure));
+	}
+
+	[TestMethod]
+	public void TextLists_RoundTrip_KeepsEveryNameWithoutAnExtraNul ()
+	{
+		var tag = new ApeTag {
+			Performers = ["Eve", "Fay"],
+			AlbumArtists = ["Ada", "Bea"],
+			Composers = ["Cara", "Dan"],
+			Genres = ["Jazz", "Soul"]
+		};
+
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("Fay", tag.Performers[1]);
+		Assert.HasCount (2, tag.AlbumArtists);
+		Assert.AreEqual ("Bea", tag.AlbumArtists[1]);
+		Assert.HasCount (2, tag.Composers);
+		Assert.AreEqual ("Dan", tag.Composers[1]);
+		Assert.HasCount (2, tag.Genres);
+		Assert.AreEqual ("Soul", tag.Genres[1]);
+		AssertRaw (tag, "Artist", "Eve\0Fay");
+		AssertRaw (tag, "Album Artist", "Ada\0Bea");
+		AssertRaw (tag, "Composer", "Cara\0Dan");
+		AssertRaw (tag, "Genre", "Jazz\0Soul");
+
+		var parsedMany = ApeTag.Parse (tag.Render ().Span);
+		Assert.IsTrue (parsedMany.IsSuccess, parsedMany.Error);
+		Assert.HasCount (2, parsedMany.Tag!.AlbumArtists);
+		Assert.AreEqual ("Ada", parsedMany.Tag.AlbumArtists[0]);
+		Assert.AreEqual ("Bea", parsedMany.Tag.AlbumArtists[1]);
+		Assert.HasCount (2, parsedMany.Tag.Composers);
+		Assert.HasCount (2, parsedMany.Tag.Performers);
+		Assert.HasCount (2, parsedMany.Tag.Genres);
+
+		tag.Performers = ["Eve"];
+		tag.AlbumArtists = ["Ada"];
+		tag.Composers = ["Cara"];
+		tag.Genres = ["Jazz"];
+		AssertRaw (tag, "Artist", "Eve");
+		AssertRaw (tag, "Album Artist", "Ada");
+		AssertRaw (tag, "Composer", "Cara");
+		AssertRaw (tag, "Genre", "Jazz");
+
+		var parsed = ApeTag.Parse (tag.Render ().Span);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.HasCount (1, parsed.Tag!.Performers);
+		Assert.AreEqual ("Eve", parsed.Tag.Performers[0]);
+		Assert.AreEqual ("Ada", parsed.Tag.AlbumArtists[0]);
+		Assert.AreEqual ("Cara", parsed.Tag.Composers[0]);
+		Assert.AreEqual ("Jazz", parsed.Tag.Genres[0]);
+
+		var alias = new ApeTag ();
+		alias.SetValue ("ALBUMARTIST", "Ada\0Bea");
+		Assert.HasCount (2, alias.AlbumArtists);
+		Assert.AreEqual ("Ada", alias.AlbumArtists[0]);
+		Assert.AreEqual ("Bea", alias.AlbumArtists[1]);
+	}
+
+	[TestMethod]
+	public void SingularNames_ReturnTheFirstListValue ()
+	{
+		var tag = new ApeTag {
+			Performers = ["A", "B"],
+			AlbumArtists = ["Ada", "Bea"],
+			Composers = ["Cara", "Dan"],
+			Genres = ["Jazz", "Soul"]
+		};
+
+		Assert.AreEqual ("A", tag.Artist);
+		Assert.HasCount (2, tag.Performers);
+		Assert.AreEqual ("A", tag.Performers[0]);
+		Assert.AreEqual ("B", tag.Performers[1]);
+		Assert.AreEqual ("Ada", tag.AlbumArtist);
+		Assert.HasCount (2, tag.AlbumArtists);
+		Assert.AreEqual ("Bea", tag.AlbumArtists[1]);
+		Assert.AreEqual ("Cara", tag.Composer);
+		Assert.HasCount (2, tag.Composers);
+		Assert.AreEqual ("Dan", tag.Composers[1]);
+		Assert.AreEqual ("Jazz", tag.Genre);
+		Assert.HasCount (2, tag.Genres);
+		Assert.AreEqual ("Soul", tag.Genres[1]);
+
+		var parsed = ApeTag.Parse (tag.Render ().Span);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.AreEqual ("A", parsed.Tag!.Artist);
+		Assert.HasCount (2, parsed.Tag.Performers);
+		Assert.AreEqual ("B", parsed.Tag.Performers[1]);
+		Assert.AreEqual ("Ada", parsed.Tag.AlbumArtist);
+		Assert.AreEqual ("Cara", parsed.Tag.Composer);
+		Assert.AreEqual ("Jazz", parsed.Tag.Genre);
+		Assert.HasCount (2, parsed.Tag.Genres);
+	}
+
+	[TestMethod]
+	public void AlbumArtists_SetAndClear_RemovesBothItemNames ()
+	{
+		var replaced = new ApeTag ();
+		replaced.SetValue ("Album Artist", "Cara\0Dan");
+		replaced.SetValue ("ALBUMARTIST", "Ada\0Bea");
+		replaced.AlbumArtists = ["A"];
+
+		Assert.AreEqual ("A", replaced.AlbumArtist);
+		Assert.HasCount (1, replaced.AlbumArtists);
+		Assert.AreEqual ("A", replaced.AlbumArtists[0]);
+		Assert.IsNull (replaced.GetValue ("ALBUMARTIST"));
+		AssertRaw (replaced, "Album Artist", "A");
+
+		var parsed = ApeTag.Parse (replaced.Render ().Span);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		Assert.HasCount (1, parsed.Tag!.AlbumArtists);
+		Assert.AreEqual ("A", parsed.Tag.AlbumArtists[0]);
+		Assert.AreEqual ("A", parsed.Tag.AlbumArtist);
+		Assert.IsNull (parsed.Tag.GetValue ("ALBUMARTIST"));
+		Assert.IsNull (parsed.Tag.GetValue ("AlbumArtist"));
+
+		var singular = new ApeTag ();
+		singular.SetValue ("Album Artist", "Ada\0Bea");
+		singular.SetValue ("ALBUMARTIST", "Cara\0Dan");
+		singular.AlbumArtist = "A";
+		Assert.AreEqual ("A", singular.AlbumArtist);
+		Assert.HasCount (1, singular.AlbumArtists);
+		Assert.IsNull (singular.GetValue ("ALBUMARTIST"));
+		Assert.AreEqual ("A", singular.GetValue ("Album Artist"));
+
+		singular.AlbumArtist = null;
+		Assert.IsNull (singular.AlbumArtist);
+		Assert.HasCount (0, singular.AlbumArtists);
+		Assert.IsNull (singular.GetValue ("Album Artist"));
+		Assert.IsNull (singular.GetValue ("ALBUMARTIST"));
+		Assert.AreEqual (0, singular.ItemCount);
+
+		var cleared = new ApeTag ();
+		cleared.SetValue ("Album Artist", "Cara\0Dan");
+		cleared.SetValue ("ALBUMARTIST", "Ada\0Bea");
+		cleared.AlbumArtists = null!;
+
+		var parsedClear = ApeTag.Parse (cleared.Render ().Span);
+		Assert.IsTrue (parsedClear.IsSuccess, parsedClear.Error);
+		Assert.HasCount (0, parsedClear.Tag!.AlbumArtists);
+		Assert.IsNull (parsedClear.Tag.AlbumArtist);
+		Assert.IsNull (parsedClear.Tag.GetValue ("ALBUMARTIST"));
+		Assert.IsNull (parsedClear.Tag.GetValue ("Album Artist"));
+		Assert.AreEqual (0, parsedClear.Tag.ItemCount);
+
+		var empty = new ApeTag ();
+		empty.SetValue ("ALBUMARTIST", "Ada\0Bea");
+		empty.AlbumArtists = [];
+		Assert.AreEqual (0, empty.ItemCount);
+		Assert.IsNull (empty.AlbumArtist);
+		Assert.HasCount (0, empty.AlbumArtists);
+
+		var blanks = new ApeTag ();
+		blanks.SetValue ("Album Artist", "Ada\0Bea");
+		blanks.SetValue ("ALBUMARTIST", "Cara");
+		blanks.AlbumArtists = [""];
+		Assert.AreEqual (0, blanks.ItemCount);
+		Assert.IsNull (blanks.GetValue ("ALBUMARTIST"));
+		Assert.IsNull (blanks.GetValue ("Album Artist"));
+	}
+
+	[TestMethod]
+	public void TextList_EmptyPartsAndNonText_AreNotNames ()
+	{
+		var split = new ApeTag ();
+		split.SetValue ("Artist", "A\0\0B");
+		Assert.AreEqual ("A", split.Artist);
+		Assert.HasCount (2, split.Performers);
+		Assert.AreEqual ("B", split.Performers[1]);
+
+		split.Performers = ["A", "", "B"];
+		Assert.AreEqual ("A", split.Artist);
+		Assert.HasCount (2, split.Performers);
+		Assert.AreEqual ("B", split.Performers[1]);
+		AssertRaw (split, "Artist", "A\0B");
+
+		var onlyNuls = new ApeTag ();
+		onlyNuls.SetValue ("Artist", "\0\0");
+		Assert.AreEqual ("", onlyNuls.Artist);
+		Assert.HasCount (0, onlyNuls.Performers);
+
+		var emptyText = new ApeTag ();
+		emptyText.SetValue ("Genre", "");
+		Assert.AreEqual ("", emptyText.Genre);
+		Assert.HasCount (0, emptyText.Genres);
+
+		var cleared = new ApeTag { Performers = ["A", "B"], Composers = ["Cara", "Dan"] };
+		cleared.Performers = null!;
+		cleared.Composers = [];
+		Assert.IsNull (cleared.Artist);
+		Assert.IsNull (cleared.GetValue ("Artist"));
+		Assert.IsNull (cleared.Composer);
+		Assert.IsNull (cleared.GetValue ("Composer"));
+		Assert.HasCount (0, cleared.Performers);
+		Assert.HasCount (0, cleared.Composers);
+
+		var binary = new ApeTag ();
+		binary.SetBinaryItem ("Artist", "a.jpg", [0x01]);
+		Assert.IsNull (binary.Artist);
+		Assert.HasCount (0, binary.Performers);
+	}
+
+	[TestMethod]
+	public void Year_Set_RewritesDate_ClearRemovesBoth ()
+	{
+		var replaced = new ApeTag ();
+		replaced.SetValue ("Date", "1999");
+		replaced.Year = "2001";
+
+		Assert.AreEqual ("2001", replaced.Year);
+		Assert.AreEqual ("2001", replaced.GetValue ("Year"));
+		Assert.AreEqual ("2001", replaced.GetValue ("Date"));
+
+		replaced.Year = null;
+		Assert.IsNull (replaced.Year);
+		Assert.IsNull (replaced.GetValue ("Year"));
+		Assert.IsNull (replaced.GetValue ("Date"));
+
+		var cleared = new ApeTag ();
+		cleared.SetValue ("Date", "1999-05-01");
+		cleared.Year = "";
+		Assert.IsNull (cleared.Year);
+		Assert.IsNull (cleared.GetValue ("Date"));
+
+		var noDate = new ApeTag ();
+		noDate.Year = "2001";
+		Assert.IsNull (noDate.GetValue ("Date"));
+	}
+
+	[TestMethod]
+	public void Year_UnchangedWriteBack_KeepsDate ()
+	{
+		var both = new ApeTag ();
+		both.SetValue ("Year", "2001");
+		both.SetValue ("Date", "2001-05-03");
+		both.Year = both.Year;
+
+		var reparsed = ApeTag.Parse (both.Render ().Span);
+		Assert.IsTrue (reparsed.IsSuccess, reparsed.Error);
+		Assert.AreEqual ("2001", reparsed.Tag!.GetValue ("Year"));
+		Assert.AreEqual ("2001-05-03", reparsed.Tag.GetValue ("Date"));
+
+		var dateOnly = new ApeTag ();
+		dateOnly.SetValue ("Date", "2001-05-03");
+		dateOnly.Year = dateOnly.Year;
+		Assert.AreEqual ("2001-05-03", dateOnly.Year);
+		Assert.AreEqual ("2001-05-03", dateOnly.GetValue ("Date"));
+	}
+
+	[TestMethod]
+	public void LocatorName_ReadsTheSameStringAsTitle ()
+	{
+		const string url = "http://example.com/name";
+		var title = TagWith (CreateExternalLocatorItem ("Title", url));
+		var artist = TagWith (CreateExternalLocatorItem ("Artist", url));
+		var albumArtist = TagWith (CreateExternalLocatorItem ("Album Artist", url));
+		var composer = TagWith (CreateExternalLocatorItem ("Composer", url));
+		var genre = TagWith (CreateExternalLocatorItem ("Genre", url));
+
+		Assert.AreEqual (url, title.Title);
+		Assert.AreEqual (title.Title, artist.Artist);
+		Assert.AreEqual (url, albumArtist.AlbumArtist);
+		Assert.AreEqual (url, composer.Composer);
+		Assert.AreEqual (url, genre.Genre);
+		Assert.HasCount (0, artist.Performers);
+
+		var emptyTitle = new ApeTag ();
+		emptyTitle.SetValue ("Title", "");
+		var emptyArtist = new ApeTag ();
+		emptyArtist.SetValue ("Artist", "");
+		Assert.AreEqual (emptyTitle.Title, emptyArtist.Artist);
+
+		var binaryTitle = new ApeTag ();
+		binaryTitle.SetBinaryItem ("Title", "t.jpg", [0x01]);
+		var binaryArtist = new ApeTag ();
+		binaryArtist.SetBinaryItem ("Artist", "a.jpg", [0x01]);
+		Assert.IsNull (binaryTitle.Title);
+		Assert.IsNull (binaryArtist.Artist);
+	}
+
+	[TestMethod]
+	public void AlbumArtist_LocatorDoesNotHideAliasText ()
+	{
+		const string url = "http://example.com/name";
+		var names = new[] { "Ada", "Bea" };
+		var hidden = TagWith (
+			CreateExternalLocatorItem ("Album Artist", url),
+			CreateTextItem ("ALBUMARTIST", "Ada\0Bea"));
+
+		Assert.AreEqual ("Ada", hidden.AlbumArtist);
+		CollectionAssert.AreEqual (names, hidden.AlbumArtists);
+
+		var onlyLocator = TagWith (CreateExternalLocatorItem ("Album Artist", url));
+		Assert.AreEqual (url, onlyLocator.AlbumArtist);
+		Assert.HasCount (0, onlyLocator.AlbumArtists);
+
+		var textWins = TagWith (
+			CreateTextItem ("Album Artist", "Ada\0Bea"),
+			CreateExternalLocatorItem ("ALBUMARTIST", url));
+		Assert.AreEqual ("Ada", textWins.AlbumArtist);
+		CollectionAssert.AreEqual (names, textWins.AlbumArtists);
+	}
+
+	static ApeTag TagWith (params byte[][] items)
+	{
+		using var body = new MemoryStream ();
+		foreach (var item in items)
+			body.Write (item);
+		var itemsData = body.ToArray ();
+		var footer = CreateValidFooter (2000, (uint)(itemsData.Length + 32), (uint)items.Length, 0);
+		var data = new byte[itemsData.Length + footer.Length];
+		itemsData.CopyTo (data, 0);
+		footer.CopyTo (data, itemsData.Length);
+		var parsed = ApeTag.Parse (data);
+		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+		return parsed.Tag!;
+	}
+
+	static void AssertRaw (ApeTag tag, string key, string expected)
+	{
+		var raw = RawText (tag, key);
+		CollectionAssert.AreEqual (Encoding.UTF8.GetBytes (expected), raw);
+	}
+
+	static byte[] RawText (ApeTag tag, string key)
+	{
+		var bytes = tag.Render ().ToArray ();
+		var items = bytes.AsSpan (0, bytes.Length - ApeTagFooter.Size);
+		while (!items.IsEmpty) {
+			var parsed = ApeTagItem.Parse (items);
+			Assert.IsTrue (parsed.IsSuccess, parsed.Error);
+			if (string.Equals (parsed.Item!.Key, key, StringComparison.OrdinalIgnoreCase))
+				return parsed.Item.RawValue;
+			items = items.Slice (parsed.BytesConsumed);
+		}
+
+		Assert.Fail ("Missing " + key);
+		return [];
 	}
 
 	[TestMethod]
