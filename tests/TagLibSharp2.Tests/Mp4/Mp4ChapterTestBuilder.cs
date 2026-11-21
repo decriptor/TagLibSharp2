@@ -95,6 +95,12 @@ internal static class Mp4ChapterTestBuilder
 
 		/// <summary>The text traf's tfdt baseMediaDecodeTime.</summary>
 		public ulong FragmentDecodeTime { get; set; }
+
+		/// <summary>
+		/// Four stray bytes at the end of the moof (1) or of the text traf (2), which do not parse as a box, or a box
+		/// that does not parse in front of the text traf (3), which leaves that traf unread.
+		/// </summary>
+		public int FragmentTail { get; set; }
 	}
 
 	/// <summary>How a test traf locates its data (ISO 14496-12 §8.8.7).</summary>
@@ -168,13 +174,13 @@ internal static class Mp4ChapterTestBuilder
 		var moofStart = ftyp.Length + audioMdat.Length + moov.Length;
 		byte[] audioFragment = options.Fragment == FragmentBase.PreviousTraf ? new byte[20] : [];
 
-		var draft = Moof (options.Fragment!.Value, 0, 0, textSizes, durations, options.FragmentDecodeTime);
+		var draft = Moof (options.Fragment!.Value, 0, 0, textSizes, durations, options.FragmentDecodeTime, options.FragmentTail);
 		var fragmentData = moofStart + draft.Length + 8;
-		var moof = Moof (options.Fragment.Value, moofStart, fragmentData, textSizes, durations, options.FragmentDecodeTime);
+		var moof = Moof (options.Fragment.Value, moofStart, fragmentData, textSizes, durations, options.FragmentDecodeTime, options.FragmentTail);
 		return [.. ftyp, .. audioMdat, .. moov, .. moof, .. Mp4TestBuilder.CreateBox ("mdat", [.. audioFragment, .. text])];
 	}
 
-	static byte[] Moof (FragmentBase mode, int moofStart, int dataStart, uint[] sizes, uint[] durations, ulong decodeTime)
+	static byte[] Moof (FragmentBase mode, int moofStart, int dataStart, uint[] sizes, uint[] durations, ulong decodeTime, int tail)
 	{
 		var trafs = new List<byte> ();
 		var textStart = dataStart;
@@ -197,13 +203,16 @@ internal static class Mp4ChapterTestBuilder
 			FragmentBase.TfhdDefaults => (0x02001Au, [.. U32 (TextTrackId), .. U32 (1), .. U32 (durations[0]), .. U32 (sizes[0])], 0x1u, U32 ((uint)(textStart - moofStart))),
 			_ => (0u, U32 (TextTrackId), 0x300u, Array.Empty<byte> ()),
 		};
+		if (tail == 3)
+			trafs.AddRange ((byte[])[0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!']);
 		trafs.AddRange (Mp4TestBuilder.CreateBox ("traf", [
 			.. Mp4TestBuilder.CreateFullBox ("tfhd", 0, tfhdFlags, tfhdBody),
 			.. Mp4TestBuilder.CreateFullBox ("tfdt", 1, 0, U64 (decodeTime)),
 			.. Mp4TestBuilder.CreateFullBox ("trun", 0, trunFlags, [.. U32 ((uint)sizes.Length), .. trunOffset, .. entries]),
+			.. (tail == 2 ? new byte[4] : []),
 		]));
 
-		return Mp4TestBuilder.CreateBox ("moof", [.. Mp4TestBuilder.CreateFullBox ("mfhd", 0, 0, U32 (1)), .. trafs]);
+		return Mp4TestBuilder.CreateBox ("moof", [.. Mp4TestBuilder.CreateFullBox ("mfhd", 0, 0, U32 (1)), .. trafs, .. (tail == 1 ? new byte[4] : [])]);
 	}
 
 	static byte[] U32 (uint value)
