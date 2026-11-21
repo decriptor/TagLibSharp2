@@ -249,6 +249,122 @@ public class Mp4PreservationTests
 		Assert.AreEqual ("Retitled", reread.File.Title);
 	}
 
+	[TestMethod]
+	public void Clear_ThenSet_WritesOnlyTheNewFields ()
+	{
+		const string mean = "com.apple.iTunes";
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (
+			TestBuilders.Mp4.CreateBox ("orch", [0x0A, 0x0B]),
+			TestBuilders.Mp4.CreateBox ("©nam", [0x01, 0x02, 0x03, 0x04]),
+			TestBuilders.Mp4.CreateIlstChild ("©ART", 1, Encoding.UTF8.GetBytes ("Artist")),
+			TestBuilders.Mp4.CreateFreeformAtom (mean, "CUSTOM", "old"),
+			TestBuilders.Mp4.CreateFreeformAtom (mean, "OTHER", "gone"),
+			FreeformWithoutData (mean, "EMPTYF"));
+
+		var result = Mp4File.Read (data);
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		var file = result.File!;
+
+		file.Tag!.Clear ();
+		file.Title = "New";
+		file.SetFreeformTag (mean, "CUSTOM", "again");
+		file.SetFreeformTag (mean, "EMPTYF", "filled");
+
+		var rendered = file.Render (data);
+		Assert.AreEqual (0, Count (rendered.Span, "orch"u8));
+		Assert.AreEqual (1, Count (rendered.Span, NameType ()));
+		Assert.AreEqual (0, Count (rendered.Span, "Artist"u8));
+		Assert.AreEqual (2, Count (rendered.Span, "----"u8));
+		Assert.AreEqual (0, Count (rendered.Span, "OTHER"u8));
+
+		var reread = Mp4File.Read (rendered.Span);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("New", reread.File!.Title);
+		Assert.AreEqual ("again", reread.File.GetFreeformTag (mean, "CUSTOM"));
+		Assert.AreEqual ("filled", reread.File.GetFreeformTag (mean, "EMPTYF"));
+		Assert.IsNull (reread.File.Tag!.Artist);
+	}
+
+	[TestMethod]
+	public void MalformedTitle_TitleCleared_LeavesNoTitleAtom ()
+	{
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("OldTitle")),
+			TestBuilders.Mp4.CreateBox ("©nam", [0x01, 0x02, 0x03, 0x04]),
+			TestBuilders.Mp4.CreateIlstChild ("©ART", 1, Encoding.UTF8.GetBytes ("Artist")));
+
+		var file = Mp4File.Read (data).File!;
+		file.Title = null;
+
+		var rendered = file.Render (data);
+		Assert.AreEqual (0, Count (rendered.Span, NameType ()));
+		var reread = Mp4File.Read (rendered.Span);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.IsNull (reread.File!.Title);
+		Assert.AreEqual ("Artist", reread.File.Tag!.Artist);
+	}
+
+	[TestMethod]
+	public void Freeform_Remove_DropsEmptyPreservedTwin ()
+	{
+		const string mean = "com.apple.iTunes";
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (
+			TestBuilders.Mp4.CreateFreeformAtom (mean, "CUSTOM", "old"),
+			FreeformWithoutData (mean, "CUSTOM"),
+			TestBuilders.Mp4.CreateIlstChild ("©ART", 1, Encoding.UTF8.GetBytes ("Artist")));
+
+		var file = Mp4File.Read (data).File!;
+		file.SetFreeformTag (mean, "CUSTOM", null);
+
+		var rendered = file.Render (data);
+		Assert.AreEqual (0, Count (rendered.Span, "----"u8));
+		Assert.AreEqual (0, Count (rendered.Span, "CUSTOM"u8));
+	}
+
+	[TestMethod]
+	public void MalformedCover_PicturesReplaced_WritesOnlyTheNewCover ()
+	{
+		var jpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (
+			TestBuilders.Mp4.CreateBox ("covr", [0x01, 0x02, 0x03, 0x04]),
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("T")));
+
+		var replaced = Mp4File.Read (data).File!;
+		Assert.IsEmpty (replaced.Pictures);
+		replaced.Tag!.Pictures = [new Mp4Picture (jpeg, isJpeg: true)];
+		var rendered = replaced.Render (data);
+		Assert.AreEqual (1, Count (rendered.Span, "covr"u8));
+		var reread = Mp4File.Read (rendered.Span);
+		Assert.HasCount (1, reread.File!.Pictures);
+		CollectionAssert.AreEqual (jpeg, reread.File.Pictures[0].PictureData.ToArray ());
+
+		var removed = Mp4File.Read (data).File!;
+		removed.Tag!.Pictures = [];
+		Assert.AreEqual (0, Count (removed.Render (data).Span, "covr"u8));
+	}
+
+	[TestMethod]
+	public void MalformedCoverAndInvalidFreeforms_TitleSave_KeptByteForByte ()
+	{
+		var malformedCover = TestBuilders.Mp4.CreateBox ("covr", [0x01, 0x02, 0x03, 0x04]);
+		var noData = FreeformWithoutData ("com.apple.iTunes", "EMPTYF");
+		var noName = TestBuilders.Mp4.CreateBox ("----", TestBuilders.Mp4.CreateBox ("data", [0, 0, 0, 1, 0, 0, 0, 0, (byte)'x']));
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Old")),
+			malformedCover,
+			noData,
+			noName);
+
+		var file = Mp4File.Read (data).File!;
+		file.Title = "New";
+
+		var rendered = file.Render (data);
+		Assert.AreEqual (1, Count (rendered.Span, malformedCover));
+		Assert.AreEqual (1, Count (rendered.Span, noData));
+		Assert.AreEqual (1, Count (rendered.Span, noName));
+		Assert.AreEqual ("New", Mp4File.Read (rendered.Span).File!.Title);
+	}
+
 	static long TimeRead (byte[] file)
 	{
 		GC.Collect ();
