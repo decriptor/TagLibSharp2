@@ -613,10 +613,11 @@ public sealed class MpegPsFile : IMediaFile
 			Math.Max (0, streamEnd - streamStart),
 			tailStart - streamStart);
 
+		// A head that already reaches the tags after the stream gains nothing from a larger window.
+		// The tail needs no such check: when it holds the whole stream it saw every stamp the head did.
 		var headIsAll = tag.Length + head.Length >= streamEnd;
-		var tailIsAll = tailStart <= tag.Length;
 		if (window < MpegPsScanner.LargeWindow
-			&& ((analysis.NeedsLargerHead && !headIsAll) || (analysis.NeedsLargerTail && !tailIsAll))) {
+			&& ((analysis.NeedsLargerHead && !headIsAll) || analysis.NeedsLargerTail)) {
 			again = true;
 			return default;
 		}
@@ -967,6 +968,7 @@ public sealed class MpegPsFile : IMediaFile
 		byte[] _candidateFooter = [];
 		Step _afterCandidate;
 		long _boundary = -1;
+		bool _peeled;
 
 		public TrailerLocator (long length, long floor)
 		{
@@ -1006,7 +1008,7 @@ public sealed class MpegPsFile : IMediaFile
 		/// The stream ends at the first tag after it: the appended tag, an APEv2 tag, ID3v1, or the
 		/// end of the file. An APEv2 tag just before the appended tag (TagLib# writes one there) counts.
 		/// </summary>
-		public long StreamEnd { get; private set; } = -1;
+		public long StreamEnd { get; private set; }
 
 		public bool Next (out long offset, out int count)
 		{
@@ -1028,14 +1030,14 @@ public sealed class MpegPsFile : IMediaFile
 				case Step.StreamApe:
 					return Before (_boundary, ApeTagFooter.Size, out offset, out count);
 				default:
-					if (StreamEnd < 0) {
-						// Every search is over. Before the innermost tag found, one more APEv2 tag may end the stream.
-						_boundary = AppendedLength > 0 ? AppendedEnd - AppendedLength : _boundary >= 0 ? _boundary : FooterStart;
-						_step = Step.StreamApe;
-						return Before (_boundary, ApeTagFooter.Size, out offset, out count);
-					}
+					if (_peeled)
+						return false;
 
-					return false;
+					// Every search is over. Before the innermost tag found, one more APEv2 tag may end the stream.
+					_peeled = true;
+					_boundary = AppendedLength > 0 ? AppendedEnd - AppendedLength : _boundary >= 0 ? _boundary : FooterStart;
+					_step = Step.StreamApe;
+					return Before (_boundary, ApeTagFooter.Size, out offset, out count);
 			}
 		}
 
