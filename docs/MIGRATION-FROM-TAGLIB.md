@@ -292,12 +292,12 @@ var id3v2 = file?.GetTag(TagTypes.Id3v2) as TagLib.Id3v2.Tag;
 ```csharp
 var result = MpegPsFile.ReadFromFile("clip.mpg");
 var mpeg = result.File!;
-var id3v2 = mpeg.EnsureId3v2Tag();   // ID3v2 in front of the first pack
+var id3v2 = mpeg.EnsureId3v2Tag();   // The tag TagLib# wrote, or a new one
 var video = mpeg.VideoProperties;     // Width, height, frame rate
 var duration = mpeg.Duration;         // From the first and last PTS
 ```
 
-An APEv2 tag after the stream is kept unchanged but not read. Only ID3v2 and ID3v1 are read and written, the tags exiftool reads in a program stream.
+TagLib# appends its ID3v2.4 tag after the stream, before ID3v1. `Id3v2Tag` is that tag, and saving writes it back in the same place, so TagLib# still reads the file. A new tag on a file without one goes in front of the stream, where exiftool and mutagen read it. An APEv2 tag after the stream is kept unchanged but not read.
 
 ### FLAC Files
 
