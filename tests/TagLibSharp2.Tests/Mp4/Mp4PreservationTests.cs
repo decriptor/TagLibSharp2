@@ -230,6 +230,50 @@ public class Mp4PreservationTests
 		Assert.AreEqual ("image/unknown", otherRead.File.Pictures[0].MimeType);
 	}
 
+	// Bytes that are not recognised fall back to the MIME type. 0 (no type) is used only when
+	// neither identifies the image, because ffmpeg does not expose a type-0 cover.
+	[TestMethod]
+	[DataRow ("image/jpeg", Mp4AtomMapping.TypeJpeg)]
+	[DataRow ("image/JPG", Mp4AtomMapping.TypeJpeg)]
+	[DataRow ("image/png", Mp4AtomMapping.TypePng)]
+	[DataRow ("image/gif", Mp4AtomMapping.TypeGif)]
+	[DataRow ("image/bmp", Mp4AtomMapping.TypeBmp)]
+	[DataRow ("image/x-ms-bmp", Mp4AtomMapping.TypeBmp)]
+	[DataRow ("image/tiff", Mp4AtomMapping.TypeBinary)]
+	[DataRow ("", Mp4AtomMapping.TypeBinary)]
+	public void NewPicture_UnrecognisedBytes_FallsBackToMimeType (string mimeType, int expected)
+	{
+		var junk = new byte[] { 0x01, 0x02, 0x03, 0x04 };
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var file = Mp4File.Read (data).File!;
+		file.AddPicture (new Mp4Picture (mimeType, PictureType.FrontCover, "", new BinaryData (junk)));
+
+		Assert.AreEqual (expected, CoverTypeIndicator (file.Render (data).Span));
+	}
+
+	[TestMethod]
+	public void NewPicture_RecognisedBytes_WinOverMimeType ()
+	{
+		var jpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var file = Mp4File.Read (data).File!;
+		file.AddPicture (new Mp4Picture ("image/png", PictureType.FrontCover, "", new BinaryData (jpeg)));
+
+		Assert.AreEqual (Mp4AtomMapping.TypeJpeg, CoverTypeIndicator (file.Render (data).Span));
+	}
+
+	[TestMethod]
+	[DataRow (true, Mp4AtomMapping.TypeJpeg)]
+	[DataRow (false, Mp4AtomMapping.TypePng)]
+	public void NewPicture_IsJpegConstructor_WritesThatTypeForUnrecognisedBytes (bool isJpeg, int expected)
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var file = Mp4File.Read (data).File!;
+		file.AddPicture (new Mp4Picture ([0x01, 0x02, 0x03, 0x04], isJpeg));
+
+		Assert.AreEqual (expected, CoverTypeIndicator (file.Render (data).Span));
+	}
+
 	[TestMethod]
 	public void ParsedBmp_TitleEdit_KeepsTypeCode ()
 	{
