@@ -372,13 +372,8 @@ public sealed class MatroskaChapters
 	internal static bool KeptHas (List<KeptElement> kept, ulong id)
 	{
 		foreach (var element in kept) {
-			var bytes = element.Bytes;
-			var offset = 0;
-			while (offset < bytes.Length && EbmlReader.TryRead (bytes, offset, bytes.Length, out var child) && !child.UnknownSize) {
-				if (child.Id == id)
-					return true;
-				offset = child.End;
-			}
+			if (id == MatroskaIds.ChapterAtom ? element.HasAtom : id == MatroskaIds.EditionEntry && element.HasEdition)
+				return true;
 		}
 
 		return false;
@@ -987,9 +982,26 @@ internal readonly struct KeptElement
 	{
 		Bytes = bytes;
 		IsRest = isRest;
+		var atom = false;
+		var edition = false;
+		var offset = 0;
+		while (offset < bytes.Length && !(atom && edition) && EbmlReader.TryRead (bytes, offset, bytes.Length, out var child) && !child.UnknownSize) {
+			atom |= child.Id == MatroskaIds.ChapterAtom;
+			edition |= child.Id == MatroskaIds.EditionEntry;
+			offset = child.End;
+		}
+
+		HasAtom = atom;
+		HasEdition = edition;
 	}
 
 	public byte[] Bytes { get; }
+
+	/// <summary>Gets a value indicating whether a <c>ChapterAtom</c> is among the kept top-level elements.</summary>
+	public bool HasAtom { get; }
+
+	/// <summary>Gets a value indicating whether an <c>EditionEntry</c> is among the kept top-level elements.</summary>
+	public bool HasEdition { get; }
 
 	/// <summary>Gets a value indicating whether this holds the rest of a parent past the entry budget, which comes last.</summary>
 	public bool IsRest { get; }
