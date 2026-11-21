@@ -14,9 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Matroska: a save fails when a picture is not an `image/` media type, has no data, would be added to a WebM file, or could not be referenced by the SeekHead. A save that does not set `Pictures` keeps the `Attachments` element byte for byte.
+- Matroska: a save fails when a picture is not an `image/` media type, has no data, or would be added to a WebM file. A save that does not set `Pictures` keeps the `Attachments` element byte for byte.
 - Matroska: an attachment named `back.jpg`, `artist.png` and so on reads with that picture type instead of `Other`.
 - Matroska: a new SeekHead entry is added only to the first SeekHead (RFC 9559 section 6.3).
+
+### Fixed
+
+- Matroska: an edited or added top-level element stays listed in the SeekHead (RFC 9559 section 6.1). When the SeekHead has no room for its Seek, or its Seek cannot hold the new offset, the element goes right after the first SeekHead. The SeekHead is written again with every Seek at the width it needs, and everything after it moves once. Cues `CueClusterPosition`, Cluster `Position` and CRC-32 values follow. Without a SeekHead the element goes before the first Cluster. Before this, an artist edit or a no-op save on `test1.mkv` or `test6.mkv` dropped the Tags Seek, and ffprobe and mediainfo lost the tags. The move is refused when it would void another element's Seek.
 
 ## [0.6.0] - 2026-01-05
 
