@@ -79,6 +79,54 @@ public class AacDetectionTests
 		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (Concat (Id3v2Bytes ("T"), new byte[100])));
 
 	[TestMethod]
+	[DataRow ("song.aac")]
+	[DataRow ("song.mp3")]
+	[DataRow ("song.bin")]
+	public async Task Id3v2ThenPaddingThenAdts_IsAac (string name)
+	{
+		// Bytes between the tag and the first frame: the reader's first-frame window decides detection too.
+		foreach (var gap in new[] { 1, 1024, AacStream.FirstFrameSearchBytes - 1 }) {
+			var data = Concat (Id3v2Bytes ("T"), new byte[gap], Adts (20));
+
+			Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (data, name), $"gap {gap}");
+			Assert.AreEqual (20, MediaFile.ReadFromData (data, name).GetFileAs<AacFile> ()!.Properties!.FrameCount);
+		}
+	}
+
+	[TestMethod]
+	public async Task Id3v2ThenPaddingThenAdif_StaysMp3 () =>
+		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (Concat (Id3v2Bytes ("T"), new byte[10], Adif (64_000))));
+
+	[TestMethod]
+	public async Task Id3v2ThenPaddingPastTheWindowThenAdts_StaysMp3 () =>
+		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (
+			Concat (Id3v2Bytes ("T"), new byte[AacStream.FirstFrameSearchBytes], Adts (20)), "song.aac"));
+
+	[TestMethod]
+	public async Task Id3v2ThenPaddingThenMpegAudio_StaysMp3 () =>
+		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (Concat (Id3v2Bytes ("T"), new byte[1024], Mp3Frames (5)), "song.aac"));
+
+	[TestMethod]
+	public async Task Id3v2ThenMpegAudioThenAdts_StaysMp3 ()
+	{
+		// The first confirmed sync after the tag decides. MPEG audio comes first here.
+		var data = Concat (Id3v2Bytes ("T"), new byte[10], Mp3Frames (3), Adts (20));
+
+		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (data, "song.aac"));
+		Assert.IsFalse (AacFile.Read (data).IsSuccess);
+	}
+
+	[TestMethod]
+	public async Task OneFrameThenATrailingTag_IsAac ()
+	{
+		// A trailing tag after the frame confirms where the frame ends, like the end of the file does.
+		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (Concat (AdtsFrame (100), Id3v1Bytes ("Back"))));
+		// An APEv2 tag with a header (as ffmpeg writes it) starts with "APETAGEX".
+		var ape = new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ();
+		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (Concat (Id3v2Bytes ("T"), AdtsFrame (100), ape)));
+	}
+
+	[TestMethod]
 	public async Task LargeId3v2ThenAdts_IsAacThroughTheShortPeek ()
 	{
 		// The stream peek is 32 bytes and the tag is far longer.
