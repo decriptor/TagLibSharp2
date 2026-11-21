@@ -293,6 +293,46 @@ public class Mp4PreservationTests
 		Assert.AreEqual ("Retitled", reread.File.Title);
 	}
 
+	// "US" + packed ISO 639-2/T "eng": a value atom's locale indicator, which says which readers
+	// the value is for (https://developer.apple.com/documentation/quicktime-file-format/locale_indicator).
+	const uint UsEnglish = 0x555315C7;
+
+	[TestMethod]
+	public void UneditedAtoms_NonZeroLocale_KeptOnTitleSave ()
+	{
+		var copyAlias = TestBuilders.Mp4.CreateIlstChild ("©cpy", 1, Encoding.UTF8.GetBytes ("(c) Alias"), UsEnglish);
+		var artist = TestBuilders.Mp4.CreateIlstChild ("©ART", 1, Encoding.UTF8.GetBytes ("Artist"), UsEnglish);
+		var freeform = FreeformWithLocale ("com.apple.iTunes", "MOOD", "Calm", UsEnglish);
+		var cover = TestBuilders.Mp4.CreateIlstChild ("covr", Mp4AtomMapping.TypeJpeg, [0xFF, 0xD8, 0xFF, 0xE0], UsEnglish);
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Old")),
+			copyAlias, artist, freeform, cover);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("(c) Alias", file.Tag!.Copyright);
+		file.Title = "New";
+
+		var rendered = file.Render (data);
+		Assert.AreEqual (1, Count (rendered.Span, copyAlias));
+		Assert.AreEqual (1, Count (rendered.Span, artist));
+		Assert.AreEqual (1, Count (rendered.Span, freeform));
+		Assert.AreEqual (1, Count (rendered.Span, cover));
+		Assert.AreEqual ("New", Mp4File.Read (rendered.Span).File!.Title);
+	}
+
+	[TestMethod]
+	public void EditedAtom_GetsDefaultLocale ()
+	{
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Old"), UsEnglish));
+
+		var file = Mp4File.Read (data).File!;
+		file.Title = "New";
+
+		var expected = TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("New"));
+		Assert.AreEqual (1, Count (file.Render (data).Span, expected));
+	}
+
 	[TestMethod]
 	public void Clear_ThenSet_WritesOnlyTheNewFields ()
 	{
@@ -451,6 +491,20 @@ public class Mp4PreservationTests
 		(char)('a' + (i / 676 % 26)),
 		(char)('a' + (i / 26 % 26)),
 		(char)('a' + (i % 26))]);
+
+	static byte[] FreeformWithLocale (string mean, string name, string value, uint locale)
+	{
+		using var dataContent = new BinaryDataBuilder ();
+		dataContent.AddUInt32BE (1);
+		dataContent.AddUInt32BE (locale);
+		dataContent.Add (Encoding.UTF8.GetBytes (value));
+
+		var withoutData = FreeformWithoutData (mean, name);
+		using var body = new BinaryDataBuilder ();
+		body.Add (withoutData.AsSpan (8).ToArray ());
+		body.Add (TestBuilders.Mp4.CreateBox ("data", dataContent.ToArray ()));
+		return TestBuilders.Mp4.CreateBox ("----", body.ToArray ());
+	}
 
 	static byte[] FreeformWithoutData (string mean, string name)
 	{
