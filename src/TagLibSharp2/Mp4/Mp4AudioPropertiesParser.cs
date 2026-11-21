@@ -299,7 +299,7 @@ public static class Mp4AudioPropertiesParser
 		var codec = System.Text.Encoding.ASCII.GetString (entryType);
 		var codecSpecificData = entryData.Slice (28);
 
-		if (codec == "mp4a") {
+		if (codec is "mp4a" or "aavd") {
 			// AAC - look for esds box
 			return ParseMp4aEntry (codecSpecificData, duration, channels, sampleSize, sampleRateFromEntry);
 		} else if (codec == "alac") {

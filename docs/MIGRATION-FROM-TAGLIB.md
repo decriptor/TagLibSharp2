@@ -554,6 +554,33 @@ if (result.IsSuccess)
 }
 ```
 
+### Audible Files (.aa, .aax)
+
+An `.aa` file has its own container with a key/value text dictionary. `.aax` is MPEG-4 and opens as `Mp4File`.
+
+```csharp
+var result = AudibleFile.ReadFromFile("book.aa");
+if (result.IsSuccess)
+{
+    var aa = result.File!;
+    Console.WriteLine($"{aa.Tag.Title} by {aa.Tag.Author}, read by {aa.Tag.Narrator}");
+    Console.WriteLine($"Duration: {aa.Properties.Duration}, codec: {aa.Tag.Codec}");
+
+    // Any dictionary key by name. DRM keys (codec, HeaderSeed, HeaderKey, EncryptedBlocks) cannot be changed.
+    Console.WriteLine(aa.Tag.GetValue("pub_date_start"));
+    aa.Tag.Narrator = "New Narrator";
+    aa.SaveToFile();   // rewrites the dictionary; the encrypted audio is copied unchanged
+}
+
+var aax = Mp4File.ReadFromFile("book.aax").File!;
+Console.WriteLine($"{aax.Narrator} / {aax.ProductId} / {aax.ReleaseDate}");
+```
+
+Differences from TagLib# for `.aa` (observed by running TagLib# 2.3 on the same files):
+
+- TagLib# reports the `provider` key as `Album` and `AlbumArtists`, and a duration of 0. TagLibSharp2 reports `Album` as null, `Artist` as the `author` key, the provider as `AudibleTag.Provider`, and the duration from the audio chunk size and codec.
+- TagLib#'s save leaves an `.aa` file unchanged. TagLibSharp2 writes the dictionary. Edited files have been checked with ffprobe, ffmpeg, and ExifTool, not with Audible's own apps, which may check a digest the file stores. Keep a copy of the original, or save to a new path.
+
 ### Musepack Files
 
 Musepack (.mpc) is a lossy audio format with excellent quality at low bitrates. It uses APE tags.
@@ -643,7 +670,7 @@ if (result.IsSuccess)
 
 TagLibSharp2 includes several features not available in TagLib#:
 
-- **Automatic format detection**: `MediaFile.Read()` auto-detects 16 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, and Matroska/WebM
+- **Automatic format detection**: `MediaFile.Read()` auto-detects MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A (including Audible .aax), ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, Matroska/WebM, and Audible .aa
 - **DSD audio support**: Native DSF and DFF format support for high-resolution DSD audio
 - **Lossless format breadth**: WavPack and Monkey's Audio support with APE tag handling
 - **Async I/O**: Full async support throughout the API with cancellation token support

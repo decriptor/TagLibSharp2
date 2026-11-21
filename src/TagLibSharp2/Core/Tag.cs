@@ -68,6 +68,11 @@ public enum TagTypes
 	Xmp = 1 << 9,
 
 	/// <summary>
+	/// Audible <c>.aa</c> text dictionary.
+	/// </summary>
+	Audible = 1 << 10,
+
+	/// <summary>
 	/// All tag types.
 	/// </summary>
 	AllTags = unchecked((int)0xFFFFFFFF)

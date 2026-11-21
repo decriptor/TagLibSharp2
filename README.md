@@ -26,6 +26,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Format Support**:
   - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
   - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): tags, duration, audio and video properties, and pictures. Tag values can be saved. Picture attachments are read but not rewritten.
+  - Audible `.aa`: the text dictionary (title, author, narrator, dates, descriptions, and every other key by name), the cover image, and the duration. Dictionary edits can be saved; the encrypted audio, its DRM keys, and the cover are copied unchanged. Edited files have been checked with ffprobe, ffmpeg, and ExifTool, not with Audible's own apps, which may check a digest the file stores (the purpose of the `68ec733412b9` key is unknown). Keep a copy of the original, or save to a new path. Audible `.aax` is MPEG-4 and opens as MP4/M4A, with its audiobook atoms (narrator, short and parent titles, product IDs, release date) as named properties. Decryption is out of scope.
 
 ## Format Support Matrix
 
@@ -72,6 +73,8 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | WavPack | APE tag | — | Native only |
 | Monkey's Audio | APE tag | — | Native only |
 | Musepack | APE tag | — | Native only |
+| Audible .aa | Audible dictionary (chunk 2) | — | Native only |
+| Audible .aax | iTunes atoms (ilst) | — | Native only |
 
 ## Installation
 

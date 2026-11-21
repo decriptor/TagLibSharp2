@@ -3,6 +3,7 @@
 
 using System.Globalization;
 using TagLibSharp2.Core;
+using TagLibSharp2.Id3;
 
 namespace TagLibSharp2.Mp4;
 
@@ -84,9 +85,24 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads ©gen (or a QuickTime "genre" key), then the ID3v1-coded gnre item. Setting a value
+	/// removes gnre, so readers that show both do not keep the old genre.
+	/// </remarks>
 	public override string? Genre {
-		get => GetText (Mp4AtomMapping.Genre);
-		set => SetText (Mp4AtomMapping.Genre, value);
+		get {
+			var text = GetText (Mp4AtomMapping.Genre);
+			if (!string.IsNullOrEmpty (text))
+				return text;
+
+			// gnre is a 1-based ID3v1 code. A non-empty ©gen wins over it.
+			return GetGnreName ();
+		}
+		set {
+			SetText (Mp4AtomMapping.Genre, value);
+			// A leftover gnre would still be returned after ©gen is cleared.
+			RemoveAtom (Mp4AtomMapping.GenreId3);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -172,9 +188,23 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads cprt (or a QuickTime "copyright" key), then the older ©cpy. Setting a value removes ©cpy.
+	/// </remarks>
 	public override string? Copyright {
-		get => GetText (Mp4AtomMapping.Copyright);
-		set => SetText (Mp4AtomMapping.Copyright, value);
+		get {
+			var text = GetText (Mp4AtomMapping.Copyright);
+			if (!string.IsNullOrEmpty (text))
+				return text;
+
+			// ©cpy is an alias. A non-empty cprt wins over it.
+			return GetText (Mp4AtomMapping.CopyrightAlias);
+		}
+		set {
+			SetText (Mp4AtomMapping.Copyright, value);
+			// A leftover ©cpy would still be returned after cprt is cleared.
+			RemoveAtom (Mp4AtomMapping.CopyrightAlias);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -575,6 +605,94 @@ public sealed class Mp4Tag : Tag
 		set => SetText (Mp4AtomMapping.Keywords, value);
 	}
 
+	/// <summary>
+	/// Gets or sets the narrator.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "©nrt" atom that Audible writes in .aax audiobooks. ExifTool reports it as Narrator.
+	/// </remarks>
+	public string? Narrator {
+		get => GetText (Mp4AtomMapping.Narrator);
+		set => SetText (Mp4AtomMapping.Narrator, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the short title.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@sti" atom that Audible writes in .aax audiobooks. ExifTool reports it as ShortTitle.
+	/// </remarks>
+	public string? ShortTitle {
+		get => GetText (Mp4AtomMapping.AudibleShortTitle);
+		set => SetText (Mp4AtomMapping.AudibleShortTitle, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the parent (series or collection) title.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@pti" atom that Audible writes in .aax audiobooks. ExifTool reports it as ParentTitle.
+	/// </remarks>
+	public string? ParentTitle {
+		get => GetText (Mp4AtomMapping.AudibleParentTitle);
+		set => SetText (Mp4AtomMapping.AudibleParentTitle, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the parent short title.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@PST" atom that Audible writes in .aax audiobooks. ExifTool reports it as ParentShortTitle.
+	/// </remarks>
+	public string? ParentShortTitle {
+		get => GetText (Mp4AtomMapping.AudibleParentShortTitle);
+		set => SetText (Mp4AtomMapping.AudibleParentShortTitle, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the parent product identifier.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "@ppi" atom that Audible writes in .aax audiobooks. ExifTool reports it as ParentProductID.
+	/// </remarks>
+	public string? ParentProductId {
+		get => GetText (Mp4AtomMapping.AudibleParentProductId);
+		set => SetText (Mp4AtomMapping.AudibleParentProductId, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the product identifier.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "prID" atom that Audible writes in .aax audiobooks. ExifTool reports it as ProductID.
+	/// </remarks>
+	public string? ProductId {
+		get => GetText (Mp4AtomMapping.AudibleProductId);
+		set => SetText (Mp4AtomMapping.AudibleProductId, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the release date, as stored (for example <c>02-Jul-2012</c>).
+	/// </summary>
+	/// <remarks>
+	/// Uses the "rldt" atom that Audible writes in .aax audiobooks. ExifTool reports it as ReleaseDate.
+	/// </remarks>
+	public string? ReleaseDate {
+		get => GetText (Mp4AtomMapping.AudibleReleaseDate);
+		set => SetText (Mp4AtomMapping.AudibleReleaseDate, value);
+	}
+
+	/// <summary>
+	/// Gets or sets the product version.
+	/// </summary>
+	/// <remarks>
+	/// Uses the "VERS" atom that Audible writes in .aax audiobooks. ExifTool reports it as ProductVersion.
+	/// </remarks>
+	public string? ProductVersion {
+		get => GetText (Mp4AtomMapping.AudibleProductVersion);
+		set => SetText (Mp4AtomMapping.AudibleProductVersion, value);
+	}
+
 	/// <inheritdoc/>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public override IPicture[] Pictures {
@@ -593,10 +711,28 @@ public sealed class Mp4Tag : Tag
 	}
 #pragma warning restore CA1819
 
+	string? GetGnreName ()
+	{
+		var code = GetInteger (Mp4AtomMapping.GenreId3);
+		if (code is not uint value)
+			return null;
+
+		// gnre 0 wraps to uint.MaxValue here, so this one bound rejects it too.
+		var index = value - 1;
+		if (index > byte.MaxValue)
+			return null;
+
+		return Id3v1Genre.GetName ((byte)index);
+	}
+
 	string? GetText (string atomId)
 	{
-		if (!_atoms.TryGetValue (atomId, out var dataAtoms) || dataAtoms.Count == 0)
-			return null;
+		if (!_atoms.TryGetValue (atomId, out var dataAtoms) || dataAtoms.Count == 0) {
+			var keyed = KeyedItems (atomId);
+			if (keyed is null)
+				return null;
+			dataAtoms = _atoms[keyed[0]];
+		}
 
 		// If there's only one value, return it directly
 		if (dataAtoms.Count == 1)
@@ -631,13 +767,83 @@ public sealed class Mp4Tag : Tag
 
 	void SetText (string atomId, string? value)
 	{
+		var keyed = KeyedItems (atomId);
 		if (string.IsNullOrEmpty (value)) {
 			RemoveAtom (atomId);
+			RemoveKeyed (keyed, from: 0);
 			return;
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
+		if (keyed is not null) {
+			// QuickTime metadata keeps the value in its keyed item, so no second, iTunes-coded item is added.
+			_atoms[keyed[0]] = new List<Mp4DataAtom> { dataAtom };
+			RemoveKeyed (keyed, from: 1);
+			RemoveAtom (atomId);
+			return;
+		}
+
 		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+	}
+
+	// QuickTime metadata (a keys atom in meta) names each ilst item by its 1-based index into the keys
+	// atom instead of by a four-character code. Apple's QuickTime File Format, "Metadata item keys atom"
+	// and "QuickTime metadata keys": https://developer.apple.com/documentation/quicktime-file-format/quicktime_metadata_keys
+	// Keys are matched without the "com.apple.quicktime." prefix and ignoring case; ffmpeg writes them bare.
+	const string QuickTimeKeyPrefix = "com.apple.quicktime.";
+
+	static readonly Dictionary<string, string[]> KeyAliases = new (StringComparer.Ordinal) {
+		[Mp4AtomMapping.Title] = ["title", "displayname"],
+		[Mp4AtomMapping.Artist] = ["artist"],
+		[Mp4AtomMapping.Album] = ["album"],
+		[Mp4AtomMapping.Comment] = ["comment"],
+		[Mp4AtomMapping.Genre] = ["genre"],
+		[Mp4AtomMapping.Copyright] = ["copyright"],
+		[Mp4AtomMapping.Description] = ["description"],
+		[Mp4AtomMapping.Year] = ["year", "date"],
+		[Mp4AtomMapping.Composer] = ["composer"],
+		[Mp4AtomMapping.AlbumArtist] = ["album_artist"],
+		[Mp4AtomMapping.Publisher] = ["publisher"],
+		[Mp4AtomMapping.Keywords] = ["keywords"],
+		[Mp4AtomMapping.Encoder] = ["encoder", "software"],
+		[Mp4AtomMapping.Grouping] = ["grouping"],
+		[Mp4AtomMapping.Lyrics] = ["lyrics"],
+	};
+
+	// Item code (the 4-byte big-endian index) to key name, from the meta's keys atom.
+	Dictionary<string, string> _keyNames = new (StringComparer.Ordinal);
+
+	internal void SetKeyNames (Dictionary<string, string> keyNames) => _keyNames = keyNames;
+
+	// The present keyed items whose key names the field stored under atomId, in key order; null when none.
+	List<string>? KeyedItems (string atomId)
+	{
+		if (_keyNames.Count == 0 || !KeyAliases.TryGetValue (atomId, out var names))
+			return null;
+
+		List<string>? found = null;
+		foreach (var pair in _keyNames) {
+			if (!_atoms.ContainsKey (pair.Key))
+				continue;
+			var name = pair.Value.StartsWith (QuickTimeKeyPrefix, StringComparison.OrdinalIgnoreCase)
+				? pair.Value.Substring (QuickTimeKeyPrefix.Length)
+				: pair.Value;
+			foreach (var alias in names) {
+				if (string.Equals (name, alias, StringComparison.OrdinalIgnoreCase)) {
+					(found ??= []).Add (pair.Key);
+					break;
+				}
+			}
+		}
+		return found;
+	}
+
+	void RemoveKeyed (List<string>? keyed, int from)
+	{
+		if (keyed is null)
+			return;
+		for (var i = from; i < keyed.Count; i++)
+			_atoms.Remove (keyed[i]);
 	}
 
 	uint? GetInteger (string atomId)

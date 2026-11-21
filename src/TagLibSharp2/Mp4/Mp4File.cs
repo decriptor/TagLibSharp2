@@ -572,6 +572,70 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
+	/// Gets or sets the narrator ("©nrt", written by Audible in .aax files).
+	/// </summary>
+	public string? Narrator {
+		get => Tag?.Narrator;
+		set => EnsureTag ().Narrator = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the short title ("@sti", written by Audible in .aax files).
+	/// </summary>
+	public string? ShortTitle {
+		get => Tag?.ShortTitle;
+		set => EnsureTag ().ShortTitle = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the parent (series or collection) title ("@pti", written by Audible in .aax files).
+	/// </summary>
+	public string? ParentTitle {
+		get => Tag?.ParentTitle;
+		set => EnsureTag ().ParentTitle = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the parent short title ("@PST", written by Audible in .aax files).
+	/// </summary>
+	public string? ParentShortTitle {
+		get => Tag?.ParentShortTitle;
+		set => EnsureTag ().ParentShortTitle = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the parent product identifier ("@ppi", written by Audible in .aax files).
+	/// </summary>
+	public string? ParentProductId {
+		get => Tag?.ParentProductId;
+		set => EnsureTag ().ParentProductId = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the product identifier ("prID", written by Audible in .aax files).
+	/// </summary>
+	public string? ProductId {
+		get => Tag?.ProductId;
+		set => EnsureTag ().ProductId = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the release date, as stored (for example <c>02-Jul-2012</c>) ("rldt", written by Audible in .aax files).
+	/// </summary>
+	public string? ReleaseDate {
+		get => Tag?.ReleaseDate;
+		set => EnsureTag ().ReleaseDate = value;
+	}
+
+	/// <summary>
+	/// Gets or sets the product version ("VERS", written by Audible in .aax files).
+	/// </summary>
+	public string? ProductVersion {
+		get => Tag?.ProductVersion;
+		set => EnsureTag ().ProductVersion = value;
+	}
+
+	/// <summary>
 	/// Gets or sets the content rating (Clean/Explicit/None).
 	/// </summary>
 	public Mp4ContentRating ContentRating {
@@ -842,7 +906,8 @@ public sealed class Mp4File : IMediaFile
 				// + samplerate(4, 16.16 fixed)
 				var codecType = entryData.Slice (4, 4).ToStringLatin1 ();
 				codec = codecType switch {
-					"mp4a" => Mp4AudioCodec.Aac,
+					// Audible .aax stores AAC in an "aavd" entry: the mp4a layout, esds included, with encrypted samples.
+					"mp4a" or "aavd" => Mp4AudioCodec.Aac,
 					"alac" => Mp4AudioCodec.Alac,
 					"fLaC" => Mp4AudioCodec.Flac,
 					"Opus" => Mp4AudioCodec.Opus,
@@ -1015,7 +1080,42 @@ public sealed class Mp4File : IMediaFile
 		if (ilst is null)
 			return null;
 
-		return ParseIlst (ilst);
+		var tag = ParseIlst (ilst);
+		if (meta.FindChild ("keys") is { } keys)
+			tag.SetKeyNames (ParseKeys (keys.Data.Span));
+		return tag;
+	}
+
+	/// <summary>
+	/// Reads a QuickTime keys atom: version and flags (4), entry count (4), then per entry a 32-bit size
+	/// covering the entry, a 4-byte namespace, and the key name. Entries are numbered from 1; an ilst
+	/// item whose code is that number, big-endian, holds the key's value.
+	/// </summary>
+	/// <remarks>
+	/// Apple QuickTime File Format, "Metadata item keys atom":
+	/// https://developer.apple.com/documentation/quicktime-file-format/metadata_item_keys_atom
+	/// An entry that runs past the atom ends the list.
+	/// </remarks>
+	internal static Dictionary<string, string> ParseKeys (ReadOnlySpan<byte> data)
+	{
+		var names = new Dictionary<string, string> (StringComparer.Ordinal);
+		if (data.Length < 8)
+			return names;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (data.Slice (4));
+		var offset = 8;
+		Span<byte> code = stackalloc byte[4];
+		for (var index = 1u; index <= count && data.Length - offset >= 8; index++) {
+			var size = BinaryPrimitives.ReadUInt32BigEndian (data.Slice (offset));
+			if (size < 8 || size > (uint)(data.Length - offset))
+				break;
+
+			var name = System.Text.Encoding.UTF8.GetString (data.Slice (offset + 8, (int)size - 8).ToArray ());
+			BinaryPrimitives.WriteUInt32BigEndian (code, index);
+			names[Polyfills.Latin1.GetString (code.ToArray ())] = name;
+			offset += (int)size;
+		}
+		return names;
 	}
 
 	static Mp4Tag ParseIlst (Mp4Box ilst)

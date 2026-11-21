@@ -22,6 +22,7 @@ internal static class Mp4AtomMapping
 	public const string Artist = "©ART";
 	public const string Album = "©alb";
 	public const string Genre = "©gen";
+	public const string GenreId3 = "gnre";
 	public const string Year = "©day";
 	public const string Comment = "©cmt";
 	public const string Composer = "©wrt";
@@ -29,6 +30,9 @@ internal static class Mp4AtomMapping
 	public const string Lyrics = "©lyr";
 	public const string Encoder = "©too";
 	public const string Copyright = "cprt";
+
+	// Older files store the same text in ©cpy. cprt wins when both are present.
+	public const string CopyrightAlias = "©cpy";
 
 	// Album artist (not © prefixed)
 	public const string AlbumArtist = "aART";
@@ -72,6 +76,17 @@ internal static class Mp4AtomMapping
 	public const string EncodedBy = "©enc";
 	public const string Description = "desc";
 	public const string LongDescription = "ldes";
+
+	// Audiobook atoms written by Audible in .aax files. The atom codes are the ones ExifTool names
+	// (exiftool -listx -QuickTime:ItemList:all); '@' is a literal 0x40, not the 0xA9 copyright sign.
+	public const string Narrator = "©nrt";
+	public const string AudibleShortTitle = "@sti";
+	public const string AudibleParentTitle = "@pti";
+	public const string AudibleParentShortTitle = "@PST";
+	public const string AudibleParentProductId = "@ppi";
+	public const string AudibleProductId = "prID";
+	public const string AudibleReleaseDate = "rldt";
+	public const string AudibleProductVersion = "VERS";
 
 	// Freeform metadata namespace
 	public const string FreeformAtom = "----";
