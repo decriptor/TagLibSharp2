@@ -34,12 +34,34 @@ public sealed class MatroskaChapters
 	/// <summary>Chapter atoms nested deeper than this are kept as bytes and not parsed.</summary>
 	internal const int MaxDepth = 32;
 
-	/// <summary>Editions, atoms, and displays past this many are kept as bytes and not parsed.</summary>
+	/// <summary>
+	/// Child elements parsed across the whole <c>Chapters</c> element. Once they are spent, the rest of
+	/// each parent is kept as one copy of its bytes, so memory stays linear in the input.
+	/// </summary>
 	internal const int MaxEntries = 65_536;
+
+	/// <summary>
+	/// The chapter elements WebM supports (https://www.webmproject.org/docs/container/#chapters).
+	/// A WebM save writes only these, whether the model holds the value or kept the element as bytes.
+	/// </summary>
+	static readonly HashSet<ulong> WebMElements = [
+		MatroskaIds.EditionEntry,
+		MatroskaIds.ChapterAtom,
+		MatroskaIds.ChapterUid,
+		MatroskaIds.ChapterStringUid,
+		MatroskaIds.ChapterTimeStart,
+		MatroskaIds.ChapterTimeEnd,
+		MatroskaIds.ChapterDisplay,
+		MatroskaIds.ChapString,
+		MatroskaIds.ChapLanguage,
+		MatroskaIds.ChapCountry
+	];
 
 	readonly List<MatroskaEdition> _editions = new ();
 	readonly List<KeptElement> _kept = new ();
 	byte[] _baseline = [];
+	bool _hadElement;
+	bool _cleared;
 
 	internal MatroskaChapters (bool isWebM) => IsWebM = isWebM;
 
@@ -57,7 +79,7 @@ public sealed class MatroskaChapters
 					return false;
 			}
 
-			return _kept.Count == 0;
+			return !KeptHas (_kept, MatroskaIds.EditionEntry);
 		}
 	}
 
@@ -104,15 +126,47 @@ public sealed class MatroskaChapters
 	public MatroskaChapter AddChapter (TimeSpan start, TimeSpan? end = null, string? title = null, string language = "eng") =>
 		(DefaultEdition ?? AddEdition ()).AddChapter (start, end, title, language);
 
-	/// <summary>Removes every edition. The next save removes the <c>Chapters</c> element.</summary>
+	/// <summary>
+	/// Removes every edition. The next save removes the <c>Chapters</c> element, even one that held
+	/// only editions without chapters.
+	/// </summary>
 	public void Clear ()
 	{
 		_editions.Clear ();
 		_kept.Clear ();
+		_cleared = true;
 	}
 
-	/// <summary>Gets a value indicating whether the editions differ from the ones read from the file.</summary>
-	internal bool IsModified => !Render ().Span.SequenceEqual (_baseline);
+	/// <summary>
+	/// Gets a value indicating whether a save has to write <c>Chapters</c>: the editions render differently
+	/// from the ones read, or <see cref="Clear"/> emptied a file that had the element.
+	/// </summary>
+	internal bool IsModified {
+		get {
+			var rendered = Render ();
+			return !rendered.Span.SequenceEqual (_baseline) || (_cleared && _hadElement && rendered.Length == 0);
+		}
+	}
+
+	/// <summary>
+	/// Checks the RFC 9559 rules on chapter times: an end is not before its start (section 20.2.2),
+	/// a nested chapter starts inside its parent (section 20.2.3), and every lowest-level chapter of an
+	/// ordered edition has an end (section 20.2.4 and Table 29).
+	/// </summary>
+	internal bool TryValidate (out string error)
+	{
+		foreach (var edition in _editions) {
+			if (edition is null)
+				continue;
+			foreach (var chapter in edition.Chapters) {
+				if (chapter is not null && !chapter.TryValidate (edition.IsOrdered, null, 1, out error))
+					return false;
+			}
+		}
+
+		error = "";
+		return true;
+	}
 
 	/// <summary>Writes one <c>Chapters</c> element.</summary>
 	/// <returns>The element, or empty when no edition has a chapter.</returns>
@@ -121,14 +175,18 @@ public sealed class MatroskaChapters
 		using var body = new BinaryDataBuilder ();
 		foreach (var edition in _editions) {
 			if (edition is not null && edition.HasAtoms)
-				body.Add (edition.Render (IsWebM));
+				edition.RenderTo (body, IsWebM);
 		}
 
-		// Editions past the entry limit, and any child this type does not model, go back as they were.
-		AddKept (body, _kept);
-		return body.Length == 0
-			? BinaryData.Empty
-			: EbmlWriter.Master (MatroskaIds.Chapters, body.ToBinaryData ().Span);
+		// RFC 9559 section 20.1: Chapters needs an EditionEntry. Editions past the entry limit, and
+		// children this type does not model, go back as they were.
+		if (body.Length == 0 && !KeptHas (_kept, MatroskaIds.EditionEntry))
+			return BinaryData.Empty;
+		AddKept (body, _kept, IsWebM);
+		AddKept (body, _kept, IsWebM, rest: true);
+		using var element = new BinaryDataBuilder (body.Length + 12);
+		ChapterWriter.Master (element, MatroskaIds.Chapters, body.Span);
+		return element.ToBinaryData ();
 	}
 
 	/// <summary>Starts an empty set whose baseline is no <c>Chapters</c> element.</summary>
@@ -137,35 +195,33 @@ public sealed class MatroskaChapters
 	/// <summary>Parses a <c>Chapters</c> payload. Malformed children end their parent and do not throw.</summary>
 	internal static MatroskaChapters Read (ReadOnlySpan<byte> body, bool isWebM)
 	{
-		var chapters = new MatroskaChapters (isWebM);
+		var chapters = new MatroskaChapters (isWebM) { _hadElement = true };
 		var budget = MaxEntries;
 		var offset = 0;
-		while (offset < body.Length) {
-			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
-				break;
-			if (element.Id == MatroskaIds.EditionEntry && budget > 0) {
-				budget--;
+		while (TryNext (body, ref offset, ref budget, chapters._kept, out var element)) {
+			if (element.Id == MatroskaIds.EditionEntry)
 				chapters._editions.Add (MatroskaEdition.Read (Payload (body, element), ref budget));
-			} else {
-				// CRC-32 and Void are dropped. A changed element gets neither.
+			else
 				KeepUnknown (chapters._kept, body, element);
-			}
-
-			offset = element.End;
 		}
 
 		chapters._baseline = chapters.Render ().ToArray ();
 		return chapters;
 	}
 
+	static readonly RandomNumberGenerator Random = RandomNumberGenerator.Create ();
+
+	[ThreadStatic]
+	static byte[]? _uidBytes;
+
 	/// <summary>A random UID. RFC 9559 gives the UID elements the range "not 0".</summary>
 	internal static ulong NewUid ()
 	{
-		var bytes = new byte[8];
-		using var random = RandomNumberGenerator.Create ();
+		var bytes = _uidBytes ??= new byte[8];
 		ulong value;
 		do {
-			random.GetBytes (bytes);
+			// RandomNumberGenerator instance methods are thread-safe.
+			Random.GetBytes (bytes);
 			value = EbmlReader.ReadUInt (bytes);
 		} while (value == 0);
 
@@ -178,17 +234,93 @@ public sealed class MatroskaChapters
 	internal static bool ReadFlag (ReadOnlySpan<byte> payload, bool defaultValue) =>
 		payload.Length == 0 ? defaultValue : EbmlReader.ReadUInt (payload) != 0;
 
-	internal static void KeepUnknown (List<KeptElement> kept, ReadOnlySpan<byte> body, EbmlElement element)
+	/// <summary>
+	/// Reads the next child of a parent and spends one entry on it. Void and CRC-32 are skipped: a changed
+	/// parent gets neither, since a CRC-32 MUST be the first child and cover the new bytes (RFC 8794 section 11.3.1).
+	/// When the budget is spent, the rest of the parent goes into <paramref name="kept"/> as one copy.
+	/// </summary>
+	/// <returns>False at the end of the parent, at bytes that do not parse, or once the rest was kept.</returns>
+	internal static bool TryNext (ReadOnlySpan<byte> body, ref int offset, ref int budget, List<KeptElement> kept, out EbmlElement element)
 	{
-		if (element.Id is MatroskaIds.Void or MatroskaIds.Crc32)
-			return;
-		kept.Add (new KeptElement (element.Id, body.Slice (element.Position, element.End - element.Position).ToArray ()));
+		while (offset < body.Length) {
+			if (!EbmlReader.TryRead (body, offset, body.Length, out element) || element.UnknownSize)
+				break;
+			if (element.Id is MatroskaIds.Void or MatroskaIds.Crc32) {
+				offset = element.End;
+				continue;
+			}
+
+			if (budget <= 0) {
+				KeepRest (body, offset, kept);
+				offset = body.Length;
+				break;
+			}
+
+			budget--;
+			offset = element.End;
+			return true;
+		}
+
+		element = default;
+		return false;
 	}
 
-	internal static void AddKept (BinaryDataBuilder builder, List<KeptElement> kept)
+	/// <summary>Keeps every parseable element from <paramref name="offset"/> on, without Void and CRC-32, as one copy.</summary>
+	static void KeepRest (ReadOnlySpan<byte> body, int offset, List<KeptElement> kept)
 	{
-		foreach (var element in kept)
-			builder.Add (element.Bytes);
+		using var rest = new BinaryDataBuilder ();
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
+			if (element.Id is not MatroskaIds.Void and not MatroskaIds.Crc32)
+				rest.Add (body.Slice (element.Position, element.End - element.Position));
+			offset = element.End;
+		}
+
+		if (rest.Length > 0)
+			kept.Add (new KeptElement (rest.ToArray (), isRest: true));
+	}
+
+	internal static void KeepUnknown (List<KeptElement> kept, ReadOnlySpan<byte> body, EbmlElement element) =>
+		kept.Add (new KeptElement (body.Slice (element.Position, element.End - element.Position).ToArray ()));
+
+	/// <summary>Returns true when a kept copy holds an element with <paramref name="id"/> at its top level.</summary>
+	internal static bool KeptHas (List<KeptElement> kept, ulong id)
+	{
+		foreach (var element in kept) {
+			var bytes = element.Bytes;
+			var offset = 0;
+			while (offset < bytes.Length && EbmlReader.TryRead (bytes, offset, bytes.Length, out var child) && !child.UnknownSize) {
+				if (child.Id == id)
+					return true;
+				offset = child.End;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Writes the kept copies: the unmodelled children, or with <paramref name="rest"/> the bytes past the
+	/// entry budget, which follow the modelled children as they did in the file. A WebM save leaves out
+	/// every top-level element WebM does not support.
+	/// </summary>
+	internal static void AddKept (BinaryDataBuilder builder, List<KeptElement> kept, bool isWebM, bool rest = false)
+	{
+		foreach (var element in kept) {
+			if (element.IsRest != rest)
+				continue;
+			if (!isWebM) {
+				builder.Add (element.Bytes);
+				continue;
+			}
+
+			var bytes = element.Bytes;
+			var offset = 0;
+			while (offset < bytes.Length && EbmlReader.TryRead (bytes, offset, bytes.Length, out var child) && !child.UnknownSize) {
+				if (WebMElements.Contains (child.Id))
+					builder.Add (bytes.AsSpan (child.Position, child.End - child.Position));
+				offset = child.End;
+			}
+		}
 	}
 }
 
@@ -227,12 +359,7 @@ public sealed class MatroskaEdition
 					return true;
 			}
 
-			foreach (var kept in _kept) {
-				if (kept.Id == MatroskaIds.ChapterAtom)
-					return true;
-			}
-
-			return false;
+			return MatroskaChapters.KeptHas (_kept, MatroskaIds.ChapterAtom);
 		}
 	}
 
@@ -253,27 +380,25 @@ public sealed class MatroskaEdition
 	/// <returns>True when the chapter was found.</returns>
 	public bool RemoveChapter (MatroskaChapter chapter) => _chapters.Remove (chapter);
 
-	internal BinaryData Render (bool isWebM)
+	internal void RenderTo (BinaryDataBuilder parent, bool isWebM)
 	{
-		using var body = new BinaryDataBuilder ();
+		using var body = new BinaryDataBuilder (64);
 		if (!isWebM) {
 			if (Uid != 0)
-				body.Add (EbmlWriter.Unsigned (MatroskaIds.EditionUid, Uid));
+				ChapterWriter.Unsigned (body, MatroskaIds.EditionUid, Uid);
 			if (IsHidden)
-				body.Add (EbmlWriter.Unsigned (MatroskaIds.EditionFlagHidden, 1));
+				ChapterWriter.Unsigned (body, MatroskaIds.EditionFlagHidden, 1);
 			if (IsDefault)
-				body.Add (EbmlWriter.Unsigned (MatroskaIds.EditionFlagDefault, 1));
+				ChapterWriter.Unsigned (body, MatroskaIds.EditionFlagDefault, 1);
 			if (IsOrdered)
-				body.Add (EbmlWriter.Unsigned (MatroskaIds.EditionFlagOrdered, 1));
+				ChapterWriter.Unsigned (body, MatroskaIds.EditionFlagOrdered, 1);
 		}
 
-		MatroskaChapters.AddKept (body, _kept);
-		foreach (var chapter in _chapters) {
-			if (chapter is not null)
-				body.Add (chapter.Render (isWebM, 1));
-		}
-
-		return EbmlWriter.Master (MatroskaIds.EditionEntry, body.ToBinaryData ().Span);
+		MatroskaChapters.AddKept (body, _kept, isWebM);
+		foreach (var chapter in _chapters)
+			chapter?.RenderTo (body, isWebM, 1);
+		MatroskaChapters.AddKept (body, _kept, isWebM, rest: true);
+		ChapterWriter.Master (parent, MatroskaIds.EditionEntry, body.Span);
 	}
 
 	internal static MatroskaEdition Read (ReadOnlySpan<byte> body, ref int budget)
@@ -281,9 +406,7 @@ public sealed class MatroskaEdition
 		// EditionUID is optional, so an edition read without one keeps 0.
 		var edition = new MatroskaEdition (0);
 		var offset = 0;
-		while (offset < body.Length) {
-			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
-				break;
+		while (MatroskaChapters.TryNext (body, ref offset, ref budget, edition._kept, out var element)) {
 			var payload = MatroskaChapters.Payload (body, element);
 			switch (element.Id) {
 				case MatroskaIds.EditionUid:
@@ -298,16 +421,13 @@ public sealed class MatroskaEdition
 				case MatroskaIds.EditionFlagOrdered:
 					edition.IsOrdered = MatroskaChapters.ReadFlag (payload, false);
 					break;
-				case MatroskaIds.ChapterAtom when budget > 0:
-					budget--;
+				case MatroskaIds.ChapterAtom:
 					edition._chapters.Add (MatroskaChapter.Read (payload, 1, ref budget));
 					break;
 				default:
 					MatroskaChapters.KeepUnknown (edition._kept, body, element);
 					break;
 			}
-
-			offset = element.End;
 		}
 
 		return edition;
@@ -350,14 +470,14 @@ public sealed class MatroskaChapter
 	public ulong? EndNanoseconds { get; set; }
 
 	/// <summary>Gets or sets the start as a <see cref="TimeSpan"/>. Precision below 100 ns is dropped on read.</summary>
-	/// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+	/// <exception cref="ArgumentOutOfRangeException">The value is negative or past 2^64 - 1 nanoseconds.</exception>
 	public TimeSpan Start {
 		get => FromNanoseconds (StartNanoseconds);
 		set => StartNanoseconds = ToNanoseconds (value);
 	}
 
-	/// <summary>Gets or sets the end as a <see cref="TimeSpan"/>, or null to leave it out.</summary>
-	/// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+	/// <summary>Gets or sets the end as a <see cref="TimeSpan"/>, or null to leave it out. A save fails when it is before the start.</summary>
+	/// <exception cref="ArgumentOutOfRangeException">The value is negative or past 2^64 - 1 nanoseconds.</exception>
 	public TimeSpan? End {
 		get => EndNanoseconds is ulong end ? FromNanoseconds (end) : null;
 		set => EndNanoseconds = value is TimeSpan end ? ToNanoseconds (end) : null;
@@ -433,38 +553,36 @@ public sealed class MatroskaChapter
 		return chapter;
 	}
 
-	internal BinaryData Render (bool isWebM, int depth)
+	internal void RenderTo (BinaryDataBuilder parent, bool isWebM, int depth)
 	{
-		using var body = new BinaryDataBuilder ();
-		body.Add (EbmlWriter.Unsigned (MatroskaIds.ChapterUid, _uid));
+		using var body = new BinaryDataBuilder (64);
+		ChapterWriter.Unsigned (body, MatroskaIds.ChapterUid, _uid);
 		if (StringUid is not null)
-			body.Add (EbmlWriter.String (MatroskaIds.ChapterStringUid, StringUid));
-		body.Add (EbmlWriter.Unsigned (MatroskaIds.ChapterTimeStart, StartNanoseconds));
+			ChapterWriter.String (body, MatroskaIds.ChapterStringUid, StringUid);
+		ChapterWriter.Unsigned (body, MatroskaIds.ChapterTimeStart, StartNanoseconds);
 		if (EndNanoseconds is ulong end)
-			body.Add (EbmlWriter.Unsigned (MatroskaIds.ChapterTimeEnd, end));
+			ChapterWriter.Unsigned (body, MatroskaIds.ChapterTimeEnd, end);
 		if (!isWebM) {
 			// Both flags have defaults, so RFC 8794 section 11.1.6.4 lets a writer leave them out.
 			if (IsHidden)
-				body.Add (EbmlWriter.Unsigned (MatroskaIds.ChapterFlagHidden, 1));
+				ChapterWriter.Unsigned (body, MatroskaIds.ChapterFlagHidden, 1);
 			if (!IsEnabled)
-				body.Add (EbmlWriter.Unsigned (MatroskaIds.ChapterFlagEnabled, 0));
+				ChapterWriter.Unsigned (body, MatroskaIds.ChapterFlagEnabled, 0);
 		}
 
-		MatroskaChapters.AddKept (body, _kept);
-		foreach (var display in _displays) {
-			if (display is not null)
-				body.Add (display.Render (isWebM));
-		}
+		MatroskaChapters.AddKept (body, _kept, isWebM);
+		foreach (var display in _displays)
+			display?.RenderTo (body, isWebM);
 
-		// Rendering is recursive. A model built in code is bounded the same way a parsed one is.
+		// Rendering is recursive. A model built in code is bounded the same way a parsed one is,
+		// which also stops a chapter that was added inside itself.
 		if (depth < MatroskaChapters.MaxDepth) {
-			foreach (var chapter in _chapters) {
-				if (chapter is not null)
-					body.Add (chapter.Render (isWebM, depth + 1));
-			}
+			foreach (var chapter in _chapters)
+				chapter?.RenderTo (body, isWebM, depth + 1);
 		}
 
-		return EbmlWriter.Master (MatroskaIds.ChapterAtom, body.ToBinaryData ().Span);
+		MatroskaChapters.AddKept (body, _kept, isWebM, rest: true);
+		ChapterWriter.Master (parent, MatroskaIds.ChapterAtom, body.Span);
 	}
 
 	internal static MatroskaChapter Read (ReadOnlySpan<byte> body, int depth, ref int budget)
@@ -472,9 +590,7 @@ public sealed class MatroskaChapter
 		ulong uid = 0;
 		var chapter = new MatroskaChapter (0);
 		var offset = 0;
-		while (offset < body.Length) {
-			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
-				break;
+		while (MatroskaChapters.TryNext (body, ref offset, ref budget, chapter._kept, out var element)) {
 			var payload = MatroskaChapters.Payload (body, element);
 			switch (element.Id) {
 				case MatroskaIds.ChapterUid:
@@ -495,21 +611,17 @@ public sealed class MatroskaChapter
 				case MatroskaIds.ChapterFlagEnabled:
 					chapter.IsEnabled = MatroskaChapters.ReadFlag (payload, true);
 					break;
-				case MatroskaIds.ChapterDisplay when budget > 0:
-					budget--;
-					chapter._displays.Add (MatroskaChapterDisplay.Read (payload));
+				case MatroskaIds.ChapterDisplay:
+					chapter._displays.Add (MatroskaChapterDisplay.Read (payload, ref budget));
 					break;
-				case MatroskaIds.ChapterAtom when budget > 0 && depth < MatroskaChapters.MaxDepth:
-					budget--;
+				case MatroskaIds.ChapterAtom when depth < MatroskaChapters.MaxDepth:
 					chapter._chapters.Add (Read (payload, depth + 1, ref budget));
 					break;
 				default:
-					// Too deep, past the budget, or not modelled: the bytes go back as they were.
+					// Too deep or not modelled: the bytes go back as they were.
 					MatroskaChapters.KeepUnknown (chapter._kept, body, element);
 					break;
 			}
-
-			offset = element.End;
 		}
 
 		// ChapterUID is mandatory and nonzero. A missing or 0 UID gets a new one, used only when chapters are edited.
@@ -521,9 +633,43 @@ public sealed class MatroskaChapter
 
 	static ulong ToNanoseconds (TimeSpan value)
 	{
-		if (value < TimeSpan.Zero)
-			throw new ArgumentOutOfRangeException (nameof (value), "A chapter time cannot be negative.");
+		// ChapterTimeStart and ChapterTimeEnd are unsigned 64-bit nanoseconds (RFC 9559 section 5.1.7.1.4.3).
+		if (value < TimeSpan.Zero || (ulong)value.Ticks > ulong.MaxValue / 100)
+			throw new ArgumentOutOfRangeException (nameof (value), "A chapter time must be from 0 to 2^64 - 1 nanoseconds.");
 		return (ulong)value.Ticks * 100;
+	}
+
+	internal bool TryValidate (bool ordered, MatroskaChapter? parent, int depth, out string error)
+	{
+		error = "";
+		if (EndNanoseconds is ulong end && end < StartNanoseconds) {
+			error = "A Matroska chapter ends before it starts (RFC 9559 section 20.2.2)";
+			return false;
+		}
+
+		if (parent is not null && (StartNanoseconds < parent.StartNanoseconds
+			|| (parent.EndNanoseconds is ulong parentEnd && StartNanoseconds > parentEnd))) {
+			error = "A nested Matroska chapter starts outside its parent (RFC 9559 section 20.2.3)";
+			return false;
+		}
+
+		var nested = MatroskaChapters.KeptHas (_kept, MatroskaIds.ChapterAtom);
+		if (depth < MatroskaChapters.MaxDepth) {
+			foreach (var chapter in _chapters) {
+				if (chapter is null)
+					continue;
+				nested = true;
+				if (!chapter.TryValidate (ordered, this, depth + 1, out error))
+					return false;
+			}
+		}
+
+		if (ordered && !nested && EndNanoseconds is null) {
+			error = "A chapter in an ordered Matroska edition needs an end (RFC 9559 section 20.2.4)";
+			return false;
+		}
+
+		return true;
 	}
 }
 
@@ -560,38 +706,37 @@ public sealed class MatroskaChapterDisplay
 	/// <summary>Gets the <c>ChapCountry</c> values.</summary>
 	public IList<string> Countries => _countries;
 
-	internal BinaryData Render (bool isWebM)
+	internal void RenderTo (BinaryDataBuilder parent, bool isWebM)
 	{
-		using var body = new BinaryDataBuilder ();
-		body.Add (EbmlWriter.String (MatroskaIds.ChapString, Text ?? string.Empty));
+		using var body = new BinaryDataBuilder (64);
+		ChapterWriter.String (body, MatroskaIds.ChapString, Text ?? string.Empty);
 		foreach (var language in _languages) {
 			if (language is not null)
-				body.Add (EbmlWriter.String (MatroskaIds.ChapLanguage, language));
+				ChapterWriter.String (body, MatroskaIds.ChapLanguage, language);
 		}
 
 		if (!isWebM) {
 			foreach (var language in _languagesBcp47) {
 				if (language is not null)
-					body.Add (EbmlWriter.String (MatroskaIds.ChapLanguageBcp47, language));
+					ChapterWriter.String (body, MatroskaIds.ChapLanguageBcp47, language);
 			}
 		}
 
 		foreach (var country in _countries) {
 			if (country is not null)
-				body.Add (EbmlWriter.String (MatroskaIds.ChapCountry, country));
+				ChapterWriter.String (body, MatroskaIds.ChapCountry, country);
 		}
 
-		MatroskaChapters.AddKept (body, _kept);
-		return EbmlWriter.Master (MatroskaIds.ChapterDisplay, body.ToBinaryData ().Span);
+		MatroskaChapters.AddKept (body, _kept, isWebM);
+		MatroskaChapters.AddKept (body, _kept, isWebM, rest: true);
+		ChapterWriter.Master (parent, MatroskaIds.ChapterDisplay, body.Span);
 	}
 
-	internal static MatroskaChapterDisplay Read (ReadOnlySpan<byte> body)
+	internal static MatroskaChapterDisplay Read (ReadOnlySpan<byte> body, ref int budget)
 	{
 		var display = new MatroskaChapterDisplay (string.Empty, null);
 		var offset = 0;
-		while (offset < body.Length) {
-			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
-				break;
+		while (MatroskaChapters.TryNext (body, ref offset, ref budget, display._kept, out var element)) {
 			var payload = MatroskaChapters.Payload (body, element);
 			switch (element.Id) {
 				case MatroskaIds.ChapString:
@@ -610,8 +755,6 @@ public sealed class MatroskaChapterDisplay
 					MatroskaChapters.KeepUnknown (display._kept, body, element);
 					break;
 			}
-
-			offset = element.End;
 		}
 
 		// ChapLanguage is mandatory with the default "eng".
@@ -621,16 +764,61 @@ public sealed class MatroskaChapterDisplay
 	}
 }
 
-/// <summary>A child element kept as its original bytes.</summary>
-internal readonly struct KeptElement
+/// <summary>
+/// Writes chapter elements straight into the parent's buffer, with the same minimal widths as
+/// <see cref="EbmlWriter"/>, so a large model is not copied once per level.
+/// </summary>
+internal static class ChapterWriter
 {
-	public KeptElement (ulong id, byte[] bytes)
+	public static void Unsigned (BinaryDataBuilder builder, ulong id, ulong value)
 	{
-		Id = id;
-		Bytes = bytes;
+		var width = 1;
+		for (var probe = value >> 8; probe != 0; probe >>= 8)
+			width++;
+		Header (builder, id, width);
+		for (var i = width - 1; i >= 0; i--)
+			builder.Add ((byte)(value >> (8 * i)));
 	}
 
-	public ulong Id { get; }
+	public static void String (BinaryDataBuilder builder, ulong id, string value)
+	{
+		var bytes = System.Text.Encoding.UTF8.GetBytes (value);
+		Header (builder, id, bytes.Length);
+		builder.Add (bytes);
+	}
+
+	public static void Master (BinaryDataBuilder builder, ulong id, ReadOnlySpan<byte> payload)
+	{
+		Header (builder, id, payload.Length);
+		builder.Add (payload);
+	}
+
+	static void Header (BinaryDataBuilder builder, ulong id, int size)
+	{
+		var idWidth = id > 0xFFFFFF ? 4 : id > 0xFFFF ? 3 : id > 0xFF ? 2 : 1;
+		for (var i = idWidth - 1; i >= 0; i--)
+			builder.Add ((byte)(id >> (8 * i)));
+
+		// The same widths as EbmlWriter: all ones is reserved for an unknown size (RFC 8794 section 6.2).
+		var value = (ulong)size;
+		var width = value < 0x7F ? 1 : value < 0x3FFF ? 2 : value < 0x1FFFFF ? 3 : value < 0x0FFFFFFF ? 4 : 8;
+		var raw = (1UL << (7 * width)) | value;
+		for (var i = width - 1; i >= 0; i--)
+			builder.Add ((byte)(raw >> (8 * i)));
+	}
+}
+
+/// <summary>One or more consecutive child elements kept as their original bytes.</summary>
+internal readonly struct KeptElement
+{
+	public KeptElement (byte[] bytes, bool isRest = false)
+	{
+		Bytes = bytes;
+		IsRest = isRest;
+	}
 
 	public byte[] Bytes { get; }
+
+	/// <summary>Gets a value indicating whether this holds the rest of a parent past the entry budget, which comes last.</summary>
+	public bool IsRest { get; }
 }

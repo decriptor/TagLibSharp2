@@ -551,7 +551,8 @@ public partial class MatroskaFileTests
 	{
 		var original = FileWith (Master (0x1F43B675, new byte[] { 1 }));
 		var parsed = MatroskaFile.Read (original).File!;
-		var chapter = parsed.Chapters.AddChapter (TimeSpan.Zero, null, "Flagged");
+		// An ordered edition needs an end on every lowest-level chapter (RFC 9559 section 20.2.4).
+		var chapter = parsed.Chapters.AddChapter (TimeSpan.Zero, TimeSpan.FromSeconds (1), "Flagged");
 		chapter.IsHidden = true;
 		chapter.IsEnabled = false;
 		chapter.Displays[0].LanguagesBcp47.Add ("en-GB");

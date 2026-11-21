@@ -13,18 +13,19 @@ namespace TagLibSharp2.Matroska;
 /// </summary>
 static partial class MatroskaRewrite
 {
-	public static bool TryRewrite (ReadOnlySpan<byte> data, MatroskaTag tag, out byte[] rewritten, out string error) =>
-		TryRewrite (data, tag, null, out rewritten, out error);
-
 	/// <summary>
 	/// Writes the edited Attachments, then edited Chapters, then edited Tags. Each pass parses the layout the
 	/// one before produced, so SeekHead, Cues, and Cluster offsets stay in step. An element that renders the
 	/// same as it was read keeps its bytes, and a save with no edits returns the container unchanged.
+	/// A chapter edit that breaks an RFC 9559 timing rule fails the save before anything is written.
 	/// </summary>
-	public static bool TryRewrite (ReadOnlySpan<byte> data, MatroskaTag tag, MatroskaChapters? chapters, out byte[] rewritten, out string error)
+	public static bool TryRewrite (ReadOnlySpan<byte> data, MatroskaTag tag, MatroskaChapters chapters, out byte[] rewritten, out string error)
 	{
 		rewritten = [];
 		if (!TryParse (data, out var layout, out error) || layout is null)
+			return false;
+		var editChapters = chapters.IsModified;
+		if (editChapters && !chapters.TryValidate (out error))
 			return false;
 
 		byte[]? staged = null;
@@ -39,7 +40,7 @@ static partial class MatroskaRewrite
 				return false;
 		}
 
-		if (chapters is not null && chapters.IsModified && !TryStage (data, ref staged, ref layout, MatroskaIds.Chapters, chapters.Render ().ToArray (), out error))
+		if (editChapters && !TryStage (data, ref staged, ref layout, MatroskaIds.Chapters, chapters.Render ().ToArray (), out error))
 			return false;
 
 		// Removed attachments also drop the tags that targeted only them.
