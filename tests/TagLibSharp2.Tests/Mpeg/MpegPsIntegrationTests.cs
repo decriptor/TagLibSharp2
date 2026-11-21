@@ -103,11 +103,18 @@ public class MpegPsIntegrationTests : FileFormatTestBase
 		}
 	}
 
-	// The bytes between the prepended tag and the appended tag or ID3v1. An appended tag ends
-	// with a "3DI" footer whose syncsafe size excludes its header and footer.
+	// The bytes between the prepended tag and the appended tag, APEv2 or ID3v1. An appended tag
+	// ends with a "3DI" footer whose syncsafe size excludes its header and footer.
 	static ReadOnlySpan<byte> Stream (byte[] data, MpegPsFile file)
 	{
 		var end = data.Length - (file.Id3v1Tag is null ? 0 : 128);
+		if (end - file.Id3v2Size >= 32 && data.AsSpan (end - 32, 8).SequenceEqual ("APETAGEX"u8)) {
+			// An APEv2 footer: the tag size at bytes 12 to 15 counts the footer; bit 31 of the flags adds a header.
+			var apeSize = BitConverter.ToInt32 (data, end - 20);
+			var header = (data[end - 9] & 0x80) != 0 ? 32 : 0;
+			end -= apeSize + header;
+		}
+
 		if (end - file.Id3v2Size >= 10 && data[end - 10] == '3' && data[end - 9] == 'D' && data[end - 8] == 'I') {
 			var size = (data[end - 4] << 21) | (data[end - 3] << 14) | (data[end - 2] << 7) | data[end - 1];
 			end -= size + 20;
