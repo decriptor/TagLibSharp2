@@ -334,54 +334,78 @@ static partial class MatroskaRewrite
 
 	/// <summary>
 	/// Makes the first EBML header's <c>DocTypeVersion</c> at least <paramref name="version"/>. A stored value
-	/// is rewritten in place. An empty or missing one is written as a new 1-octet element and the header
-	/// grows; its CRC-32 is recomputed. A header that cannot be read is left as it is.
+	/// is rewritten in place; an empty or missing one is written as a new 1-octet element and the header
+	/// is rebuilt, its size widening if it must, and its CRC-32 recomputed. DocTypeVersion has maxOccurs 1
+	/// (RFC 8794 section 11.2.7), but every copy below the target is raised, as every FlagEnabled copy is
+	/// written, so no reader keeps an old value. A header that cannot be read is left as it is.
 	/// </summary>
 	static byte[] RaiseDocTypeVersion (byte[] file, ulong version)
 	{
 		if (!EbmlReader.TryRead (file, 0, file.Length, out var header) || header.Id != MatroskaIds.Ebml || header.UnknownSize)
 			return file;
+		var element = EbmlWriter.Unsigned (MatroskaIds.DocTypeVersion, version).ToArray ();
+		var children = new List<EbmlElement> ();
+		var insertAfter = -1;
+		var seen = false;
 		var offset = header.DataOffset;
-		EbmlElement? stored = null;
-		var insertAt = header.End;
 		while (offset < header.End) {
 			if (!EbmlReader.TryRead (file, offset, header.End, out var child) || child.UnknownSize)
 				return file;
 			if (child.Id == MatroskaIds.DocTypeVersion)
-				stored = child;
+				seen = true;
 			else if (child.Id == MatroskaIds.DocType)
-				insertAt = child.End;
+				insertAfter = children.Count;
+			children.Add (child);
 			offset = child.End;
 		}
 
-		if (stored is { DataLength: > 0 } present) {
-			if (present.DataLength > 8)
-				return file;
-			var value = EbmlReader.ReadUInt (file.AsSpan (present.DataOffset, (int)present.DataLength));
-			if (value < version && TryWriteUnsigned (file, present.DataOffset, (int)present.DataLength, version))
+		// Stored copies that are too low are raised in place. Empty copies, or none at all, need a rebuild.
+		var rebuild = !seen;
+		var raised = false;
+		foreach (var child in children) {
+			if (child.Id != MatroskaIds.DocTypeVersion || child.DataLength > 8)
+				continue;
+			if (child.DataLength == 0) {
+				rebuild = true;
+				continue;
+			}
+
+			var value = EbmlReader.ReadUInt (file.AsSpan (child.DataOffset, (int)child.DataLength));
+			if (value < version && TryWriteUnsigned (file, child.DataOffset, (int)child.DataLength, version))
+				raised = true;
+		}
+
+		if (!rebuild) {
+			if (raised)
 				UpdateElementCrc (file, header.Position, header.End);
 			return file;
 		}
 
-		// Insert after DocType, or replace the empty element where it was.
-		var element = EbmlWriter.Unsigned (MatroskaIds.DocTypeVersion, version).ToArray ();
-		var cutFrom = stored is { } empty ? empty.Position : insertAt;
-		var cutTo = stored is { } empty2 ? empty2.End : insertAt;
-		var payloadLength = (ulong)header.DataLength - (ulong)(cutTo - cutFrom) + (ulong)element.Length;
+		using var payload = new BinaryDataBuilder ((int)header.DataLength + element.Length);
+		for (var i = 0; i < children.Count; i++) {
+			var child = children[i];
+			if (child.Id == MatroskaIds.DocTypeVersion && child.DataLength == 0)
+				payload.Add (element);
+			else
+				payload.Add (file.AsSpan (child.Position, child.End - child.Position));
+			if (!seen && i == insertAfter)
+				payload.Add (element);
+		}
+
+		if (!seen && insertAfter < 0)
+			payload.Add (element);
 		if (!EbmlReader.TryReadVint (file, 0, header.DataOffset, true, 4, out _, out var idWidth, out _))
 			return file;
-		var size = EncodeFittedSize (payloadLength, header.HeaderLength - idWidth);
+		var size = EncodeFittedSize ((ulong)payload.Length, header.HeaderLength - idWidth);
 		if (size.Length == 0)
 			return file;
 
-		var before = cutFrom - header.DataOffset;
-		var grown = new byte[(long)file.Length - header.HeaderLength - (cutTo - cutFrom) + idWidth + size.Length + element.Length];
+		var grown = new byte[(long)file.Length - (header.End - header.Position) + idWidth + size.Length + payload.Length];
 		file.AsSpan (0, idWidth).CopyTo (grown);
 		size.CopyTo (grown.AsSpan (idWidth));
-		file.AsSpan (header.DataOffset, before).CopyTo (grown.AsSpan (idWidth + size.Length));
-		element.CopyTo (grown.AsSpan (idWidth + size.Length + before));
-		file.AsSpan (cutTo).CopyTo (grown.AsSpan (idWidth + size.Length + before + element.Length));
-		UpdateElementCrc (grown, 0, idWidth + size.Length + (int)payloadLength);
+		payload.Span.CopyTo (grown.AsSpan (idWidth + size.Length));
+		file.AsSpan (header.End).CopyTo (grown.AsSpan (idWidth + size.Length + payload.Length));
+		UpdateElementCrc (grown, 0, idWidth + size.Length + payload.Length);
 		return grown;
 	}
 }
