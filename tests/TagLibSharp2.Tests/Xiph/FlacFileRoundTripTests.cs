@@ -36,6 +36,38 @@ public class FlacFileRoundTripTests
 	}
 
 	[TestMethod]
+	public void PicardMovementAndOriginalYear_SurviveUnchangedWriteBack ()
+	{
+		// An editor that writes back every field it shows must not drop MOVEMENTNAME or
+		// ORIGINALYEAR, which Picard stores beside MOVEMENT (the number) and ORIGINALDATE.
+		var comment = new VorbisComment ("test");
+		comment.AddField ("MOVEMENTNAME", "Allegro");
+		comment.AddField ("MOVEMENT", "2");
+		comment.AddField ("MOVEMENTTOTAL", "4");
+		comment.AddField ("ORIGINALDATE", "1969-09-26");
+		comment.AddField ("ORIGINALYEAR", "1969");
+		var seed = FlacFile.Read (TestBuilders.Flac.CreateMinimal ()).File!;
+		seed.VorbisComment = comment;
+		var original = seed.Render (TestBuilders.Flac.CreateMinimal ()).ToArray ();
+
+		var file = FlacFile.Read (original).File!;
+		var vc = file.VorbisComment!;
+		vc.Movement = vc.Movement;
+		vc.OriginalReleaseDate = vc.OriginalReleaseDate;
+		var written = file.Render (original);
+
+		var reread = FlacFile.Read (written.Span);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		var after = reread.File!.VorbisComment!;
+		Assert.AreEqual ("Allegro", after.GetValue ("MOVEMENTNAME"));
+		Assert.AreEqual ("2", after.GetValue ("MOVEMENT"));
+		Assert.AreEqual ("4", after.GetValue ("MOVEMENTTOTAL"));
+		Assert.AreEqual ("1969-09-26", after.GetValue ("ORIGINALDATE"));
+		Assert.AreEqual ("1969", after.GetValue ("ORIGINALYEAR"));
+		CollectionAssert.AreEqual (original, written.ToArray ());
+	}
+
+	[TestMethod]
 	public void AllMetadataFields_SurviveRoundTrip ()
 	{
 		// Arrange
