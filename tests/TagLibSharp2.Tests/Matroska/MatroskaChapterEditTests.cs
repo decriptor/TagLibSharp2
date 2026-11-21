@@ -137,4 +137,23 @@ public partial class MatroskaFileTests
 		var untouched = MatroskaFile.Read (original).File!;
 		CollectionAssert.AreEqual (original, Save (untouched, original));
 	}
+
+	[TestMethod]
+	public void SaveChapters_WebM_ValuesWebMDoesNotStore_AreNotAnEdit ()
+	{
+		// WebM has no chapter flags, edition flags, EditionUID or ChapLanguageBCP47, so setting them
+		// changes nothing in the file, and an ordered flag does not bring in the ordered-edition rule.
+		var original = Matroska (Master (0x18538067, Concat (
+			ChaptersElement (EditionEntry (Atom (1, 0, null, Display ("Web")))),
+			Master (0x1F43B675, new byte[] { 1 }))), "webm");
+		var file = MatroskaFile.Read (original).File!;
+		var chapter = file.Chapters.Editions[0].Chapters[0];
+		chapter.IsHidden = true;
+		chapter.IsEnabled = false;
+		chapter.Displays[0].LanguagesBcp47.Add ("en-US");
+		file.Chapters.Editions[0].IsOrdered = true;
+		file.Chapters.Editions[0].Uid = 42;
+
+		CollectionAssert.AreEqual (original, Save (file, original));
+	}
 }
