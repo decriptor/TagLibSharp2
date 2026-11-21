@@ -38,6 +38,7 @@ namespace TagLibSharp2.Core;
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
 /// <item>Matroska/WebM (Matroska tags)</item>
+/// <item>MPEG program streams and MPEG video elementary streams (ID3v2, ID3v1)</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -316,11 +317,19 @@ public static class MediaFile
 
 	static MediaFormat DetectOpenFormat (Stream stream, ReadOnlySpan<byte> peek, string? pathHint)
 	{
-		if (!IsRiffWave (peek))
-			return DetectFormat (peek, pathHint);
+		if (IsRiffWave (peek))
+			return RiffDataStartsWithWavPack (stream) ? MediaFormat.WavPack : MediaFormat.Wav;
 
-		return RiffDataStartsWithWavPack (stream) ? MediaFormat.WavPack : MediaFormat.Wav;
+		// The peek holds the ID3v2 header but not what follows the tag.
+		// A program stream behind the tag is not MP3.
+		var format = DetectFormat (peek, pathHint);
+		if (format == MediaFormat.Mp3 && StartsWithId3 (peek) && MpegPsFile.StartsAfterId3v2 (stream))
+			return MediaFormat.MpegPs;
+		return format;
 	}
+
+	static bool StartsWithId3 (ReadOnlySpan<byte> data) =>
+		data.Length >= 3 && data[0] == Id3Magic[0] && data[1] == Id3Magic[1] && data[2] == Id3Magic[2];
 
 	// Walk RIFF chunk headers until "data". Payloads are skipped, not copied.
 	// Each chunk before data may be at most MaxRiffChunkSkip. The data chunk
@@ -398,6 +407,7 @@ public static class MediaFile
 			MediaFormat.Mp3 => FromMp3 (await Mp3File.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Flac => FromFlac (await FlacFile.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.MpegPs => FromMpegPs (await MpegPsFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
 			_ => OpenDetected (format, stream, sourcePath, fileSystem, pathHint)
 		};
 		return RememberMatroskaSource (result, sourcePath, fileSystem);
@@ -420,6 +430,7 @@ public static class MediaFile
 			MediaFormat.Dsf => FromDsf (DsfFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Dff => FromDff (DffFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Asf => FromAsf (AsfFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.MpegPs => FromMpegPs (MpegPsFile.Read (stream, sourcePath, fileSystem)),
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
@@ -529,6 +540,13 @@ public static class MediaFile
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Asf);
 	}
 
+	static MediaFileResult FromMpegPs (MpegPsFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse MPEG program stream");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.MpegPs);
+	}
+
 	static MediaFileResult FromWav (WavFileReadResult result)
 	{
 		if (!result.IsSuccess || result.File is null)
@@ -569,6 +587,7 @@ public static class MediaFile
 			MediaFormat.Asf => OpenAsf (data),
 			MediaFormat.Musepack => OpenMusepack (data),
 			MediaFormat.Matroska => OpenMatroska (data),
+			MediaFormat.MpegPs => FromMpegPs (MpegPsFile.Read (data.Span)),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 
@@ -652,6 +671,12 @@ public static class MediaFile
 			if (data[0] == MusepackSV7Magic[0] && data[1] == MusepackSV7Magic[1] &&
 				data[2] == MusepackSV7Magic[2])
 				return MediaFormat.Musepack;
+
+			// MPEG program stream (pack header 0x000001BA) or video elementary stream
+			// (sequence header 0x000001B3). Checked after MP4, whose first box size can
+			// spell 0x000001BA in front of "ftyp".
+			if (MpegPsFile.IsValidFormat (data))
+				return MediaFormat.MpegPs;
 		}
 
 		// ASF/WMA: starts with ASF Header Object GUID (16 bytes)
@@ -659,9 +684,9 @@ public static class MediaFile
 			return MediaFormat.Asf;
 
 		if (data.Length >= 3) {
-			// ID3v2: starts with "ID3"
+			// ID3v2: starts with "ID3". A program stream may follow the tag instead of MPEG audio.
 			if (data[0] == Id3Magic[0] && data[1] == Id3Magic[1] && data[2] == Id3Magic[2])
-				return MediaFormat.Mp3;
+				return MpegPsFile.IsValidFormat (data) ? MediaFormat.MpegPs : MediaFormat.Mp3;
 		}
 
 		// A bare sync (0xFF plus the top 3 bits) also matches a UTF-16 LE BOM (FF FE).
@@ -687,6 +712,7 @@ public static class MediaFile
 				".WMA" or ".WMV" or ".ASF" => MediaFormat.Asf,
 				".MPC" or ".MP+" or ".MPP" => MediaFormat.Musepack,
 				".MKV" or ".MKA" or ".MKS" or ".MK3D" or ".WEBM" => MediaFormat.Matroska,
+				".MPG" or ".MPEG" or ".MPE" or ".MPV" or ".M2V" => MediaFormat.MpegPs,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -1030,5 +1056,11 @@ public enum MediaFormat
 	/// <summary>
 	/// Matroska and WebM (.mkv, .mka, .mks, .mk3d, .webm).
 	/// </summary>
-	Matroska
+	Matroska,
+
+	/// <summary>
+	/// MPEG-1 and MPEG-2 program streams (.mpg, .mpeg, .mpe, .vob) and MPEG video elementary
+	/// streams (.mpv, .m2v).
+	/// </summary>
+	MpegPs
 }
