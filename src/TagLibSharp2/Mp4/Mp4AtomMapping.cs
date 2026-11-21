@@ -22,6 +22,7 @@ internal static class Mp4AtomMapping
 	public const string Artist = "©ART";
 	public const string Album = "©alb";
 	public const string Genre = "©gen";
+	public const string GenreId3 = "gnre";
 	public const string Year = "©day";
 	public const string Comment = "©cmt";
 	public const string Composer = "©wrt";
@@ -29,6 +30,22 @@ internal static class Mp4AtomMapping
 	public const string Lyrics = "©lyr";
 	public const string Encoder = "©too";
 	public const string Copyright = "cprt";
+
+	// Older files store the same text in ©cpy. cprt wins when both are present.
+	public const string CopyrightAlias = "©cpy";
+
+	// QuickTime metadata keys (meta handler "mdta"), without the "com.apple.quicktime." prefix.
+	// https://developer.apple.com/documentation/quicktime-file-format/quicktime_metadata_keys
+	public const string QuickTimeKeyPrefix = "com.apple.quicktime.";
+	public const string QuickTimeTitle = "title";
+	public const string QuickTimeArtist = "artist";
+	public const string QuickTimeAlbum = "album";
+	public const string QuickTimeComment = "comment";
+	public const string QuickTimeYear = "year";
+	public const string QuickTimeDescription = "description";
+	public const string QuickTimePublisher = "publisher";
+	public const string QuickTimeGenre = "genre";
+	public const string QuickTimeCopyright = "copyright";
 
 	// Album artist (not © prefixed)
 	public const string AlbumArtist = "aART";
@@ -137,7 +154,9 @@ internal static class Mp4AtomMapping
 	public const int TypeBinary = 0;
 	public const int TypeUtf8 = 1;
 	public const int TypeUtf16 = 2;
+	public const int TypeGif = 12;
 	public const int TypeJpeg = 13;
 	public const int TypePng = 14;
+	public const int TypeBmp = 27;
 	public const int TypeInteger = 21;
 }

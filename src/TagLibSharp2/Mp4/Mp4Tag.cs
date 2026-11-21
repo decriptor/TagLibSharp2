@@ -1,8 +1,10 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using System.Globalization;
 using TagLibSharp2.Core;
+using TagLibSharp2.Id3;
 
 namespace TagLibSharp2.Mp4;
 
@@ -50,43 +52,72 @@ public sealed class Mp4Tag : Tag
 	readonly Dictionary<string, List<Mp4DataAtom>> _atoms = new ();
 	readonly List<Mp4Picture> _pictures = new ();
 
+	// mean and name stay separate so a colon in either field is not a delimiter.
+	// The list keeps render order; the index finds a field without scanning, so a file
+	// with many freeform atoms reads in linear time.
+	readonly LinkedList<FreeformField> _freeform = new ();
+	readonly Dictionary<(string Mean, string Name), LinkedListNode<FreeformField>> _freeformByKey = new ();
+
+	// ilst children that are not rebuilt from parsed fields, such as "orch".
+	// Indexed by 4-byte type so one edit does not scan every child.
+	readonly List<PreservedBox?> _preservedAtoms = new ();
+	readonly Dictionary<uint, List<int>> _preservedByType = new ();
+
+	// Preserved freeform boxes that carry a mean and a name, so a set drops its twin directly.
+	readonly Dictionary<(string Mean, string Name), List<int>> _preservedFreeformByKey = new ();
+
+	// Items of a QuickTime "mdta" meta that a property reads, by key (without the
+	// com.apple.quicktime. prefix). The boxes themselves are preserved; a set drops them.
+	readonly Dictionary<string, QuickTimeItem> _quickTimeItems = new (StringComparer.Ordinal);
+
 	/// <inheritdoc/>
 	public override TagTypes TagType => TagTypes.Apple;
 
 	/// <inheritdoc/>
 	public override string? Title {
-		get => GetText (Mp4AtomMapping.Title);
-		set => SetText (Mp4AtomMapping.Title, value);
+		get => GetText (Mp4AtomMapping.Title) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeTitle);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Title, Mp4AtomMapping.QuickTimeTitle, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Artist {
-		get => GetText (Mp4AtomMapping.Artist);
-		set => SetText (Mp4AtomMapping.Artist, value);
+		get => GetText (Mp4AtomMapping.Artist) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeArtist);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Artist, Mp4AtomMapping.QuickTimeArtist, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Album {
-		get => GetText (Mp4AtomMapping.Album);
-		set => SetText (Mp4AtomMapping.Album, value);
+		get => GetText (Mp4AtomMapping.Album) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeAlbum);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Album, Mp4AtomMapping.QuickTimeAlbum, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Year {
-		get => GetText (Mp4AtomMapping.Year);
-		set => SetText (Mp4AtomMapping.Year, value);
+		get => GetText (Mp4AtomMapping.Year) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeYear);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Year, Mp4AtomMapping.QuickTimeYear, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Comment {
-		get => GetText (Mp4AtomMapping.Comment);
-		set => SetText (Mp4AtomMapping.Comment, value);
+		get => GetText (Mp4AtomMapping.Comment) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeComment);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Comment, Mp4AtomMapping.QuickTimeComment, value);
 	}
 
 	/// <inheritdoc/>
 	public override string? Genre {
-		get => GetText (Mp4AtomMapping.Genre);
-		set => SetText (Mp4AtomMapping.Genre, value);
+		get {
+			var text = GetText (Mp4AtomMapping.Genre);
+			if (!string.IsNullOrEmpty (text))
+				return text;
+
+			// gnre is a 1-based ID3v1 code. A non-empty ©gen wins over it.
+			return GetGnreName () ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeGenre);
+		}
+		set {
+			SetTextReplacingQuickTime (Mp4AtomMapping.Genre, Mp4AtomMapping.QuickTimeGenre, value);
+			// A leftover gnre would still be returned after ©gen is cleared.
+			RemoveAtom (Mp4AtomMapping.GenreId3);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -173,8 +204,19 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Copyright {
-		get => GetText (Mp4AtomMapping.Copyright);
-		set => SetText (Mp4AtomMapping.Copyright, value);
+		get {
+			var text = GetText (Mp4AtomMapping.Copyright);
+			if (!string.IsNullOrEmpty (text))
+				return text;
+
+			// ©cpy is an alias. A non-empty cprt wins over it.
+			return GetText (Mp4AtomMapping.CopyrightAlias) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeCopyright);
+		}
+		set {
+			SetTextReplacingQuickTime (Mp4AtomMapping.Copyright, Mp4AtomMapping.QuickTimeCopyright, value);
+			// A leftover ©cpy would still be returned after cprt is cleared.
+			RemoveAtom (Mp4AtomMapping.CopyrightAlias);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -246,8 +288,8 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Publisher {
-		get => GetText (Mp4AtomMapping.Publisher);
-		set => SetText (Mp4AtomMapping.Publisher, value);
+		get => GetText (Mp4AtomMapping.Publisher) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimePublisher);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Publisher, Mp4AtomMapping.QuickTimePublisher, value);
 	}
 
 	/// <inheritdoc/>
@@ -258,8 +300,8 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	public override string? Description {
-		get => GetText (Mp4AtomMapping.Description);
-		set => SetText (Mp4AtomMapping.Description, value);
+		get => GetText (Mp4AtomMapping.Description) ?? GetQuickTimeText (Mp4AtomMapping.QuickTimeDescription);
+		set => SetTextReplacingQuickTime (Mp4AtomMapping.Description, Mp4AtomMapping.QuickTimeDescription, value);
 	}
 
 	/// <inheritdoc/>
@@ -581,6 +623,7 @@ public sealed class Mp4Tag : Tag
 		get => [.. _pictures];
 		set {
 			_pictures.Clear ();
+			DropPreserved (Mp4AtomMapping.CoverArt);
 			if (value is not null) {
 				foreach (var pic in value) {
 					if (pic is Mp4Picture mp4Pic)
@@ -592,6 +635,19 @@ public sealed class Mp4Tag : Tag
 		}
 	}
 #pragma warning restore CA1819
+
+	string? GetGnreName ()
+	{
+		var code = GetInteger (Mp4AtomMapping.GenreId3);
+		if (code is not uint value || value == 0)
+			return null;
+
+		var index = value - 1;
+		if (index > byte.MaxValue)
+			return null;
+
+		return Id3v1Genre.GetName ((byte)index);
+	}
 
 	string? GetText (string atomId)
 	{
@@ -629,6 +685,40 @@ public sealed class Mp4Tag : Tag
 		return values;
 	}
 
+	string? GetQuickTimeText (string key) =>
+		_quickTimeItems.TryGetValue (key, out var item) ? item.Text : null;
+
+	// The setter replaces every item the getter reads, so readers that list them all see one value.
+	void SetTextReplacingQuickTime (string atomId, string quickTimeKey, string? value)
+	{
+		SetText (atomId, value);
+		if (!_quickTimeItems.TryGetValue (quickTimeKey, out var item))
+			return;
+
+		foreach (var type in item.Types)
+			DropPreserved (type);
+
+		_quickTimeItems.Remove (quickTimeKey);
+	}
+
+	/// <summary>
+	/// Keeps an item of an "mdta" meta whose key a property reads. The box is written back
+	/// unchanged unless that property is set.
+	/// </summary>
+	internal void AddQuickTimeItem (string key, BinaryData box, string? text)
+	{
+		PreserveIlstAtom (box);
+		var type = TypeKey (box.Span);
+		if (!_quickTimeItems.TryGetValue (key, out var item)) {
+			item = new QuickTimeItem ();
+			_quickTimeItems.Add (key, item);
+		}
+
+		item.Types.Add (type);
+		if (string.IsNullOrEmpty (item.Text))
+			item.Text = text;
+	}
+
 	void SetText (string atomId, string? value)
 	{
 		if (string.IsNullOrEmpty (value)) {
@@ -637,7 +727,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	uint? GetInteger (string atomId)
@@ -656,7 +746,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeInteger, BinaryData.FromUInt32BE (value.Value));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	bool GetBoolean (string atomId)
@@ -675,7 +765,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeInteger, new BinaryData ([1]));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
 	bool GetTrackDisc (string atomId, out uint number, out uint total)
@@ -698,34 +788,51 @@ public sealed class Mp4Tag : Tag
 		data[5] = (byte)(total & 0xFF);
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeBinary, new BinaryData (data));
-		_atoms[atomId] = new List<Mp4DataAtom> { dataAtom };
+		SetAtoms (atomId, new List<Mp4DataAtom> { dataAtom });
 	}
 
-	string? GetFreeform (string mean, string name)
+	internal string? GetFreeform (string mean, string name)
 	{
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-		if (!_atoms.TryGetValue (key, out var dataAtoms) || dataAtoms.Count == 0)
+		var field = FindFreeform (mean, name);
+		if (field is null || field.Atoms.Count == 0)
 			return null;
 
-		return dataAtoms[0].ToUtf8String ();
+		return field.Atoms[0].ToUtf8String ();
 	}
 
-	void SetFreeform (string mean, string name, string? value)
+	internal void SetFreeform (string mean, string name, string? value)
 	{
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-
 		if (string.IsNullOrEmpty (value)) {
-			RemoveAtom (key);
+			SetFreeformAtoms (mean, name, new List<Mp4DataAtom> ());
 			return;
 		}
 
 		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
-		_atoms[key] = new List<Mp4DataAtom> { dataAtom };
+		SetFreeformAtoms (mean, name, new List<Mp4DataAtom> { dataAtom });
 	}
+
+	internal void SetFreeformAtoms (string mean, string name, List<Mp4DataAtom> dataAtoms)
+	{
+		var key = (mean, name);
+		if (_freeformByKey.TryGetValue (key, out var existing)) {
+			_freeform.Remove (existing);
+			_freeformByKey.Remove (key);
+		}
+
+		DropPreservedFreeform (mean, name);
+		if (dataAtoms is null || dataAtoms.Count == 0)
+			return;
+
+		_freeformByKey.Add (key, _freeform.AddLast (new FreeformField (mean, name, dataAtoms)));
+	}
+
+	FreeformField? FindFreeform (string mean, string name) =>
+		_freeformByKey.TryGetValue ((mean, name), out var node) ? node.Value : null;
 
 	void RemoveAtom (string atomId)
 	{
 		_atoms.Remove (atomId);
+		DropPreserved (atomId);
 	}
 
 	/// <inheritdoc/>
@@ -733,6 +840,12 @@ public sealed class Mp4Tag : Tag
 	{
 		_atoms.Clear ();
 		_pictures.Clear ();
+		_freeform.Clear ();
+		_freeformByKey.Clear ();
+		_preservedAtoms.Clear ();
+		_preservedByType.Clear ();
+		_preservedFreeformByKey.Clear ();
+		_quickTimeItems.Clear ();
 	}
 
 	/// <inheritdoc/>
@@ -740,28 +853,18 @@ public sealed class Mp4Tag : Tag
 	{
 		using var builder = new BinaryDataBuilder ();
 
-		foreach (var kvp in _atoms) {
-			var atomId = kvp.Key;
-			var dataAtoms = kvp.Value;
+		foreach (var kvp in _atoms)
+			RenderStandardAtom (builder, kvp.Key, kvp.Value);
 
-			if (atomId.StartsWith (Mp4AtomMapping.FreeformAtom + ":", StringComparison.Ordinal)) {
-				RenderFreeformAtom (builder, atomId, dataAtoms);
-				continue;
-			}
+		foreach (var field in _freeform)
+			RenderFreeformAtom (builder, field.Mean, field.Name, field.Atoms);
 
-			RenderStandardAtom (builder, atomId, dataAtoms);
-		}
+		if (_pictures.Count > 0)
+			RenderPictures (builder);
 
-		if (_pictures.Count > 0) {
-			var coverDataAtoms = new List<Mp4DataAtom> ();
-			foreach (var pic in _pictures) {
-				var isJpeg = pic.MimeType.Contains ("jpeg", StringComparison.OrdinalIgnoreCase) ||
-							 pic.MimeType.Contains ("jpg", StringComparison.OrdinalIgnoreCase);
-				var typeIndicator = isJpeg ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng;
-				coverDataAtoms.Add (new Mp4DataAtom (typeIndicator, pic.PictureData));
-			}
-
-			RenderStandardAtom (builder, Mp4AtomMapping.CoverArt, coverDataAtoms);
+		foreach (var preserved in _preservedAtoms) {
+			if (preserved is not null)
+				builder.Add (preserved.Box);
 		}
 
 		return builder.ToBinaryData ();
@@ -789,21 +892,33 @@ public sealed class Mp4Tag : Tag
 			builder.Add ((byte)((dataAtom.TypeIndicator >> 8) & 0xFF));
 			builder.Add ((byte)(dataAtom.TypeIndicator & 0xFF));
 
-			builder.Add (BinaryData.FromUInt32BE (0));
+			builder.Add (BinaryData.FromUInt32BE (dataAtom.Locale));
 
 			builder.Add (dataAtom.Data);
 		}
 	}
 
-	static void RenderFreeformAtom (BinaryDataBuilder builder, string key, List<Mp4DataAtom> dataAtoms)
+	void RenderPictures (BinaryDataBuilder builder)
 	{
-		var parts = key.Split (':');
-		if (parts.Length != 3)
-			return;
+		var payloads = new BinaryData[_pictures.Count];
+		var dataSize = 0;
+		for (var i = 0; i < _pictures.Count; i++) {
+			payloads[i] = Mp4DataAtom.CreateImage (_pictures[i].PictureData, _pictures[i].RenderTypeIndicator, _pictures[i].RenderLocale);
+			dataSize += 8 + payloads[i].Length;
+		}
 
-		var mean = parts[1];
-		var name = parts[2];
+		builder.Add (BinaryData.FromUInt32BE ((uint)(8 + dataSize)));
+		builder.Add (BinaryData.FromStringLatin1 (Mp4AtomMapping.CoverArt));
 
+		foreach (var payload in payloads) {
+			builder.Add (BinaryData.FromUInt32BE ((uint)(8 + payload.Length)));
+			builder.Add (BinaryData.FromStringLatin1 ("data"));
+			builder.Add (payload);
+		}
+	}
+
+	static void RenderFreeformAtom (BinaryDataBuilder builder, string mean, string name, List<Mp4DataAtom> dataAtoms)
+	{
 		var meanBytes = System.Text.Encoding.UTF8.GetBytes (mean);
 		var nameBytes = System.Text.Encoding.UTF8.GetBytes (name);
 
@@ -840,13 +955,11 @@ public sealed class Mp4Tag : Tag
 			builder.Add ((byte)((dataAtom.TypeIndicator >> 8) & 0xFF));
 			builder.Add ((byte)(dataAtom.TypeIndicator & 0xFF));
 
-			builder.Add (BinaryData.FromUInt32BE (0));
+			builder.Add (BinaryData.FromUInt32BE (dataAtom.Locale));
 
 			builder.Add (dataAtom.Data);
 		}
 	}
-
-	internal IReadOnlyDictionary<string, List<Mp4DataAtom>> GetAtoms () => _atoms;
 
 	internal void SetAtoms (string atomId, List<Mp4DataAtom> dataAtoms)
 	{
@@ -855,8 +968,115 @@ public sealed class Mp4Tag : Tag
 			return;
 		}
 
+		DropPreserved (atomId);
 		_atoms[atomId] = dataAtoms;
 	}
 
+	internal void PreserveIlstAtom (BinaryData box, string? mean = null, string? name = null)
+	{
+		if (box.IsEmpty)
+			return;
+
+		var typeKey = TypeKey (box.Span);
+		var index = _preservedAtoms.Count;
+		_preservedAtoms.Add (new PreservedBox (box));
+		if (!_preservedByType.TryGetValue (typeKey, out var indexes)) {
+			indexes = new List<int> ();
+			_preservedByType.Add (typeKey, indexes);
+		}
+
+		indexes.Add (index);
+
+		if (mean is null || name is null)
+			return;
+
+		if (!_preservedFreeformByKey.TryGetValue ((mean, name), out var twins)) {
+			twins = new List<int> ();
+			_preservedFreeformByKey.Add ((mean, name), twins);
+		}
+
+		twins.Add (index);
+	}
+
+	void DropPreserved (string atomId)
+	{
+		// Freeform keys are longer than 4 characters and are matched by mean and name.
+		if (atomId.Length != 4)
+			return;
+
+		DropPreserved (TypeKey (atomId));
+	}
+
+	void DropPreserved (uint typeKey)
+	{
+		if (!_preservedByType.TryGetValue (typeKey, out var indexes))
+			return;
+
+		foreach (var index in indexes)
+			_preservedAtoms[index] = null;
+
+		_preservedByType.Remove (typeKey);
+	}
+
+	void DropPreservedFreeform (string mean, string name)
+	{
+		// The ---- entries in _preservedByType keep these indexes; nulled slots are skipped on render.
+		if (!_preservedFreeformByKey.TryGetValue ((mean, name), out var twins))
+			return;
+
+		foreach (var index in twins)
+			_preservedAtoms[index] = null;
+
+		_preservedFreeformByKey.Remove ((mean, name));
+	}
+
+	static uint TypeKey (string atomId) =>
+		((uint)(byte)atomId[0] << 24) |
+		((uint)(byte)atomId[1] << 16) |
+		((uint)(byte)atomId[2] << 8) |
+		(byte)atomId[3];
+
+	static uint TypeKey (ReadOnlySpan<byte> box)
+	{
+		if (box.Length < 8)
+			return 0;
+
+		return BinaryPrimitives.ReadUInt32BigEndian (box.Slice (4, 4));
+	}
+
 	internal IReadOnlyList<Mp4Picture> GetPictureList () => _pictures;
+
+	sealed class FreeformField
+	{
+		public FreeformField (string mean, string name, List<Mp4DataAtom> atoms)
+		{
+			Mean = mean;
+			Name = name;
+			Atoms = atoms;
+		}
+
+		public string Mean { get; }
+
+		public string Name { get; }
+
+		public List<Mp4DataAtom> Atoms { get; }
+	}
+
+	sealed class QuickTimeItem
+	{
+		// May repeat a type; dropping a type twice is harmless, and no lookup is needed per item.
+		public List<uint> Types { get; } = new ();
+
+		public string? Text { get; set; }
+	}
+
+	sealed class PreservedBox
+	{
+		public PreservedBox (BinaryData box)
+		{
+			Box = box;
+		}
+
+		public BinaryData Box { get; }
+	}
 }

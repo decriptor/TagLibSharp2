@@ -2609,6 +2609,148 @@ public static class TestBuilders
 		}
 
 		/// <summary>
+		/// Creates an MP4 file with an optional text genre and an optional gnre code.
+		/// </summary>
+		/// <param name="textGenre">UTF-8 genre stored in ©gen, or null to omit that atom.</param>
+		/// <param name="gnre">1-based ID3v1 code stored as a 16-bit big-endian gnre value, or null to omit that atom.</param>
+		/// <param name="gnreType">Type indicator on the gnre data atom. Zero is the usual implicit code.</param>
+		public static byte[] CreateWithGenres (string? textGenre = null, int? gnre = null, int gnreType = 0)
+		{
+			var atoms = new List<byte[]> ();
+			if (textGenre is not null)
+				atoms.Add (CreateTextAtom ("©gen", textGenre));
+			if (gnre is not null)
+				atoms.Add (CreateGnreAtom ((ushort)gnre.Value, gnreType));
+
+			return CreateWithIlstAtoms (atoms.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates an MP4 file whose ilst contains <paramref name="atoms"/> in order.
+		/// </summary>
+		/// <param name="atoms">Complete ilst child boxes.</param>
+		public static byte[] CreateWithIlstAtoms (params byte[][] atoms)
+		{
+			var builder = new BinaryDataBuilder ();
+
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var udtaContent = new BinaryDataBuilder ();
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateMetaHdlr ());
+
+			var ilstContent = new BinaryDataBuilder ();
+			if (atoms is not null) {
+				foreach (var atom in atoms)
+					ilstContent.Add (atom);
+			}
+
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
+			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
+
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an MP4 file whose udta/meta uses the QuickTime "mdta" handler: a keys atom
+		/// names each item, and each ilst child's type is a 1-based index into those keys.
+		/// </summary>
+		/// <param name="keys">Key values, all in the "mdta" namespace.</param>
+		/// <param name="items">ilst children (see <see cref="CreateMdtaItem"/>).</param>
+		public static byte[] CreateWithMdtaIlst (string[] keys, params byte[][] items) =>
+			CreateWithKeyedIlst ("mdta", keys, items);
+
+		/// <summary>
+		/// Creates an MP4 file whose udta/meta has a keys atom and the given handler type.
+		/// </summary>
+		public static byte[] CreateWithKeyedIlst (string handler, string[] keys, params byte[][] items)
+		{
+			var builder = new BinaryDataBuilder ();
+			builder.Add (CreateFtyp ("M4A "));
+
+			var moovContent = new BinaryDataBuilder ();
+			moovContent.Add (CreateMvhd (44100, 44100));
+			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
+
+			var hdlr = new BinaryDataBuilder ();
+			hdlr.AddUInt32BE (0);
+			hdlr.AddUInt32BE (0);
+			hdlr.AddStringLatin1 (handler);
+			hdlr.AddZeros (12);
+			hdlr.Add ((byte)0);
+
+			var keysContent = new BinaryDataBuilder ();
+			keysContent.AddUInt32BE (0);
+			keysContent.AddUInt32BE ((uint)keys.Length);
+			foreach (var key in keys) {
+				var value = Encoding.UTF8.GetBytes (key);
+				keysContent.AddUInt32BE ((uint)(8 + value.Length));
+				keysContent.AddStringLatin1 ("mdta");
+				keysContent.Add (value);
+			}
+
+			var ilstContent = new BinaryDataBuilder ();
+			foreach (var item in items)
+				ilstContent.Add (item);
+
+			var metaContent = new BinaryDataBuilder ();
+			metaContent.AddUInt32BE (0);
+			metaContent.Add (CreateBox ("hdlr", hdlr.ToArray ()));
+			metaContent.Add (CreateBox ("keys", keysContent.ToArray ()));
+			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
+
+			moovContent.Add (CreateBox ("udta", CreateBox ("meta", metaContent.ToArray ())));
+			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
+			builder.Add (CreateBox ("mdat", new byte[4]));
+			return builder.ToArray ();
+		}
+
+		/// <summary>
+		/// Creates an mdta ilst item: its type is the 1-based key index, and it holds one UTF-8 data atom.
+		/// </summary>
+		public static byte[] CreateMdtaItem (uint keyIndex, string value)
+		{
+			var type = new string ([(char)(keyIndex >> 24), (char)((keyIndex >> 16) & 0xFF), (char)((keyIndex >> 8) & 0xFF), (char)(keyIndex & 0xFF)]);
+			return CreateIlstChild (type, 1, Encoding.UTF8.GetBytes (value));
+		}
+
+		/// <summary>
+		/// Creates an ilst child that holds one data atom.
+		/// </summary>
+		/// <param name="name">4-character atom name.</param>
+		/// <param name="typeIndicator">Data-atom type code stored in the flags field.</param>
+		/// <param name="payload">Bytes after the locale field.</param>
+		/// <param name="locale">Locale field. Zero is the usual value.</param>
+		public static byte[] CreateIlstChild (string name, int typeIndicator, byte[] payload, uint locale = 0)
+		{
+			var dataContent = new BinaryDataBuilder ();
+			dataContent.AddUInt32BE ((uint)typeIndicator);
+			dataContent.AddUInt32BE (locale);
+			dataContent.Add (payload);
+
+			var child = new BinaryDataBuilder ();
+			child.Add (CreateBox ("data", dataContent.ToArray ()));
+			return CreateBox (name, child.ToArray ());
+		}
+
+		/// <summary>
+		/// Creates a gnre atom whose data payload is a 16-bit big-endian genre code.
+		/// </summary>
+		static byte[] CreateGnreAtom (ushort code, int typeIndicator = 0)
+		{
+			return CreateIlstChild ("gnre", typeIndicator, new byte[] { (byte)(code >> 8), (byte)code });
+		}
+
+		/// <summary>
 		/// Creates an MP4 file with track number.
 		/// </summary>
 		public static byte[] CreateWithTrackNumber (uint track, uint total)
@@ -2713,43 +2855,27 @@ public static class TestBuilders
 		/// Creates an MP4 file with cover art.
 		/// </summary>
 		public static byte[] CreateWithCoverArt (byte[] imageData, Mp4PictureType type)
+			=> CreateWithCoverArt (imageData, (int)type);
+
+		/// <summary>
+		/// Creates an MP4 file with cover art using an explicit data-atom type code.
+		/// </summary>
+		/// <param name="imageData">Image bytes stored in the covr data atom.</param>
+		/// <param name="typeIndicator">Type code. 13 is JPEG, 14 is PNG, 0 is implicit.</param>
+		public static byte[] CreateWithCoverArt (byte[] imageData, int typeIndicator)
 		{
-			var builder = new BinaryDataBuilder ();
-
-			builder.Add (CreateFtyp ("M4A "));
-
-			var moovContent = new BinaryDataBuilder ();
-			moovContent.Add (CreateMvhd (44100, 44100));
-			moovContent.Add (CreateTrak (Mp4CodecType.Aac));
-
-			var udtaContent = new BinaryDataBuilder ();
-			var metaContent = new BinaryDataBuilder ();
-			metaContent.AddUInt32BE (0);
-			metaContent.Add (CreateMetaHdlr ());
-
-			var ilstContent = new BinaryDataBuilder ();
-			ilstContent.Add (CreateCovrAtom (imageData, type));
-
-			metaContent.Add (CreateBox ("ilst", ilstContent.ToArray ()));
-			udtaContent.Add (CreateBox ("meta", metaContent.ToArray ()));
-			moovContent.Add (CreateBox ("udta", udtaContent.ToArray ()));
-
-			builder.Add (CreateBox ("moov", moovContent.ToArray ()));
-			builder.Add (CreateBox ("mdat", new byte[4]));
-
-			return builder.ToArray ();
+			return CreateWithIlstAtoms (CreateCovrAtom (imageData, typeIndicator));
 		}
 
 		/// <summary>
 		/// Creates covr atom.
 		/// </summary>
-		static byte[] CreateCovrAtom (byte[] imageData, Mp4PictureType type)
+		public static byte[] CreateCovrAtom (byte[] imageData, int typeIndicator)
 		{
 			var builder = new BinaryDataBuilder ();
 
 			var dataContent = new BinaryDataBuilder ();
-			var flags = type == Mp4PictureType.Jpeg ? 13u : 14u;
-			dataContent.AddUInt32BE (flags); // flags: 13=JPEG, 14=PNG
+			dataContent.AddUInt32BE ((uint)typeIndicator);
 			dataContent.AddUInt32BE (0);
 			dataContent.Add (imageData);
 
@@ -2792,7 +2918,7 @@ public static class TestBuilders
 		/// <summary>
 		/// Creates ---- (freeform) atom.
 		/// </summary>
-		static byte[] CreateFreeformAtom (string domain, string name, string value)
+		public static byte[] CreateFreeformAtom (string domain, string name, string value)
 		{
 			var builder = new BinaryDataBuilder ();
 

@@ -621,12 +621,7 @@ public sealed class Mp4File : IMediaFile
 		if (Tag is null)
 			return null;
 
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-		var atoms = Tag.GetAtoms ();
-		if (!atoms.TryGetValue (key, out var dataAtoms) || dataAtoms.Count == 0)
-			return null;
-
-		return dataAtoms[0].ToUtf8String ();
+		return Tag.GetFreeform (mean, name);
 	}
 
 	/// <summary>
@@ -637,16 +632,7 @@ public sealed class Mp4File : IMediaFile
 	/// <param name="value">The value to set, or null to remove.</param>
 	public void SetFreeformTag (string mean, string name, string? value)
 	{
-		var tag = EnsureTag ();
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-
-		if (string.IsNullOrEmpty (value)) {
-			tag.SetAtoms (key, null!);
-			return;
-		}
-
-		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
-		tag.SetAtoms (key, new List<Mp4DataAtom> { dataAtom });
+		EnsureTag ().SetFreeform (mean, name, value);
 	}
 
 	Mp4Tag EnsureTag ()
@@ -1015,10 +1001,84 @@ public sealed class Mp4File : IMediaFile
 		if (ilst is null)
 			return null;
 
-		return ParseIlst (ilst);
+		return ParseIlst (ilst, ReadQuickTimeKeys (meta));
 	}
 
-	static Mp4Tag ParseIlst (Mp4Box ilst)
+	/// <summary>
+	/// Reads the keys of a meta whose handler is "mdta". Each ilst item's type is then a 1-based
+	/// index into this list (https://developer.apple.com/documentation/quicktime-file-format/metadata_item_keys_atom).
+	/// Entry i holds the key without the com.apple.quicktime. prefix, or null when it is not an
+	/// "mdta" namespace key. Returns null for any other handler.
+	/// </summary>
+	static string?[]? ReadQuickTimeKeys (Mp4Box meta)
+	{
+		var hdlr = meta.FindChild ("hdlr");
+		var keys = meta.FindChild ("keys");
+		if (hdlr is null || keys is null || hdlr.Data.Length < 12 || !hdlr.Data.Span.Slice (8, 4).SequenceEqual ("mdta"u8))
+			return null;
+
+		// keys: version and flags (4), entry_count (4), then key_size (4) + key_namespace (4) + key_value.
+		var span = keys.Data.Span;
+		if (span.Length < 8)
+			return null;
+
+		var count = BinaryPrimitives.ReadUInt32BigEndian (span.Slice (4, 4));
+		var names = new List<string?> ();
+		var offset = 8;
+		while (names.Count < count && offset + 8 <= span.Length) {
+			var size = BinaryPrimitives.ReadUInt32BigEndian (span.Slice (offset, 4));
+			if (size < 8 || size > span.Length - offset)
+				break;
+
+			var value = span.Slice (offset + 8, (int)size - 8);
+			names.Add (span.Slice (offset + 4, 4).SequenceEqual ("mdta"u8) ? QuickTimeKeyName (value) : null);
+			offset += (int)size;
+		}
+
+		return [.. names];
+	}
+
+	static string QuickTimeKeyName (ReadOnlySpan<byte> value)
+	{
+		var key = System.Text.Encoding.UTF8.GetString (value.ToArray ());
+		return key.StartsWith (Mp4AtomMapping.QuickTimeKeyPrefix, StringComparison.Ordinal)
+			? key.Substring (Mp4AtomMapping.QuickTimeKeyPrefix.Length)
+			: key;
+	}
+
+	static bool IsMappedQuickTimeKey (string key) => key is
+		Mp4AtomMapping.QuickTimeTitle or Mp4AtomMapping.QuickTimeArtist or Mp4AtomMapping.QuickTimeAlbum or
+		Mp4AtomMapping.QuickTimeComment or Mp4AtomMapping.QuickTimeYear or Mp4AtomMapping.QuickTimeDescription or
+		Mp4AtomMapping.QuickTimePublisher or Mp4AtomMapping.QuickTimeGenre or Mp4AtomMapping.QuickTimeCopyright;
+
+	static string? QuickTimeKeyOf (Mp4Box item, string?[]? keys)
+	{
+		if (keys is null || item.Type.Length != 4)
+			return null;
+
+		var index = ((uint)item.Type[0] << 24) | ((uint)item.Type[1] << 16) | ((uint)item.Type[2] << 8) | item.Type[3];
+		if (index == 0 || index > keys.Length)
+			return null;
+
+		var key = keys[index - 1];
+		return key is not null && IsMappedQuickTimeKey (key) ? key : null;
+	}
+
+	static string? FirstText (Mp4Box item)
+	{
+		foreach (var child in Mp4BoxParser.ParseChildren (item.Data.Span)) {
+			if (child.Type != "data" || child.Data.Length < 8)
+				continue;
+
+			var atom = Mp4DataAtom.Parse (child.Data.Span);
+			if (atom.TypeIndicator == Mp4AtomMapping.TypeUtf8)
+				return atom.ToUtf8String ();
+		}
+
+		return null;
+	}
+
+	static Mp4Tag ParseIlst (Mp4Box ilst, string?[]? quickTimeKeys)
 	{
 		var tag = new Mp4Tag ();
 
@@ -1026,19 +1086,28 @@ public sealed class Mp4File : IMediaFile
 		foreach (var atomBox in ilst.Children) {
 			var atomId = atomBox.Type;
 
-			// Handle cover art specially
-			if (atomId == Mp4AtomMapping.CoverArt) {
-				ParseCoverArt (atomBox, tag);
+			// In an "mdta" meta, a numeric type names a key; keep the item and let its property read it.
+			var quickTimeKey = QuickTimeKeyOf (atomBox, quickTimeKeys);
+			if (quickTimeKey is not null) {
+				tag.AddQuickTimeItem (quickTimeKey, atomBox.Render (), FirstText (atomBox));
 				continue;
 			}
 
-			// Handle freeform atoms (----)
+			// Handle cover art specially
+			if (atomId == Mp4AtomMapping.CoverArt) {
+				if (!ParseCoverArt (atomBox, tag))
+					tag.PreserveIlstAtom (atomBox.Render ());
+				continue;
+			}
+
+			// Handle freeform atoms (----). ParseFreeformAtom keeps a failed box, including its mean and name.
 			if (atomId == Mp4AtomMapping.FreeformAtom) {
 				ParseFreeformAtom (atomBox, tag);
 				continue;
 			}
 
-			// Standard atoms contain data sub-atoms
+			// Standard atoms contain data sub-atoms.
+			// Names outside ContainerBoxes have no children, so the original box is kept.
 			var dataAtoms = new List<Mp4DataAtom> ();
 			foreach (var child in atomBox.Children) {
 				if (child.Type == "data" && child.Data.Length >= 8) {
@@ -1049,12 +1118,14 @@ public sealed class Mp4File : IMediaFile
 
 			if (dataAtoms.Count > 0)
 				tag.SetAtoms (atomId, dataAtoms);
+			else
+				tag.PreserveIlstAtom (atomBox.Render ());
 		}
 
 		return tag;
 	}
 
-	static void ParseCoverArt (Mp4Box covrBox, Mp4Tag tag)
+	static bool ParseCoverArt (Mp4Box covrBox, Mp4Tag tag)
 	{
 		var pictures = new List<Mp4Picture> ();
 
@@ -1066,13 +1137,17 @@ public sealed class Mp4File : IMediaFile
 			}
 		}
 
-		if (pictures.Count > 0)
-			tag.Pictures = [.. pictures];
+		if (pictures.Count == 0)
+			return false;
+
+		tag.Pictures = [.. pictures];
+		return true;
 	}
 
 	static void ParseFreeformAtom (Mp4Box freeformBox, Mp4Tag tag)
 	{
-		// Freeform atoms have mean, name, and data children
+		// Freeform atoms have mean, name, and data children. Mean and name are kept even when
+		// the data child is missing, so a later set can drop that preserved twin.
 		string? mean = null;
 		string? name = null;
 		var dataAtoms = new List<Mp4DataAtom> ();
@@ -1090,10 +1165,12 @@ public sealed class Mp4File : IMediaFile
 			}
 		}
 
-		if (!string.IsNullOrEmpty (mean) && !string.IsNullOrEmpty (name) && dataAtoms.Count > 0) {
-			var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-			tag.SetAtoms (key, dataAtoms);
+		if (string.IsNullOrEmpty (mean) || string.IsNullOrEmpty (name) || dataAtoms.Count == 0) {
+			tag.PreserveIlstAtom (freeformBox.Render (), mean, name);
+			return;
 		}
+
+		tag.SetFreeformAtoms (mean!, name!, dataAtoms);
 	}
 
 	/// <summary>

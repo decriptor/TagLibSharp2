@@ -15,7 +15,7 @@ namespace TagLibSharp2.Mp4;
 /// </para>
 /// <code>
 /// Bytes 0-3:   version (1 byte) + flags (3 bytes) - flags indicate data type
-/// Bytes 4-7:   reserved (locale, typically 0)
+/// Bytes 4-7:   locale indicator (country + language, 0 = every locale)
 /// Bytes 8+:    actual value (format depends on type indicator in flags)
 /// </code>
 /// </remarks>
@@ -32,14 +32,23 @@ internal readonly struct Mp4DataAtom
 	public BinaryData Data { get; }
 
 	/// <summary>
+	/// Gets the locale indicator: a 2-byte country and a 2-byte language, 0 meaning every locale.
+	/// Kept so an unedited value is written back for the same readers
+	/// (https://developer.apple.com/documentation/quicktime-file-format/locale_indicator).
+	/// </summary>
+	public uint Locale { get; }
+
+	/// <summary>
 	/// Initializes a new instance of the <see cref="Mp4DataAtom"/> struct.
 	/// </summary>
 	/// <param name="typeIndicator">The data type indicator.</param>
 	/// <param name="data">The raw data.</param>
-	public Mp4DataAtom (int typeIndicator, BinaryData data)
+	/// <param name="locale">The locale indicator. 0 applies to every locale.</param>
+	public Mp4DataAtom (int typeIndicator, BinaryData data, uint locale = 0)
 	{
 		TypeIndicator = typeIndicator;
 		Data = data;
+		Locale = locale;
 	}
 
 	/// <summary>
@@ -55,11 +64,13 @@ internal readonly struct Mp4DataAtom
 		// Bytes 0-3: version (1 byte) + flags (3 bytes) - flags are the type indicator
 		var typeIndicator = (data[1] << 16) | (data[2] << 8) | data[3];
 
-		// Bytes 4-7: reserved (locale)
+		// Bytes 4-7: locale indicator
+		var locale = (uint)((data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7]);
+
 		// Bytes 8+: actual value
 		var valueData = data.Length > 8 ? new BinaryData (data[8..]) : BinaryData.Empty;
 
-		return new Mp4DataAtom (typeIndicator, valueData);
+		return new Mp4DataAtom (typeIndicator, valueData, locale);
 	}
 
 	/// <summary>
@@ -259,21 +270,33 @@ internal readonly struct Mp4DataAtom
 	/// <returns>The binary representation of the data atom.</returns>
 	public static BinaryData CreateImage (BinaryData imageData, bool isJpeg)
 	{
+		return CreateImage (imageData, isJpeg ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng);
+	}
+
+	/// <summary>
+	/// Creates a data atom for image data with an explicit type code.
+	/// </summary>
+	/// <param name="imageData">The image binary data.</param>
+	/// <param name="typeIndicator">The data type indicator (13 = JPEG, 14 = PNG, or the code from the file).</param>
+	/// <param name="locale">The locale indicator. 0 applies to every locale.</param>
+	/// <returns>The binary representation of the data atom.</returns>
+	public static BinaryData CreateImage (BinaryData imageData, int typeIndicator, uint locale = 0)
+	{
 		var data = new byte[8 + imageData.Length];
 
 		// Version: 0
 		data[0] = 0;
 
-		// Flags: type indicator (13 = JPEG, 14 = PNG)
-		data[1] = 0;
-		data[2] = 0;
-		data[3] = (byte)(isJpeg ? Mp4AtomMapping.TypeJpeg : Mp4AtomMapping.TypePng);
+		// Flags: type indicator
+		data[1] = (byte)((typeIndicator >> 16) & 0xFF);
+		data[2] = (byte)((typeIndicator >> 8) & 0xFF);
+		data[3] = (byte)(typeIndicator & 0xFF);
 
-		// Reserved (locale): 0
-		data[4] = 0;
-		data[5] = 0;
-		data[6] = 0;
-		data[7] = 0;
+		// Locale indicator
+		data[4] = (byte)(locale >> 24);
+		data[5] = (byte)(locale >> 16);
+		data[6] = (byte)(locale >> 8);
+		data[7] = (byte)locale;
 
 		// Image data
 		imageData.Span.CopyTo (data.AsSpan (8));
