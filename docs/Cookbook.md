@@ -891,6 +891,37 @@ newChapter.AddSubFrame(new TextFrame("TIT2", "Introduction"));
 tag.AddFrame(newChapter);
 ```
 
+MP4, M4A and M4B files (audiobooks) keep chapters in a QuickTime chapter track and a Nero `chpl` box.
+`Mp4File.Chapters` reads them and replaces both on save:
+
+```csharp
+using TagLibSharp2.Mp4;
+
+var result = Mp4File.ReadFromFile("book.m4b");
+if (!result.IsSuccess)
+    return;
+
+var m4b = result.File!;
+
+// Read chapters: start time, title, and the derived end time
+foreach (var chapter in m4b.Chapters)
+    Console.WriteLine($"{chapter.StartTime} - {chapter.EndTime}: {chapter.Title}");
+
+// Replace the whole list (it is sorted by start time on assignment)
+m4b.Chapters = [
+    new Mp4Chapter(TimeSpan.Zero, "Opening Credits"),
+    new Mp4Chapter(TimeSpan.FromMinutes(1), "Chapter 1"),
+    new Mp4Chapter(TimeSpan.FromMinutes(42.5), "Chapter 2"),
+];
+
+// Or remove every chapter
+// m4b.Chapters = [];
+
+var save = m4b.SaveToFile();
+if (!save.IsSuccess)
+    Console.WriteLine(save.Error); // e.g. a chapter track whose samples sit in movie fragments
+```
+
 ### Work with Synchronized Lyrics
 
 ```csharp

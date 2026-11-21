@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   referenced from every sound and video track). New chapter samples go in their own `mdat` after `moov`, and
   every other track's chunk offsets move with them. That `mdat` replaces the one an earlier chapter save wrote,
   so repeated edits do not grow the file. A save that leaves the list alone keeps the chapter bytes.
+  Chapter samples in movie fragments are read; changing chapters whose track has samples in movie fragments
+  fails with an error instead of leaving a second list. A replaced track keeps its language, handler,
+  and flags. New tracks use `nmhd` and `tx3g` in MP4 (Apple TN2174) and `gmhd` and the QTFF `text`
+  description in QuickTime files. Clearing also removes Apple chapter image and URL tracks.
 
 ### Fixed
 
