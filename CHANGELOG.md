@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Matroska: an attachment named `back.jpg`, `artist.png` and so on reads with that picture type instead of `Other`.
 - Matroska: a new SeekHead entry is added only to the first SeekHead (RFC 9559 section 6.3).
 
+#### Raw AAC (ADTS/ADIF) Support
+- `AacFile` reads and writes raw AAC files (`.aac`): ADTS (ISO/IEC 13818-7 §6.2, MPEG-2 and MPEG-4) and ADIF (§6.1)
+- `AacAudioProperties`: duration from every ADTS frame header (1024 samples per raw data block), average bitrate, sample rate, channels (including a program config element when channel_configuration is 0), profile, MPEG version, and frame count. ADIF duration comes from the header bitrate
+- `AacProfile` and `AacStreamFormat` enums, and `MediaFormat.Aac`
+- ID3v2 in front, APEv2 and ID3v1 at the end, unified through `AacFile.Tag`. Saving rewrites only the tags and copies the AAC frames unchanged
+- `MediaFile` detection: "ADIF" or a confirmed ADTS sync (layer '00') at offset 0 or right after a leading ID3v2 tag is AAC. An MPEG audio frame after the tag stays MP3. `.aac` is an extension fallback
+
+### Changed
+
+- A file that starts with an ID3v2 tag followed by an ADTS or ADIF stream is now detected as `MediaFormat.Aac` instead of `MediaFormat.Mp3`, and `Mp3File.IsValidFormat` returns false for it
+
 ### Fixed
 
 - Ogg Vorbis comment packets that run across pages without the continuation flag keep their comments, and a stream whose last audio page is cut off keeps its duration (#126). `missing_flag.ogg` from that issue now opens with its title, artist, album, genre, cover and 10.189 s duration. Its framing byte is 0x01: the comments were lost in page reassembly, not at the framing bit.

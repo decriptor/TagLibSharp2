@@ -24,26 +24,26 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 - **Performance-First**: Zero-allocation parsing with `Span<T>` and `ArrayPool<T>`
 - **Multi-Target**: Supports .NET Standard 2.0/2.1, .NET 8.0, and .NET 10.0
 - **Format Support**:
-  - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
+  - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), raw AAC (ADTS/ADIF, ID3v2/APEv2/ID3v1), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
   - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): tags, chapters (editions and nested chapter atoms), duration, audio and video properties, tracks, and pictures. Tag values, chapters, pictures, and each track's enabled flag can be saved. A disabled track is not picked as the main audio or video track. Pictures are image attachments: a new front cover is written as `cover.jpg` or `cover.png` (another image type keeps its own extension, such as `cover.gif`), and fonts and other attachments are kept. WebM has no attachments, so a save that would add a picture to a WebM file fails.
   - MPEG program streams (`.mpg`, `.mpeg`, `.mpe`, `.vob`) and MPEG video elementary streams (`.mpv`, `.m1v`, `.m2v`): duration, MPEG-1/MPEG-2 video properties, and the first audio stream (MPEG audio, AC-3, LPCM). ID3v2 in front of the stream, an ID3v2.4 tag appended after it (the layout TagLib# writes), and ID3v1 are read and written in place; the stream bytes are not changed.
 
 ## Format Support Matrix
 
-| Feature | MP3 | FLAC | Ogg Vorbis | Ogg Opus | Ogg FLAC | WAV | AIFF | MP4/M4A | ASF/WMA | DSF | DFF | WavPack | APE | MPC |
-|---------|:---:|:----:|:----------:|:--------:|:--------:|:---:|:----:|:-------:|:-------:|:---:|:---:|:-------:|:---:|:---:|
-| **Read metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Write metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅⁸ |
-| **Audio properties** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Async I/O** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Album art** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
-| **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
-| **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
-| **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
-| **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ |
-| **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — | — | — |
-| **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | — | ✅⁷ | ✅⁷ | — | — | — |
-| **DSD sample rates** | — | — | — | — | — | — | — | — | — | ✅ | ✅ | — | — | — |
+| Feature | MP3 | FLAC | Ogg Vorbis | Ogg Opus | Ogg FLAC | WAV | AIFF | MP4/M4A | ASF/WMA | DSF | DFF | WavPack | APE | MPC | AAC |
+|---------|:---:|:----:|:----------:|:--------:|:--------:|:---:|:----:|:-------:|:-------:|:---:|:---:|:-------:|:---:|:---:|:---:|
+| **Read metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Write metadata** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅⁸ | ✅ |
+| **Audio properties** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅¹⁰ |
+| **Async I/O** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Album art** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
+| **ReplayGain** | ✅ | ✅ | ✅ | ✅⁴ | ✅² | ✅¹ | ✅¹ | ✅⁵ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
+| **MusicBrainz IDs** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
+| **Lyrics** | ✅ | ✅² | ✅² | ✅² | ✅² | ✅¹ | ✅¹ | ✅ | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
+| **Performer roles** | ✅ | ✅ | ✅ | ✅ | ✅² | ✅¹ | ✅¹ | — | ✅⁹ | ✅¹ | ✅¹ | ✅⁸ | ✅⁸ | ✅⁸ | ✅¹ |
+| **BWF broadcast metadata** | — | — | — | — | — | ✅ | — | — | — | — | — | — | — | — | — |
+| **Surround sound info** | — | — | — | — | — | ✅³ | — | ✅⁶ | — | ✅⁷ | ✅⁷ | — | — | — | — |
+| **DSD sample rates** | — | — | — | — | — | — | — | — | — | ✅ | ✅ | — | — | — | — |
 
 ¹ Via embedded ID3v2 tag
 ² Via Vorbis Comment
@@ -54,6 +54,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 ⁷ Via channel type in fmt chunk (Mono, Stereo, 5.1 surround)
 ⁸ Via APE tag
 ⁹ Via ASF Extended Content Description
+¹⁰ From the ADTS frame headers or the ADIF header. HE-AAC reports the AAC core sample rate.
 
 ### Tag Format by Container
 
@@ -74,6 +75,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | Monkey's Audio | APE tag | — | Native only |
 | Musepack | APE tag | — | Native only |
 | MPEG program stream / video elementary stream | — (ISO/IEC 11172-1 and 13818-1 define none) | ID3v2 (in front, or ID3v2.4 appended after the stream), ID3v1 (at the end) | ID3v2 preferred (an appended tag replaces a prepended one, ID3v2.4 §5) |
+| AAC (ADTS/ADIF) | ID3v2 | APEv2, ID3v1 | ID3v2, then APEv2, then ID3v1 |
 
 ## Installation
 
@@ -295,6 +297,10 @@ This is a clean-room rewrite of media tagging functionality, designed from speci
   - [x] SV7 and SV8 stream version detection
   - [x] Audio properties (sample rate, channels, duration)
   - [x] APE tag support for metadata
+- [x] Raw AAC (.aac) format
+  - [x] ADTS (MPEG-2 and MPEG-4) and ADIF streams
+  - [x] Duration from every ADTS frame header, profile, sample rate, channels
+  - [x] ID3v2, APEv2, and ID3v1 tags; saves keep the frame bytes
 
 ### Future
 - [ ] Speex format (Ogg container support exists)

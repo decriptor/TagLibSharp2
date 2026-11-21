@@ -31,6 +31,7 @@ TagLibSharp2 currently supports **17 formats** with read and write. The library 
 | Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values, chapters, picture attachments, and track enabled flags are saved. Other attachments are preserved, not rewritten |
 | MPEG PS / video ES | P2 | ✅ | ✅ | ✅ | - | ID3v2 and ID3v1 around the stream; duration from PTS or GOP time codes |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
+| AAC (ADTS/ADIF) | P1 | ✅ | ✅ | ✅ | - | ID3v2, APEv2, ID3v1 tags |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |
 | TrueAudio | P2 | ❌ | ❌ | ❌ | LOW | Uses ID3v2 |
 | Monkey's Audio | P2 | ✅ | ✅ | ✅ | - | Recently added |
