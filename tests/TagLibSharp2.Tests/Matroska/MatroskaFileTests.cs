@@ -799,6 +799,53 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Clear_ThatEmptiesATag_DropsTheTag ()
+	{
+		// RFC 9559 section 5.1.8.1.2: a Tag contains at least one SimpleTag.
+		var original = FileWith (
+			Tags (
+				Tag (60, Simple ("TOTAL_PARTS", "3")),
+				Tag (50, Simple ("PART_NUMBER", "2")),
+				Tag (30, Simple ("TITLE", "Song"), Simple ("PART_NUMBER", "4"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.DiscNumber = null;
+		parsed.Tag.TotalDiscs = null;
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		AssertNumbers (again, 4, null, null, null, "cleared");
+		Assert.AreEqual ("Song", again.Title);
+		Assert.AreEqual (0, TagsWithoutSimpleTag (bytes));
+		CollectionAssert.AreEqual (new ulong[] { 30 }, TargetLevelsInOrder (bytes));
+
+		// With every Tag emptied, no Tag is left at all.
+		var discOnly = FileWith (Tags (Tag (50, Simple ("PART_NUMBER", "2"))), Master (0x1F43B675, new byte[] { 1 }));
+		var cleared = MatroskaFile.Read (discOnly).File!;
+		cleared.Tag.DiscNumber = null;
+		var none = SaveAndReread (cleared, discOnly, out var noneBytes);
+		Assert.IsNull (none.DiscNumber);
+		Assert.AreEqual (0, TagsWithoutSimpleTag (noneBytes));
+		Assert.AreEqual (0, TargetLevelsInOrder (noneBytes).Count);
+	}
+
+	[TestMethod]
+	public void Save_ATagThatWasEmptyWhenRead_IsKept ()
+	{
+		// Only a Tag this library empties is dropped, so a save does not rewrite what it did not change.
+		var empty = Tag (50);
+		var original = FileWith (
+			Tags (empty, Tag (30, Simple ("TITLE", "Song"))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.IsTrue (parsed.Tag.Render ().Span.IndexOf (empty) >= 0);
+
+		parsed.Tag.Title = "Renamed";
+		var again = SaveAndReread (parsed, original, out var bytes);
+		Assert.AreEqual ("Renamed", again.Title);
+		Assert.AreEqual (1, TagsWithoutSimpleTag (bytes));
+	}
+
+	[TestMethod]
 	public void Read_TagLibWrittenTotals_FollowTheSpecLevels ()
 	{
 		// TagLib writes the track total at 30 and the disc total at 50. The spec makes 50 the track total.
@@ -2327,6 +2374,41 @@ public partial class MatroskaFileTests
 		}
 
 		return saw;
+	}
+
+	static int TagsWithoutSimpleTag (byte[] file)
+	{
+		if (!TrySegmentBody (file, out var body, out _))
+			return -1;
+		var count = 0;
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
+			if (element.Id == MatroskaIds.Tags) {
+				var tags = body.AsSpan (element.DataOffset, (int)element.DataLength);
+				var tagAt = 0;
+				while (tagAt < tags.Length && EbmlReader.TryRead (tags, tagAt, tags.Length, out var tag) && !tag.UnknownSize) {
+					if (tag.Id == MatroskaIds.Tag && !TagBodyHas (tags.Slice (tag.DataOffset, (int)tag.DataLength), MatroskaIds.SimpleTag))
+						count++;
+					tagAt = tag.End;
+				}
+			}
+
+			offset = element.End;
+		}
+
+		return count;
+	}
+
+	static bool TagBodyHas (ReadOnlySpan<byte> body, ulong id)
+	{
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var child) && !child.UnknownSize) {
+			if (child.Id == id)
+				return true;
+			offset = child.End;
+		}
+
+		return false;
 	}
 
 	static bool TagBodyHasTargets (ReadOnlySpan<byte> body)

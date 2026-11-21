@@ -874,6 +874,7 @@ public sealed class MatroskaFile : IMediaFile
 			offset = element.End;
 		}
 
+		block.WasEmpty = block.Tags.Count == 0;
 		return block;
 	}
 
