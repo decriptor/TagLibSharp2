@@ -891,6 +891,28 @@ newChapter.AddSubFrame(new TextFrame("TIT2", "Introduction"));
 tag.AddFrame(newChapter);
 ```
 
+### Work with Matroska/WebM Chapters
+
+```csharp
+using TagLibSharp2.Matroska;
+
+var mkv = MatroskaFile.ReadFromFile("movie.mkv").File!;
+
+// Editions hold chapter atoms, which can nest. Times are nanoseconds, not scaled by TimestampScale.
+foreach (var edition in mkv.Chapters.Editions)
+    foreach (var chapter in edition.Chapters)
+        Console.WriteLine($"{chapter.Start} {chapter.Title} ({chapter.Displays.Count} displays)");
+
+// Add, edit, and remove. New chapters and editions get random nonzero UIDs.
+var intro = mkv.Chapters.AddChapter(TimeSpan.Zero, TimeSpan.FromMinutes(2), "Introduction");
+intro.AddChapter(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), "Opening titles");
+mkv.Chapters.DefaultEdition!.Chapters[0].Title = "Cold open";
+
+// Chapter titles never become mkv.Tag.Title. A save that does not change the
+// chapters keeps the original Chapters bytes. WebM saves drop the elements WebM does not support.
+mkv.SaveToFile();
+```
+
 ### Work with Synchronized Lyrics
 
 ```csharp

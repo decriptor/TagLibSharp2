@@ -53,8 +53,9 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 /// <summary>
 /// A Matroska or WebM file. Reading maps <c>Tags</c> onto <see cref="Tag"/> and image attachments
 /// onto <see cref="MatroskaTag.Pictures"/>.
-/// Saving splices <see cref="MatroskaTag.Render()"/> into the first <c>Segment</c>, and the
-/// <c>Attachments</c> element too when the pictures were set.
+/// Saving splices <see cref="MatroskaTag.Render()"/> into the first <c>Segment</c>, the
+/// <c>Attachments</c> element too when the pictures were set, and <c>Chapters</c> onto <see cref="Chapters"/>
+/// when the chapters were edited. An element that was not edited keeps its original bytes.
 /// Any <see cref="MatroskaTrack.IsEnabled"/> the caller set is written first.
 /// </summary>
 public sealed class MatroskaFile : IMediaFile
@@ -68,9 +69,10 @@ public sealed class MatroskaFile : IMediaFile
 	internal const int MaxTracks = 4096;
 	IFileSystem? _sourceFileSystem;
 
-	MatroskaFile (MatroskaTag tag, TimeSpan? duration, TrackLayout layout)
+	MatroskaFile (MatroskaTag tag, MatroskaChapters chapters, TimeSpan? duration, TrackLayout layout)
 	{
 		Tag = tag;
+		Chapters = chapters;
 		Duration = duration;
 		MediaTypes = layout.Types;
 		_sampleRate = layout.SampleRate;
@@ -98,6 +100,12 @@ public sealed class MatroskaFile : IMediaFile
 	public MatroskaTag Tag { get; }
 
 	Tag? IMediaFile.Tag => Tag;
+
+	/// <summary>
+	/// Gets the editions and chapters from the first <c>Chapters</c> element. Chapter titles never become <see cref="MatroskaTag.Title"/>.
+	/// A save rewrites <c>Chapters</c> only when these differ from what was read.
+	/// </summary>
+	public MatroskaChapters Chapters { get; }
 
 	/// <summary>Gets the segment duration, when <c>Info/Duration</c> is present.</summary>
 	public TimeSpan? Duration { get; }
@@ -185,6 +193,8 @@ public sealed class MatroskaFile : IMediaFile
 			return MatroskaFileReadResult.Failure ("Matroska file has no Segment");
 
 		var tag = new MatroskaTag ();
+		var isWebM = docType.Equals ("webm", StringComparison.OrdinalIgnoreCase);
+		MatroskaChapters? chapters = null;
 		var scale = DefaultTimestampScale;
 		double? durationTicks = null;
 		var layout = new TrackLayout ();
@@ -206,6 +216,10 @@ public sealed class MatroskaFile : IMediaFile
 				ReadTags (data, Range (data, element, segmentEnd), tag);
 			else if (element.Id == MatroskaIds.Attachments)
 				ReadAttachments (Range (data, element, segmentEnd), tag);
+			else if (element.Id == MatroskaIds.Chapters && chapters is null) {
+				// Chapters is identically recurring (RFC 8794 section 11.1.17), so the first copy is read.
+				chapters = MatroskaChapters.Read (Range (data, element, segmentEnd), isWebM);
+			}
 
 			if (element.UnknownSize)
 				offset = NextSibling (data, element.DataOffset, segmentEnd);
@@ -220,7 +234,8 @@ public sealed class MatroskaFile : IMediaFile
 				duration = TimeSpan.FromSeconds (seconds);
 		}
 
-		return MatroskaFileReadResult.Success (new MatroskaFile (tag, duration, layout));
+		tag.MarkRead ();
+		return MatroskaFileReadResult.Success (new MatroskaFile (tag, chapters ?? MatroskaChapters.Empty (isWebM), duration, layout));
 	}
 
 	/// <summary>
@@ -382,13 +397,13 @@ public sealed class MatroskaFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, the <c>Attachments</c> element
-	/// when <see cref="MatroskaTag.Pictures"/> was set, and the rendered <c>Tags</c> element into a copy
-	/// of <paramref name="originalData"/>.
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the edited <c>Attachments</c>,
+	/// <c>Chapters</c>, and <c>Tags</c> elements into a copy of <paramref name="originalData"/>.
 	/// </summary>
 	/// <returns>
 	/// The rewritten file, or empty when the save is refused: the container cannot be bounded, a picture
-	/// cannot be written (see <see cref="MatroskaTag.Pictures"/>), or a track flag cannot be written.
+	/// cannot be written (see <see cref="MatroskaTag.Pictures"/>), a track flag cannot be written, or an
+	/// edited chapter breaks an RFC 9559 timing rule (see <see cref="MatroskaChapters"/>).
 	/// <see cref="SaveToFile(string, ReadOnlySpan{byte}, IFileSystem?)"/> returns the reason.
 	/// </returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
@@ -410,7 +425,7 @@ public sealed class MatroskaFile : IMediaFile
 		}
 
 		if (edits is null)
-			return MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error);
+			return MatroskaRewrite.TryRewrite (originalData, Tag, Chapters, out rewritten, out error);
 
 		if (!MatroskaRewrite.TryWriteTrackFlags (originalData, edits, out var flagged, out error)) {
 			rewritten = [];
@@ -418,8 +433,8 @@ public sealed class MatroskaFile : IMediaFile
 		}
 
 		return flagged is null
-			? MatroskaRewrite.TryRewrite (originalData, Tag, out rewritten, out error)
-			: MatroskaRewrite.TryRewrite (flagged, Tag, out rewritten, out error);
+			? MatroskaRewrite.TryRewrite (originalData, Tag, Chapters, out rewritten, out error)
+			: MatroskaRewrite.TryRewrite (flagged, Tag, Chapters, out rewritten, out error);
 	}
 
 	/// <summary>Saves tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
