@@ -182,9 +182,15 @@ public sealed class MatroskaChapters
 	internal BinaryData Render ()
 	{
 		using var body = new BinaryDataBuilder ();
-		foreach (var edition in _editions) {
+		var anchor = LastRead (_editions);
+		if (anchor < 0)
+			AddKept (body, _kept, IsWebM, rest: true);
+		for (var i = 0; i < _editions.Count; i++) {
+			var edition = _editions[i];
 			if (edition is not null && edition.HasAtoms)
 				edition.RenderTo (body, IsWebM);
+			if (i == anchor)
+				AddKept (body, _kept, IsWebM, rest: true);
 		}
 
 		// RFC 9559 section 20.1: Chapters needs an EditionEntry. Editions past the entry limit, and
@@ -192,7 +198,6 @@ public sealed class MatroskaChapters
 		if (body.Length == 0 && !KeptHas (_kept, MatroskaIds.EditionEntry))
 			return BinaryData.Empty;
 		AddKept (body, _kept, IsWebM);
-		AddKept (body, _kept, IsWebM, rest: true);
 		using var element = new BinaryDataBuilder (body.Length + 12);
 		ChapterWriter.Master (element, MatroskaIds.Chapters, body.Span);
 		return element.ToBinaryData ();
@@ -291,6 +296,32 @@ public sealed class MatroskaChapters
 	internal static void KeepUnknown (List<KeptElement> kept, ReadOnlySpan<byte> body, EbmlElement element) =>
 		kept.Add (new KeptElement (body.Slice (element.Position, element.End - element.Position).ToArray ()));
 
+	/// <summary>
+	/// Writes chapter atoms in list order. The bytes kept past the entry budget follow the last atom
+	/// that was read from the file, so added atoms still come after them.
+	/// </summary>
+	internal static void RenderChapters (BinaryDataBuilder body, IList<MatroskaChapter> chapters, List<KeptElement> kept, bool isWebM, int depth)
+	{
+		var anchor = LastRead (chapters);
+		if (anchor < 0)
+			AddKept (body, kept, isWebM, rest: true);
+		for (var i = 0; i < chapters.Count; i++) {
+			chapters[i]?.RenderTo (body, isWebM, depth);
+			if (i == anchor)
+				AddKept (body, kept, isWebM, rest: true);
+		}
+	}
+
+	static int LastRead<T> (IList<T> items) where T : class, IReadFromFile
+	{
+		for (var i = items.Count - 1; i >= 0; i--) {
+			if (items[i] is { IsFromFile: true })
+				return i;
+		}
+
+		return -1;
+	}
+
 	/// <summary>Returns true when a kept copy holds an element with <paramref name="id"/> at its top level.</summary>
 	internal static bool KeptHas (List<KeptElement> kept, ulong id)
 	{
@@ -334,12 +365,16 @@ public sealed class MatroskaChapters
 }
 
 /// <summary>One <c>EditionEntry</c>: a set of chapters a player can choose.</summary>
-public sealed class MatroskaEdition
+public sealed class MatroskaEdition : IReadFromFile
 {
 	readonly List<MatroskaChapter> _chapters = new ();
 	readonly List<KeptElement> _kept = new ();
 
 	MatroskaEdition (ulong uid) => Uid = uid;
+
+	bool IReadFromFile.IsFromFile => _fromFile;
+
+	bool _fromFile;
 
 	/// <summary>Creates an edition with a new random <see cref="Uid"/> and no chapters.</summary>
 	public MatroskaEdition () : this (MatroskaChapters.NewUid ())
@@ -404,16 +439,14 @@ public sealed class MatroskaEdition
 		}
 
 		MatroskaChapters.AddKept (body, _kept, isWebM);
-		foreach (var chapter in _chapters)
-			chapter?.RenderTo (body, isWebM, 1);
-		MatroskaChapters.AddKept (body, _kept, isWebM, rest: true);
+		MatroskaChapters.RenderChapters (body, _chapters, _kept, isWebM, 1);
 		ChapterWriter.Master (parent, MatroskaIds.EditionEntry, body.Span);
 	}
 
 	internal static MatroskaEdition Read (ReadOnlySpan<byte> body, ref int budget)
 	{
 		// EditionUID is optional, so an edition read without one keeps 0.
-		var edition = new MatroskaEdition (0);
+		var edition = new MatroskaEdition (0) { _fromFile = true };
 		var offset = 0;
 		while (MatroskaChapters.TryNext (body, ref offset, ref budget, edition._kept, out var element)) {
 			var payload = MatroskaChapters.Payload (body, element);
@@ -444,7 +477,7 @@ public sealed class MatroskaEdition
 }
 
 /// <summary>One <c>ChapterAtom</c>. Times are Matroska ticks (nanoseconds) and are not scaled by <c>TimestampScale</c>.</summary>
-public sealed class MatroskaChapter
+public sealed class MatroskaChapter : IReadFromFile
 {
 	readonly List<MatroskaChapterDisplay> _displays = new ();
 	readonly List<MatroskaChapter> _chapters = new ();
@@ -452,6 +485,10 @@ public sealed class MatroskaChapter
 	ulong _uid;
 
 	MatroskaChapter (ulong uid) => _uid = uid;
+
+	bool IReadFromFile.IsFromFile => _fromFile;
+
+	bool _fromFile;
 
 	/// <summary>Creates a chapter with a new random <see cref="Uid"/> that starts at 0 and has no display.</summary>
 	public MatroskaChapter () : this (MatroskaChapters.NewUid ())
@@ -585,19 +622,14 @@ public sealed class MatroskaChapter
 
 		// Rendering is recursive. A model built in code is bounded the same way a parsed one is,
 		// which also stops a chapter that was added inside itself.
-		if (depth < MatroskaChapters.MaxDepth) {
-			foreach (var chapter in _chapters)
-				chapter?.RenderTo (body, isWebM, depth + 1);
-		}
-
-		MatroskaChapters.AddKept (body, _kept, isWebM, rest: true);
+		MatroskaChapters.RenderChapters (body, depth < MatroskaChapters.MaxDepth ? _chapters : [], _kept, isWebM, depth + 1);
 		ChapterWriter.Master (parent, MatroskaIds.ChapterAtom, body.Span);
 	}
 
 	internal static MatroskaChapter Read (ReadOnlySpan<byte> body, int depth, ref int budget)
 	{
 		ulong uid = 0;
-		var chapter = new MatroskaChapter (0);
+		var chapter = new MatroskaChapter (0) { _fromFile = true };
 		var offset = 0;
 		while (MatroskaChapters.TryNext (body, ref offset, ref budget, chapter._kept, out var element)) {
 			var payload = MatroskaChapters.Payload (body, element);
@@ -815,6 +847,12 @@ internal static class ChapterWriter
 		for (var i = width - 1; i >= 0; i--)
 			builder.Add ((byte)(raw >> (8 * i)));
 	}
+}
+
+/// <summary>An edition or chapter that knows whether it was read from the file or added in code.</summary>
+internal interface IReadFromFile
+{
+	bool IsFromFile { get; }
 }
 
 /// <summary>One or more consecutive child elements kept as their original bytes.</summary>
