@@ -909,7 +909,9 @@ intro.AddChapter(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), "Opening ti
 mkv.Chapters.DefaultEdition!.Chapters[0].Title = "Cold open";
 
 // Chapter titles never become mkv.Tag.Title. A save that does not change the
-// chapters keeps the original Chapters bytes. WebM saves drop the elements WebM does not support.
+// chapters keeps the original Chapters bytes. A WebM save writes only the chapter elements WebM
+// supports, so hidden and disabled flags are dropped there. A chapter that ends before it starts,
+// or a lowest-level chapter without an end in an ordered edition, fails the save (RFC 9559 section 20.2).
 mkv.SaveToFile();
 ```
 
