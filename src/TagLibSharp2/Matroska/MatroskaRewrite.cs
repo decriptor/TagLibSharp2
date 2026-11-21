@@ -127,6 +127,9 @@ static class MatroskaRewrite
 			return false;
 		}
 
+		// A CRC-32 the caller left stale is recomputed, so a shorter replacement is valid too.
+		replacement = replacement.ToArray ();
+		UpdateElementCrc (replacement, 0, replacement.Length);
 		var pieces = layout.Pieces;
 		var index = pieces.FindIndex (piece => piece.Id == parsed.Id && !piece.UnknownSize);
 		if (index < 0) {

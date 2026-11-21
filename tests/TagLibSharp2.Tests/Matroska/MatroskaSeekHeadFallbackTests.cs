@@ -125,7 +125,7 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (grown.Length - tracks.Length, bytes.Length - original.Length);
 
 		// A shorter element stays in place, padded with a Void.
-		var shorter = Master (0x1654AE6B, Master (0xAE, Element (0x83, new byte[] { 2 })));
+		var shorter = Master (0x1654AE6B, Concat (Element (0xBF, new byte[4]), Master (0xAE, Element (0x83, new byte[] { 2 }))));
 		Assert.IsTrue (MatroskaRewrite.TryGrow (original, shorter, out var padded, out error), error);
 		Assert.AreEqual (original.Length, padded.Length);
 		Assert.AreEqual (IndexOf (original, cluster), IndexOf (padded, cluster));
