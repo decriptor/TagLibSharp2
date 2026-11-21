@@ -54,6 +54,11 @@ public class MatroskaChapterIntegrationTests : FileFormatTestBase
 		Assert.AreEqual ("Integration chapter", read.Title);
 		Assert.AreEqual ("Nested", read.Chapters[0].Title);
 		// A live file without a SeekHead has nothing to list them in (RFC 9559 section 6.1).
+		// RFC 9559 section 6.6: a reader that goes front to back stops at the first Cluster.
+		// This walk stops at bytes that do not parse, such as test4's junk after the Segment header.
+		var firstCluster = Children (saved, MatroskaIds.Cluster).Select (range => range.Start).DefaultIfEmpty (int.MaxValue).First ();
+		foreach (var (start, _) in Children (saved, MatroskaIds.Chapters))
+			Assert.IsTrue (start < firstCluster, "The Chapters element follows the first Cluster");
 		if (TopLevel (original, MatroskaIds.SeekHead) is not null)
 			Assert.IsTrue (ChaptersAreListed (saved), "The SeekHead does not list the Chapters element");
 
