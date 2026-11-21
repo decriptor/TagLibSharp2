@@ -161,6 +161,20 @@ public class AacFileRoundTripTests
 	}
 
 	[TestMethod]
+	public void Save_ApeTagReplacingAFooterOnlyTag_WritesAHeader ()
+	{
+		var frames = Frames ();
+		var original = Concat (frames, ApeBytes ("Old"));
+		var file = Open (original);
+
+		file.ApeTag = new TagLibSharp2.Ape.ApeTag { Title = "Brand new" };
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsTrue (HasApeHeader (saved), "a new tag gets a header whatever the old one had");
+		Assert.AreEqual ("Brand new", Open (saved).ApeTag!.Title);
+	}
+
+	[TestMethod]
 	public void Save_FooterOnlyApeTag_StaysFooterOnly ()
 	{
 		var frames = Frames ();

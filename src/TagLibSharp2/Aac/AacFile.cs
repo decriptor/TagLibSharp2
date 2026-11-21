@@ -42,10 +42,10 @@ public sealed class AacFile : IMediaFile
 	bool _disposed;
 	IFileSystem? _sourceFileSystem;
 
-	// The APEv2 tag that was read had only a footer. Spec-valid, so a save keeps that layout.
-	// Every other tag is written with a header and a footer, as ffmpeg writes it; some readers
-	// (mediainfo) find the tag only through the header.
-	bool _apeFooterOnly;
+	// The APEv2 tag that was read, when it had only a footer. Spec-valid, so a save keeps that layout
+	// for that tag. Every other tag, including one assigned in its place, is written with a header and
+	// a footer, as ffmpeg writes it; some readers (mediainfo) find the tag only through the header.
+	ApeTag? _footerOnlyApeTag;
 
 	AacFile ()
 	{
@@ -205,7 +205,8 @@ public sealed class AacFile : IMediaFile
 			var ape = ApeTag.Parse (apeBytes);
 			if (ape.IsSuccess && ape.Tag is not null) {
 				file.ApeTag = ape.Tag;
-				file._apeFooterOnly = !HasApeHeader (apeBytes);
+				if (!HasApeHeader (apeBytes))
+					file._footerOnlyApeTag = ape.Tag;
 				audioEnd = apeOffset;
 			}
 		}
@@ -346,7 +347,7 @@ public sealed class AacFile : IMediaFile
 	/// <returns>
 	/// The new ID3v2 tag, the original bytes from the end of the read ID3v2 tag to the start of the
 	/// trailing tags, the new APEv2 tag, any Lyrics3 block that sat in front of ID3v1, and the new ID3v1 tag.
-	/// The APEv2 tag has a header and a footer unless the tag that was read had only a footer.
+	/// The APEv2 tag has a header and a footer unless it is the tag that was read and that tag had only a footer.
 	/// </returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData)
 	{
@@ -355,7 +356,7 @@ public sealed class AacFile : IMediaFile
 		var audioEnd = Math.Max (location.AudioEnd, audioStart);
 
 		var id3v2 = Id3v2Tag?.Render () ?? BinaryData.Empty;
-		var ape = ApeTag?.RenderWithOptions (includeHeader: !_apeFooterOnly) ?? BinaryData.Empty;
+		var ape = ApeTag?.RenderWithOptions (includeHeader: !ReferenceEquals (ApeTag, _footerOnlyApeTag)) ?? BinaryData.Empty;
 		var id3v1 = Id3v1Tag?.Render () ?? BinaryData.Empty;
 
 		// Lyrics3 belongs in front of ID3v1 and goes when that tag goes.
@@ -493,6 +494,7 @@ public sealed class AacFile : IMediaFile
 
 		Id3v2Tag = null;
 		ApeTag = null;
+		_footerOnlyApeTag = null;
 		Id3v1Tag = null;
 		SourcePath = null;
 		_sourceFileSystem = null;
