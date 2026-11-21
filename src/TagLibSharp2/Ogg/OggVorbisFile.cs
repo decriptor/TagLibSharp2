@@ -333,7 +333,7 @@ public sealed class OggVorbisFile : IMediaFile
 			return VorbisCommentReadResult.Failure ("Not a Vorbis comment header");
 
 		// https://xiph.org/vorbis/doc/v-comment.html places one framing byte after the comment list.
-		// The spec requires 1. A 0 is kept. Bytes after that byte are padding, not the framing byte.
+		// libvorbis checks the low bit. A 0 is kept. Bytes after that byte are padding.
 		if (packet.Length < MinVorbisHeaderSize + 1)
 			return VorbisCommentReadResult.Failure ("Comment header too short for framing bit");
 
@@ -342,34 +342,91 @@ public sealed class OggVorbisFile : IMediaFile
 		if (!commentResult.IsSuccess)
 			return commentResult;
 
-		if (commentResult.BytesConsumed >= body.Length || SwallowedFramingByte (body, commentResult.BytesConsumed))
+		var consumed = commentResult.BytesConsumed;
+		if (consumed >= body.Length)
+			return VorbisCommentReadResult.Failure ("No framing byte");
+
+		if (SwallowedFramingByte (body, consumed))
 			return VorbisCommentReadResult.Failure ("Comment field length includes the framing byte");
 
-		var framing = body[commentResult.BytesConsumed];
-		if (framing is not (0 or 1))
-			return VorbisCommentReadResult.Failure ($"Invalid framing bit (expected 0 or 1, got {framing})");
+		var framing = body[consumed];
+		if (HasValidFramingByte (framing) || ExtraCommentsThenFraming (body[consumed..]))
+			return commentResult;
 
-		return commentResult;
+		return VorbisCommentReadResult.Failure ($"Invalid framing bit (expected low bit set or 0, got {framing})");
 	}
 
-	// A 0x01 followed by more than one trailing zero is the framing byte. Padding starts after it.
-	// A field length that continues into those zeros swallowed that byte.
+	// libvorbis reads one bit. Tag readers also keep a cleared bit of 0 so the comments still open.
+	static bool HasValidFramingByte (byte framing) =>
+		framing == 0 || (framing & 1) != 0;
+
+	// The framing byte is the first byte after the comment list, not a searched pattern.
+	// A length that runs past that byte sits in the trailing zeros. One 0x00 of padding is enough.
 	static bool SwallowedFramingByte (ReadOnlySpan<byte> body, int consumed)
 	{
-		if (body[consumed] != 0)
+		if ((uint)consumed >= (uint)body.Length || body[consumed] != 0)
 			return false;
 
-		for (var i = consumed + 1; i < body.Length; i++) {
-			if (body[i] != 0)
+		if (!IsZeroPadding (body[(consumed + 1)..]))
+			return false;
+
+		var zeroStart = consumed;
+		while (zeroStart > 0 && body[zeroStart - 1] == 0)
+			zeroStart--;
+
+		// The length included the 0x00 framing byte and stopped among the zeros after it.
+		if (zeroStart < consumed)
+			return true;
+
+		// The length included a 0x01 framing byte. The following 0x00 is padding, not framing.
+		return zeroStart > 0 && body[zeroStart - 1] == 0x01;
+	}
+
+	// A count that is one short leaves another length-prefixed comment before the real framing byte.
+	// Keep the comments already read. Do not treat that length byte as the framing byte.
+	static bool ExtraCommentsThenFraming (ReadOnlySpan<byte> rest)
+	{
+		var offset = 0;
+		while (offset + 4 < rest.Length) {
+			var length = ReadUInt32LE (rest.Slice (offset, 4));
+			var room = rest.Length - offset - 4;
+			if (length == 0 || length >= (uint)room)
+				break;
+
+			var fieldLength = (int)length;
+			if (!ContainsEquals (rest.Slice (offset + 4, fieldLength)))
+				break;
+
+			offset += 4 + fieldLength;
+			if (offset < rest.Length && HasValidFramingByte (rest[offset]) && IsZeroPadding (rest[(offset + 1)..]))
+				return true;
+		}
+
+		return false;
+	}
+
+	static bool ContainsEquals (ReadOnlySpan<byte> field)
+	{
+		for (var i = 0; i < field.Length; i++) {
+			if (field[i] == (byte)'=')
+				return true;
+		}
+
+		return false;
+	}
+
+	static bool IsZeroPadding (ReadOnlySpan<byte> tail)
+	{
+		for (var i = 0; i < tail.Length; i++) {
+			if (tail[i] != 0)
 				return false;
 		}
 
-		var padding = consumed;
-		while (padding > 0 && body[padding - 1] == 0)
-			padding--;
-
-		return padding > 0 && body[padding - 1] == 1 && body.Length - padding > 1;
+		return true;
 	}
+
+	static uint ReadUInt32LE (ReadOnlySpan<byte> data) =>
+		(uint)(data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24));
 
 	static VorbisCommentReadResult TryParseCommentPacket (byte[] packet) =>
 		TryParseCommentPacket (packet.AsSpan ());
