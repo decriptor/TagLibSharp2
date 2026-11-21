@@ -271,7 +271,8 @@ public partial class MatroskaFileTests
 
 		var names = AttachedFiles (Save (file, original)).Select (f => f.Name).ToArray ();
 
-		Assert.AreEqual ("cover_2.jpg|cover.png|cover.jpg", string.Join ("|", names));
+		// The kept cover.png stays first, so the new front cover goes after the kept attachments.
+		Assert.AreEqual ("cover.png|cover.jpg|cover_2.jpg", string.Join ("|", names));
 	}
 
 	[TestMethod]
@@ -651,6 +652,94 @@ public partial class MatroskaFileTests
 			Assert.IsTrue (again.IsSuccess, again.Error);
 			Assert.IsTrue (again.File!.Tag.Pictures.Any (p => p.PictureType == PictureType.Media), "cut " + cut);
 		}
+	}
+
+	[TestMethod]
+	[DataRow ("image/")]
+	[DataRow ("image/jpeg ")]
+	[DataRow ("IMAGE/JPEG")]
+	[DataRow ("image/jp\u00e9g")]
+	[DataRow ("image/\u0001png")]
+	public void Save_ReadPictureWithAnyStoredMediaType_MatchesItsOwnAttachment (string mediaType)
+	{
+		// The reader surfaces every image/ attachment, so the writer must match it as stored.
+		// RFC 9559 section 5.1.6.1.3 asks for an RFC 6838 type, but muxers write what they are given.
+		var loose = Picture ("cover.jpg", mediaType, null, Jpeg, 5);
+		var targeted = Master (0x7373, Concat (
+			Master (0x63C0, Concat (Element (0x68CA, new byte[] { 30 }), Element (0x63C6, new byte[] { 5 }))),
+			Simple ("COMMENT", "hello")));
+		var font = Font (6);
+		var original = Movie (Tags (targeted), Attachments (loose, font), Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		Assert.AreEqual (1, MatroskaFile.Read (original).File!.Tag.Pictures.Length);
+
+		var same = MatroskaFile.Read (original).File!;
+		same.Tag.Pictures = same.Tag.Pictures;
+		CollectionAssert.AreEqual (original, Save (same, original));
+
+		var copied = MatroskaFile.Read (original).File!;
+		copied.Tag.Pictures = [.. copied.Tag.Pictures.Select (p => (IPicture)new TestPicture (p.MimeType, p.PictureType, p.Description, p.PictureData.ToArray ()))];
+		CollectionAssert.AreEqual (original, Save (copied, original));
+
+		var added = MatroskaFile.Read (original).File!;
+		added.Tag.Pictures = [.. added.Tag.Pictures, new TestPicture ("image/png", PictureType.BackCover, "", Png)];
+		var bytes = Save (added, original);
+		var files = AttachedFiles (bytes);
+		Assert.AreEqual (3, files.Count);
+		CollectionAssert.AreEqual (loose, files[0].Raw);
+		CollectionAssert.AreEqual (font, files[1].Raw);
+		Assert.AreEqual (1, CountOf (bytes, targeted));
+	}
+
+	[TestMethod]
+	public void Save_NewFrontCover_GoesAfterAKeptFrontCover ()
+	{
+		// RFC 9559 section 21.1: the normal cover, cover.(jpg|png), SHOULD be the first attachment.
+		var cover = Picture ("cover.jpg", "image/jpeg", null, Jpeg, 5);
+		var font = Font (6);
+		var original = Movie (Attachments (cover, font), Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		var file = MatroskaFile.Read (original).File!;
+		file.Tag.Pictures = [.. file.Tag.Pictures, new TestPicture ("image/jpeg", PictureType.FrontCover, "", Png)];
+
+		var files = AttachedFiles (Save (file, original));
+
+		Assert.AreEqual ("cover.jpg|font.ttf|cover_2.jpg", string.Join ("|", files.Select (f => f.Name)));
+		CollectionAssert.AreEqual (cover, files[0].Raw);
+	}
+
+	[TestMethod]
+	public void ReadAndSave_ImageWithEmptyFileData_IsNotAPicture_AndIsKept ()
+	{
+		var empty = Picture ("cover.png", "image/png", null, [], 5);
+		var original = Movie (Attachments (empty), Master (MatroskaIds.Cluster, new byte[] { 1 }));
+
+		var file = MatroskaFile.Read (original).File!;
+		Assert.AreEqual (0, file.Tag.Pictures.Length);
+		file.Tag.Pictures = file.Tag.Pictures;
+		CollectionAssert.AreEqual (original, Save (file, original));
+
+		var added = MatroskaFile.Read (original).File!;
+		added.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.BackCover, "", Jpeg)];
+		var files = AttachedFiles (Save (added, original));
+		Assert.AreEqual (2, files.Count);
+		CollectionAssert.AreEqual (empty, files[0].Raw);
+		Assert.AreEqual ("back.jpg", files[1].Name);
+	}
+
+	[TestMethod]
+	public void Build_AddingAPicture_AllocatesForTheAttachments_NotForTheFile ()
+	{
+		// 64 MB of cluster payload. The Attachments body is a few hundred bytes.
+		var cluster = EbmlWriter.Master (MatroskaIds.Cluster, new byte[64 << 20]).ToArray ();
+		var original = Movie (cluster);
+		var pictures = new IPicture[] { new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg) };
+
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		Assert.IsTrue (MatroskaAttachments.TryBuild (original, [], pictures, false, out var element, out var changed, out _, out var error), error);
+		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+
+		Assert.IsTrue (changed);
+		Assert.IsTrue (element.Length < 512);
+		Assert.IsTrue (allocated < 1 << 20, "allocated " + allocated);
 	}
 
 	[TestMethod]
