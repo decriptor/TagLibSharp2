@@ -13,6 +13,7 @@ using TagLibSharp2.Matroska;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
+using TagLibSharp2.Riff;
 using TagLibSharp2.Tests;
 using TagLibSharp2.Tests.Asf;
 using TagLibSharp2.WavPack;
@@ -96,6 +97,7 @@ public class WindowedEdgeTests
 		SameWhenCopied (TestBuilders.OggFlac.CreateMinimal (), "song.oga");
 		SameWhenCopied (AsfTestBuilder.CreateMinimalWma ("Window"), "song.wma");
 		SameWhenCopied (MatroskaAlbum (), "song.mkv");
+		SameWhenCopied (AviTitled (), "clip.avi");
 	}
 
 	[TestMethod]
@@ -114,6 +116,7 @@ public class WindowedEdgeTests
 		AssertCopied (OggFlacFile.Read (Copy (TestBuilders.OggFlac.CreateMinimal ()), "/song.oga", files));
 		AssertCopied (AsfFile.Read (Copy (AsfTestBuilder.CreateMinimalWma ("Window")), "/song.wma", files));
 		AssertCopied (MatroskaFile.Read (Copy (MatroskaAlbum ()), "/song.mkv", files));
+		AssertCopied (AviFile.Read (Copy (AviTitled ()), "/clip.avi", files));
 	}
 
 	[TestMethod]
@@ -124,6 +127,7 @@ public class WindowedEdgeTests
 		await ExpectNoSource (MusepackFile.Read (Copy (TestBuilders.Musepack.CreateMinimal ()), "", null).File!, static file => file.SaveToFileAsync ("/copy.mpc"));
 		await ExpectNoSource (AsfFile.Read (Copy (AsfTestBuilder.CreateMinimalWma ("Window")), "", null).File!, static file => file.SaveToFileAsync ("/copy.wma"));
 		await ExpectNoSource (DffFile.Read (Copy (TestBuilders.Dff.CreateMinimal ()), "", null).File!, static file => file.SaveToFileAsync ("/copy.dff"));
+		await ExpectNoSource (AviFile.Read (AtStart (AviTitled ()), null, null).File!, static file => file.SaveToFileAsync ("/copy.avi"));
 	}
 
 	[TestMethod]
@@ -139,6 +143,7 @@ public class WindowedEdgeTests
 		await ExpectReread (Mp4File.Read (AtStart (TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac)), "/song.m4a", files).File!, static file => file.SaveToFile ("/copy.m4a"), static file => file.SaveToFileAsync ("/copy.m4a"));
 		await ExpectReread (DsfFile.Read (AtStart (TestBuilders.Dsf.CreateMinimal ()), "/song.dsf", files).File!, static file => file.SaveToFile ("/copy.dsf"), static file => file.SaveToFileAsync ("/copy.dsf"));
 		await ExpectReread (MatroskaFile.Read (AtStart (MatroskaAlbum ()), "/song.mkv", files).File!, static file => file.SaveToFile ("/copy.mkv"), static file => file.SaveToFileAsync ("/copy.mkv"));
+		await ExpectReread (AviFile.Read (AtStart (AviTitled ()), "/clip.avi", files).File!, static file => file.SaveToFile ("/copy.avi"), static file => file.SaveToFileAsync ("/copy.avi"));
 	}
 
 	[TestMethod]
@@ -382,6 +387,15 @@ public class WindowedEdgeTests
 	static void AssertCopied (AsfFileReadResult result) => Assert.IsTrue (result.IsSuccess, result.Error);
 
 	static void AssertCopied (MatroskaFileReadResult result) => Assert.IsTrue (result.IsSuccess, result.Error);
+
+	static void AssertCopied (AviFileReadResult result) => Assert.IsTrue (result.IsSuccess, result.Error);
+
+	static byte[] AviTitled ()
+	{
+		var builder = new TagLibSharp2.Tests.Riff.AviTestBuilder ();
+		builder.Info.Add (("INAM", "Window"));
+		return builder.Build ();
+	}
 
 	static async Task ExpectNoSource<T> (T? file, Func<T, Task<FileWriteResult>> save)
 		where T : class

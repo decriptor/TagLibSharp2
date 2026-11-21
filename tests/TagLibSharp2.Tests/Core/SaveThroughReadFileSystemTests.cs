@@ -226,6 +226,38 @@ public class SaveThroughReadFileSystemTests
 		Assert.AreEqual ("Matroska", MatroskaFile.ReadFromFile ("/copy.mkv", files).File!.Tag.Title);
 	}
 
+	[TestMethod]
+	public void Avi_SaveWithoutAFileSystem_WritesThroughTheOneFromRead ()
+	{
+		var files = Stored ("/clip.avi", new TagLibSharp2.Tests.Riff.AviTestBuilder ().Build ());
+		var opened = AviFile.ReadFromFile ("/clip.avi", files);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		opened.File!.InfoTag.Title = "Avi";
+
+		var saved = opened.File.SaveToFile ("/copy.avi");
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		Assert.AreEqual ("Avi", AviFile.ReadFromFile ("/copy.avi", files).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public async Task Avi_SaveAsyncOfOriginalBytesWithoutAFileSystem_WritesThroughTheOneFromRead ()
+	{
+		var original = new TagLibSharp2.Tests.Riff.AviTestBuilder ().Build ();
+		var files = Stored ("/clip.avi", original);
+		var opened = AviFile.ReadFromFile ("/clip.avi", files);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		opened.File!.InfoTag.Title = "Avi Async";
+
+		var saved = await opened.File.SaveToFileAsync ("/copy.avi", original);
+		var savedSync = opened.File.SaveToFile ("/sync.avi", original);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		Assert.IsTrue (savedSync.IsSuccess, savedSync.Error);
+		Assert.AreEqual ("Avi Async", AviFile.ReadFromFile ("/copy.avi", files).File!.InfoTag.Title);
+		Assert.AreEqual ("Avi Async", AviFile.ReadFromFile ("/sync.avi", files).File!.InfoTag.Title);
+	}
+
 	static MockFileSystem Stored (string path, byte[] data)
 	{
 		var files = new MockFileSystem ();
