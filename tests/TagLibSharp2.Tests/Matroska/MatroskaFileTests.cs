@@ -714,6 +714,34 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_NewTargets_GoBeforeNarrowerOnes ()
+	{
+		// MediaInfo keeps the last PART_NUMBER and TOTAL_PARTS it meets, so a new 50 or 60 tag after the
+		// track's tag would show the disc as the track. The spec's examples list 60, 50, then 30.
+		var original = FileWith (Tags (Tag (30, Simple ("PART_NUMBER", "4"))), Master (0x1F43B675, new byte[] { 1 }));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.DiscNumber = 2;
+		parsed.Tag.TotalTracks = 12;
+		parsed.Tag.TotalDiscs = 3;
+
+		var again = SaveAndReread (parsed, original, out var bytes);
+		AssertNumbers (again, 4, 12, 2, 3, "saved");
+		CollectionAssert.AreEqual (new ulong[] { 60, 50, 30 }, TargetLevelsInOrder (bytes));
+
+		// ffmpeg's single untargeted tag holds the track, so the new album and set tags go before it.
+		var ffmpeg = FileWith (
+			Tags (Master (0x7373, Concat (Master (0x63C0, Array.Empty<byte> ()), Simple ("PART_NUMBER", "4/12")))),
+			Master (0x1F43B675, new byte[] { 1 }));
+		var fromFfmpeg = MatroskaFile.Read (ffmpeg).File!;
+		fromFfmpeg.Tag.DiscNumber = 2;
+		fromFfmpeg.Tag.TotalDiscs = 3;
+		var ffAgain = SaveAndReread (fromFfmpeg, ffmpeg, out var ffBytes);
+		AssertNumbers (ffAgain, 4, 12, 2, 3, "ffmpeg saved");
+		CollectionAssert.AreEqual (new ulong[] { 60, 50 }, TargetLevelsInOrder (ffBytes));
+		Assert.IsTrue (ffBytes.AsSpan ().IndexOf (Element (0x68CA, new byte[] { 50 })) < ffBytes.AsSpan ().IndexOf ("4/12"u8));
+	}
+
+	[TestMethod]
 	public void Read_TagLibWrittenTotals_FollowTheSpecLevels ()
 	{
 		// TagLib writes the track total at 30 and the disc total at 50. The spec makes 50 the track total.
@@ -993,6 +1021,21 @@ public partial class MatroskaFileTests
 		var result = MatroskaFile.Read (bytes);
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		return result.File!.Tag;
+	}
+
+	static List<ulong> TargetLevelsInOrder (byte[] file)
+	{
+		var levels = new List<ulong> ();
+		var pattern = Id (0x68CA);
+		for (var i = file.AsSpan ().IndexOf (pattern); i >= 0;) {
+			var at = i + pattern.Length;
+			if (at + 1 < file.Length && file[at] == 0x81)
+				levels.Add (file[at + 1]);
+			var next = file.AsSpan (at).IndexOf (pattern);
+			i = next < 0 ? -1 : at + next;
+		}
+
+		return levels;
 	}
 
 	// A TagString element holding exactly this text.

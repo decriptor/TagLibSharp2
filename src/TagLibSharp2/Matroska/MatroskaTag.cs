@@ -774,9 +774,7 @@ public sealed class MatroskaTag : Tag
 		var album = FirstBlock (IsExplicitAlbum);
 		if (album is not null)
 			return album;
-		var created = new TagBlock (AlbumLevel);
-		_blocks.Add (created);
-		return created;
+		return AddFileBlock (new TagBlock (AlbumLevel));
 	}
 
 	static bool IsTrackTarget (TagBlock block) =>
@@ -1047,7 +1045,22 @@ public sealed class MatroskaTag : Tag
 				return block;
 		}
 
-		var created = new TagBlock (level);
+		return AddFileBlock (new TagBlock (level));
+	}
+
+	// A new target goes before the file's narrower targets, as in the spec's examples (70, 60, 50, 30).
+	// Readers that keep the last PART_NUMBER or TOTAL_PARTS they meet then still see the narrowest one.
+	// ffmpeg's untargeted tag holds the track, so a new album or broader target goes before it too.
+	TagBlock AddFileBlock (TagBlock created)
+	{
+		for (var i = 0; i < _blocks.Count; i++) {
+			var block = _blocks[i];
+			if (block.IsFileLevel && (block.Level < created.Level || (!block.HasTargetTypeValue && created.Level >= AlbumLevel))) {
+				_blocks.Insert (i, created);
+				return created;
+			}
+		}
+
 		_blocks.Add (created);
 		return created;
 	}
