@@ -49,9 +49,6 @@ internal static class MpegPsScanner
 	/// <summary>Bytes of each stream's first payload kept to find its codec header.</summary>
 	const int ProbeBytes = 16 * 1024;
 
-	/// <summary>At most this many streams are tracked; 13818-1 allows 32 audio and 16 video.</summary>
-	const int MaxStreams = 64;
-
 	const long Wrap = 1L << 33;
 
 	/// <summary>A tail time stamp this close before the start is a reordered frame, not a 26-hour stream.</summary>
@@ -662,7 +659,9 @@ internal static class MpegPsScanner
 		{
 			if (_streams.TryGetValue (key, out var stream))
 				return stream;
-			if (!isHead || _streams.Count >= MaxStreams)
+			// No cap is needed: a key is a stream_id (0xBD to 0xFF) or a private_stream_1
+			// sub-stream id, so there are at most 323, and probes hold only head payload.
+			if (!isHead)
 				return null;
 			stream = new StreamState (key, kind);
 			_streams[key] = stream;
