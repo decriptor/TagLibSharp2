@@ -69,6 +69,19 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	public void Read_ChplOutOfOrder_IsSortedByStart ()
+	{
+		var options = new Mp4ChapterTestBuilder.Options {
+			Chpl = [(TimeSpan.FromSeconds (5), "B"), (TimeSpan.FromSeconds (1), "A")],
+		};
+
+		var file = Mp4ChapterTestBuilder.ReadFile (Mp4ChapterTestBuilder.Build (options));
+
+		AssertChapters (file.Chapters, (1, "A"), (5, "B"));
+		Assert.AreEqual (TimeSpan.FromSeconds (5), file.Chapters[0].EndTime);
+	}
+
+	[TestMethod]
 	public void Read_ChplKeeps100NanosecondStartTimes ()
 	{
 		var start = TimeSpan.FromTicks (12_345_678);
