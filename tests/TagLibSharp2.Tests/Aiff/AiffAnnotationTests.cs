@@ -11,7 +11,7 @@ namespace TagLibSharp2.Tests.Aiff;
 [TestClass]
 [TestCategory ("Unit")]
 [TestCategory ("Aiff")]
-public class AiffAnnotationTests
+public partial class AiffAnnotationTests
 {
 	[TestMethod]
 	public void Read_Anno_ReturnsCommentAndDuration ()
@@ -501,8 +501,11 @@ public class AiffAnnotationTests
 	}
 
 	[TestMethod]
-	public void Read_ThousandsOfAnnoChunks_JoinsWithinASecond ()
+	public void Read_ThousandsOfAnnoChunks_AllocatesLinearly ()
 	{
+		// Joining n chunks by repeated concatenation allocates about n squared bytes
+		// (32 MB here). A linear read allocates about 25 times the input (1 MB). Counting
+		// this thread's allocations is deterministic where a wall-clock bound is not.
 		const int extra = 4000;
 		var chunks = new List<byte[]> (extra + 3) {
 			Text ("ANNO", " Creator: Logic"),
@@ -511,16 +514,40 @@ public class AiffAnnotationTests
 		for (var i = 0; i < extra; i++)
 			chunks.Add (Text ("ANNO", "x"));
 		chunks.Add (Comm ());
+		var data = Form ([.. chunks]);
 
-		var started = System.Diagnostics.Stopwatch.StartNew ();
-		var file = ReadAiff (Form ([.. chunks]));
-		started.Stop ();
-
-		Assert.IsTrue (started.Elapsed < TimeSpan.FromSeconds (1), started.Elapsed.ToString ());
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		var file = ReadAiff (data);
 		var comment = file.Tag!.Comment!;
+		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+
+		Assert.IsTrue (allocated < 128L * data.Length, $"{allocated:N0} bytes allocated reading {data.Length:N0} bytes");
 		Assert.IsTrue (comment.StartsWith (" Creator: Logic\n\u00D6\n", StringComparison.Ordinal));
 		Assert.AreEqual (extra, comment.Count (ch => ch == 'x'));
 		Assert.AreEqual (TagTypes.RiffInfo, file.Tag.TagType);
+	}
+
+	[TestMethod]
+	[DataRow (new byte[] { 0x41, 0xC3 }, "A\u221A", DisplayName = "two-byte lead at the end")]
+	[DataRow (new byte[] { 0x41, 0xE1, 0x80 }, "A\u00B7\u00C4", DisplayName = "three-byte lead, one continuation at the end")]
+	[DataRow (new byte[] { 0x41, 0xF1, 0x80, 0x80 }, "A\u00D2\u00C4\u00C4", DisplayName = "four-byte lead, two continuations at the end")]
+	[DataRow (new byte[] { 0xE0, 0x80, 0x80 }, "\u2021\u00C4\u00C4", DisplayName = "E0 overlong")]
+	[DataRow (new byte[] { 0xED, 0xA0, 0x80 }, "\u00CC\u2020\u00C4", DisplayName = "ED surrogate")]
+	[DataRow (new byte[] { 0xF0, 0x80, 0x80, 0x80 }, "\uF8FF\u00C4\u00C4\u00C4", DisplayName = "F0 overlong")]
+	[DataRow (new byte[] { 0xF4, 0x90, 0x80, 0x80 }, "\u00D9\u00EA\u00C4\u00C4", DisplayName = "F4 above U+10FFFF")]
+	[DataRow (new byte[] { 0xC3, 0x28 }, "\u221A(", DisplayName = "bad continuation")]
+	[DataRow (new byte[] { 0xE0, 0xA0, 0x80 }, "\u0800", DisplayName = "E0 valid")]
+	[DataRow (new byte[] { 0xE1, 0x80, 0x80 }, "\u1000", DisplayName = "E1 valid")]
+	[DataRow (new byte[] { 0xED, 0x9F, 0xBF }, "\uD7FF", DisplayName = "ED valid")]
+	[DataRow (new byte[] { 0xF0, 0x90, 0x80, 0x80 }, "\U00010000", DisplayName = "F0 valid")]
+	[DataRow (new byte[] { 0xF1, 0x80, 0x80, 0x80 }, "\U00040000", DisplayName = "F1 valid")]
+	[DataRow (new byte[] { 0xF4, 0x8F, 0xBF, 0xBF }, "\U0010FFFF", DisplayName = "F4 valid")]
+	public void Read_Text_IsUtf8OnlyWhenEverySequenceIsComplete (byte[] bytes, string expected)
+	{
+		// RFC 3629 section 4 lists the valid UTF-8 byte sequences. Anything else, including a
+		// sequence cut off by the end of the chunk, is Mac OS Roman.
+		var file = ReadAiff (Form (TextBytes ("ANNO", bytes), Comm ()));
+		Assert.AreEqual (expected, file.Tag!.Comment);
 	}
 
 	[TestMethod]

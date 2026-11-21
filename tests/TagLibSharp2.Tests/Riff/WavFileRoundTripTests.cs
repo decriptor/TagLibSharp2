@@ -5,6 +5,7 @@ using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
 using TagLibSharp2.Riff;
+using TagLibSharp2.Tests.Core;
 
 namespace TagLibSharp2.Tests.Riff;
 
@@ -35,6 +36,28 @@ public class WavFileRoundTripTests
 		builder.AddUInt32LE (0);
 
 		return builder.ToBinaryData ();
+	}
+
+	[TestMethod]
+	public void Save_Id3HoldingAnySingleMember_KeepsTheId3Chunk ()
+	{
+		// WAV writes its ID3 chunk only when Id3v2Tag.IsEmpty is false. A tag that holds just
+		// a composer, a publisher, lyrics or a BPM is not empty and must survive a save.
+		var failures = new List<string> ();
+		foreach (var p in TagMemberSamples.Settable) {
+			var id3 = new Id3v2Tag ();
+			p.SetValue (id3, TagMemberSamples.Sample (p));
+			var expected = TagMemberSamples.Describe (p, Id3v2Tag.Read (id3.Render ().Span).Tag);
+
+			WavFile.TryRead (CreateMinimalWav (), out var wav);
+			wav!.Id3v2Tag = id3;
+			WavFile.TryRead (wav.Render (), out var again);
+			var actual = TagMemberSamples.Describe (p, again!.Id3v2Tag);
+			if (actual != expected)
+				failures.Add ($"{p.Name}: {actual}, expected {expected}");
+		}
+
+		Assert.AreEqual (0, failures.Count, string.Join ("\n", failures));
 	}
 
 	[TestMethod]
