@@ -537,7 +537,8 @@ public partial class AiffAnnotationTests
 	{
 		// A comment edit or Clear rewrites COMT without the marker-0 entry. The other notes
 		// were not edited, so each stays as read: UTF-8, Mac OS Roman, a trailing NUL, no
-		// text at all, and text that is only NULs.
+		// text at all, and text that is only NULs. An empty marker-0 entry is part of the
+		// comment, so it is not written back as a note.
 		var cafe = new byte[] { 0x43, 0x61, 0x66, 0xC3, 0xA9 };
 		var ost = new byte[] { 0x85, 0x73, 0x74 };
 		var cue = new byte[] { 0x63, 0x75, 0x65, 0x00 };
@@ -549,7 +550,8 @@ public partial class AiffAnnotationTests
 				(12, 4, ost),
 				(13, 5, cue),
 				(14, 6, []),
-				(15, 7, nuls)),
+				(15, 7, nuls),
+				(16, 0, [])),
 			Comm (),
 			Ssnd ()));
 		Assert.AreEqual ("File", file.Tag!.Comment);
@@ -573,8 +575,9 @@ public partial class AiffAnnotationTests
 	[TestMethod]
 	public void SetComment_MoreNotesThanOneComtHolds_SplitsThemWithoutWrapping ()
 	{
-		// numComments is 16 bits (AIFF 1.3 section 13). Two COMT chunks of 40,000 notes
-		// each must not come back as one chunk whose count wrapped to 14,464.
+		// numComments is 16 bits (AIFF 1.3, Comments Chunk). Two COMT chunks of 40,000 notes
+		// each must not come back as one chunk whose count wrapped to 14,464, nor as more
+		// chunks than the input had, nor with a count of exactly 65,535 (MediaInfo hangs).
 		const int perChunk = 40000;
 		var entries = new (uint, ushort, byte[])[perChunk];
 		for (var i = 0; i < perChunk; i++)
@@ -596,7 +599,34 @@ public partial class AiffAnnotationTests
 		}
 
 		Assert.AreEqual (2 * perChunk, total);
+		Assert.AreEqual (2, chunks.Count);
+		Assert.IsTrue (chunks.All (c => c.Data.ToUInt16BE () < ushort.MaxValue));
 		Assert.AreEqual ("Edited", again.Tag!.Comment);
+	}
+
+	[TestMethod]
+	[DataRow (false, DisplayName = "unchanged save")]
+	[DataRow (true, DisplayName = "Title edit")]
+	public void SaveWithoutCommentEdit_LeavesEveryComtChunkAsRead (bool editTitle)
+	{
+		// COMT is rewritten only when the comment is edited. Any other save must keep each
+		// COMT chunk, one or several, byte for byte and not add a second copy of the notes.
+		var single = Form (Marked ((0, "File"), (5, "Cue")), Comm (), Ssnd ());
+		var split = Form (Marked ((0, "File")), Comm (), Marked ((5, "Cue"), (6, "")), Ssnd ());
+		foreach (var input in new[] { single, split }) {
+			var file = ReadAiff (input);
+			if (editTitle)
+				file.Tag!.Title = "New";
+
+			var output = file.Render ().ToArray ();
+			if (!editTitle)
+				CollectionAssert.AreEqual (input, output);
+			var before = ReadAiff (input).AllChunks.Where (c => c.FourCC == "COMT").Select (c => c.Data.ToArray ()).ToList ();
+			var after = ReadAiff (output).AllChunks.Where (c => c.FourCC == "COMT").Select (c => c.Data.ToArray ()).ToList ();
+			Assert.AreEqual (before.Count, after.Count);
+			for (var i = 0; i < before.Count; i++)
+				CollectionAssert.AreEqual (before[i], after[i]);
+		}
 	}
 
 	[TestMethod]
