@@ -304,7 +304,7 @@ public sealed class MpegPsFile : IMediaFile
 		var appendedEnd = footerStart;
 		var appendedLength = AppendedLength (Before (data, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
 		if (appendedLength == 0) {
-			var ape = ApeLength (Before (data, footerStart, ApeTagFooter.Size), footerStart, tagLength);
+			var ape = ApeLength (Before (data, footerStart, ApeTagFooter.Size));
 			if (ape > 0) {
 				appendedEnd = footerStart - ape;
 				appendedLength = AppendedLength (Before (data, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
@@ -346,7 +346,7 @@ public sealed class MpegPsFile : IMediaFile
 		var appendedEnd = footerStart;
 		var appendedLength = AppendedLength (ReadBefore (stream, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
 		if (appendedLength == 0) {
-			var ape = ApeLength (ReadBefore (stream, footerStart, ApeTagFooter.Size), footerStart, tagLength);
+			var ape = ApeLength (ReadBefore (stream, footerStart, ApeTagFooter.Size));
 			if (ape > 0) {
 				appendedEnd = footerStart - ape;
 				appendedLength = AppendedLength (ReadBefore (stream, appendedEnd, Id3v2Header.FooterSize), appendedEnd, tagLength);
@@ -398,7 +398,7 @@ public sealed class MpegPsFile : IMediaFile
 		var appendedLength = AppendedLength (probe, appendedEnd, tagLength);
 		if (appendedLength == 0) {
 			var apeFooter = await ReadBeforeAsync (stream, footerStart, ApeTagFooter.Size, cancellationToken).ConfigureAwait (false);
-			var ape = ApeLength (apeFooter, footerStart, tagLength);
+			var ape = ApeLength (apeFooter);
 			if (ape > 0) {
 				appendedEnd = footerStart - ape;
 				probe = await ReadBeforeAsync (stream, appendedEnd, Id3v2Header.FooterSize, cancellationToken).ConfigureAwait (false);
@@ -572,18 +572,18 @@ public sealed class MpegPsFile : IMediaFile
 
 	/// <summary>
 	/// The length of an APEv2 tag whose footer is <paramref name="footer"/>, the 32 bytes before
-	/// <paramref name="end"/>, or 0. The tag size counts the footer; a header adds 32 bytes
-	/// when the footer's bit 31 says there is one.
+	/// the end of that tag, or 0. The tag size counts the footer; a header adds 32 bytes when the
+	/// footer's bit 31 says there is one. A length that reaches past the stream start finds no
+	/// ID3v2 footer before it, so it needs no check here.
 	/// </summary>
-	static int ApeLength (ReadOnlySpan<byte> footer, long end, long floor)
+	static long ApeLength (ReadOnlySpan<byte> footer)
 	{
 		if (footer.Length != ApeTagFooter.Size)
 			return 0;
 		var parsed = ApeTagFooter.Parse (footer);
 		if (!parsed.IsSuccess || parsed.Footer is not { } ape || ape.IsHeader)
 			return 0;
-		var total = (long)ape.TagSize + ((ape.Flags & 0x80000000) != 0 ? ApeTagFooter.Size : 0);
-		return total >= ApeTagFooter.Size && total <= end - floor ? (int)total : 0;
+		return (long)ape.TagSize + ((ape.Flags & 0x80000000) != 0 ? ApeTagFooter.Size : 0);
 	}
 
 	/// <summary>
