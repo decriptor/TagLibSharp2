@@ -115,26 +115,8 @@ public sealed class TextFrame
 		return System.Text.Encoding.UTF8.GetString (data);
 	}
 
-	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data)
-	{
-		if (data.Length < 2)
-			return string.Empty;
-
-		// Check BOM to determine endianness
-		var isLittleEndian = data[0] == 0xFF && data[1] == 0xFE;
-		var isBigEndian = data[0] == 0xFE && data[1] == 0xFF;
-
-		if (!isLittleEndian && !isBigEndian) {
-			// No BOM found - fall back to little-endian (Windows default)
-			// This handles buggy taggers that don't write BOM
-			return DecodeTextUtf16 (data, isLittleEndian: true);
-		}
-
-		// Skip BOM
-		data = data.Slice (2);
-
-		return DecodeTextUtf16 (data, isLittleEndian);
-	}
+	static string DecodeTextUtf16WithBom (ReadOnlySpan<byte> data) =>
+		Id3Text.DecodeUtf16BomText (data);
 
 	static string DecodeTextUtf16BE (ReadOnlySpan<byte> data)
 	{
