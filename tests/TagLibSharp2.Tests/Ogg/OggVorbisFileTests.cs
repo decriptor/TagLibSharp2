@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Core;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Tests.Core;
@@ -93,14 +94,14 @@ public class OggVorbisFileTests
 	}
 
 	[TestMethod]
-	public void Read_MultiSegmentCommentWithUnsetFramingBit_KeepsTitle ()
+	public void Read_MultiSegmentComment_KeepsTitle ()
 	{
 		var comment = new VorbisComment (TestConstants.Vendors.TagLibSharp2);
 		comment.Title = "Loom";
 		comment.SetValue ("PADDING", new string ('x', 300));
-		var packet = TestBuilders.Ogg.CreateCommentPacket (comment, validFramingBit: false);
+		var packet = TestBuilders.Ogg.CreateCommentPacket (comment, validFramingBit: true);
 		Assert.IsGreaterThan (255, packet.Length);
-		Assert.AreEqual ((byte)0, packet[^1]);
+		Assert.AreEqual ((byte)1, packet[^1]);
 
 		using var builder = new BinaryDataBuilder ();
 		builder.Add (TestBuilders.Ogg.CreatePage (
@@ -129,9 +130,9 @@ public class OggVorbisFileTests
 		comment.Title = "Loom";
 		// Two full pages of 255-byte segments, then a tail. The middle page must not drop the title.
 		comment.SetValue ("PADDING", new string ('x', 140_000));
-		var packet = TestBuilders.Ogg.CreateCommentPacket (comment, validFramingBit: false);
+		var packet = TestBuilders.Ogg.CreateCommentPacket (comment, validFramingBit: true);
 		Assert.IsGreaterThan (255 * 255 * 2, packet.Length);
-		Assert.AreEqual ((byte)0, packet[^1]);
+		Assert.AreEqual ((byte)1, packet[^1]);
 
 		var (commentPages, nextSequence) = OggPageHelper.BuildMultiPagePacket (
 			packet,
@@ -294,7 +295,7 @@ public class OggVorbisFileTests
 	}
 
 	[TestMethod]
-	public void Read_UnsetFramingBit_KeepsCommentsAndAudioProperties ()
+	public void Read_UnsetFramingBit_ReturnsFailure ()
 	{
 		var data = TestBuilders.Ogg.CreateFileWithInvalidFramingBit ();
 		var packets = OggPageHelper.ExtractHeaderPackets (data, maxPackets: 2);
@@ -303,38 +304,8 @@ public class OggVorbisFileTests
 
 		var result = OggVorbisFile.Read (data);
 
-		Assert.IsTrue (result.IsSuccess, result.Error);
-		Assert.AreEqual ("Loom", result.File!.Title);
-		Assert.AreEqual (44100, result.File.Properties.SampleRate);
-		Assert.AreEqual (2, result.File.Properties.Channels);
-		Assert.AreEqual (128, result.File.Properties.Bitrate);
-		Assert.AreEqual ("Vorbis", result.File.Properties.Codec);
-		Assert.AreEqual (TimeSpan.Zero, result.File.Properties.Duration);
-	}
-
-	[TestMethod]
-	public void Save_UnsetFramingBit_WritesFramingBitOneAndKeepsTitle ()
-	{
-		var data = TestBuilders.Ogg.CreateFileWithInvalidFramingBit ();
-		var mockFs = new MockFileSystem ();
-		mockFs.AddFile ("/test.ogg", data);
-
-		var readResult = OggVorbisFile.ReadFromFile ("/test.ogg", mockFs);
-		Assert.IsTrue (readResult.IsSuccess, readResult.Error);
-		Assert.AreEqual ("Loom", readResult.File!.Title);
-
-		var saveResult = readResult.File.SaveToFile ("/output.ogg", mockFs);
-		Assert.IsTrue (saveResult.IsSuccess, saveResult.Error);
-
-		var written = mockFs.ReadAllBytes ("/output.ogg");
-		var packets = OggPageHelper.ExtractHeaderPackets (written, maxPackets: 2);
-		Assert.IsTrue (packets.IsSuccess, packets.Error);
-		Assert.AreEqual (TestConstants.Ogg.PacketTypeComment, packets.Packets[1][0]);
-		Assert.AreEqual ((byte)1, packets.Packets[1][^1]);
-
-		var verify = OggVorbisFile.Read (written);
-		Assert.IsTrue (verify.IsSuccess, verify.Error);
-		Assert.AreEqual ("Loom", verify.File!.Title);
+		Assert.IsFalse (result.IsSuccess);
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[TestMethod]
@@ -355,7 +326,6 @@ public class OggVorbisFileTests
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.Contains ("No framing byte", result.Error!, StringComparison.Ordinal);
-		Assert.IsFalse (result.Error!.Contains ("includes the framing byte", StringComparison.Ordinal));
 	}
 
 	[TestMethod]
@@ -442,9 +412,9 @@ public class OggVorbisFileTests
 	}
 
 	[TestMethod]
-	[DataRow ("ALBUM=Hi")]
+	[DataRow ("ALBUM=BGM")]
 	[DataRow ("ARTIST=Yellow")]
-	public void Read_CommentCountOneUnder_ReturnsTitle (string extraField)
+	public void Read_CommentCountOneUnder_OddLengthField_ReturnsTitle (string extraField)
 	{
 		var title = "TITLE=Loom"u8;
 		var extra = System.Text.Encoding.UTF8.GetBytes (extraField);
@@ -462,6 +432,7 @@ public class OggVorbisFileTests
 	}
 
 	[TestMethod]
+	[DataRow (0x00)]
 	[DataRow (0x02)]
 	[DataRow (0x80)]
 	public void Read_FramingByteLowBitClear_ReturnsFailure (int framing)
@@ -488,7 +459,7 @@ public class OggVorbisFileTests
 		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
 
 		Assert.IsFalse (result.IsSuccess);
-		Assert.Contains ("includes the framing byte", result.Error!, StringComparison.Ordinal);
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[TestMethod]
@@ -502,7 +473,7 @@ public class OggVorbisFileTests
 		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
 
 		Assert.IsFalse (result.IsSuccess);
-		Assert.Contains ("includes the framing byte", result.Error!, StringComparison.Ordinal);
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[TestMethod]
@@ -517,40 +488,193 @@ public class OggVorbisFileTests
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.Contains ("No framing byte", result.Error!, StringComparison.Ordinal);
-		Assert.IsFalse (result.Error!.Contains ("includes the framing byte", StringComparison.Ordinal));
 	}
 
 	[TestMethod]
-	public void Read_FramingZeroWithoutPadding_ReturnsTitle ()
-	{
-		var title = "TITLE=Loom"u8;
-		var packet = BuildCommentPacket (1, [
-			((uint)title.Length, title.ToArray ())
-		], 0x00);
-		Assert.AreEqual ((byte)0, packet[^1]);
-
-		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
-
-		Assert.IsTrue (result.IsSuccess, result.Error);
-		Assert.AreEqual ("Loom", result.File!.Title);
-	}
-
-	[TestMethod]
-	public void Read_FramingZeroThenZeroPadding_ReturnsTitle ()
+	[DataRow (0)]
+	[DataRow (3)]
+	[DataRow (64)]
+	public void Read_FramingZeroThenPadding_ReturnsFailure (int padding)
 	{
 		var title = "TITLE=Loom"u8;
 		var artist = "ARTIST=Yellow"u8;
 		var packet = BuildCommentPacket (2, [
 			((uint)title.Length, title.ToArray ()),
 			((uint)artist.Length, artist.ToArray ())
-		], 0x00, 0x00, 0x00, 0x00);
+		], new byte[1 + padding]);
 
 		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
 
-		Assert.IsTrue (result.IsSuccess, result.Error);
-		Assert.AreEqual ("Loom", result.File!.Title);
-		Assert.AreEqual ("Yellow", result.File.Artist);
-		Assert.AreEqual (6, result.File.Artist!.Length);
+		Assert.IsFalse (result.IsSuccess);
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public void Read_ZeroCommentsFramingZero_NamesUnsetFramingBit ()
+	{
+		var packet = BuildCommentPacket (0, [], 0x00);
+
+		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.Contains ("Framing bit unset", result.Error!, StringComparison.Ordinal);
+		Assert.IsFalse (result.Error!.Contains ("includes the framing byte", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	[DataRow ("ALBUM=Hi")]
+	[DataRow ("ARTIST=YMO")]
+	public void Read_CommentCountOneUnder_EvenLengthField_ReturnsFailure (string extraField)
+	{
+		// The uncounted field's length byte sits where the framing byte belongs. An even length clears the bit.
+		var title = "TITLE=Loom"u8;
+		var extra = System.Text.Encoding.UTF8.GetBytes (extraField);
+		var packet = BuildCommentPacket (1, [
+			((uint)title.Length, title.ToArray ()),
+			((uint)extra.Length, extra)
+		], 0x01);
+
+		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	[DataRow (0x01, 1)]
+	[DataRow (0x01, 64)]
+	[DataRow (0x03, 1)]
+	[DataRow (0x03, 64)]
+	[DataRow (0x81, 1)]
+	[DataRow (0x81, 64)]
+	[DataRow (0xFF, 1)]
+	[DataRow (0xFF, 64)]
+	[DataRow (0x02, 1)]
+	[DataRow (0x02, 64)]
+	[DataRow (0x00, 1)]
+	public void Read_LastFieldLengthOneLongThenZeroPadding_ReturnsFailure (int framing, int padding)
+	{
+		// The length swallows the framing byte, so the next byte read as framing is a padding zero.
+		var artist = "ARTIST=YMO"u8;
+		var tail = new byte[1 + padding];
+		tail[0] = (byte)framing;
+		var packet = BuildCommentPacket (1, [
+			((uint)(artist.Length + 1), artist.ToArray ())
+		], tail);
+
+		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
+
+		Assert.IsFalse (result.IsSuccess, $"Opened with artist {result.File?.Artist}");
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	[DataRow (0x02)]
+	[DataRow (0x04)]
+	public void Read_FramingLowBitClearThenZeroPadding_ReturnsFailure (int framing)
+	{
+		// The cleared byte and the zeros after it look like an uncounted field with no '='.
+		var title = "TITLE=Loom"u8;
+		var tail = new byte[65];
+		tail[0] = (byte)framing;
+		var packet = BuildCommentPacket (1, [
+			((uint)title.Length, title.ToArray ())
+		], tail);
+
+		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public void Read_FramingLowBitClearThenFieldWithoutEqualsThenOne_ReturnsFailure ()
+	{
+		var title = "TITLE=Loom"u8;
+		var packet = BuildCommentPacket (1, [
+			((uint)title.Length, title.ToArray ())
+		], 0x02, 0x00, 0x00, 0x00, (byte)'A', (byte)'B', 0x01);
+
+		var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
+
+		Assert.IsFalse (result.IsSuccess);
+		Assert.Contains ("framing bit", result.Error!, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[TestMethod]
+	public void Read_FramingGrid_MatchesSpecDecode ()
+	{
+		// https://xiph.org/vorbis/doc/v-comment.html: read the declared fields, then one bit, the low bit
+		// of the next byte (Vorbis I spec 2.1.4). An unset bit or end of packet is an error.
+		var failures = new List<string> ();
+		int[] countDeltas = [-1, 0];
+		int[] lengthDeltas = [-2, -1, 0, 1, 2, 3];
+		int?[] framings = [null, 0x00, 0x01, 0x02, 0x03, 0x80, 0x81, 0xFE, 0xFF];
+		byte[][] tails = [[], [0], [0, 0], new byte[64], [0xAB], [0x01], [0x01, 0, 0, 0], [0, 0xAB]];
+		var title = "TITLE=Loom"u8.ToArray ();
+		var artist = "ARTIST=YMO"u8.ToArray ();
+
+		foreach (var countDelta in countDeltas)
+			foreach (var lengthDelta in lengthDeltas)
+				foreach (var framing in framings)
+					foreach (var tail in tails) {
+						var trailer = new List<byte> ();
+						if (framing is not null)
+							trailer.Add ((byte)framing.Value);
+						trailer.AddRange (tail);
+						var packet = BuildCommentPacket ((uint)(2 + countDelta), [
+							((uint)title.Length, title),
+							((uint)(artist.Length + lengthDelta), artist)
+						], [.. trailer]);
+
+						var (expectOpen, expectArtist) = SpecDecode (packet);
+						var result = OggVorbisFile.Read (CreateFileWithCommentPacket (packet));
+						var label = $"count{countDelta:+0;-0;0} length{lengthDelta:+0;-0;0} framing={(framing is null ? "none" : framing.Value.ToString ("X2", System.Globalization.CultureInfo.InvariantCulture))} tail={Convert.ToHexString (tail)}";
+						if (result.IsSuccess != expectOpen)
+							failures.Add ($"{label}: expected {(expectOpen ? "open" : "failure")}, got {(result.IsSuccess ? $"open with artist {result.File!.Artist}" : result.Error)}");
+						else if (expectOpen && result.File!.Artist != expectArtist)
+							failures.Add ($"{label}: expected artist {expectArtist}, got {result.File.Artist}");
+					}
+
+		Assert.IsEmpty (failures, string.Join ("\n", failures));
+	}
+
+	// An independent decode of the comment header, step by step from the spec.
+	static (bool Open, string? Artist) SpecDecode (byte[] packet)
+	{
+		var offset = 7;
+		uint ReadLength ()
+		{
+			var value = BinaryPrimitives.ReadUInt32LittleEndian (packet.AsSpan (offset, 4));
+			offset += 4;
+			return value;
+		}
+
+		if (packet.Length - offset < 4)
+			return (false, null);
+		var vendorLength = ReadLength ();
+		if (vendorLength > (uint)(packet.Length - offset))
+			return (false, null);
+		offset += (int)vendorLength;
+		if (packet.Length - offset < 4)
+			return (false, null);
+		var count = ReadLength ();
+		string? artist = null;
+		for (var i = 0u; i < count; i++) {
+			if (packet.Length - offset < 4)
+				return (false, null);
+			var length = ReadLength ();
+			if (length > (uint)(packet.Length - offset))
+				return (false, null);
+			var field = System.Text.Encoding.UTF8.GetString (packet, offset, (int)length);
+			if (field.StartsWith ("ARTIST=", StringComparison.Ordinal))
+				artist = field["ARTIST=".Length..];
+			offset += (int)length;
+		}
+
+		if (offset >= packet.Length || (packet[offset] & 1) == 0)
+			return (false, null);
+		return (true, artist);
 	}
 
 	[TestMethod]
