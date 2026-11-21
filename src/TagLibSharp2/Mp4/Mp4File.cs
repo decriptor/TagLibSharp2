@@ -621,12 +621,7 @@ public sealed class Mp4File : IMediaFile
 		if (Tag is null)
 			return null;
 
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-		var atoms = Tag.GetAtoms ();
-		if (!atoms.TryGetValue (key, out var dataAtoms) || dataAtoms.Count == 0)
-			return null;
-
-		return dataAtoms[0].ToUtf8String ();
+		return Tag.GetFreeform (mean, name);
 	}
 
 	/// <summary>
@@ -637,16 +632,7 @@ public sealed class Mp4File : IMediaFile
 	/// <param name="value">The value to set, or null to remove.</param>
 	public void SetFreeformTag (string mean, string name, string? value)
 	{
-		var tag = EnsureTag ();
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-
-		if (string.IsNullOrEmpty (value)) {
-			tag.SetAtoms (key, null!);
-			return;
-		}
-
-		var dataAtom = new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value!));
-		tag.SetAtoms (key, new List<Mp4DataAtom> { dataAtom });
+		EnsureTag ().SetFreeform (mean, name, value);
 	}
 
 	Mp4Tag EnsureTag ()
@@ -1033,10 +1019,9 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
-			// Handle freeform atoms (----)
+			// Handle freeform atoms (----). ParseFreeformAtom keeps a failed box, including its mean and name.
 			if (atomId == Mp4AtomMapping.FreeformAtom) {
-				if (!ParseFreeformAtom (atomBox, tag))
-					tag.PreserveIlstAtom (atomBox.Render ());
+				ParseFreeformAtom (atomBox, tag);
 				continue;
 			}
 
@@ -1078,9 +1063,10 @@ public sealed class Mp4File : IMediaFile
 		return true;
 	}
 
-	static bool ParseFreeformAtom (Mp4Box freeformBox, Mp4Tag tag)
+	static void ParseFreeformAtom (Mp4Box freeformBox, Mp4Tag tag)
 	{
-		// Freeform atoms have mean, name, and data children
+		// Freeform atoms have mean, name, and data children. Mean and name are kept even when
+		// the data child is missing, so a later set can drop that preserved twin.
 		string? mean = null;
 		string? name = null;
 		var dataAtoms = new List<Mp4DataAtom> ();
@@ -1098,12 +1084,12 @@ public sealed class Mp4File : IMediaFile
 			}
 		}
 
-		if (string.IsNullOrEmpty (mean) || string.IsNullOrEmpty (name) || dataAtoms.Count == 0)
-			return false;
+		if (string.IsNullOrEmpty (mean) || string.IsNullOrEmpty (name) || dataAtoms.Count == 0) {
+			tag.PreserveIlstAtom (freeformBox.Render (), mean, name);
+			return;
+		}
 
-		var key = $"{Mp4AtomMapping.FreeformAtom}:{mean}:{name}";
-		tag.SetAtoms (key, dataAtoms);
-		return true;
+		tag.SetFreeformAtoms (mean!, name!, dataAtoms);
 	}
 
 	/// <summary>
