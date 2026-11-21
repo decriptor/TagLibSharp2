@@ -221,6 +221,7 @@ public class TagCopyReplacesListTests
 		tag.Performers = ["P1", "P2"];
 		tag.Genres = ["Rock", "Pop"];
 		tag.SetTextFrameValues ("TPUB", ["Lab1", "Lab2"]);
+		tag.SetTextFrameValues ("TSRC", ["ISRC1", "ISRC2"]);
 		tag.AddUserTextFrame (new TagLibSharp2.Id3.Id3v2.Frames.UserTextFrame ("CATALOGNUMBER", "CAT1\0CAT2"));
 		return Id3v2Tag.Read (tag.Render ().Span).Tag!;
 	}
@@ -242,11 +243,22 @@ public class TagCopyReplacesListTests
 		tag.CopyTo (tag, TagCopyOptions.All);
 		CollectionAssert.AreEqual (before, Frames (tag));
 
+		// Two different views over the same tag share it, though they are different objects.
+		new CombinedTag (tag, null).CopyTo (new CombinedTag (tag, null), TagCopyOptions.All);
+		CollectionAssert.AreEqual (before, Frames (tag));
+
 		// Mp3File.Tag is a CombinedTag over the file's ID3v2 and ID3v1 tags.
 		byte[] mpeg = [0xFF, 0xFB, 0x90, 0x00, .. new byte[413]];
 		var mp3 = Mp3File.Read ([.. tag.Render ().Span, .. mpeg]).File!;
 		var fileBefore = Frames (mp3.Id3v2Tag!);
 		mp3.Tag!.CopyTo (mp3.Id3v2Tag!, TagCopyOptions.All);
+		CollectionAssert.AreEqual (fileBefore, Frames (mp3.Id3v2Tag!));
+
+		// Mp3File.Tag builds a new view on every read.
+		var source = mp3.Tag!;
+		var target = mp3.Tag!;
+		Assert.AreNotSame (source, target);
+		source.CopyTo (target, TagCopyOptions.All);
 		CollectionAssert.AreEqual (fileBefore, Frames (mp3.Id3v2Tag!));
 	}
 
@@ -350,6 +362,54 @@ public class TagCopyReplacesListTests
 		public override uint? Track { get => inner.Track; set => inner.Track = value; }
 		public override BinaryData Render () => inner.Render ();
 		public override void Clear () => inner.Clear ();
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version3)]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	public void CopyAll_ListTheTargetHolds_KeepsItsFrames (byte version)
+	{
+		// UTF-16 frames the setters would not write. With Extended, the names travel in the lists,
+		// so a target that already holds them keeps its frames, encoding and order included.
+		static byte[] Utf16List (string a, string b) =>
+			[0x01, 0xFF, 0xFE, .. System.Text.Encoding.Unicode.GetBytes (a), 0, 0, 0xFF, 0xFE, .. System.Text.Encoding.Unicode.GetBytes (b)];
+		byte[] body = [
+			.. TestBuilders.Id3v2.CreateFrame ("TPE1", Utf16List ("P1", "P2"), version),
+			.. TestBuilders.Id3v2.CreateFrame ("TCON", Utf16List ("Rock", "Pop"), version),
+			.. TestBuilders.Id3v2.CreateFrame ("TALB", Utf16List ("A", "B"), version),
+		];
+		var target = Id3v2Tag.Read ([.. TestBuilders.Id3v2.CreateHeader (version, (uint)body.Length), .. body]).Tag!;
+		var before = target.Render ().ToArray ();
+		var source = new VorbisComment ("s");
+		foreach (var (name, value) in new[] { ("ARTIST", "P1"), ("ARTIST", "P2"), ("GENRE", "Rock"), ("GENRE", "Pop") })
+			source.AddField (name, value);
+
+		source.CopyTo (target, TagCopyOptions.All);
+
+		CollectionAssert.AreEqual (before, target.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version3)]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	public void Copy_BetweenViewsOverOneTag_IsByteIdentical (byte version)
+	{
+		// Numbers and dates in a layout their setters would rewrite ("05/12" becomes "5/12"); a view
+		// copy skips every value the target already shows, so none of them is rewritten.
+		static byte[] Utf16 (string text) => [0x01, 0xFF, 0xFE, .. System.Text.Encoding.Unicode.GetBytes (text)];
+		byte[] body = [
+			.. TestBuilders.Id3v2.CreateFrame ("TRCK", Utf16 ("05/12"), version),
+			.. TestBuilders.Id3v2.CreateFrame ("TPOS", Utf16 ("1/2"), version),
+			.. TestBuilders.Id3v2.CreateFrame (version == 4 ? "TDRC" : "TYER", Utf16 (version == 4 ? "2001-05-03" : "2001"), version),
+			.. TestBuilders.Id3v2.CreateFrame ("TBPM", Utf16 ("0120"), version),
+			.. TestBuilders.Id3v2.CreateFrame ("TPUB", Utf16 ("Lab1\0Lab2"), version),
+		];
+		var tag = Id3v2Tag.Read ([.. TestBuilders.Id3v2.CreateHeader (version, (uint)body.Length), .. body]).Tag!;
+		var before = tag.Render ().ToArray ();
+
+		new CombinedTag (tag, null).CopyTo (new CombinedTag (tag, null), TagCopyOptions.All);
+
+		CollectionAssert.AreEqual (before, tag.Render ().ToArray ());
 	}
 
 	[TestMethod]

@@ -272,47 +272,69 @@ public sealed class VorbisComment : Tag
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Uses the MOVEMENT field. Falls back to MOVEMENTNAME when MOVEMENT is missing or empty.
-	/// Writing back the value already read changes nothing. A new value is written to MOVEMENT and to
-	/// an existing MOVEMENTNAME. Clearing removes both.
-	/// MusicBrainz Picard and Mp3tag store the name in MOVEMENTNAME and the number in MOVEMENT
-	/// (https://picard-docs.musicbrainz.org/en/v3.0/appendices/tag_mapping.html). When MOVEMENT is a
-	/// number beside a MOVEMENTNAME, the name is read from and written to MOVEMENTNAME only, and
-	/// MOVEMENT is left to <see cref="MovementNumber"/>.
+	/// Follows MusicBrainz Picard's tag mapping (https://picard-docs.musicbrainz.org/en/v3.0/appendices/tag_mapping.html):
+	/// the movement name is MOVEMENTNAME and the movement number is MOVEMENT. A MOVEMENT that is not a
+	/// number is still read as the name when there is no MOVEMENTNAME, as earlier versions wrote it.
+	/// Writing back the value read changes nothing. A new name goes to MOVEMENTNAME, and also to MOVEMENT
+	/// when MOVEMENT holds a name. Clearing removes MOVEMENTNAME and a MOVEMENT that holds a name; a
+	/// numeric MOVEMENT stays the number, so a clear never changes how the other half reads.
 	/// </remarks>
 	public override string? Movement {
-		get => HasPicardMovement ? GetValue ("MOVEMENTNAME") : GetValueOrFallback ("MOVEMENT", "MOVEMENTNAME");
+		get {
+			var name = GetValue ("MOVEMENTNAME");
+			if (!string.IsNullOrEmpty (name))
+				return name;
+			var legacy = LegacyMovementName;
+			return string.IsNullOrEmpty (legacy) ? name ?? legacy : legacy;
+		}
 		set {
-			if (HasPicardMovement)
-				SetValueProperty ("MOVEMENTNAME", value, Movement);
-			else
-				SetValueWithFallback ("MOVEMENT", value, "MOVEMENTNAME", static v => v);
+			if (IsWriteBack (value, Movement))
+				return;
+			// A name in MOVEMENT is kept in step with a new name, and removed by a clear ("" leaves an
+			// empty MOVEMENTNAME, as "" does for any field) or by a numeric name, which MOVEMENT would
+			// turn into the movement number.
+			if (LegacyMovementName is not null) {
+				if (string.IsNullOrEmpty (value) || TryParseUInt (value, out _))
+					RemoveAll ("MOVEMENT");
+				else
+					SetValue ("MOVEMENT", value);
+			}
+			SetValue ("MOVEMENTNAME", value);
 		}
 	}
 
 	/// <summary>
-	/// True for the Picard layout: a non-empty MOVEMENTNAME beside a numeric MOVEMENT.
+	/// MOVEMENT when it holds a movement name (it is not a number), as earlier versions wrote it; otherwise null.
 	/// </summary>
-	bool HasPicardMovement => !string.IsNullOrEmpty (GetValue ("MOVEMENTNAME")) && TryParseUInt (GetValue ("MOVEMENT"), out _);
+	string? LegacyMovementName {
+		get {
+			var value = GetValue ("MOVEMENT");
+			return value is not null && !TryParseUInt (value, out _) ? value : null;
+		}
+	}
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Uses the MOVEMENTNUMBER field. In the Picard layout (see <see cref="Movement"/>) without one,
-	/// the number is read from and written to MOVEMENT, and clearing it removes MOVEMENT.
+	/// Reads MOVEMENTNUMBER, then a numeric MOVEMENT (Picard's movement number). A write goes to MOVEMENT,
+	/// and to an existing MOVEMENTNUMBER, unless MOVEMENT holds a movement name; then it goes to
+	/// MOVEMENTNUMBER. Clearing removes MOVEMENTNUMBER and a numeric MOVEMENT.
 	/// </remarks>
 	public override uint? MovementNumber {
 		get {
 			if (TryParseUInt (GetValue ("MOVEMENTNUMBER"), out var num))
 				return num;
-			return HasPicardMovement && TryParseUInt (GetValue ("MOVEMENT"), out num) ? num : null;
+			return TryParseUInt (GetValue ("MOVEMENT"), out num) ? num : null;
 		}
 		set {
 			if (IsWriteBack (value, MovementNumber))
 				return;
 			var text = value?.ToString (System.Globalization.CultureInfo.InvariantCulture);
-			if (HasPicardMovement && GetValue ("MOVEMENTNUMBER") is null)
-				SetValue ("MOVEMENT", text);
-			else
+			if (LegacyMovementName is not null) {
+				SetValue ("MOVEMENTNUMBER", text);
+				return;
+			}
+			SetValue ("MOVEMENT", text);
+			if (text is null || GetValue ("MOVEMENTNUMBER") is not null)
 				SetValue ("MOVEMENTNUMBER", text);
 		}
 	}

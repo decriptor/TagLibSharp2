@@ -173,8 +173,10 @@ public sealed class CrossTaggerCompatibilityTests
 
 		Assert.IsTrue (parsed.IsSuccess);
 		Assert.AreEqual ("Symphony No. 9", parsed.Tag!.GetValue ("WORK"));
-		Assert.AreEqual ("Allegro", parsed.Tag.GetValue ("MOVEMENT"));
-		Assert.AreEqual ("1", parsed.Tag.GetValue ("MOVEMENTNUMBER"));
+		// MusicBrainz Picard's mapping: the name is MOVEMENTNAME, the number MOVEMENT.
+		Assert.AreEqual ("Allegro", parsed.Tag.GetValue ("MOVEMENTNAME"));
+		Assert.AreEqual ("1", parsed.Tag.GetValue ("MOVEMENT"));
+		Assert.IsNull (parsed.Tag.GetValue ("MOVEMENTNUMBER"));
 		Assert.AreEqual ("4", parsed.Tag.GetValue ("MOVEMENTTOTAL"));
 	}
 

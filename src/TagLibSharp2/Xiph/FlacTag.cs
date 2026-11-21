@@ -113,8 +113,14 @@ public sealed class FlacTag : Tag
 	}
 
 	/// <inheritdoc/>
-	internal override bool ReadsFrom (Tag tag) =>
-		base.ReadsFrom (tag) || (_file.VorbisComment?.ReadsFrom (tag) ?? false);
+	internal override IEnumerable<Tag> Leaves ()
+	{
+		yield return this;
+		if (_file.VorbisComment is { } comment) {
+			foreach (var leaf in comment.Leaves ())
+				yield return leaf;
+		}
+	}
 
 	/// <inheritdoc/>
 	public override string? Copyright {

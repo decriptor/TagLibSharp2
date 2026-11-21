@@ -2129,20 +2129,28 @@ public sealed class Id3v2Tag : Tag
 		if (_comments.Count == 0)
 			return null;
 
-		// Prefer comments with empty description (the user-facing comment).
+		// The first non-empty comment without a description (the user-facing comment, in any language),
+		// as for text frames. ffprobe and TagLib# show the same frame.
+		string? empty = null;
 		for (var i = 0; i < _comments.Count; i++) {
-			if (string.IsNullOrEmpty (_comments[i].Description))
+			if (!string.IsNullOrEmpty (_comments[i].Description))
+				continue;
+			if (_comments[i].Text.Length != 0)
 				return _comments[i].Text;
+			empty = "";
 		}
 
 		// iTunes stores gapless and normalization data in COM frames. Those are
 		// not the comment. Any other described comment can still be shown.
 		for (var i = 0; i < _comments.Count; i++) {
-			if (!IsToolPrivateComment (_comments[i].Description))
+			if (IsToolPrivateComment (_comments[i].Description))
+				continue;
+			if (_comments[i].Text.Length != 0)
 				return _comments[i].Text;
+			empty = "";
 		}
 
-		return null;
+		return empty;
 	}
 
 	static bool IsToolPrivateComment (string? description) =>
@@ -2271,14 +2279,19 @@ public sealed class Id3v2Tag : Tag
 		if (_lyricsFrames.Count == 0)
 			return null;
 
-		// Prefer lyrics with empty description (default lyrics)
+		// The first non-empty lyrics without a description (the default lyrics, in any language),
+		// then the first non-empty lyrics of any description, and "" when every frame is empty.
 		for (var i = 0; i < _lyricsFrames.Count; i++) {
-			if (string.IsNullOrEmpty (_lyricsFrames[i].Description))
+			if (string.IsNullOrEmpty (_lyricsFrames[i].Description) && _lyricsFrames[i].Text.Length != 0)
 				return _lyricsFrames[i].Text;
 		}
 
-		// Fall back to first lyrics
-		return _lyricsFrames[0].Text;
+		for (var i = 0; i < _lyricsFrames.Count; i++) {
+			if (_lyricsFrames[i].Text.Length != 0)
+				return _lyricsFrames[i].Text;
+		}
+
+		return "";
 	}
 
 	/// <summary>
