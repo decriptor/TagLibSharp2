@@ -126,6 +126,23 @@ public sealed class MpegPsTrailerTests
 	}
 
 	[TestMethod]
+	public void Read_ApeBeforeId3v1ReachingIntoThePrependedTag_IsNotATag ()
+	{
+		var front = Id3v2 ("Front");
+		var stream = ProgramStream ();
+		var footer = Concat ("APETAGEX"u8.ToArray (), BitConverter.GetBytes (2000), BitConverter.GetBytes (stream.Length + 32 + 5),
+			BitConverter.GetBytes (0), BitConverter.GetBytes (0), new byte[8]);
+		var data = Concat (front, stream, footer, Id3v1 ("Footer"));
+
+		var result = MpegPsFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual ("Front", result.File!.Tag!.Title);
+		Assert.AreEqual ("Footer", result.File.Id3v1Tag!.Title);
+		Assert.AreEqual (TimeSpan.FromSeconds (2), result.File.Duration);
+	}
+
+	[TestMethod]
 	public void Read_HeadThatReachesTheTags_IsNotReadAgain ()
 	{
 		// No sequence header, so the head asks for a larger window; it already holds the whole
