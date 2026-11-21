@@ -25,7 +25,7 @@ public class SaveThroughReadFileSystemTests
 		var files = Stored ("/song.aiff", TestBuilders.Aiff.CreateMinimal ());
 		var opened = AiffFile.ReadFromFile ("/song.aiff", files);
 		Assert.IsTrue (opened.IsSuccess, opened.Error);
-		opened.File!.Tag = Titled ("Aiff");
+		opened.File!.Id3v2Tag = Titled ("Aiff");
 
 		var saved = opened.File.SaveToFile ("/copy.aiff");
 
@@ -41,7 +41,7 @@ public class SaveThroughReadFileSystemTests
 		var files = Stored ("/song.aiff", TestBuilders.Aiff.CreateMinimal ());
 		var opened = AiffFile.ReadFromFile ("/song.aiff", files);
 		Assert.IsTrue (opened.IsSuccess, opened.Error);
-		opened.File!.Tag = Titled ("Aiff Async");
+		opened.File!.Id3v2Tag = Titled ("Aiff Async");
 
 		var saved = await opened.File.SaveToFileAsync ("/copy.aiff");
 

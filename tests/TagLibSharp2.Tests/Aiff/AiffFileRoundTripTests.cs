@@ -72,7 +72,7 @@ public class AiffFileRoundTripTests
 		// Act
 		Assert.IsTrue (AiffFile.TryRead (original, out var file1), "First parse failed");
 
-		file1!.Tag = new Id3v2Tag { Title = "Test Title", Artist = "Test Artist" };
+		file1!.Id3v2Tag = new Id3v2Tag { Title = "Test Title", Artist = "Test Artist" };
 
 		var written = file1.Render ();
 		Assert.IsTrue (written.Length > 0, "Render produced empty output");
@@ -92,7 +92,7 @@ public class AiffFileRoundTripTests
 		Assert.IsTrue (AiffFile.TryRead (original, out var file));
 
 		// Set all standard metadata fields via Id3v2Tag
-		file!.Tag = new Id3v2Tag {
+		file!.Id3v2Tag = new Id3v2Tag {
 			Title = "Round Trip Title",
 			Artist = "Round Trip Artist",
 			Album = "Round Trip Album",
@@ -143,7 +143,7 @@ public class AiffFileRoundTripTests
 		var tag = new Id3v2Tag { Title = "With Art" };
 		var picture = new PictureFrame ("image/jpeg", PictureType.FrontCover, "Cover", new BinaryData (jpegData));
 		tag.AddPicture (picture);
-		file!.Tag = tag;
+		file!.Id3v2Tag = tag;
 
 		// Act
 		var written = file.Render ();
@@ -169,7 +169,7 @@ public class AiffFileRoundTripTests
 		var originalBitDepth = file.Properties.BitsPerSample;
 
 		// Modify metadata
-		file.Tag = new Id3v2Tag { Title = "Modified Title" };
+		file.Id3v2Tag = new Id3v2Tag { Title = "Modified Title" };
 
 		// Act
 		var written = file.Render ();
@@ -191,7 +191,7 @@ public class AiffFileRoundTripTests
 
 		// Act: Write multiple times
 		Assert.IsTrue (AiffFile.TryRead (original, out var file1));
-		file1!.Tag = new Id3v2Tag { Title = "Title", Artist = "Artist" };
+		file1!.Id3v2Tag = new Id3v2Tag { Title = "Title", Artist = "Artist" };
 		var written1 = file1.Render ();
 		var size1 = written1.Length;
 
@@ -223,7 +223,7 @@ public class AiffFileRoundTripTests
 		var mbTrackId = "12345678-1234-1234-1234-123456789012";
 		var mbReleaseId = "87654321-4321-4321-4321-210987654321";
 
-		file!.Tag = new Id3v2Tag {
+		file!.Id3v2Tag = new Id3v2Tag {
 			Title = "With MB IDs",
 			MusicBrainzTrackId = mbTrackId,
 			MusicBrainzReleaseId = mbReleaseId
@@ -245,7 +245,7 @@ public class AiffFileRoundTripTests
 		var original = CreateMinimalAiff ();
 		Assert.IsTrue (AiffFile.TryRead (original, out var file));
 
-		file!.Tag = new Id3v2Tag {
+		file!.Id3v2Tag = new Id3v2Tag {
 			Title = "With ReplayGain",
 			ReplayGainTrackGain = "-6.50 dB",
 			ReplayGainTrackPeak = "0.988547",

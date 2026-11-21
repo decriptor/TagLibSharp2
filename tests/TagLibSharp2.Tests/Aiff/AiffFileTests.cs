@@ -474,7 +474,7 @@ public class AiffFileTests
 		var data = CreateMinimalAiffFile (44100, 16, 2, 1000);
 		AiffFile.TryRead (data, out var file);
 
-		file!.Tag = new TagLibSharp2.Id3.Id3v2.Id3v2Tag { Title = "Test Title" };
+		file!.Id3v2Tag = new TagLibSharp2.Id3.Id3v2.Id3v2Tag { Title = "Test Title" };
 
 		var rendered = file.Render ();
 		AiffFile.TryRead (rendered, out var roundTripped);

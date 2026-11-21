@@ -1935,6 +1935,28 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Empty means no frames of any kind are stored, including lyrics, ratings,
+	/// pictures, and private frames. The base check only looks at the standard fields.
+	/// </remarks>
+	public override bool IsEmpty =>
+		_frames.Count == 0
+		&& _pictures.Count == 0
+		&& _comments.Count == 0
+		&& _userTextFrames.Count == 0
+		&& _lyricsFrames.Count == 0
+		&& _uniqueFileIdFrames.Count == 0
+		&& _involvedPeopleFrames.Count == 0
+		&& _popularimeterFrames.Count == 0
+		&& _urlFrames.Count == 0
+		&& _userUrlFrames.Count == 0
+		&& _syncLyricsFrames.Count == 0
+		&& _generalObjectFrames.Count == 0
+		&& _privateFrames.Count == 0
+		&& _chapterFrames.Count == 0
+		&& _tableOfContentsFrames.Count == 0;
+
+	/// <inheritdoc/>
 	public override void Clear ()
 	{
 		_frames.Clear ();

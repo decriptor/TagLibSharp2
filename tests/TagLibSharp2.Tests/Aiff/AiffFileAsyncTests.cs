@@ -63,7 +63,7 @@ public class AiffFileAsyncTests
 		Assert.IsTrue (readResult.IsSuccess);
 
 		var file = readResult.File!;
-		file.Tag = new Id3v2Tag { Title = "Updated Title" };
+		file.Id3v2Tag = new Id3v2Tag { Title = "Updated Title" };
 
 		var saveResult = await file.SaveToFileAsync ("/dest.aiff", mockFs);
 
@@ -83,7 +83,7 @@ public class AiffFileAsyncTests
 
 		var readResult = await AiffFile.ReadFromFileAsync ("/test.aiff", mockFs);
 		var file = readResult.File!;
-		file.Tag = new Id3v2Tag { Title = "Test", Artist = "Artist" };
+		file.Id3v2Tag = new Id3v2Tag { Title = "Test", Artist = "Artist" };
 
 		var saveResult = await file.SaveToFileAsync ("/output.aiff", mockFs);
 		Assert.IsTrue (saveResult.IsSuccess);
@@ -103,7 +103,7 @@ public class AiffFileAsyncTests
 
 		var readResult = await AiffFile.ReadFromFileAsync ("/test.aiff", mockFs);
 		var file = readResult.File!;
-		file.Tag = new Id3v2Tag { Title = "Overwritten Title" };
+		file.Id3v2Tag = new Id3v2Tag { Title = "Overwritten Title" };
 
 		var saveResult = await file.SaveToFileAsync (mockFs);
 
