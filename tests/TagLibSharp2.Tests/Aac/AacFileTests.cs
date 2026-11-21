@@ -233,6 +233,41 @@ public class AacFileTests
 	}
 
 	[TestMethod]
+	public void Read_FalseSyncRegion_ReadsTheStreamInChunks ()
+	{
+		// Same-stream headers every 10 bytes whose 9-byte frame is followed by zeros: every byte
+		// is a resync candidate that its successor rejects. The search must read the region in
+		// chunks, not seek once per candidate.
+		var fake = AdtsFrame (9);
+		var region = new byte[1024 * 1024];
+		for (var at = 0; at + 10 <= region.Length; at += 10)
+			fake.CopyTo (region, at);
+		var data = Concat (Adts (5), new byte[3], region, Adts (5));
+		using var stream = new CountingStream (data);
+
+		var result = AacFile.Read (stream, null, null);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsTrue (stream.Reads < 1000, $"{stream.Reads} reads for {data.Length} bytes");
+		Assert.IsTrue (stream.BytesRead < 4L * data.Length, $"{stream.BytesRead} bytes read for {data.Length}");
+	}
+
+	sealed class CountingStream (byte[] data) : MemoryStream (data, writable: false)
+	{
+		public int Reads { get; private set; }
+
+		public long BytesRead { get; private set; }
+
+		public override int Read (byte[] buffer, int offset, int count)
+		{
+			Reads++;
+			var n = base.Read (buffer, offset, count);
+			BytesRead += n;
+			return n;
+		}
+	}
+
+	[TestMethod]
 	public void Read_HeaderForAnotherStream_IsSkippedNotCounted ()
 	{
 		// The fixed header does not change from frame to frame (ISO/IEC 13818-7 §6.2.1).

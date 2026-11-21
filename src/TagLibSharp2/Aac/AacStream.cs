@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Core;
+using TagLibSharp2.Mpeg;
 
 namespace TagLibSharp2.Aac;
 
@@ -29,7 +30,11 @@ internal static class AacStream
 	/// </summary>
 	public const int FirstFrameSearchBytes = 8192;
 
-	const int SearchChunkBytes = 4096;
+	// aac_frame_length is 13 bits, so a frame's successor header starts at most this far past it.
+	const int MaxFrameLength = 8191;
+	const int SuccessorReach = MaxFrameLength + AdtsHeader.Size;
+
+	const int SearchChunkBytes = 16384;
 
 	// A program_config_element is at most 2465 bits (see AdifHeader.MaxSize), plus the 3-bit element id.
 	const int MaxProgramConfigBytes = 320;
@@ -38,59 +43,82 @@ internal static class AacStream
 	const int ProgramConfigElementId = 5;
 
 	/// <summary>
-	/// True when an AAC stream starts at <paramref name="offset"/>: "ADIF", or an ADTS header whose
-	/// successor confirms it. A header whose successor lies past the data is accepted on its own.
+	/// The bytes <see cref="FindStart(ReadOnlySpan{byte}, long, int)"/> needs to decide a search of <paramref name="searchBytes"/>:
+	/// every candidate plus the farthest successor header.
 	/// </summary>
-	public static bool StartsAt (ReadOnlySpan<byte> data, int offset)
+	public static int WindowBytes (int searchBytes) => searchBytes - 1 + SuccessorReach;
+
+	/// <summary>
+	/// The one rule, for detection and for reading, that says where an AAC stream starts in
+	/// <paramref name="window"/>. "ADIF" at offset 0 starts an ADIF stream. Otherwise the first ADTS header
+	/// in the first <paramref name="searchBytes"/> bytes whose successor confirms it starts an ADTS stream,
+	/// unless an MPEG audio frame (layer other than '00', ISO/IEC 11172-3 §2.4.2.3) comes first.
+	/// </summary>
+	/// <param name="window">The bytes from the earliest possible start.</param>
+	/// <param name="room">The bytes from the earliest possible start to the end of the data.</param>
+	/// <param name="searchBytes">How many start offsets to try.</param>
+	/// <returns>The offset of the stream in <paramref name="window"/>, or -1.</returns>
+	public static int FindStart (ReadOnlySpan<byte> window, long room, int searchBytes)
 	{
-		if (offset < 0 || offset >= data.Length)
-			return false;
+		if (AdifHeader.HasMagic (window))
+			return 0;
 
-		var rest = data[offset..];
-		if (AdifHeader.HasMagic (rest))
-			return true;
+		var limit = (int)Math.Min (searchBytes, Math.Min (window.Length, room));
+		for (var i = 0; i < limit; i++) {
+			if (window[i] != 0xFF)
+				continue;
 
-		if (!AdtsHeader.TryParse (rest, out var header))
-			return false;
+			var rest = window[i..];
+			if (AdtsHeader.TryParse (rest, out var header)) {
+				if (IsConfirmed (header, rest, room - i))
+					return i;
+			} else if (MpegFrame.IsStartOfAudio (rest)) {
+				return -1;
+			}
+		}
 
-		return Confirms (header, rest.Length, rest.Length >= header.FrameLength + AdtsHeader.Size
-			? rest.Slice (header.FrameLength, AdtsHeader.Size)
-			: []);
+		return -1;
 	}
 
 	/// <summary>
-	/// The stream twin of <see cref="StartsAt(ReadOnlySpan{byte}, int)"/>. The stream position moves.
+	/// The stream twin of <see cref="FindStart(ReadOnlySpan{byte}, long, int)"/>: reads the window at <paramref name="offset"/>. The stream position moves.
 	/// </summary>
-	public static bool StartsAt (Stream stream, long offset)
+	public static long FindStart (Stream stream, long offset, long end, int searchBytes)
 	{
-		var buffer = new byte[AdtsHeader.Size];
-		if (!ReadAt (stream, offset, buffer, 4))
-			return false;
-		if (AdifHeader.HasMagic (buffer))
-			return true;
+		if (offset < 0 || offset >= end)
+			return -1;
 
-		if (!ReadAt (stream, offset, buffer, AdtsHeader.Size) || !AdtsHeader.TryParse (buffer, out var header))
-			return false;
+		var length = (int)Math.Min (WindowBytes (searchBytes), end - offset);
+		var window = new byte[length];
+		if (!ReadAt (stream, offset, window, length))
+			return -1;
 
-		var room = stream.Length - offset;
-		var next = new byte[AdtsHeader.Size];
-		var hasNext = room >= header.FrameLength + AdtsHeader.Size
-			&& ReadAt (stream, offset + header.FrameLength, next, AdtsHeader.Size);
-		return Confirms (header, room, hasNext ? next : []);
+		var found = FindStart (window, end - offset, searchBytes);
+		return found < 0 ? -1 : offset + found;
 	}
 
-	// A frame that ends exactly at the end, or whose successor header does not fit, cannot be
-	// contradicted. Otherwise the next header must parse and name the same stream.
-	static bool Confirms (AdtsHeader header, long room, ReadOnlySpan<byte> next)
+	/// <summary>
+	/// True when the header at the start of <paramref name="rest"/> is confirmed. Its successor names the same
+	/// stream, or is a trailing tag, or cannot be checked: the frame reaches the end of the data
+	/// (<paramref name="room"/>) or of the bytes in hand.
+	/// </summary>
+	static bool IsConfirmed (AdtsHeader header, ReadOnlySpan<byte> rest, long room)
 	{
-		if (room < header.FrameLength + AdtsHeader.Size)
+		var successor = header.FrameLength + AdtsHeader.Size;
+		if (room < successor || rest.Length < successor)
 			return true;
 
-		return AdtsHeader.TryParse (next, out var following) && following.SameStream (header);
+		var next = rest.Slice (header.FrameLength, AdtsHeader.Size);
+		if (AdtsHeader.TryParse (next, out var following))
+			return following.SameStream (header);
+
+		// The frame ends where an ID3v1, APEv2, or Lyrics3 tag begins.
+		return next.StartsWith ("TAG"u8) || next.StartsWith ("APETAGE"u8) || next.StartsWith ("LYRICSB"u8);
 	}
 
 	/// <summary>
 	/// Reads the stream properties from the audio region [<paramref name="start"/>, <paramref name="end"/>).
+	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, long, int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
 	/// </summary>
 	public static bool TryRead (Stream stream, long start, long end, out AacAudioProperties? properties)
 	{
@@ -98,17 +126,15 @@ internal static class AacStream
 		if (start < 0 || end > stream.Length || end - start < 4)
 			return false;
 
-		var magic = new byte[4];
-		if (!ReadAt (stream, start, magic, 4))
-			return false;
-		if (AdifHeader.HasMagic (magic))
-			return TryReadAdif (stream, start, end, out properties);
-
-		var first = FindFrame (stream, start, Math.Min (end, start + FirstFrameSearchBytes), end, null);
+		var first = FindStart (stream, start, end, FirstFrameSearchBytes);
 		if (first < 0)
 			return false;
 
-		return TryWalkAdts (stream, first, end, out properties);
+		var magic = new byte[4];
+		if (first == start && ReadAt (stream, start, magic, 4) && AdifHeader.HasMagic (magic))
+			return TryReadAdif (stream, start, end, out properties);
+
+		return TryWalkAdts (new ScanReader (stream, end), first, end, out properties);
 	}
 
 	static bool TryReadAdif (Stream stream, long start, long end, out AacAudioProperties? properties)
@@ -136,26 +162,23 @@ internal static class AacStream
 		return true;
 	}
 
-	static bool TryWalkAdts (Stream stream, long first, long end, out AacAudioProperties? properties)
+	static bool TryWalkAdts (ScanReader reader, long first, long end, out AacAudioProperties? properties)
 	{
 		properties = null;
-		var buffer = new byte[AdtsHeader.Size];
-		if (!ReadAt (stream, first, buffer, AdtsHeader.Size) || !AdtsHeader.TryParse (buffer, out var stream0))
+		if (!reader.TryHeader (first, out var stream0))
 			return false;
 
 		var channels = stream0.Channels;
 		if (stream0.ChannelConfiguration == 0)
-			channels = ProgramConfigChannels (stream, first, stream0, end);
+			channels = ProgramConfigChannels (reader.Stream, first, stream0, end);
 
 		long frames = 0;
 		long blocks = 0;
 		long bytes = 0;
 		var pos = first;
 		while (pos <= end - AdtsHeader.Size) {
-			if (!ReadAt (stream, pos, buffer, AdtsHeader.Size)
-				|| !AdtsHeader.TryParse (buffer, out var header)
-				|| !header.SameStream (stream0)) {
-				var found = FindFrame (stream, pos + 1, end, end, stream0);
+			if (!reader.TryHeader (pos, out var header) || !header.SameStream (stream0)) {
+				var found = FindFrame (reader, pos + 1, stream0);
 				if (found < 0)
 					break;
 				pos = found;
@@ -211,43 +234,85 @@ internal static class AacStream
 	}
 
 	/// <summary>
-	/// Finds the first ADTS header at or after <paramref name="from"/> and before <paramref name="limit"/>
-	/// that parses, names <paramref name="sameAs"/>'s stream when given, and is confirmed by its successor
-	/// inside <paramref name="end"/>. Returns -1 when there is none.
+	/// Finds the first ADTS header at or after <paramref name="from"/> that names <paramref name="sameAs"/>'s
+	/// stream and is confirmed (see <see cref="IsConfirmed"/>). Returns -1 when there is none.
+	/// Candidates and their successors are read from the scan buffer, so the search reads each byte
+	/// about once however many false syncs it rejects.
 	/// </summary>
-	static long FindFrame (Stream stream, long from, long limit, long end, AdtsHeader? sameAs)
+	static long FindFrame (ScanReader reader, long from, AdtsHeader sameAs)
 	{
-		var chunk = new byte[SearchChunkBytes + AdtsHeader.Size - 1];
-		var header = new byte[AdtsHeader.Size];
+		var end = reader.End;
 		var at = from;
-		while (at < limit && at <= end - AdtsHeader.Size) {
-			var length = (int)Math.Min (chunk.Length, end - at);
-			if (!ReadAt (stream, at, chunk, length))
+		while (at <= end - AdtsHeader.Size) {
+			var chunk = reader.Search (at);
+			if (chunk.Length < AdtsHeader.Size)
 				return -1;
 
-			var candidates = (int)Math.Min (SearchChunkBytes, limit - at);
-			for (var i = 0; i < candidates && i + AdtsHeader.Size <= length; i++) {
+			// Every candidate below this offset has its farthest successor in the chunk, or the chunk reaches the end.
+			var candidates = at + chunk.Length >= end
+				? chunk.Length - AdtsHeader.Size + 1
+				: chunk.Length - SuccessorReach + 1;
+			for (var i = 0; i < candidates; i++) {
 				if (chunk[i] != 0xFF)
 					continue;
 
-				var span = chunk.AsSpan (i, AdtsHeader.Size);
-				if (!AdtsHeader.TryParse (span, out var candidate))
-					continue;
-				if (sameAs is { } expected && !candidate.SameStream (expected))
+				var rest = chunk[i..];
+				if (!AdtsHeader.TryParse (rest, out var candidate) || !candidate.SameStream (sameAs))
 					continue;
 
-				var pos = at + i;
-				var room = end - pos;
-				var hasNext = room >= candidate.FrameLength + AdtsHeader.Size
-					&& ReadAt (stream, pos + candidate.FrameLength, header, AdtsHeader.Size);
-				if (Confirms (candidate, room, hasNext ? header : []))
-					return pos;
+				if (IsConfirmed (candidate, rest, end - (at + i)))
+					return at + i;
 			}
 
 			at += candidates;
 		}
 
 		return -1;
+	}
+
+	/// <summary>
+	/// Reads frame headers for one scan. A header inside the search buffer comes from it. Any other
+	/// header is a 7-byte read, so walking well-formed frames never reads their payload.
+	/// </summary>
+	sealed class ScanReader (Stream stream, long end)
+	{
+		readonly byte[] _buffer = new byte[SearchChunkBytes + SuccessorReach];
+		readonly byte[] _header = new byte[AdtsHeader.Size];
+		long _start = -1;
+		int _length;
+
+		public Stream Stream => stream;
+
+		public long End => end;
+
+		/// <summary>
+		/// The bytes from <paramref name="at"/> for a search. The buffer is kept while it still holds more
+		/// than one successor reach past <paramref name="at"/> (or holds the end); otherwise it refills at
+		/// <paramref name="at"/>. Each refill therefore moves at least one chunk forward.
+		/// </summary>
+		public ReadOnlySpan<byte> Search (long at)
+		{
+			var bufferEnd = _start + _length;
+			var inside = _start >= 0 && at >= _start && at < bufferEnd;
+			if (!inside || (bufferEnd < end && bufferEnd - at < SuccessorReach)) {
+				var length = (int)Math.Min (_buffer.Length, end - at);
+				if (!ReadAt (stream, at, _buffer, length))
+					return [];
+				_start = at;
+				_length = length;
+			}
+
+			return _buffer.AsSpan ((int)(at - _start), (int)(_start + _length - at));
+		}
+
+		public bool TryHeader (long pos, out AdtsHeader header)
+		{
+			if (_start >= 0 && pos >= _start && pos + AdtsHeader.Size <= _start + _length)
+				return AdtsHeader.TryParse (_buffer.AsSpan ((int)(pos - _start), AdtsHeader.Size), out header);
+
+			header = default;
+			return ReadAt (stream, pos, _header, AdtsHeader.Size) && AdtsHeader.TryParse (_header, out header);
+		}
 	}
 
 	static bool ReadAt (Stream stream, long position, byte[] buffer, int count)
