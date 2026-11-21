@@ -501,6 +501,18 @@ public class CustomFieldTests
 	}
 
 	[TestMethod]
+	public void Mp4_MappedFreeformName_IsTheMappedProperty ()
+	{
+		var tag = new Mp4Tag { Conductor = "Old" };
+
+		tag.SetCustomField ("CONDUCTOR", "New");
+
+		Assert.AreEqual ("New", tag.Conductor);
+		tag.Conductor = "Again";
+		AssertValues (tag.GetCustomField ("CONDUCTOR"), "Again");
+	}
+
+	[TestMethod]
 	public void Mp4_NameWithColon_SurvivesRender ()
 	{
 		var tag = new Mp4Tag ();
@@ -590,6 +602,18 @@ public class CustomFieldTests
 	}
 
 	// ───────────────────────── Matroska ─────────────────────────
+
+	[TestMethod]
+	public void Matroska_MappedName_IsTheMappedProperty ()
+	{
+		var tag = new MatroskaTag { Comment = "Old" };
+
+		tag.SetCustomField ("COMMENT", "New");
+
+		Assert.AreEqual ("New", tag.Comment);
+		tag.Comment = "Again";
+		AssertValues (tag.GetCustomField ("COMMENT"), "Again");
+	}
 
 	[TestMethod]
 	public void Matroska_NameMatchesExactly ()

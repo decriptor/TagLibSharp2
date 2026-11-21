@@ -345,6 +345,19 @@ string? gain = id3v2?.GetUserText("REPLAYGAIN_TRACK_GAIN");
 id3v2?.SetUserText("REPLAYGAIN_TRACK_GAIN", "-6.5 dB");
 ```
 
+### Custom Fields on Any Tag
+
+TagLib# 2.3 reads and writes a named field on a concrete tag with `GetField`, `SetField`, and `RemoveField`.
+TagLibSharp2 has the same operations on the base `Tag`, so the caller does not need the concrete type.
+`RiffInfoTag.GetField` already means "read one FOURCC", so the new members are named for what they hold:
+
+| TagLib# | TagLibSharp2 |
+|---------|--------------|
+| `GetField(name)` | `tag.GetCustomField(name)` (all values) |
+| `SetField(name, values)` | `tag.SetCustomField(name, values)` (returns false if the format cannot store it) |
+| `RemoveField(name)` | `tag.RemoveCustomField(name)` |
+| — | `tag.SupportsCustomFields` (false for ID3v1) |
+
 ## Binary Data Handling
 
 **TagLib#** uses `ByteVector`:
