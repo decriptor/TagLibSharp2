@@ -766,13 +766,13 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_ThousandsOfTinyClusters_UpdatesTheLastPosition ()
+	public void Save_HundredThousandClusters_UpdatesTheLastPositionInLinearTime ()
 	{
-		// The segment offset is piece.Offset minus the segment payload start, which is O(1).
+		// Each cluster's segment offset is piece.Offset minus the segment payload start, which is O(1).
+		// Summing the piece lengths before every cluster instead takes seconds at this size, so the bound fails.
 		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
 		var small = Master (0x1F43B675, new byte[] { 0x11 });
-		// The shared element helper stores a 14-bit master size, so a few thousand tiny clusters is the fixture limit.
-		const int count = 2500;
+		const int count = 100_000;
 		var children = new List<byte[]> (count + 2) { info };
 		for (var i = 0; i < count; i++)
 			children.Add (small);
@@ -783,7 +783,8 @@ public partial class MatroskaFileTests
 		var position = Element (MatroskaIds.Position, UIntBytes ((ulong)lastPos));
 		var last = UnknownWithCrc (0x1F43B675, Concat (position, Element (0xEC, marker)));
 		children.Add (last);
-		var original = FileWith (children.ToArray ());
+		// The segment payload is far past the 14-bit size the shared Element helper writes.
+		var original = Matroska (WideElement (0x18538067, Concat (children.ToArray ())));
 		Assert.IsTrue (IsElementAt (original, (ulong)lastPos, MatroskaIds.Cluster));
 		Assert.IsTrue (TryReadUnknownClusterPosition (original, out var originalPosition, out var originalCrc, out _));
 		Assert.IsTrue (originalCrc);
@@ -798,7 +799,7 @@ public partial class MatroskaFileTests
 		watch.Stop ();
 
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
-		Assert.IsTrue (watch.Elapsed < TimeSpan.FromSeconds (2), "cluster offsets are O(1)");
+		Assert.IsTrue (watch.Elapsed < TimeSpan.FromSeconds (2), $"cluster offsets are O(1); the save took {watch.Elapsed}");
 		var bytes = fs.ReadAllBytes ("/many-fast.mkv");
 		Assert.AreEqual ("Moved", MatroskaFile.Read (bytes).File!.Tag.Title);
 		Assert.AreEqual (1, CountOf (bytes, marker));
@@ -1285,6 +1286,23 @@ public partial class MatroskaFileTests
 		if (value <= 0xFFFF)
 			return new[] { (byte)(value >> 8), (byte)value };
 		return new[] { (byte)(value >> 16), (byte)(value >> 8), (byte)value };
+	}
+
+	// An element with an 8-byte size, for a payload too large for the shared Element helper.
+	static byte[] WideElement (ulong id, byte[] payload)
+	{
+		var idBytes = Id (id);
+		var result = new byte[idBytes.Length + 8 + payload.Length];
+		idBytes.CopyTo (result, 0);
+		result[idBytes.Length] = 0x01;
+		var size = (ulong)payload.Length;
+		for (var i = 7; i >= 1; i--) {
+			result[idBytes.Length + i] = (byte)size;
+			size >>= 8;
+		}
+
+		payload.CopyTo (result, idBytes.Length + 8);
+		return result;
 	}
 
 	static byte[] EmptyElement (ulong id)
