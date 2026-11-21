@@ -53,17 +53,19 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 /// <summary>
 /// A Matroska or WebM file. Reading maps <c>Tags</c> onto <see cref="Tag"/> and image attachments
 /// onto <see cref="MatroskaTag.Pictures"/>.
-/// Saving splices <see cref="MatroskaTag.Render()"/> into the first <c>Segment</c>, and the
-/// <c>Attachments</c> element too when the pictures were set.
+/// Saving splices <see cref="MatroskaTag.Render()"/> into the first <c>Segment</c>, the
+/// <c>Attachments</c> element too when the pictures were set, and <c>Chapters</c> onto <see cref="Chapters"/>
+/// when the chapters were edited. An element that was not edited keeps its original bytes.
 /// </summary>
 public sealed class MatroskaFile : IMediaFile
 {
 	const ulong DefaultTimestampScale = 1_000_000;
 	IFileSystem? _sourceFileSystem;
 
-	MatroskaFile (MatroskaTag tag, TimeSpan? duration, TrackLayout layout)
+	MatroskaFile (MatroskaTag tag, MatroskaChapters chapters, TimeSpan? duration, TrackLayout layout)
 	{
 		Tag = tag;
+		Chapters = chapters;
 		Duration = duration;
 		MediaTypes = layout.Types;
 		_sampleRate = layout.SampleRate;
@@ -89,6 +91,12 @@ public sealed class MatroskaFile : IMediaFile
 	public MatroskaTag Tag { get; }
 
 	Tag? IMediaFile.Tag => Tag;
+
+	/// <summary>
+	/// Gets the editions and chapters from the first <c>Chapters</c> element. Chapter titles never become <see cref="MatroskaTag.Title"/>.
+	/// A save rewrites <c>Chapters</c> only when these differ from what was read.
+	/// </summary>
+	public MatroskaChapters Chapters { get; }
 
 	/// <summary>Gets the segment duration, when <c>Info/Duration</c> is present.</summary>
 	public TimeSpan? Duration { get; }
@@ -159,6 +167,8 @@ public sealed class MatroskaFile : IMediaFile
 			return MatroskaFileReadResult.Failure ("Matroska file has no Segment");
 
 		var tag = new MatroskaTag ();
+		var isWebM = docType.Equals ("webm", StringComparison.OrdinalIgnoreCase);
+		MatroskaChapters? chapters = null;
 		var scale = DefaultTimestampScale;
 		double? durationTicks = null;
 		var layout = new TrackLayout ();
@@ -180,6 +190,10 @@ public sealed class MatroskaFile : IMediaFile
 				ReadTags (data, Range (data, element, segmentEnd), tag);
 			else if (element.Id == MatroskaIds.Attachments)
 				ReadAttachments (Range (data, element, segmentEnd), tag);
+			else if (element.Id == MatroskaIds.Chapters && chapters is null) {
+				// Chapters is identically recurring (RFC 8794 section 11.1.17), so the first copy is read.
+				chapters = MatroskaChapters.Read (Range (data, element, segmentEnd), isWebM);
+			}
 
 			if (element.UnknownSize)
 				offset = NextSibling (data, element.DataOffset, segmentEnd);
@@ -194,7 +208,8 @@ public sealed class MatroskaFile : IMediaFile
 				duration = TimeSpan.FromSeconds (seconds);
 		}
 
-		return MatroskaFileReadResult.Success (new MatroskaFile (tag, duration, layout));
+		tag.MarkRead ();
+		return MatroskaFileReadResult.Success (new MatroskaFile (tag, chapters ?? MatroskaChapters.Empty (isWebM), duration, layout));
 	}
 
 	/// <summary>
@@ -355,17 +370,17 @@ public sealed class MatroskaFile : IMediaFile
 		return result.IsSuccess;
 	}
 
-	/// <summary>Writes the rendered <c>Tags</c> element into a copy of <paramref name="originalData"/>.</summary>
+	/// <summary>Writes the edited <c>Tags</c>, <c>Attachments</c>, and <c>Chapters</c> elements into a copy of <paramref name="originalData"/>.</summary>
 	/// <returns>The rewritten file, or empty when the container cannot be bounded.</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
-		MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out _)
+		MatroskaRewrite.TryRewrite (originalData, Tag, Chapters, out var rewritten, out _)
 			? new BinaryData (rewritten)
 			: BinaryData.Empty;
 
 	/// <summary>Saves tags into <paramref name="path"/> using <paramref name="originalData"/> as the container.</summary>
 	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData, Tag, out var rewritten, out var error))
+		if (!MatroskaRewrite.TryRewrite (originalData, Tag, Chapters, out var rewritten, out var error))
 			return FileWriteResult.Failure (error);
 
 		fileSystem ??= _sourceFileSystem;
@@ -402,7 +417,7 @@ public sealed class MatroskaFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
-		if (!MatroskaRewrite.TryRewrite (originalData.Span, Tag, out var rewritten, out var error))
+		if (!MatroskaRewrite.TryRewrite (originalData.Span, Tag, Chapters, out var rewritten, out var error))
 			return Task.FromResult (FileWriteResult.Failure (error));
 
 		fileSystem ??= _sourceFileSystem;
