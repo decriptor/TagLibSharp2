@@ -19,14 +19,23 @@ namespace TagLibSharp2.Matroska;
 /// </para>
 /// <para>
 /// WebM carries a subset of these elements (https://www.webmproject.org/docs/container/#chapters).
-/// A WebM save leaves out <c>EditionUID</c>, the edition flags, <c>ChapterFlagHidden</c>,
-/// <c>ChapterFlagEnabled</c>, and <c>ChapLanguageBCP47</c>.
+/// When a WebM file's chapters are written, every chapter element the guidelines list as unsupported
+/// is left out, on every chapter, edited or not: <c>EditionUID</c>, the edition flags,
+/// <c>ChapterFlagHidden</c>, <c>ChapterFlagEnabled</c>, <c>ChapLanguageBCP47</c>, and kept children
+/// such as <c>EditionDisplay</c>, <c>ChapterSegmentUUID</c>, <c>ChapterTrack</c>, and <c>ChapProcess</c>.
+/// A hidden or disabled chapter in a WebM file is therefore written as a plain one. Bytes kept past the
+/// depth or entry limit are filtered only at their top level.
 /// </para>
 /// <para>
 /// A chapter title names a chapter, not the file, so it never becomes <see cref="MatroskaTag.Title"/>.
 /// A save writes <c>Chapters</c> again only when the editions differ from what was read.
 /// Otherwise the original element bytes stay where they are.
-/// Child elements this type does not model are kept and written back.
+/// Child elements this type does not model are kept and written back, without Void and CRC-32.
+/// A save fails, writing nothing, when an edited chapter breaks an RFC 9559 timing rule.
+/// </para>
+/// <para>
+/// Untrusted input is bounded: atoms nest at most <c>32</c> levels, and at most 65,536 child elements are
+/// parsed. Past either limit the bytes are kept, the rest of a parent as one copy, so memory stays linear.
 /// </para>
 /// </remarks>
 public sealed class MatroskaChapters
