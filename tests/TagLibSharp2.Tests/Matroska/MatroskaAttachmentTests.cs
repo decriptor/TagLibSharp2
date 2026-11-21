@@ -465,17 +465,28 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_NewAttachments_WithoutSeekHeadRoom_FailsAndLeavesTheFile ()
+	public void Save_NewAttachments_WithoutSeekHeadRoom_GoAfterTheSeekHeadAndAreListed ()
 	{
-		// RFC 9559 section 6.3: the SeekHead MUST reference every Top-Level Element.
+		// RFC 9559 section 6.3: the SeekHead MUST reference every Top-Level Element. With no room
+		// for a Seek, the SeekHead grows and the attachments go right after it.
 		var info = Info ();
+		var cluster = Master (MatroskaIds.Cluster, new byte[] { 0xE7, 0x81, 0x00, 0xA3, 0x82, 0x51, 0x52 });
 		var probe = Master (MatroskaIds.SeekHead, SeekEntry (MatroskaIds.Info, 0));
 		var seekHead = Master (MatroskaIds.SeekHead, SeekEntry (MatroskaIds.Info, (ulong)probe.Length));
-		var original = FileWith (seekHead, info, Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		var original = FileWith (seekHead, info, cluster);
 		var file = MatroskaFile.Read (original).File!;
 		file.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg)];
 
-		AssertFailure (file, new MockFileSystem (), "/full.mkv", original, "SeekHead has no room");
+		var bytes = Save (file, original);
+
+		var seeks = ReadSeeks (bytes);
+		var attachments = seeks.Find (entry => entry.Id == MatroskaIds.Attachments);
+		Assert.AreEqual (MatroskaIds.Attachments, attachments.Id);
+		Assert.IsTrue (IsElementAt (bytes, attachments.Position, MatroskaIds.Attachments));
+		Assert.IsTrue (IsElementAt (bytes, seeks.Find (entry => entry.Id == MatroskaIds.Info).Position, MatroskaIds.Info));
+		Assert.IsTrue (OffsetOfChild (bytes, MatroskaIds.Attachments) < OffsetOfChild (bytes, MatroskaIds.Cluster));
+		Assert.AreEqual (1, CountOf (bytes, cluster));
+		Assert.AreEqual (1, MatroskaFile.Read (bytes).File!.Tag.Pictures.Length);
 	}
 
 	[TestMethod]
@@ -509,7 +520,7 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_NewAttachments_WithoutASeekHead_GoBeforeTheClusters_OrFail ()
+	public void Save_NewAttachments_WithoutASeekHead_GoBeforeTheClusters ()
 	{
 		var hole = Element (MatroskaIds.Void, new byte[100]);
 		var cluster = Master (MatroskaIds.Cluster, new byte[] { 1 });
@@ -521,10 +532,14 @@ public partial class MatroskaFileTests
 		Assert.IsTrue (OffsetOfChild (bytes, MatroskaIds.Attachments) < OffsetOfChild (bytes, MatroskaIds.Cluster));
 
 		// Without a SeekHead a player reads only up to the first Cluster (RFC 9559 section 25.3.4).
+		// With no Void there, the attachments are inserted before the Cluster, which moves once.
 		var full = FileWith (Info (), cluster);
 		var after = MatroskaFile.Read (full).File!;
 		after.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg)];
-		AssertFailure (after, new MockFileSystem (), "/live.mkv", full, "no SeekHead");
+		var moved = Save (after, full);
+		Assert.AreEqual (1, MatroskaFile.Read (moved).File!.Tag.Pictures.Length);
+		Assert.IsTrue (OffsetOfChild (moved, MatroskaIds.Attachments) < OffsetOfChild (moved, MatroskaIds.Cluster));
+		Assert.AreEqual (1, CountOf (moved, cluster));
 	}
 
 	[TestMethod]
@@ -571,7 +586,31 @@ public partial class MatroskaFileTests
 		var file = MatroskaFile.Read (original).File!;
 		file.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg)];
 
-		AssertFailure (file, new MockFileSystem (), "/two-heads.mkv", original, "SeekHead has no room");
+		var bytes = Save (file, original);
+
+		// The first SeekHead grows to list the attachments. The second still lists only the Cluster.
+		Assert.IsTrue (TrySegmentBody (bytes, out var body, out _));
+		var heads = new List<List<SeekRef>> ();
+		var offset = 0;
+		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
+			if (element.Id == MatroskaIds.SeekHead) {
+				var found = new List<SeekRef> ();
+				ReadSeekHead (body.AsSpan (element.DataOffset, (int)element.DataLength), found);
+				heads.Add (found);
+			}
+
+			offset = element.End;
+		}
+
+		Assert.AreEqual (2, heads.Count);
+		var listed = heads[0].Find (entry => entry.Id == MatroskaIds.Attachments);
+		Assert.AreEqual (MatroskaIds.Attachments, listed.Id);
+		Assert.IsTrue (IsElementAt (bytes, listed.Position, MatroskaIds.Attachments));
+		Assert.IsTrue (heads[1].TrueForAll (entry => entry.Id == MatroskaIds.Cluster));
+		Assert.IsTrue (IsElementAt (bytes, heads[1][0].Position, MatroskaIds.Cluster));
+		foreach (var entry in heads[0])
+			Assert.IsTrue (IsElementAt (bytes, entry.Position, entry.Id));
+		Assert.AreEqual (1, MatroskaFile.Read (bytes).File!.Tag.Pictures.Length);
 	}
 
 	[TestMethod]

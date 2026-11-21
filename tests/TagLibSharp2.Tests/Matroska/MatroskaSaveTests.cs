@@ -142,8 +142,7 @@ public partial class MatroskaFileTests
 					Simple ("PUBLISHER", "Old Label"))),
 			pictures,
 			cluster);
-		var clusterAt = IndexOf (original, marker);
-		Assert.IsTrue (clusterAt > 0);
+		Assert.IsTrue (IndexOf (original, marker) > 0);
 
 		var parsed = MatroskaFile.Read (original);
 		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
@@ -172,8 +171,10 @@ public partial class MatroskaFileTests
 
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		var bytes = fs.ReadAllBytes ("/song.mkv");
-		Assert.AreEqual (clusterAt, IndexOf (bytes, marker));
-		Assert.AreEqual (1, CountOf (bytes, marker));
+		// No SeekHead: the grown Tags go before the Cluster, where a reader looks (RFC 9559 section 25.3.4).
+		// The Cluster moves whole.
+		Assert.AreEqual (1, CountOf (bytes, cluster));
+		Assert.IsTrue (IndexOf (bytes, Id (MatroskaIds.Tags)) < IndexOf (bytes, cluster));
 		var again = MatroskaFile.Read (bytes);
 		Assert.IsTrue (again.IsSuccess, again.Error);
 		var round = again.File!.Tag;
