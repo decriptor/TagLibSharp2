@@ -21,6 +21,8 @@ public class Mp4QuickTimeKeysTests
 	const string MusicBrainz = "org.musicbrainz";
 	static readonly byte[] Other = TestBuilders.Mp4.CreateMdtaItem (2, "+12.3456-065.4321/");
 	static readonly string[] ArtistOnly = ["artist"];
+	static readonly string[] DisplayNameOnly = ["com.apple.quicktime.displayname"];
+	static readonly string[] ArtistThenTitle = ["com.apple.quicktime.artist", "com.apple.quicktime.title"];
 
 	// Every key name this library maps: ffmpeg's -movflags use_metadata_tags names, Apple's
 	// com.apple.quicktime.* keys, and the freeform names (which ffmpeg writes as keys).
@@ -705,9 +707,9 @@ public class Mp4QuickTimeKeysTests
 		Assert.IsNull (Mp4File.Read (cleared).File!.Tag!.Artist);
 	}
 
-	// A field only moov/meta has, set to a value moov/meta has no key for, still goes to moov/meta.
+	// A field that lives in moov/meta stays there when it is cleared and set again.
 	[TestMethod]
-	public void BothMetas_NewKeyInMovieMetaFollowsItsNaming ()
+	public void BothMetas_ClearedThenSetFieldStaysInMovieMeta ()
 	{
 		var udta = TestBuilders.Mp4.CreateBox ("meta", [
 			0, 0, 0, 0,
@@ -722,6 +724,47 @@ public class Mp4QuickTimeKeysTests
 		var rendered = file.Render (data).ToArray ();
 		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "Again")));
 		Assert.AreEqual (0, Count (rendered, NameType ()));
+	}
+
+	// An iTunes atom in moov/meta's keyed ilst has no key. A set gives it one, named the way moov/meta names its keys.
+	[TestMethod]
+	public void BothMetas_FieldWithoutKeyInMovieMetaGetsOne ()
+	{
+		var udta = TestBuilders.Mp4.CreateBox ("meta", [
+			0, 0, 0, 0,
+			.. TestBuilders.Mp4.CreateBox ("hdlr", [0, 0, 0, 0, 0, 0, 0, 0, .. "mdirappl"u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+			.. TestBuilders.Mp4.CreateBox ("ilst", TestBuilders.Mp4.CreateIlstChild ("©too", 1, Encoding.UTF8.GetBytes ("Lavf")))]);
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.artist"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "AppleA"), TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("MovieT"))],
+			inMovie: true, udtaExtra: udta);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("MovieT", file.Title);
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, NameType ()));
+		CollectionAssert.AreEqual (ArtistThenTitle, Keys (rendered));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (2, "New")));
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
+	}
+
+	// The set rewrites the item at moov/meta's own key, even when that key is not the name a new key would get.
+	[TestMethod]
+	public void BothMetas_SetRewritesMovieMetaAtItsOwnKey ()
+	{
+		var udta = TestBuilders.Mp4.CreateBox ("meta", [
+			0, 0, 0, 0,
+			.. TestBuilders.Mp4.CreateBox ("hdlr", [0, 0, 0, 0, 0, 0, 0, 0, .. "mdirappl"u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+			.. TestBuilders.Mp4.CreateBox ("ilst", TestBuilders.Mp4.CreateIlstChild ("©too", 1, Encoding.UTF8.GetBytes ("Lavf")))]);
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.displayname"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "Shown")], inMovie: true, udtaExtra: udta);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("Shown", file.Title);
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		CollectionAssert.AreEqual (DisplayNameOnly, Keys (rendered));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "New")));
 	}
 
 	static byte[] NameType () => [0xA9, (byte)'n', (byte)'a', (byte)'m'];
