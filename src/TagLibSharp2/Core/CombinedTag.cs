@@ -158,6 +158,18 @@ public class CombinedTag : Tag
 		FirstNonEmptyString (tag => tag.ReadCopyableDate ());
 
 	/// <inheritdoc/>
+	internal override bool ReadsFrom (Tag tag)
+	{
+		if (base.ReadsFrom (tag))
+			return true;
+		foreach (var inner in _tags) {
+			if (inner is not null && inner.ReadsFrom (tag))
+				return true;
+		}
+		return false;
+	}
+
+	/// <inheritdoc/>
 	public override string? Comment {
 		get => FirstNonEmptyString (t => t.Comment);
 		set => WriteToAll (t => t.Comment = value);

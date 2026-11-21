@@ -273,22 +273,48 @@ public sealed class VorbisComment : Tag
 	/// <inheritdoc/>
 	/// <remarks>
 	/// Uses the MOVEMENT field. Falls back to MOVEMENTNAME when MOVEMENT is missing or empty.
-	/// Writing back the value already read changes nothing, so a MOVEMENTNAME that Picard or Mp3tag
-	/// wrote beside a MOVEMENT number is kept. A new value is written to MOVEMENT and to an existing
-	/// MOVEMENTNAME. Clearing removes both.
+	/// Writing back the value already read changes nothing. A new value is written to MOVEMENT and to
+	/// an existing MOVEMENTNAME. Clearing removes both.
+	/// MusicBrainz Picard and Mp3tag store the name in MOVEMENTNAME and the number in MOVEMENT
+	/// (https://picard-docs.musicbrainz.org/en/v3.0/appendices/tag_mapping.html). When MOVEMENT is a
+	/// number beside a MOVEMENTNAME, the name is read from and written to MOVEMENTNAME only, and
+	/// MOVEMENT is left to <see cref="MovementNumber"/>.
 	/// </remarks>
 	public override string? Movement {
-		get => GetValueOrFallback ("MOVEMENT", "MOVEMENTNAME");
-		set => SetValueWithFallback ("MOVEMENT", value, "MOVEMENTNAME", static v => v);
+		get => HasPicardMovement ? GetValue ("MOVEMENTNAME") : GetValueOrFallback ("MOVEMENT", "MOVEMENTNAME");
+		set {
+			if (HasPicardMovement)
+				SetValueProperty ("MOVEMENTNAME", value, Movement);
+			else
+				SetValueWithFallback ("MOVEMENT", value, "MOVEMENTNAME", static v => v);
+		}
 	}
 
+	/// <summary>
+	/// True for the Picard layout: a non-empty MOVEMENTNAME beside a numeric MOVEMENT.
+	/// </summary>
+	bool HasPicardMovement => !string.IsNullOrEmpty (GetValue ("MOVEMENTNAME")) && TryParseUInt (GetValue ("MOVEMENT"), out _);
+
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Uses the MOVEMENTNUMBER field. In the Picard layout (see <see cref="Movement"/>) without one,
+	/// the number is read from and written to MOVEMENT, and clearing it removes MOVEMENT.
+	/// </remarks>
 	public override uint? MovementNumber {
 		get {
-			var value = GetValue ("MOVEMENTNUMBER");
-			return TryParseUInt (value, out var num) ? num : null;
+			if (TryParseUInt (GetValue ("MOVEMENTNUMBER"), out var num))
+				return num;
+			return HasPicardMovement && TryParseUInt (GetValue ("MOVEMENT"), out num) ? num : null;
 		}
-		set => SetValue ("MOVEMENTNUMBER", value?.ToString (System.Globalization.CultureInfo.InvariantCulture));
+		set {
+			if (IsWriteBack (value, MovementNumber))
+				return;
+			var text = value?.ToString (System.Globalization.CultureInfo.InvariantCulture);
+			if (HasPicardMovement && GetValue ("MOVEMENTNUMBER") is null)
+				SetValue ("MOVEMENT", text);
+			else
+				SetValue ("MOVEMENTNUMBER", text);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -746,10 +772,14 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <summary>
-	/// Gets the first value for a field name.
+	/// Gets the first non-empty value for a field name.
 	/// </summary>
 	/// <param name="name">The field name (case-insensitive).</param>
-	/// <returns>The first value, or null if not found.</returns>
+	/// <returns>
+	/// The first non-empty value, "" when every field with this name is empty, or null if not found.
+	/// Field names may repeat (https://xiph.org/vorbis/doc/v-comment.html), so an empty first field does
+	/// not hide a later value, and a write-back of the value read keeps every field.
+	/// </returns>
 	/// <exception cref="ArgumentNullException">Thrown when <paramref name="name"/> is null.</exception>
 	public string? GetValue (string name)
 	{
@@ -763,11 +793,15 @@ public sealed class VorbisComment : Tag
 		// Use explicit check instead of relying on struct default behavior.
 		// When no match is found, FirstOrDefault returns default(VorbisCommentField)
 		// which has null properties - but we make this explicit for clarity.
+		string? empty = null;
 		for (var i = 0; i < _fields.Count; i++) {
-			if (_fields[i].Name == upperName)
+			if (_fields[i].Name != upperName)
+				continue;
+			if (_fields[i].Value.Length != 0)
 				return _fields[i].Value;
+			empty = "";
 		}
-		return null;
+		return empty;
 	}
 
 	/// <summary>
@@ -927,31 +961,8 @@ public sealed class VorbisComment : Tag
 	/// </summary>
 	void SetValueProperty (string name, string? value, string? current)
 	{
-		if (!IsFieldWriteBack (value, current, name))
+		if (!IsWriteBack (value, current))
 			SetValue (name, value);
-	}
-
-	/// <summary>
-	/// <see cref="Tag.IsWriteBack(string?, string?)"/>, except that an empty string is a write-back only when
-	/// no field named <paramref name="name"/> holds text. The getter returns "" for an empty first field
-	/// even when a later one has text, and "" over such fields still clears them.
-	/// </summary>
-	bool IsFieldWriteBack (string? value, string? current, string name) =>
-		IsWriteBack (value, current) && (value!.Length != 0 || !HasText (name));
-
-	/// <summary>
-	/// True when any field with one of these names has a non-empty value.
-	/// </summary>
-	bool HasText (params string[] names)
-	{
-		foreach (var name in names) {
-			var upper = name.ToUpperInvariant ();
-			for (var i = 0; i < _fields.Count; i++) {
-				if (_fields[i].Name == upper && _fields[i].Value.Length != 0)
-					return true;
-			}
-		}
-		return false;
 	}
 
 	/// <summary>
@@ -979,7 +990,7 @@ public sealed class VorbisComment : Tag
 	/// </summary>
 	void SetValueWithFallback (string name, string? value, string fallback, Func<string, string?> toFallback)
 	{
-		if (IsValueRead (value, GetValueOrFallback (name, fallback)) && (value!.Length != 0 || !HasText (name, fallback))) {
+		if (IsValueRead (value, GetValueOrFallback (name, fallback))) {
 			// The value read changes nothing, in a copy too: the fallback is its own field (Picard keeps
 			// MOVEMENTNAME beside a MOVEMENT number). A copy still drops the other values of name.
 			if (IsCopying && GetValues (name).Count > 1 && GetValue (name) == value)

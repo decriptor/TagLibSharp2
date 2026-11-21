@@ -55,10 +55,7 @@ public class VorbisCommentWriteBackTests
 			property.SetValue (comment, read);
 			var after = Snapshot (Reparse (comment));
 
-			// "" is a write-back only when no value holds text: an empty first value reads "",
-			// and "" over a list with text clears it.
-			var clears = read == "" && before.Any (r => r.Contains ("V2", StringComparison.Ordinal));
-			if (clears ? after.Any (r => r.Contains ("V2", StringComparison.Ordinal)) : !before.SequenceEqual (after))
+			if (!before.SequenceEqual (after))
 				failures.Add ($"{property.Name}: [{string.Join (" | ", before)}] -> [{string.Join (" | ", after)}]");
 
 			// A case-only edit, or "" over a list whose later values hold text, is not a write-back.
@@ -77,7 +74,7 @@ public class VorbisCommentWriteBackTests
 	}
 
 	[TestMethod]
-	public void EmptyString_OverFieldsWithText_ClearsThem ()
+	public void LeadingEmptyField_ReadsTheNextValue_WriteBackKeepsIt_EmptyStringClears ()
 	{
 		var comment = new VorbisComment ("test");
 		comment.AddField ("ARTIST", "");
@@ -85,7 +82,12 @@ public class VorbisCommentWriteBackTests
 		comment.AddField ("MOVEMENT", "");
 		comment.AddField ("MOVEMENT", "V2");
 		comment.AddField ("MOVEMENTNAME", "N");
-		Assert.AreEqual ("", comment.Artist);
+		Assert.AreEqual ("V2", comment.Artist);
+		Assert.AreEqual ("V2", comment.Movement);
+		var before = string.Join ("|", comment.Fields.Select (f => f.Name + "=" + f.Value));
+		comment.Artist = comment.Artist;
+		comment.Movement = comment.Movement;
+		Assert.AreEqual (before, string.Join ("|", comment.Fields.Select (f => f.Name + "=" + f.Value)));
 
 		comment.Artist = "";
 		comment.Movement = "";

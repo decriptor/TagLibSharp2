@@ -6,6 +6,7 @@ using System.Text;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Mpeg;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Core;
@@ -212,6 +213,143 @@ public class TagCopyReplacesListTests
 		ape.SetValue ("Date", "2001-05-03");
 		new ApeTag { Year = "2001" }.CopyTo (ape, TagCopyOptions.Basic);
 		Assert.AreEqual ("2001-05-03", ape.GetValue ("Date"));
+	}
+
+	static Id3v2Tag PicardId3 (Id3v2Version version)
+	{
+		var tag = new Id3v2Tag (version);
+		tag.Performers = ["P1", "P2"];
+		tag.Genres = ["Rock", "Pop"];
+		tag.SetTextFrameValues ("TPUB", ["Lab1", "Lab2"]);
+		tag.AddUserTextFrame (new TagLibSharp2.Id3.Id3v2.Frames.UserTextFrame ("CATALOGNUMBER", "CAT1\0CAT2"));
+		return Id3v2Tag.Read (tag.Render ().Span).Tag!;
+	}
+
+	static List<string> Frames (Id3v2Tag tag) =>
+		[.. tag.Frames.Select (f => f.Id + "=" + f.Text), .. tag.UserTextFrames.Select (f => f.Description + "=" + f.Value)];
+
+	[TestMethod]
+	[DataRow (Id3v2Version.V23)]
+	[DataRow (Id3v2Version.V24)]
+	public void Copy_FromAViewOverTheTarget_KeepsEveryList (Id3v2Version version)
+	{
+		var tag = PicardId3 (version);
+		var before = Frames (tag);
+
+		new CombinedTag (tag, null).CopyTo (tag, TagCopyOptions.All);
+		CollectionAssert.AreEqual (before, Frames (tag));
+
+		tag.CopyTo (tag, TagCopyOptions.All);
+		CollectionAssert.AreEqual (before, Frames (tag));
+
+		// Mp3File.Tag is a CombinedTag over the file's ID3v2 and ID3v1 tags.
+		byte[] mpeg = [0xFF, 0xFB, 0x90, 0x00, .. new byte[413]];
+		var mp3 = Mp3File.Read ([.. tag.Render ().Span, .. mpeg]).File!;
+		var fileBefore = Frames (mp3.Id3v2Tag!);
+		mp3.Tag!.CopyTo (mp3.Id3v2Tag!, TagCopyOptions.All);
+		CollectionAssert.AreEqual (fileBefore, Frames (mp3.Id3v2Tag!));
+	}
+
+	[TestMethod]
+	public void Copy_FromAViewOverTheTarget_KeepsEveryList_FlacAndApe ()
+	{
+		var file = FlacFile.Read (TestBuilders.Flac.CreateMinimal ()).File!;
+		var comment = new VorbisComment ("test");
+		foreach (var (name, value) in new[] { ("ARTIST", "P1"), ("ARTIST", "P2"), ("GENRE", "Rock"), ("GENRE", "Pop"), ("LABEL", "Lab1"), ("LABEL", "Lab2") })
+			comment.AddField (name, value);
+		file.VorbisComment = comment;
+		var before = string.Join ("|", comment.Fields.Select (f => f.Name + "=" + f.Value));
+
+		file.Tag!.CopyTo (comment, TagCopyOptions.All);
+		comment.CopyTo (file.Tag!, TagCopyOptions.All);
+
+		Assert.AreEqual (before, string.Join ("|", comment.Fields.Select (f => f.Name + "=" + f.Value)));
+
+		var ape = new ApeTag ();
+		ape.SetValue ("Artist", "P1\0P2");
+		ape.SetValue ("Genre", "Rock\0Pop");
+		ape.SetValue ("Publisher", "Lab1\0Lab2");
+		ape.CopyTo (ape, TagCopyOptions.All);
+		Assert.AreEqual ("P1|P2", string.Join ("|", ape.Performers));
+		Assert.AreEqual ("Rock|Pop", string.Join ("|", ape.Genres));
+		Assert.AreEqual ("Lab1, Lab2", ape.GetValue ("Publisher"));
+	}
+
+	[TestMethod]
+	public void Copy_FromAnUndetectedView_ReadsTheSourceBeforeWriting ()
+	{
+		// A view this library does not know about. CopyTo reads every source value before it writes,
+		// so the Artist write cannot shorten the Performers list the copy reads afterwards.
+		var inner = PicardId3 (Id3v2Version.V24);
+		var view = new ForwardingTag (inner);
+
+		view.CopyTo (inner, TagCopyOptions.All);
+
+		Assert.AreEqual ("P1|P2", string.Join ("|", inner.Performers));
+		Assert.AreEqual ("Rock|Pop", string.Join ("|", inner.Genres));
+	}
+
+	[TestMethod]
+	public void Copy_OfTheOriginalDateAV23TagReads_KeepsTdor ()
+	{
+		// In ID3v2.3, TORY holds only the year (ID3v2.3 §4.2.1); a TDOR beside it carries the full date.
+		var tdorOnly = new Id3v2Tag (Id3v2Version.V23);
+		tdorOnly.SetTextFrameValues ("TDOR", ["1969-09-26"]);
+		new VorbisComment ("s") { OriginalReleaseDate = "1969-09-26" }.CopyTo (tdorOnly, TagCopyOptions.All);
+		Assert.AreEqual ("1969-09-26", tdorOnly.GetTextFrame ("TDOR"));
+		Assert.IsNull (tdorOnly.GetTextFrame ("TORY"));
+
+		var both = new Id3v2Tag (Id3v2Version.V23);
+		both.SetTextFrameValues ("TORY", ["1969"]);
+		both.SetTextFrameValues ("TDOR", ["1969-09-26"]);
+		new VorbisComment ("s") { OriginalReleaseDate = "1969" }.CopyTo (both, TagCopyOptions.All);
+		Assert.AreEqual ("1969", both.GetTextFrame ("TORY"));
+		Assert.AreEqual ("1969-09-26", both.GetTextFrame ("TDOR"));
+
+		new VorbisComment ("s") { OriginalReleaseDate = "1970-01-02" }.CopyTo (both, TagCopyOptions.All);
+		Assert.AreEqual ("1970", both.OriginalReleaseDate);
+		Assert.IsNull (both.GetTextFrame ("TDOR"));
+	}
+
+	[TestMethod]
+	public void Copy_FromAPicardMovementLayout_KeepsTheAppleName ()
+	{
+		var source = new VorbisComment ("picard");
+		source.AddField ("MOVEMENTNAME", "Allegro");
+		source.AddField ("MOVEMENT", "2");
+		source.AddField ("MOVEMENTTOTAL", "4");
+		var target = new Id3v2Tag (Id3v2Version.V24);
+		target.SetTextFrameValues ("MVNM", ["Allegro"]);
+		target.SetTextFrameValues ("MVIN", ["2/4"]);
+
+		source.CopyTo (target, TagCopyOptions.All);
+
+		Assert.AreEqual ("Allegro", target.GetTextFrame ("MVNM"));
+		Assert.AreEqual ("2/4", target.GetTextFrame ("MVIN"));
+
+		var ape = new ApeTag ();
+		ape.SetValue ("MOVEMENTNAME", "Allegro");
+		ape.SetValue ("MOVEMENT", "2");
+		var fromApe = new Id3v2Tag (Id3v2Version.V24);
+		ape.CopyTo (fromApe, TagCopyOptions.All);
+		Assert.AreEqual ("Allegro", fromApe.GetTextFrame ("MVNM"));
+		Assert.AreEqual (2u, fromApe.MovementNumber);
+	}
+
+	sealed class ForwardingTag (Id3v2Tag inner) : Tag
+	{
+		public override TagTypes TagType => inner.TagType;
+		public override string? Title { get => inner.Title; set => inner.Title = value; }
+		public override string? Artist { get => inner.Artist; set => inner.Artist = value; }
+		public override string[] Performers { get => inner.Performers; set => inner.Performers = value; }
+		public override string? Album { get => inner.Album; set => inner.Album = value; }
+		public override string? Year { get => inner.Year; set => inner.Year = value; }
+		public override string? Comment { get => inner.Comment; set => inner.Comment = value; }
+		public override string? Genre { get => inner.Genre; set => inner.Genre = value; }
+		public override string[] Genres { get => inner.Genres; set => inner.Genres = value; }
+		public override uint? Track { get => inner.Track; set => inner.Track = value; }
+		public override BinaryData Render () => inner.Render ();
+		public override void Clear () => inner.Clear ();
 	}
 
 	[TestMethod]

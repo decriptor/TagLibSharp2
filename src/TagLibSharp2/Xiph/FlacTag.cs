@@ -113,6 +113,10 @@ public sealed class FlacTag : Tag
 	}
 
 	/// <inheritdoc/>
+	internal override bool ReadsFrom (Tag tag) =>
+		base.ReadsFrom (tag) || (_file.VorbisComment?.ReadsFrom (tag) ?? false);
+
+	/// <inheritdoc/>
 	public override string? Copyright {
 		get => _file.VorbisComment?.Copyright;
 		set => EnsureVorbisComment ().Copyright = value;

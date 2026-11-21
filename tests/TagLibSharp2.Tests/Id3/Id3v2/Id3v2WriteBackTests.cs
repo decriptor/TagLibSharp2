@@ -80,10 +80,7 @@ public class Id3v2WriteBackTests
 			property.SetValue (tag, read);
 			var after = Snapshot (Reparse (tag));
 
-			// "" is a write-back only when no value holds text: the getter reports an empty first
-			// value as "", and "" over a list with text clears it, as in APE.
-			var clears = read == "" && before.Any (r => r.Contains ("V2", StringComparison.Ordinal));
-			if (clears ? after.Any (r => r.Contains ("V2", StringComparison.Ordinal)) : !before.SequenceEqual (after))
+			if (!before.SequenceEqual (after))
 				failures.Add ($"{property.Name}: [{string.Join (" | ", before)}] -> [{string.Join (" | ", after)}]");
 
 			// A case-only edit, or "" over a list whose later values hold text, is not a write-back.
@@ -107,28 +104,62 @@ public class Id3v2WriteBackTests
 	static readonly string[] Candidates = ["V1", "2001", "2001-05-03", "http://example.com/feed", "b10b5bd8-0000-4000-8000-000000000001"];
 
 	/// <summary>
-	/// COMM and USLT can hold several frames that differ by language and description; their single-value
-	/// setters replace that set and are outside the write-back rule.
+	/// Content in a layout this library's setters never write: UTF-16 with a BOM on every value,
+	/// a second value, a non-default language, a second COMM frame.
 	/// </summary>
-	static readonly string[] NotWriteBackSafe = ["Comment", "Lyrics"];
+	static byte[] Utf16 (string text) => [0xFF, 0xFE, .. System.Text.Encoding.Unicode.GetBytes (text)];
+
+	static byte[] Join (params byte[][] parts) => parts.SelectMany (p => p).ToArray ();
+
+	static readonly byte[] Nul16 = [0, 0];
+
+	/// <summary>
+	/// Rebuilds every frame the setter wrote for <paramref name="probe"/> in a foreign layout, holding
+	/// <paramref name="value"/>, and parses the result.
+	/// </summary>
+	static Id3v2Tag BuildForeign (Id3v2Tag probe, byte version, string value)
+	{
+		var frames = new List<byte[]> ();
+		foreach (var f in probe.Frames)
+			frames.Add (TestBuilders.Id3v2.CreateFrame (f.Id, Join ([0x01], Utf16 (value), Nul16, Utf16 ("V2")), version));
+		foreach (var f in probe.UserTextFrames)
+			frames.Add (TestBuilders.Id3v2.CreateFrame ("TXXX", Join ([0x01], Utf16 (f.Description), Nul16, Utf16 (value), Nul16, Utf16 ("V2")), version));
+		if (probe.Comments.Count > 0) {
+			frames.Add (TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "deu"u8.ToArray (), [0x00], System.Text.Encoding.Latin1.GetBytes (value)), version));
+			frames.Add (TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "eng"u8.ToArray (), "note"u8.ToArray (), [0x00], "other"u8.ToArray ()), version));
+		}
+		foreach (var _ in probe.LyricsFrames)
+			frames.Add (TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x01], "deu"u8.ToArray (), Utf16 (""), Nul16, Utf16 (value)), version));
+		foreach (var f in probe.UrlFrames)
+			frames.Add (TestBuilders.Id3v2.CreateFrame (f.Id, System.Text.Encoding.Latin1.GetBytes (value), version));
+		foreach (var f in probe.UniqueFileIdFrames)
+			frames.Add (TestBuilders.Id3v2.CreateFrame ("UFID", Join (System.Text.Encoding.Latin1.GetBytes (f.Owner), [0x00], System.Text.Encoding.ASCII.GetBytes (value)), version));
+		// A frame after the property's frames, so a setter that rewrites them moves them.
+		frames.Add (TestBuilders.Id3v2.CreateFrame (probe.Frames.Any (f => f.Id == "TALB") ? "TIT2" : "TALB", Join ([0x01], Utf16 ("after")), version));
+
+		var body = Join ([.. frames]);
+		var result = Id3v2Tag.Read (Join (TestBuilders.Id3v2.CreateHeader (version, (uint)body.Length), body));
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		return result.Tag!;
+	}
 
 	[TestMethod]
-	[DataRow (Id3v2Version.V23)]
-	[DataRow (Id3v2Version.V24)]
-	public void EveryStringProperty_WriteBackOfTheValueRead_IsByteIdentical (Id3v2Version version)
+	[DataRow (TestConstants.Id3v2.Version3)]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	public void EveryStringProperty_WriteBackOverForeignFrames_IsByteIdentical (byte version)
 	{
 		var failures = new List<string> ();
 		var uncovered = new List<string> ();
 		foreach (var property in StringProperties ()) {
 			Id3v2Tag? tag = null;
 			foreach (var candidate in Candidates) {
-				var probe = new Id3v2Tag (version);
+				var probe = new Id3v2Tag ((Id3v2Version)version);
 				property.SetValue (probe, candidate);
-				// A later frame, so a setter that rewrites its frame moves it and changes the bytes.
-				probe.SetTextFrameValues (property.Name == "Album" ? "TIT2" : "TALB", ["after"]);
-				probe = Reparse (probe);
-				if (Equals (property.GetValue (probe), candidate)) {
-					tag = probe;
+				if (!Equals (property.GetValue (probe), candidate))
+					continue;
+				var foreign = BuildForeign (probe, version, candidate);
+				if (Equals (property.GetValue (foreign), candidate)) {
+					tag = foreign;
 					break;
 				}
 			}
@@ -136,8 +167,6 @@ public class Id3v2WriteBackTests
 				uncovered.Add (property.Name);
 				continue;
 			}
-			if (NotWriteBackSafe.Contains (property.Name))
-				continue;
 
 			var before = tag.Render ().ToArray ();
 			property.SetValue (tag, property.GetValue (tag));
@@ -165,7 +194,7 @@ public class Id3v2WriteBackTests
 	[TestMethod]
 	[DataRow (Id3v2Version.V23)]
 	[DataRow (Id3v2Version.V24)]
-	public void EmptyString_OverAListWithText_ClearsIt (Id3v2Version version)
+	public void LeadingEmptyValue_ReadsTheNextValue_WriteBackKeepsIt_EmptyStringClears (Id3v2Version version)
 	{
 		var tag = new Id3v2Tag (version);
 		tag.Artist = "x";
@@ -176,9 +205,15 @@ public class Id3v2WriteBackTests
 		foreach (var f in tag.UserTextFrames)
 			f.Value = "\0V2";
 		tag = Reparse (tag);
-		Assert.AreEqual ("", tag.Artist);
-		Assert.AreEqual ("", tag.Genre);
-		Assert.AreEqual ("", tag.Movement);
+		Assert.AreEqual ("V2", tag.Artist);
+		Assert.AreEqual ("V2", tag.Genre);
+		Assert.AreEqual ("V2", tag.Movement);
+		var before = Snapshot (tag);
+
+		tag.Artist = tag.Artist;
+		tag.Genre = tag.Genre;
+		tag.Movement = tag.Movement;
+		CollectionAssert.AreEqual (before, Snapshot (Reparse (tag)));
 
 		tag.Artist = "";
 		tag.Genre = "";
@@ -288,10 +323,10 @@ public class Id3v2WriteBackTests
 	}
 
 	[TestMethod]
-	public void Genre_EmptyFirstValue_ReadsEmpty ()
+	public void Genre_EmptyValues_ReadTheFirstNonEmptyValue ()
 	{
-		// An empty first value reads "", like every other text frame. Writing "" back keeps a frame
-		// whose values are all empty and clears one whose later values hold text.
+		// Like every other text frame, the genre is the first non-empty value, and "" only when
+		// every value is empty. Writing back what was read keeps the frame either way.
 		var tag = new Id3v2Tag (Id3v2Version.V24);
 		tag.Genre = "Rock";
 		tag.Frames.First (f => f.Id == "TCON").Text = "";
@@ -300,8 +335,10 @@ public class Id3v2WriteBackTests
 		Assert.AreEqual ("", tag.Frames.First (f => f.Id == "TCON").Text);
 
 		tag.Frames.First (f => f.Id == "TCON").Text = "\0Pop";
-		Assert.AreEqual ("", tag.Genre);
+		Assert.AreEqual ("Pop", tag.Genre);
 		tag.Genre = tag.Genre;
+		Assert.AreEqual ("\0Pop", tag.Frames.First (f => f.Id == "TCON").Text);
+		tag.Genre = "";
 		Assert.IsNull (tag.GetTextFrame ("TCON"));
 
 		tag.Genre = "Rock";
