@@ -38,6 +38,8 @@ public class Mp4QuickTimeKeysTests
 	[DataRow ("grouping", "Grouping")]
 	[DataRow ("lyrics", "Lyrics")]
 	[DataRow ("encoder", "EncoderSettings")]
+	[DataRow ("encoded_by", "EncodedBy")]
+	[DataRow ("publisher", "Publisher")]
 	[DataRow ("sort_name", "TitleSort")]
 	[DataRow ("sort_artist", "ArtistSort")]
 	[DataRow ("sort_album", "AlbumSort")]
@@ -213,10 +215,11 @@ public class Mp4QuickTimeKeysTests
 	[TestMethod]
 	[DataRow ("title", "Artist", "artist")]
 	[DataRow ("com.apple.quicktime.title", "Artist", "com.apple.quicktime.artist")]
-	[DataRow ("title", "Publisher", "com.apple.quicktime.publisher")]
+	[DataRow ("title", "Publisher", "publisher")]
+	[DataRow ("com.apple.quicktime.title", "Publisher", "com.apple.quicktime.publisher")]
+	[DataRow ("title", "Work", "udta:©wrk")]
 	[DataRow ("com.apple.quicktime.title", "AlbumArtist", "album_artist")]
 	[DataRow ("title", "Mood", "MOOD")]
-	[DataRow ("title", "Work", "udta:©wrk")]
 	public void NewField_GetsAKey (string existingKey, string property, string expectedKey)
 	{
 		var data = Keyed ([existingKey], TestBuilders.Mp4.CreateMdtaItem (1, "T"));
