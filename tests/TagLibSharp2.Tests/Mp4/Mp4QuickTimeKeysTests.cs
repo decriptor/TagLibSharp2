@@ -48,6 +48,7 @@ public class Mp4QuickTimeKeysTests
 	[DataRow ("category", "PodcastCategory")]
 	[DataRow ("keywords", "PodcastKeywords")]
 	[DataRow ("com.apple.quicktime.title", "Title")]
+	[DataRow ("com.apple.quicktime.displayname", "Title")]
 	[DataRow ("com.apple.quicktime.artist", "Artist")]
 	[DataRow ("com.apple.quicktime.album", "Album")]
 	[DataRow ("com.apple.quicktime.comment", "Comment")]
@@ -166,6 +167,43 @@ public class Mp4QuickTimeKeysTests
 
 		file.Tag.ContentRating = Mp4ContentRating.Explicit;
 		Assert.AreEqual (1, Count (file.Render (data).ToArray (), TestBuilders.Mp4.CreateMdtaItem (1, "1")));
+	}
+
+	// Index 0 is reserved and names no key.
+	[TestMethod]
+	public void ItemTypeZero_NamesNoKey ()
+	{
+		var zero = TestBuilders.Mp4.CreateMdtaItem (0, "Zero");
+		var data = Keyed (["title"], zero, TestBuilders.Mp4.CreateMdtaItem (1, "T"));
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("T", file.Title);
+		Assert.AreEqual (1, Count (file.Render (data).ToArray (), zero));
+	}
+
+	// A text key's value is UTF-8 (value type 1); other data is not that field's value.
+	[TestMethod]
+	[DataRow (0)]
+	[DataRow (2)]
+	[DataRow (Mp4AtomMapping.TypeInteger)]
+	public void TextKey_IgnoresNonUtf8Data (int typeIndicator)
+	{
+		var item = TestBuilders.Mp4.CreateMdtaItem (1, typeIndicator, Encoding.BigEndianUnicode.GetBytes ("X"));
+		var data = Keyed (["title"], item);
+		var file = Mp4File.Read (data).File!;
+		Assert.IsNull (file.Title);
+		Assert.AreEqual (1, Count (file.Render (data).ToArray (), item));
+	}
+
+	[TestMethod]
+	public void TextKey_FirstUtf8ValueWins ()
+	{
+		var payload = new byte[][] {
+			TestBuilders.Mp4.CreateBox ("data", [0, 0, 0, 0, 0, 0, 0, 0, 0x01]),
+			TestBuilders.Mp4.CreateBox ("data", [0, 0, 0, 1, 0, 0, 0, 0, (byte)'U'])
+		};
+		var item = TestBuilders.Mp4.CreateBox ("\0\0\0\u0001", [.. payload[0], .. payload[1]]);
+		var data = Keyed (["title"], item);
+		Assert.AreEqual ("U", Mp4File.Read (data).File!.Title);
 	}
 
 	[TestMethod]

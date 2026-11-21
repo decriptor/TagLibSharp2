@@ -606,7 +606,12 @@ public sealed class Mp4File : IMediaFile
 	/// <summary>
 	/// Removes all pictures from this file.
 	/// </summary>
-	public void RemovePictures () => Tag?.Clear ();
+	public void RemovePictures ()
+	{
+		// Only the covers: every other field stays.
+		if (Tag is not null)
+			Tag.Pictures = [];
+	}
 
 	/// <summary>
 	/// Clears all metadata from this file.
@@ -1028,9 +1033,12 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
-			// Standard atoms contain data sub-atoms. Names outside ContainerBoxes have no parsed
-			// children: an alias atom is read from its payload, and anything else is kept as it is.
-			var dataAtoms = Mp4AtomMapping.IsAliasAtom (atomId) ? DataAtomsIn (atomBox.Data.Span) : DataAtomsOf (atomBox);
+			// Standard atoms contain data sub-atoms. A mapped atom is read from its payload even when
+			// the box parser left it unparsed, so no property depends on ContainerBoxes; anything
+			// else is kept as it is.
+			var dataAtoms = atomBox.Children.Count == 0 && Mp4AtomMapping.IsTagAtom (atomId)
+				? DataAtomsIn (atomBox.Data.Span)
+				: DataAtomsOf (atomBox);
 			if (dataAtoms.Count > 0)
 				tag.SetAtoms (atomId, dataAtoms);
 			else

@@ -91,6 +91,7 @@ internal sealed class Mp4QuickTimeKeys
 	// Apple's keys, without the prefix.
 	static readonly Dictionary<string, string> AppleKeys = new (StringComparer.Ordinal) {
 		["title"] = Mp4AtomMapping.Title,
+		["displayname"] = Mp4AtomMapping.Title,
 		["artist"] = Mp4AtomMapping.Artist,
 		["album"] = Mp4AtomMapping.Album,
 		["comment"] = Mp4AtomMapping.Comment,
