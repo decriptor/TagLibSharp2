@@ -60,6 +60,12 @@ public readonly struct MatroskaFileReadResult : IEquatable<MatroskaFileReadResul
 public sealed class MatroskaFile : IMediaFile
 {
 	const ulong DefaultTimestampScale = 1_000_000;
+
+	/// <summary>
+	/// The most <see cref="Tracks"/> entries kept. RFC 9559 sets no maxOccurs on TrackEntry, so a crafted
+	/// file could hold millions; every entry still counts when the main audio and video track is chosen.
+	/// </summary>
+	internal const int MaxTracks = 4096;
 	IFileSystem? _sourceFileSystem;
 
 	MatroskaFile (MatroskaTag tag, TimeSpan? duration, TrackLayout layout)
@@ -591,7 +597,7 @@ public sealed class MatroskaFile : IMediaFile
 			else if (element.Id == MatroskaIds.TrackUid)
 				uid = EbmlReader.ReadUInt (payload);
 			else if (element.Id == MatroskaIds.FlagDefault)
-				isDefault = payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
+				isDefault = IsFlagSet (payload);
 			else if (element.Id == MatroskaIds.FlagEnabled)
 				isEnabled = IsFlagSet (payload);
 			else if (element.Id == MatroskaIds.CodecId)
@@ -624,7 +630,8 @@ public sealed class MatroskaFile : IMediaFile
 			rate = 8000;
 		var codec = CodecLabel (codecId, codecName, codecPrivate);
 		layout.Tracks ??= new List<MatroskaTrack> ();
-		layout.Tracks.Add (new MatroskaTrack (layout.Tracks.Count, number, uid, kind, codecId, isDefault, isEnabled));
+		if (layout.Tracks.Count < MaxTracks)
+			layout.Tracks.Add (new MatroskaTrack (layout.Tracks.Count, number, uid, kind, codecId, isDefault, isEnabled));
 		// FlagEnabled and FlagDefault both default to 1 (RFC 9559 §5.1.4.1.4, §5.1.4.1.5).
 		// An enabled track beats a disabled one; among those, a default track beats one that opted out.
 		// The first track of the best rank is kept. When every track is disabled, the disabled ones still rank.
@@ -914,7 +921,7 @@ public sealed class MatroskaFile : IMediaFile
 			else if (element.Id == MatroskaIds.TagBinary)
 				binary = payload.ToArray ();
 			else if (element.Id == MatroskaIds.TagDefault || element.Id == MatroskaIds.TagDefaultBogus)
-				isDefault = payload.Length == 0 || EbmlReader.ReadUInt (payload) != 0;
+				isDefault = IsFlagSet (payload);
 			else if (element.Id == MatroskaIds.SimpleTag)
 				children.Add (ReadSimpleTag (payload));
 			offset = element.End;
