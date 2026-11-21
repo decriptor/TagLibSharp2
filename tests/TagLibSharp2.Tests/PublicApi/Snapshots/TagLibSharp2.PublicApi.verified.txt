@@ -34,16 +34,21 @@
         public static readonly TagLibSharp2.Core.BinaryData FormMagic;
         public AiffFile() { }
         public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Aiff.AiffChunk> AllChunks { get; }
+        public string? Artist { get; set; }
+        public string? Comment { get; set; }
+        public string? Copyright { get; set; }
         public TagLibSharp2.Id3.Id3v2.Frames.PictureFrame? CoverArt { get; }
         public uint FileSize { get; }
         public string FormType { get; }
         public TagLibSharp2.Core.MediaFormat Format { get; }
         public bool HasPictures { get; }
+        public TagLibSharp2.Id3.Id3v2.Id3v2Tag? Id3v2Tag { get; set; }
         public bool IsValid { get; }
         public TagLibSharp2.Core.IPicture[] Pictures { get; }
         public TagLibSharp2.Aiff.AiffAudioProperties? Properties { get; }
         public string? SourcePath { get; }
-        public TagLibSharp2.Id3.Id3v2.Id3v2Tag? Tag { get; set; }
+        public TagLibSharp2.Core.Tag? Tag { get; }
+        public string? Title { get; set; }
         public void Dispose() { }
         public TagLibSharp2.Aiff.AiffChunk? GetChunk(string fourCC) { }
         public TagLibSharp2.Core.BinaryData Render() { }
@@ -2101,6 +2106,7 @@ namespace TagLibSharp2.Id3.Id3v2
         public override string? InitialKey { get; set; }
         public System.Collections.Generic.IReadOnlyList<TagLibSharp2.Id3.Id3v2.Frames.InvolvedPeopleFrame> InvolvedPeopleFrames { get; }
         public override bool IsCompilation { get; set; }
+        public override bool IsEmpty { get; }
         public override string? Isrc { get; set; }
         public override string? Language { get; set; }
         public override string? Lyrics { get; set; }

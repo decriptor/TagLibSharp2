@@ -5,6 +5,22 @@ All notable changes to TagLibSharp2 will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- **Changed**: `AiffFile.Tag` is now a get-only `Tag?` view over the ID3 chunk and the native AIFF text chunks (it was a settable `Id3v2Tag?`). Assign or read the ID3 tag through the new `AiffFile.Id3v2Tag` property; code that assigned `AiffFile.Tag` or used ID3-only members on it no longer compiles. `AiffFile.Tag.Render()` throws `NotSupportedException`, as the other combined views do; render the `AiffFile` instead
+- **Changed**: `Id3v2Tag.IsEmpty` is false when the tag holds any frame, including lyrics, ratings, pictures, comments, user text, URLs and private frames. It used to check only the basic fields, so WAV and AIFF saves dropped an ID3 chunk that held only, for example, a composer, a publisher or a BPM
+
+### Added
+
+- `AiffFile.Id3v2Tag`, and `AiffFile.Title`, `Artist`, `Comment` and `Copyright`
+
+### Fixed
+
+- AIFF and AIFF-C files return their native `ANNO`, `COMT` (marker id 0), `NAME`, `AUTH` and `(c) ` text through `Tag` when the ID3 tag has no value for that field (#127). Text is read as Mac OS Roman, or as UTF-8 when the whole value is valid UTF-8 with a multibyte sequence
+- Editing Title, Artist, Comment, Copyright or Performers on an AIFF file writes the value to the ID3 chunk and removes that field's native chunk on save, even when the new value equals the old one. `COMT` notes attached to other markers are kept byte for byte. An unchanged save leaves the native chunks as they are
+
 ## [0.6.0] - 2026-01-05
 
 ### Breaking Changes

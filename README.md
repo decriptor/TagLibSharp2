@@ -64,7 +64,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | Ogg Opus | Vorbis Comment | — | Native only |
 | Ogg FLAC | Vorbis Comment | — | Native only |
 | WAV | RIFF INFO | ID3v2, bext (BWF) | ID3v2 preferred |
-| AIFF | ID3 chunk | — | Native only |
+| AIFF | ID3 chunk | ANNO, COMT, NAME, AUTH, (c) (read) | ID3 preferred; edits write ID3 |
 | MP4/M4A | iTunes atoms (ilst) | — | Native only |
 | ASF/WMA | ASF Content Description | Extended Content Description | Native only |
 | DSF | ID3v2 | — | Native only |
@@ -143,7 +143,7 @@ Console.WriteLine($"WAV: {wav.Title} - {wav.AudioProperties?.Duration}");
 // AIFF files (read and write, includes audio properties)
 AiffFile.TryRead(new BinaryData(File.ReadAllBytes("song.aiff")), out var aiff);
 Console.WriteLine($"AIFF: {aiff.AudioProperties?.SampleRate}Hz");
-aiff.Tag = new Id3v2Tag { Title = "Updated Title" };
+aiff.Id3v2Tag = new Id3v2Tag { Title = "Updated Title" };
 aiff.SaveToFile("song.aiff");
 
 // Async support for high-throughput scenarios

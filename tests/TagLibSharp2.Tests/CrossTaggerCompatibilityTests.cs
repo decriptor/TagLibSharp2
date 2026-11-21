@@ -951,8 +951,8 @@ public sealed class CrossTaggerCompatibilityTests
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.IsNotNull (result.File);
 
-		// Set ID3v2 tag metadata (AIFF uses 'Tag' property for ID3v2)
-		result.File!.Tag = new Id3v2Tag {
+		// ID3 bytes are assigned through the typed property. Tag is the combined view.
+		result.File!.Id3v2Tag = new Id3v2Tag {
 			Title = "AIFF Title",
 			Artist = "AIFF Artist",
 			Album = "AIFF Album"
