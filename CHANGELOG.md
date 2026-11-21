@@ -44,7 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AviFile` reads and writes AVI files (RIFF `AVI ` form, including OpenDML `odml`/`indx` and `AVIX` forms). `MediaFile.Read` detects them as `MediaFormat.Avi`; WAV stays the `WAVE` form.
   - Properties: duration (OpenDML `dmlh` total frames when present, timed by the video stream's rate and scale), video width, height, frame rate and BITMAPINFOHEADER FourCC, and the first audio stream's WAVEFORMATEX sample rate, channels, bits and bitrate.
   - Tags: every `LIST INFO` in the first RIFF form (`InfoTag`) and an ID3v2 tag in an `ID32` chunk (`Id3v2Tag`). The unified `Tag` puts INFO first.
-  - Saving keeps the `movi` sample bytes. New tags reuse the tag and `JUNK` space before `movi`, so nothing moves; when they do not fit, the data moves and the RIFF size, absolute `idx1` offsets, `indx` super index entries and standard index base offsets are shifted. A save is refused, without writing, when an index cannot be verified first. An unchanged save writes the original bytes.
+  - Saving keeps the `movi` sample bytes. New tags reuse the tag and `JUNK` space between `hdrl` and `movi`, so nothing moves; when they do not fit, the data moves and the RIFF size, absolute `idx1` offsets, `indx` super index entries, and each standard index's base offset (or, when the base stays put, each entry whose data moved) are shifted. A save is refused, without writing, when an index cannot be verified first. A changed tag chunk cut off by the end of the file is turned into `JUNK`, so a removed value does not return. An unchanged save writes the original bytes.
+  - A file whose RIFF size is still the streaming placeholder 0xFFFFFFFF reports no duration: its frame counts were never filled in.
+  - INFO text in AVI is read as UTF-8 when the bytes are valid UTF-8 (ffmpeg's encoding), otherwise as Latin-1, and written as UTF-8. An unchanged field keeps its original bytes. WAV INFO is unchanged (Latin-1).
+  - Limits: a save loads the whole file (about the file's size in memory when nothing moves, twice that when data moves), so AVI files of 2 GiB or more cannot be saved yet. `MediaFile.Read` and `AviFile.ReadFromFile` read only the header and tag chunks.
+
+### Fixed
+
+- `MediaFile.Read` (path or stream) takes the long detection peek whenever the first 32 bytes match no magic, even when the file name has a known extension, so a mislabeled file (an MP3 named `.avi`, `.wav` or `.mkv`) is found by its content as `MediaFile.ReadFromData` already did.
 
 #### Raw AAC (ADTS/ADIF) Support
 - `AacFile` reads and writes raw AAC files (`.aac`): ADTS (ISO/IEC 13818-7 §6.2, MPEG-2 and MPEG-4) and ADIF (§6.1)
