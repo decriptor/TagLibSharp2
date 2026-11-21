@@ -1,4 +1,75 @@
-﻿namespace TagLibSharp2.Aiff
+﻿namespace TagLibSharp2.Aac
+{
+    public sealed class AacAudioProperties : TagLibSharp2.Core.IMediaProperties
+    {
+        public int Bitrate { get; }
+        public int BitsPerSample { get; }
+        public int Channels { get; }
+        public string Codec { get; }
+        public System.TimeSpan Duration { get; }
+        public long FrameCount { get; }
+        public int MpegVersion { get; }
+        public TagLibSharp2.Aac.AacProfile Profile { get; }
+        public int SampleRate { get; }
+        public TagLibSharp2.Aac.AacStreamFormat StreamFormat { get; }
+    }
+    public sealed class AacFile : System.IDisposable, TagLibSharp2.Core.IMediaFile
+    {
+        public TagLibSharp2.Ape.ApeTag? ApeTag { get; set; }
+        public System.TimeSpan? Duration { get; }
+        public TagLibSharp2.Core.MediaFormat Format { get; }
+        public bool HasApeTag { get; }
+        public bool HasId3v1Tag { get; }
+        public bool HasId3v2Tag { get; }
+        public TagLibSharp2.Id3.Id3v1Tag? Id3v1Tag { get; set; }
+        public int Id3v2Size { get; }
+        public TagLibSharp2.Id3.Id3v2.Id3v2Tag? Id3v2Tag { get; set; }
+        public TagLibSharp2.Aac.AacAudioProperties? Properties { get; }
+        public string? SourcePath { get; }
+        public TagLibSharp2.Core.Tag? Tag { get; }
+        public void Dispose() { }
+        public TagLibSharp2.Id3.Id3v2.Id3v2Tag EnsureId3v2Tag() { }
+        public TagLibSharp2.Core.BinaryData Render(System.ReadOnlySpan<byte> originalData) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, System.ReadOnlySpan<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, System.ReadOnlyMemory<byte> originalData, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool IsValidFormat(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Aac.AacFileReadResult Read(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Aac.AacFileReadResult ReadFromFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public static System.Threading.Tasks.Task<TagLibSharp2.Aac.AacFileReadResult> ReadFromFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool TryRead(System.ReadOnlySpan<byte> data, out TagLibSharp2.Aac.AacFile? file) { }
+    }
+    public readonly struct AacFileReadResult : System.IEquatable<TagLibSharp2.Aac.AacFileReadResult>
+    {
+        public string? Error { get; }
+        public TagLibSharp2.Aac.AacFile? File { get; }
+        public bool IsSuccess { get; }
+        public bool Equals(TagLibSharp2.Aac.AacFileReadResult other) { }
+        public override bool Equals(object? obj) { }
+        public override int GetHashCode() { }
+        public static TagLibSharp2.Aac.AacFileReadResult Failure(string error) { }
+        public static TagLibSharp2.Aac.AacFileReadResult Success(TagLibSharp2.Aac.AacFile file) { }
+        public static bool operator !=(TagLibSharp2.Aac.AacFileReadResult left, TagLibSharp2.Aac.AacFileReadResult right) { }
+        public static bool operator ==(TagLibSharp2.Aac.AacFileReadResult left, TagLibSharp2.Aac.AacFileReadResult right) { }
+    }
+    public enum AacProfile
+    {
+        Unknown = 0,
+        Main = 1,
+        LowComplexity = 2,
+        ScalableSampleRate = 3,
+        LongTermPrediction = 4,
+    }
+    public enum AacStreamFormat
+    {
+        Adts = 0,
+        Adif = 1,
+    }
+}
+namespace TagLibSharp2.Aiff
 {
     public class AiffAudioProperties : TagLibSharp2.Core.IMediaProperties
     {
@@ -1101,6 +1172,7 @@ namespace TagLibSharp2.Core
         Asf = 13,
         Musepack = 14,
         Matroska = 15,
+        Aac = 16,
     }
     [System.Flags]
     public enum MediaTypes

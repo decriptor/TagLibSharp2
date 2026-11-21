@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
@@ -896,6 +897,94 @@ public class MalformedInputTests
 
 		var result = ApeTag.Parse (data);
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
+	}
+
+	[TestMethod]
+	public void AacFile_EmptyInput_ReturnsFailure ()
+	{
+		Assert.IsFalse (AacFile.Read ([]).IsSuccess, "Empty input should return failure, not crash");
+		Assert.IsFalse (MediaFile.ReadFromData (Array.Empty<byte> (), "empty.aac").IsSuccess);
+	}
+
+	[TestMethod]
+	public void AacFile_TruncatedHeader_ReturnsFailure ()
+	{
+		var frame = Aac.AacTestBuilder.AdtsFrame ();
+		for (var cut = 0; cut < 7; cut++)
+			Assert.IsFalse (AacFile.Read (frame.AsSpan (0, cut)).IsSuccess, $"cut at {cut}");
+	}
+
+	[TestMethod]
+	public void AacFile_InvalidMagic_ReturnsFailure ()
+	{
+		Assert.IsFalse (AacFile.Read ("ADIX\0\0\0\0\0\0"u8).IsSuccess);
+		Assert.IsFalse (AacFile.Read (Aac.AacTestBuilder.Mp3Frames (4)).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AacFile_FrameLengthShorterThanTheHeader_ReturnsFailure ()
+	{
+		var frame = Aac.AacTestBuilder.AdtsFrame (64);
+		// aac_frame_length = 6, shorter than the 7-byte header.
+		frame[3] &= 0xFC;
+		frame[4] = 0;
+		frame[5] = (byte)((6 << 5) | 0x1F);
+		Assert.IsFalse (AacFile.Read (frame).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AacFile_OversizedClaim_DoesNotAllocate ()
+	{
+		// An ID3v2 size of 256 MB and an 8191-byte ADTS frame in a file of a few bytes.
+		byte[] id3 = [(byte)'I', (byte)'D', (byte)'3', 4, 0, 0, 0x7F, 0x7F, 0x7F, 0x7F, 0xFF, 0xF1, 0x50, 0x83, 0xFF, 0xFF, 0xFC];
+		Assert.IsFalse (AacFile.Read (id3).IsSuccess);
+		var frame = Aac.AacTestBuilder.AdtsFrame (8191).AsSpan (0, 20).ToArray ();
+		var result = AacFile.Read (frame);
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.AreEqual (0, result.File!.Properties!.FrameCount);
+	}
+
+	[TestMethod]
+	public void AacFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[4096];
+		for (var round = 0; round < 50; round++) {
+			random.NextBytes (data);
+			data[0] = 0xFF;
+			data[1] = 0xF1;
+			_ = AacFile.Read (data);
+			_ = MediaFile.ReadFromData (data, "noise.aac");
+		}
+	}
+
+	[TestMethod]
+	public void AacFile_AllZeros_ReturnsFailure ()
+	{
+		Assert.IsFalse (AacFile.Read (new byte[10_000]).IsSuccess);
+	}
+
+	[TestMethod]
+	public void AacFile_TruncatedAtEveryByte_DoesNotThrow ()
+	{
+		int[] front = [2, 1];
+		var data = Aac.AacTestBuilder.Concat (
+			Aac.AacTestBuilder.Id3v2Bytes ("Front"),
+			Aac.AacTestBuilder.Adts (6, length: 80, channelConfiguration: 0, crc: true, payload: Aac.AacTestBuilder.PceBlock (front)),
+			Aac.AacTestBuilder.ApeBytes ("Ape"),
+			Aac.AacTestBuilder.Id3v1Bytes ("Back"));
+		var adif = Aac.AacTestBuilder.Concat (Aac.AacTestBuilder.Adif (64_000, comment: "x", payloadBytes: 50), Aac.AacTestBuilder.Id3v1Bytes ("B"));
+
+		foreach (var whole in new[] { data, adif }) {
+			for (var cut = 0; cut <= whole.Length; cut++) {
+				var prefix = whole.AsSpan (0, cut).ToArray ();
+				var result = AacFile.Read (prefix);
+				if (result.IsSuccess)
+					_ = result.File!.Render (prefix);
+				_ = MediaFile.ReadFromData (prefix, "cut.aac");
+				_ = MediaFile.Read (new MemoryStream (prefix), "cut.aac");
+			}
+		}
 	}
 
 }

@@ -630,15 +630,18 @@ public sealed class Mp3File : IMediaFile
 	/// Checks if the data appears to be a valid MP3 file without fully parsing it.
 	/// </summary>
 	/// <param name="data">The data to check.</param>
-	/// <returns>True if the data starts with ID3 magic or a complete MPEG frame.</returns>
+	/// <returns>
+	/// True if the data starts with a complete MPEG frame, or with ID3 magic that is not followed by an
+	/// AAC stream (see <see cref="Aac.AacFile.IsValidFormat(ReadOnlySpan{byte})"/>).
+	/// </returns>
 	public static bool IsValidFormat (ReadOnlySpan<byte> data)
 	{
 		if (data.Length < 2)
 			return false;
 
-		// Check for ID3v2 magic "ID3"
+		// Check for ID3v2 magic "ID3". ADTS or ADIF after the tag is a raw AAC file.
 		if (data.Length >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3')
-			return true;
+			return !Aac.AacFile.IsValidFormat (data);
 
 		return MpegFrame.IsStartOfAudio (data);
 	}

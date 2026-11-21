@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Buffers.Binary;
+using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
@@ -38,6 +39,7 @@ namespace TagLibSharp2.Core;
 /// <item>DFF/DSDIFF (DSD Interchange File Format - ID3v2 metadata)</item>
 /// <item>WMA/ASF (Windows Media Audio - ASF extended content)</item>
 /// <item>Matroska/WebM (Matroska tags)</item>
+/// <item>AAC (raw ADTS or ADIF - ID3v2, APEv2, ID3v1)</item>
 /// </list>
 ///
 /// <para><b>Reading and Modifying Tags</b></para>
@@ -317,7 +319,7 @@ public static class MediaFile
 	static MediaFormat DetectOpenFormat (Stream stream, ReadOnlySpan<byte> peek, string? pathHint)
 	{
 		if (!IsRiffWave (peek))
-			return DetectFormat (peek, pathHint);
+			return DetectFormat (peek, pathHint, stream);
 
 		return RiffDataStartsWithWavPack (stream) ? MediaFormat.WavPack : MediaFormat.Wav;
 	}
@@ -420,6 +422,7 @@ public static class MediaFile
 			MediaFormat.Dsf => FromDsf (DsfFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Dff => FromDff (DffFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Asf => FromAsf (AsfFile.Read (stream, sourcePath, fileSystem)),
+			MediaFormat.Aac => FromAac (AacFile.Read (stream, sourcePath, fileSystem)),
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
@@ -529,6 +532,13 @@ public static class MediaFile
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Asf);
 	}
 
+	static MediaFileResult FromAac (AacFileReadResult result)
+	{
+		if (!result.IsSuccess || result.File is null)
+			return MediaFileResult.Failure (result.Error ?? "Failed to parse AAC file");
+		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Aac);
+	}
+
 	static MediaFileResult FromWav (WavFileReadResult result)
 	{
 		if (!result.IsSuccess || result.File is null)
@@ -569,6 +579,7 @@ public static class MediaFile
 			MediaFormat.Asf => OpenAsf (data),
 			MediaFormat.Musepack => OpenMusepack (data),
 			MediaFormat.Matroska => OpenMatroska (data),
+			MediaFormat.Aac => FromAac (AacFile.Read (data)),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 
@@ -581,7 +592,12 @@ public static class MediaFile
 	/// <param name="data">The file data (at least first 12 bytes).</param>
 	/// <param name="pathHint">Optional file path for extension fallback.</param>
 	/// <returns>The detected format.</returns>
-	public static MediaFormat DetectFormat (ReadOnlySpan<byte> data, string? pathHint = null)
+	public static MediaFormat DetectFormat (ReadOnlySpan<byte> data, string? pathHint = null) =>
+		DetectFormat (data, pathHint, stream: null);
+
+	// A seekable stream answers the AAC question from the whole file. The peek alone holds
+	// neither the bytes after a long ID3v2 tag nor the header after the first ADTS frame.
+	static MediaFormat DetectFormat (ReadOnlySpan<byte> data, string? pathHint, Stream? stream)
 	{
 		// Check magic bytes first
 		if (data.Length >= 4) {
@@ -658,11 +674,14 @@ public static class MediaFile
 		if (data.Length >= 16 && data.Slice (0, 16).SequenceEqual (AsfMagic))
 			return MediaFormat.Asf;
 
-		if (data.Length >= 3) {
-			// ID3v2: starts with "ID3"
-			if (data[0] == Id3Magic[0] && data[1] == Id3Magic[1] && data[2] == Id3Magic[2])
-				return MediaFormat.Mp3;
-		}
+		// ID3v2: starts with "ID3". The stream after the tag decides: an ADTS sync (layer '00') or
+		// "ADIF" is AAC (ISO/IEC 13818-7 §6.1, §6.2). Anything else stays MP3.
+		if (data.Length >= 3 && data[0] == Id3Magic[0] && data[1] == Id3Magic[1] && data[2] == Id3Magic[2])
+			return IsAac (data, stream) ? MediaFormat.Aac : MediaFormat.Mp3;
+
+		// Bare ADTS or ADIF. An MPEG audio sync has layer bits other than '00' and falls through.
+		if (IsAac (data, stream))
+			return MediaFormat.Aac;
 
 		// A bare sync (0xFF plus the top 3 bits) also matches a UTF-16 LE BOM (FF FE).
 		if (MpegFrame.IsStartOfAudio (data))
@@ -687,12 +706,16 @@ public static class MediaFile
 				".WMA" or ".WMV" or ".ASF" => MediaFormat.Asf,
 				".MPC" or ".MP+" or ".MPP" => MediaFormat.Musepack,
 				".MKV" or ".MKA" or ".MKS" or ".MK3D" or ".WEBM" => MediaFormat.Matroska,
+				".AAC" => MediaFormat.Aac,
 				_ => MediaFormat.Unknown
 			};
 		}
 
 		return MediaFormat.Unknown;
 	}
+
+	static bool IsAac (ReadOnlySpan<byte> data, Stream? stream) =>
+		stream is null ? AacFile.IsValidFormat (data) : AacFile.IsValidFormat (stream);
 
 	/// <summary>
 	/// Detects the specific codec inside an Ogg container by examining the first packet.
@@ -1030,5 +1053,10 @@ public enum MediaFormat
 	/// <summary>
 	/// Matroska and WebM (.mkv, .mka, .mks, .mk3d, .webm).
 	/// </summary>
-	Matroska
+	Matroska,
+
+	/// <summary>
+	/// Raw AAC in an ADTS or ADIF stream (.aac). AAC inside MP4 is <see cref="Mp4"/>.
+	/// </summary>
+	Aac
 }
