@@ -815,7 +815,9 @@ public sealed class MatroskaFile : IMediaFile
 			var payload = body.Slice (element.DataOffset, (int)element.DataLength);
 			if (element.Id == MatroskaIds.TargetTypeValue) {
 				block.HasTargetTypeValue = true;
-				block.Level = payload.Length == 0 ? 0 : EbmlReader.ReadUInt (payload);
+				// A missing TargetTypeValue is not an explicit 50.
+				// An empty element is present and means the spec default, 50.
+				block.Level = payload.Length == 0 ? 50 : EbmlReader.ReadUInt (payload);
 			} else {
 				block.KeepTarget (body.Slice (element.Position, element.End - element.Position).ToArray ());
 				if (element.Id == MatroskaIds.TagChapterUid)
