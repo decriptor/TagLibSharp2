@@ -22,6 +22,7 @@ internal static class Mp4AtomMapping
 	public const string Artist = "©ART";
 	public const string Album = "©alb";
 	public const string Genre = "©gen";
+	public const string GenreId3 = "gnre";
 	public const string Year = "©day";
 	public const string Comment = "©cmt";
 	public const string Composer = "©wrt";
@@ -29,6 +30,9 @@ internal static class Mp4AtomMapping
 	public const string Lyrics = "©lyr";
 	public const string Encoder = "©too";
 	public const string Copyright = "cprt";
+
+	// Older files store the same text in ©cpy. cprt wins when both are present.
+	public const string CopyrightAlias = "©cpy";
 
 	// Album artist (not © prefixed)
 	public const string AlbumArtist = "aART";
