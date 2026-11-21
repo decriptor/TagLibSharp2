@@ -7,9 +7,10 @@ using TagLibSharp2.Id3.Id3v2;
 namespace TagLibSharp2.Aiff;
 
 /// <summary>
-/// Read view over an AIFF file's ID3 tag and native text chunks.
+/// View over an AIFF file's ID3 tag and native text chunks.
 /// Comment, Title, Artist, Copyright, and Performers prefer ID3 and fall back
-/// to native text. Every other field is forwarded to the ID3 tag.
+/// to native text. Every other field is forwarded to the ID3 tag. Every set
+/// writes the ID3 tag; an edited native field's chunks are dropped on save.
 /// </summary>
 sealed class AiffTag : Tag
 {
