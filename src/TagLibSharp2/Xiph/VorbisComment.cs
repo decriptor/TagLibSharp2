@@ -933,23 +933,25 @@ public sealed class VorbisComment : Tag
 
 	/// <summary>
 	/// <see cref="Tag.IsWriteBack(string?, string?)"/>, except that an empty string is a write-back only when
-	/// no field named in <paramref name="names"/> holds text. The getter returns "" for an empty first field
+	/// no field named <paramref name="name"/> holds text. The getter returns "" for an empty first field
 	/// even when a later one has text, and "" over such fields still clears them.
 	/// </summary>
-	bool IsFieldWriteBack (string? value, string? current, params string[] names)
+	bool IsFieldWriteBack (string? value, string? current, string name) =>
+		IsWriteBack (value, current) && (value!.Length != 0 || !HasText (name));
+
+	/// <summary>
+	/// True when any field with one of these names has a non-empty value.
+	/// </summary>
+	bool HasText (params string[] names)
 	{
-		if (!IsWriteBack (value, current))
-			return false;
-		if (value!.Length != 0)
-			return true;
 		foreach (var name in names) {
 			var upper = name.ToUpperInvariant ();
 			for (var i = 0; i < _fields.Count; i++) {
 				if (_fields[i].Name == upper && _fields[i].Value.Length != 0)
-					return false;
+					return true;
 			}
 		}
-		return true;
+		return false;
 	}
 
 	/// <summary>
@@ -977,8 +979,13 @@ public sealed class VorbisComment : Tag
 	/// </summary>
 	void SetValueWithFallback (string name, string? value, string fallback, Func<string, string?> toFallback)
 	{
-		if (IsFieldWriteBack (value, GetValueOrFallback (name, fallback), name, fallback))
+		if (IsValueRead (value, GetValueOrFallback (name, fallback)) && (value!.Length != 0 || !HasText (name, fallback))) {
+			// The value read changes nothing, in a copy too: the fallback is its own field (Picard keeps
+			// MOVEMENTNAME beside a MOVEMENT number). A copy still drops the other values of name.
+			if (IsCopying && GetValues (name).Count > 1 && GetValue (name) == value)
+				SetValue (name, value);
 			return;
+		}
 
 		if (string.IsNullOrEmpty (value)) {
 			RemoveAll (fallback);

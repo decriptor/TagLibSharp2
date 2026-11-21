@@ -180,6 +180,41 @@ public class TagCopyReplacesListTests
 	}
 
 	[TestMethod]
+	public void Copy_ValueEqualToTarget_KeepsTheTargetsFallbackFields ()
+	{
+		// MOVEMENTNAME, ORIGINALYEAR, and APE Date are fields of their own beside the value the getter
+		// reads. A copy of that same value leaves them, and drops only other values of the primary field.
+		static VorbisComment Picard ()
+		{
+			var c = new VorbisComment ("picard");
+			c.AddField ("MOVEMENT", "2");
+			c.AddField ("MOVEMENTNAME", "Allegro");
+			c.AddField ("ORIGINALDATE", "1969-09-26");
+			c.AddField ("ORIGINALYEAR", "1969");
+			return c;
+		}
+
+		var target = Picard ();
+		target.AddField ("MOVEMENT", "X");
+		Picard ().CopyTo (target, TagCopyOptions.All);
+		Assert.AreEqual ("2", string.Join ("|", target.GetValues ("MOVEMENT")));
+		Assert.AreEqual ("Allegro", string.Join ("|", target.GetValues ("MOVEMENTNAME")));
+		Assert.AreEqual ("1969", string.Join ("|", target.GetValues ("ORIGINALYEAR")));
+
+		var nameOnly = new VorbisComment ("t");
+		nameOnly.AddField ("MOVEMENTNAME", "Allegro");
+		new VorbisComment ("s") { Movement = "Allegro" }.CopyTo (nameOnly, TagCopyOptions.All);
+		Assert.HasCount (0, nameOnly.GetValues ("MOVEMENT"));
+		Assert.AreEqual ("Allegro", nameOnly.GetValue ("MOVEMENTNAME"));
+
+		var ape = new ApeTag ();
+		ape.SetValue ("Year", "2001");
+		ape.SetValue ("Date", "2001-05-03");
+		new ApeTag { Year = "2001" }.CopyTo (ape, TagCopyOptions.Basic);
+		Assert.AreEqual ("2001-05-03", ape.GetValue ("Date"));
+	}
+
+	[TestMethod]
 	public void WriteBack_AfterACopy_IsANoOpAgain ()
 	{
 		var target = new Id3v2Tag (Id3v2Version.V24);
