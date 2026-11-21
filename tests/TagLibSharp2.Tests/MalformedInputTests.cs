@@ -8,9 +8,11 @@ using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
 using TagLibSharp2.Id3;
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Mpeg;
 using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Riff;
+using TagLibSharp2.Tests.Mpeg;
 using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
 
@@ -898,4 +900,151 @@ public class MalformedInputTests
 		Assert.IsFalse (result.IsSuccess, "Random data should fail without crashing");
 	}
 
+	// ═══════════════════════════════════════════════════════════════
+	// MPEG Program Stream Malformed Input Tests
+	// ═══════════════════════════════════════════════════════════════
+
+	[TestMethod]
+	public void MpegPsFile_EmptyInput_ReturnsFailure ()
+	{
+		Assert.IsFalse (MpegPsFile.Read ([]).IsSuccess);
+	}
+
+	[TestMethod]
+	public void MpegPsFile_TruncatedPackHeader_ReturnsFailure ()
+	{
+		var pack = MpegPsTestBuilder.PackHeader1 (0);
+		for (var length = 0; length < pack.Length; length++)
+			Assert.IsFalse (MpegPsFile.Read (pack.AsSpan (0, length)).IsSuccess, $"length {length}");
+	}
+
+	[TestMethod]
+	public void MpegPsFile_AllZeros_ReturnsFailure ()
+	{
+		Assert.IsFalse (MpegPsFile.Read (new byte[1000]).IsSuccess);
+	}
+
+	[TestMethod]
+	public void MpegPsFile_RandomData_DoesNotCrash ()
+	{
+		var random = new Random (42);
+		var data = new byte[10000];
+		random.NextBytes (data);
+
+		Assert.IsFalse (MpegPsFile.Read (data).IsSuccess);
+	}
+
+	[TestMethod]
+	public void MpegPsFile_OversizedId3v2Claim_DoesNotAllocate ()
+	{
+		// A syncsafe size of 256 MiB on a 20-byte file.
+		var data = new byte[] { 0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x7F, 0x7F, 0x7F, 0x7F, 0x00, 0x00, 0x01, 0xBA, 0x21, 0x00, 0x01, 0x00, 0x01, 0x80 };
+
+		var result = MpegPsFile.Read (data);
+		var streamed = MediaFile.Read (new MemoryStream (data), "clip.mpg");
+
+		Assert.IsFalse (result.IsSuccess);
+		// The tag claims the whole file, so nothing follows it and the MP3 reader keeps it.
+		Assert.AreNotEqual (MediaFormat.MpegPs, streamed.Format);
+	}
+
+	[TestMethod]
+	public void MpegPsFile_EveryTruncation_DoesNotThrow ()
+	{
+		var program = MpegPsTestBuilder.ProgramStream (new MpegPsTestBuilder.Options { VideoFrames = 4, VideoFrameBytes = 20 });
+		var dvd = MpegPsTestBuilder.ProgramStream (new MpegPsTestBuilder.Options {
+			Mpeg2 = true,
+			VideoFrames = 4,
+			VideoFrameBytes = 20,
+			AudioKind = MpegPsTestBuilder.Audio.Ac3,
+			PackStuffing = 2
+		});
+		var elementary = MpegPsTestBuilder.ElementaryStream (new MpegPsTestBuilder.Options { Mpeg2 = true, VideoFrames = 6, VideoFrameBytes = 16 }, gopLength: 2);
+		var tag = new Id3v2Tag { Title = "t" }.Render ().ToArray ();
+		var tagged = MpegPsTestBuilder.Concat (tag, program);
+
+		foreach (var data in new[] { program, dvd, elementary, tagged }) {
+			for (var length = 0; length <= data.Length; length++) {
+				var slice = data.AsSpan (0, length);
+				_ = MpegPsFile.Read (slice);
+				_ = MediaFile.ReadFromData (slice.ToArray (), "clip.mpg");
+			}
+		}
+	}
+
+	[TestMethod]
+	public void MpegPsFile_EveryCorruptedByte_DoesNotThrow ()
+	{
+		var original = MpegPsTestBuilder.ProgramStream (new MpegPsTestBuilder.Options {
+			Mpeg2 = true,
+			VideoFrames = 3,
+			VideoFrameBytes = 16,
+			AudioKind = MpegPsTestBuilder.Audio.Lpcm
+		});
+		foreach (var value in new byte[] { 0x00, 0x01, 0xBA, 0xFF }) {
+			for (var i = 0; i < original.Length; i++) {
+				var data = (byte[])original.Clone ();
+				data[i] = value;
+				var result = MpegPsFile.Read (data);
+				if (result.IsSuccess)
+					_ = result.File!.Render (data);
+			}
+		}
+	}
+
+	[TestMethod]
+	public void MpegPsFile_PacketLengthsPastTheEnd_AreBounded ()
+	{
+		// A PES packet that claims 65535 bytes and a PES header that claims 255 bytes.
+		var data = MpegPsTestBuilder.Concat (
+			MpegPsTestBuilder.PackHeader2 (0),
+			[0x00, 0x00, 0x01, 0xE0, 0xFF, 0xFF, 0x80, 0x80, 0xFF, 0x21, 0x00, 0x01, 0x00, 0x01]);
+
+		var result = MpegPsFile.Read (data);
+
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsNull (result.File!.VideoProperties);
+	}
+
+	[TestMethod]
+	public void MpegPsFile_StartCodeFlood_IsLinear ()
+	{
+		// Four MiB of pack start codes whose headers do not parse, after one valid pack.
+		var flood = new byte[MpegPsScannerWindow];
+		for (var i = 0; i + 4 <= flood.Length; i += 4) {
+			flood[i + 2] = 0x01;
+			flood[i + 3] = 0xBA;
+		}
+
+		var data = MpegPsTestBuilder.Concat (MpegPsTestBuilder.PackHeader1 (0), flood);
+		var watch = System.Diagnostics.Stopwatch.StartNew ();
+
+		var result = MpegPsFile.Read (data);
+
+		watch.Stop ();
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsTrue (watch.Elapsed < TimeSpan.FromSeconds (5), watch.Elapsed.ToString ());
+	}
+
+	const int MpegPsScannerWindow = 4 * 1024 * 1024;
+
+	[TestMethod]
+	public void MpegPsFile_SequenceAndGopFlood_IsLinear ()
+	{
+		var header = MpegPsTestBuilder.SequenceHeader (new MpegPsTestBuilder.Options ());
+		var flood = new byte[MpegPsScannerWindow];
+		for (var i = 0; i + 4 <= flood.Length; i += 4) {
+			flood[i + 2] = 0x01;
+			flood[i + 3] = (byte)((i / 4 % 2) == 0 ? 0xB8 : 0x00);
+		}
+
+		var data = MpegPsTestBuilder.Concat (header, flood);
+		var watch = System.Diagnostics.Stopwatch.StartNew ();
+
+		var result = MpegPsFile.Read (data);
+
+		watch.Stop ();
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		Assert.IsTrue (watch.Elapsed < TimeSpan.FromSeconds (5), watch.Elapsed.ToString ());
+	}
 }
