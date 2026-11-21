@@ -342,6 +342,7 @@ public class OggVorbisFileTests
 	}
 
 	[TestMethod]
+	[DataRow (0x01)]
 	[DataRow (0x03)]
 	[DataRow (0x81)]
 	[DataRow (0xFF)]
