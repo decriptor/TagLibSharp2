@@ -27,6 +27,7 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
   - Audio: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV (RIFF INFO/ID3v2), AIFF (ID3v2), MP4/M4A (AAC/ALAC), raw AAC (ADTS/ADIF, ID3v2/APEv2/ID3v1), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack
   - Matroska/WebM (`.mkv`, `.mka`, `.mks`, `.mk3d`, `.webm`): tags, chapters (editions and nested chapter atoms), duration, audio and video properties, tracks, and pictures. Tag values, chapters, pictures, and each track's enabled flag can be saved. A disabled track is not picked as the main audio or video track. Pictures are image attachments: a new front cover is written as `cover.jpg` or `cover.png` (another image type keeps its own extension, such as `cover.gif`), and fonts and other attachments are kept. WebM has no attachments, so a save that would add a picture to a WebM file fails.
   - MPEG program streams (`.mpg`, `.mpeg`, `.mpe`, `.vob`) and MPEG video elementary streams (`.mpv`, `.m1v`, `.m2v`): duration, MPEG-1/MPEG-2 video properties, and the first audio stream (MPEG audio, AC-3, LPCM). ID3v2 in front of the stream, an ID3v2.4 tag appended after it (the layout TagLib# writes), and ID3v1 are read and written in place; the stream bytes are not changed.
+  - Audible `.aa`: the text dictionary (title, author, narrator, dates, descriptions, and every other key by name), the cover image, and the duration. Dictionary edits can be saved; the encrypted audio, its DRM keys, and the cover are copied unchanged. Audible `.aax` is MPEG-4 and opens as MP4/M4A, with its audiobook atoms (narrator, short and parent titles, product IDs, release date) as named properties. Decryption is out of scope.
 
 ## Format Support Matrix
 
@@ -76,6 +77,8 @@ See the [Migration Guide](docs/MIGRATION-FROM-TAGLIB.md) for detailed comparison
 | Musepack | APE tag | — | Native only |
 | MPEG program stream / video elementary stream | — (ISO/IEC 11172-1 and 13818-1 define none) | ID3v2 (in front, or ID3v2.4 appended after the stream), ID3v1 (at the end) | ID3v2 preferred (an appended tag replaces a prepended one, ID3v2.4 §5) |
 | AAC (ADTS/ADIF) | ID3v2 | APEv2, ID3v1 | ID3v2, then APEv2, then ID3v1 |
+| Audible .aa | Audible dictionary (chunk 2) | — | Native only |
+| Audible .aax | iTunes atoms (ilst) | — | Native only |
 
 ## Installation
 

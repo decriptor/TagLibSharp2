@@ -573,6 +573,28 @@ if (result.IsSuccess)
 }
 ```
 
+### Audible Files (.aa, .aax)
+
+An `.aa` file has its own container with a key/value text dictionary. `.aax` is MPEG-4 and opens as `Mp4File`.
+
+```csharp
+var result = AudibleFile.ReadFromFile("book.aa");
+if (result.IsSuccess)
+{
+    var aa = result.File!;
+    Console.WriteLine($"{aa.Tag.Title} by {aa.Tag.Author}, read by {aa.Tag.Narrator}");
+    Console.WriteLine($"Duration: {aa.Properties.Duration}, codec: {aa.Tag.Codec}");
+
+    // Any dictionary key by name. DRM keys (codec, HeaderSeed, HeaderKey, EncryptedBlocks) cannot be changed.
+    Console.WriteLine(aa.Tag.GetValue("pub_date_start"));
+    aa.Tag.Narrator = "New Narrator";
+    aa.SaveToFile();   // rewrites the dictionary; the encrypted audio is copied unchanged
+}
+
+var aax = Mp4File.ReadFromFile("book.aax").File!;
+Console.WriteLine($"{aax.Narrator} / {aax.ProductId} / {aax.ReleaseDate}");
+```
+
 ### Musepack Files
 
 Musepack (.mpc) is a lossy audio format with excellent quality at low bitrates. It uses APE tags.
@@ -687,7 +709,7 @@ if (result.IsSuccess)
 
 TagLibSharp2 includes several features not available in TagLib#:
 
-- **Automatic format detection**: `MediaFile.Read()` auto-detects 17 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A, ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, Matroska/WebM, MPEG program streams / video elementary streams, and raw AAC (ADTS/ADIF)
+- **Automatic format detection**: `MediaFile.Read()` auto-detects 18 formats: MP3, FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A (including Audible .aax), ASF/WMA, DSF, DFF, WavPack, Monkey's Audio, Musepack, Matroska/WebM, MPEG program streams / video elementary streams, raw AAC (ADTS/ADIF), and Audible .aa
 - **DSD audio support**: Native DSF and DFF format support for high-resolution DSD audio
 - **Lossless format breadth**: WavPack and Monkey's Audio support with APE tag handling
 - **Async I/O**: Full async support throughout the API with cancellation token support
