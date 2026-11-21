@@ -207,6 +207,62 @@ public class Mp4TagTests
 	}
 
 	[TestMethod]
+	public void TitleOnlySave_KeepsImplicitJpegCoverType ()
+	{
+		var jpegData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+		var data = TestBuilders.Mp4.CreateWithCoverArt (jpegData, typeIndicator: 0);
+		var result = Mp4File.Read (data);
+		Assert.IsTrue (result.IsSuccess, result.Error);
+		var file = result.File!;
+
+		file.Title = "Retitled";
+
+		var rendered = file.Render (data);
+		Assert.AreEqual (0, CoverTypeIndicator (rendered.Span));
+		Assert.IsTrue (CoverPayload (rendered.Span).StartsWith (jpegData));
+
+		var reread = Mp4File.Read (rendered.Span);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual ("Retitled", reread.File!.Title);
+		CollectionAssert.AreEqual (jpegData, reread.File.Pictures[0].PictureData.ToArray ());
+	}
+
+	[TestMethod]
+	public void NewJpegCover_WritesType13 ()
+	{
+		var data = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		var result = Mp4File.Read (data);
+		var file = result.File!;
+		file.AddPicture (new Mp4Picture (new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }, isJpeg: true));
+
+		var rendered = file.Render (data);
+		Assert.AreEqual (Mp4AtomMapping.TypeJpeg, CoverTypeIndicator (rendered.Span));
+	}
+
+	static int CoverTypeIndicator (ReadOnlySpan<byte> file)
+	{
+		var dataAt = CovrDataOffset (file);
+		return file[dataAt + 7];
+	}
+
+	static ReadOnlySpan<byte> CoverPayload (ReadOnlySpan<byte> file)
+	{
+		var dataAt = CovrDataOffset (file);
+		return file.Slice (dataAt + 12);
+	}
+
+	static int CovrDataOffset (ReadOnlySpan<byte> file)
+	{
+		var covr = file.IndexOf ("covr"u8);
+		Assert.IsTrue (covr >= 4, "covr missing");
+		var size = (file[covr - 4] << 24) | (file[covr - 3] << 16) | (file[covr - 2] << 8) | file[covr - 1];
+		var box = file.Slice (covr - 4, size);
+		var data = box.IndexOf ("data"u8);
+		Assert.IsTrue (data >= 4, "covr data atom missing");
+		return covr - 4 + data;
+	}
+
+	[TestMethod]
 	public void ReadFreeformTag_DashDashDash_ReturnsValue ()
 	{
 		var data = TestBuilders.Mp4.CreateWithFreeformTag ("com.apple.iTunes", "CUSTOM", "Custom Value");
