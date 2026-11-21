@@ -50,6 +50,10 @@ static class MatroskaIds
 	public const ulong CuePoint = 0xBB;
 	public const ulong CueTrackPositions = 0xB7;
 	public const ulong CueClusterPosition = 0xF1;
+	public const ulong CueCodecState = 0xEA;
+	public const ulong CueReference = 0xDB;
+	public const ulong CueRefCluster = 0x97;
+	public const ulong CueRefCodecState = 0xEB;
 	public const ulong Attachments = 0x1941A469;
 	public const ulong Chapters = 0x1043A770;
 	public const ulong Tags = 0x1254C367;

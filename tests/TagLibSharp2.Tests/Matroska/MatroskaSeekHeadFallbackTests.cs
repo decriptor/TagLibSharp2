@@ -40,6 +40,7 @@ public partial class MatroskaFileTests
 
 		var bytes = Save (parsed, original);
 
+		AssertSeeksPreserved (original, bytes);
 		AssertEverySeekAndCue (bytes);
 		var listed = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Tags);
 		Assert.AreEqual (MatroskaIds.Tags, listed.Id);
@@ -91,10 +92,10 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_MoveThatWouldDropASecondSeekHeadEntry_IsNotUsed ()
+	public void Save_Move_WidensASecondSeekHeadEntry ()
 	{
-		// The second SeekHead's one-byte Cluster Seek cannot hold the moved offset and has no room
-		// to widen, so the move is refused and the tags take the old path.
+		// The second SeekHead's one-byte Cluster Seek cannot hold the moved offset. That SeekHead is
+		// written again with a wider Seek, so the move goes ahead and no entry is lost.
 		var info = Master (0x1549A966, Element (0x7BA9, "I"u8));
 		var tags = Tags (Tag (30, Simple ("TITLE", "Old")));
 		var firstProbe = Master (0x114D9B74, Concat (SeekEntry (MatroskaIds.Info, 1), SeekEntry (MatroskaIds.Tags, 1), SeekEntry (MatroskaIds.SeekHead, 1)));
@@ -117,8 +118,13 @@ public partial class MatroskaFileTests
 
 		var bytes = Save (parsed, original);
 
-		Assert.AreEqual (IndexOf (original, cluster) - SegmentBodyAt (original), IndexOf (bytes, cluster) - SegmentBodyAt (bytes));
-		Assert.IsTrue (ReadSeeks (bytes).Exists (entry => entry.Id == MatroskaIds.Cluster && IsElementAt (bytes, entry.Position, MatroskaIds.Cluster)));
+		AssertSeeksPreserved (original, bytes);
+		AssertEverySeekAndCue (bytes);
+		var clusterSeek = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Cluster);
+		Assert.IsTrue (clusterSeek.Position > 255, "the cluster moved past a one-byte position");
+		Assert.IsTrue (IsElementAt (bytes, clusterSeek.Position, MatroskaIds.Cluster));
+		var tagsSeek = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Tags);
+		Assert.IsTrue (tagsSeek.Position < clusterSeek.Position, "the Tags moved before the cluster");
 		Assert.AreEqual (new string ('S', 120), MatroskaFile.Read (bytes).File!.Tag.Title);
 	}
 
@@ -152,6 +158,7 @@ public partial class MatroskaFileTests
 
 		Assert.IsTrue (MatroskaRewrite.TryGrow (original, grown, out var bytes, out var error), error);
 
+		AssertSeeksPreserved (original, bytes);
 		AssertEverySeekAndCue (bytes);
 		Assert.IsTrue (EveryCrcMatches (bytes));
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (entry) >= 0);
