@@ -127,6 +127,7 @@ public sealed class ApeTag : Tag
 		public const string Work = "WORK";
 		public const string Movement = "MOVEMENT";
 		public const string MovementNumber = "MOVEMENTNUMBER";
+		public const string MovementName = "MOVEMENTNAME";
 		public const string MovementTotal = "MOVEMENTTOTAL";
 		public const string Grouping = "Grouping";
 		public const string Remixer = "MixArtist";
@@ -674,24 +675,50 @@ public sealed class ApeTag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Uses the MOVEMENT item. MusicBrainz Picard stores the name in MOVEMENTNAME and the number in
+	/// MOVEMENT (https://picard-docs.musicbrainz.org/en/v3.0/appendices/tag_mapping.html). When MOVEMENT
+	/// is a number beside a MOVEMENTNAME, the name is read from and written to MOVEMENTNAME only, and
+	/// MOVEMENT is left to <see cref="MovementNumber"/>.
+	/// </remarks>
 	public override string? Movement {
-		get => GetValue (Keys.Movement);
-		set => SetOrRemoveProperty (Keys.Movement, value, Movement);
+		get => HasPicardMovement ? GetValue (Keys.MovementName) : GetValue (Keys.Movement);
+		set {
+			if (HasPicardMovement)
+				SetOrRemoveProperty (Keys.MovementName, value, Movement);
+			else
+				SetOrRemoveProperty (Keys.Movement, value, Movement);
+		}
+	}
+
+	/// <summary>
+	/// True for the Picard layout: a non-empty MOVEMENTNAME beside a numeric MOVEMENT.
+	/// </summary>
+	bool HasPicardMovement => !string.IsNullOrEmpty (GetValue (Keys.MovementName)) && ParseMovementNumber (Keys.Movement) is not null;
+
+	uint? ParseMovementNumber (string key)
+	{
+		var value = GetValue (key);
+		if (string.IsNullOrEmpty (value))
+			return null;
+		return uint.TryParse (value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num) ? num : null;
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Uses the MOVEMENTNUMBER item. In the Picard layout (see <see cref="Movement"/>) without one,
+	/// the number is read from and written to MOVEMENT, and clearing it removes MOVEMENT.
+	/// </remarks>
 	public override uint? MovementNumber {
-		get {
-			var value = GetValue (Keys.MovementNumber);
-			if (string.IsNullOrEmpty (value))
-				return null;
-			return uint.TryParse (value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num) ? num : null;
-		}
+		get => ParseMovementNumber (Keys.MovementNumber) ?? (HasPicardMovement ? ParseMovementNumber (Keys.Movement) : null);
 		set {
+			if (IsWriteBack (value, MovementNumber))
+				return;
+			var key = HasPicardMovement && !_items.ContainsKey (Keys.MovementNumber) ? Keys.Movement : Keys.MovementNumber;
 			if (value.HasValue)
-				SetValue (Keys.MovementNumber, value.Value.ToString (CultureInfo.InvariantCulture));
+				SetValue (key, value.Value.ToString (CultureInfo.InvariantCulture));
 			else
-				_items.Remove (Keys.MovementNumber);
+				_items.Remove (key);
 		}
 	}
 

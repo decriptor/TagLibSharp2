@@ -1189,10 +1189,16 @@ public abstract class Tag
 	/// <exception cref="ArgumentNullException">Thrown if target is null.</exception>
 	/// <remarks>
 	/// <para>
-	/// Only non-null values are copied. The target tag's existing values are overwritten
-	/// for any property that has a non-null value in the source. A source value that equals the
-	/// target's first value still replaces the target's list: the setters' write-back no-op does not
-	/// apply during a copy.
+	/// Only non-null values are copied. Every source value is read before any is written. The target's
+	/// existing values are overwritten for any property that has a non-null value in the source, and a
+	/// source value that equals the target's first value still replaces the target's list; a list the
+	/// target already holds is left as it is.
+	/// </para>
+	/// <para>
+	/// When the source is the target or reads from it (a file's combined <c>Tag</c> copied into one of its
+	/// own tags), the copy only adds values the target does not show. A fallback field of its own beside a
+	/// value equal to the copied one stays: Vorbis MOVEMENTNAME or ORIGINALYEAR, APE Date, and an
+	/// ID3v2.3 TDOR beside TORY.
 	/// </para>
 	/// <para>
 	/// This is useful for converting between tag formats or synchronizing metadata
@@ -1230,196 +1236,237 @@ public abstract class Tag
 		ArgumentNullException.ThrowIfNull (target);
 #endif
 
-		// A copy makes the target hold the source's value, so the write-back no-op in the setters
-		// (IsWriteBack) is off for the duration, also for tags a wrapper target forwards to.
+		if (ReferenceEquals (this, target))
+			return;
+
+		var writes = SnapshotCopyWrites (options);
+
+		// A source that reads from the target, or a target that forwards to the source, already shows
+		// the target's values. Each is then a write-back and changes nothing (IsWriteBack), so only
+		// values the target does not hold arrive and its lists stay whole.
+		if (ReadsFrom (target) || target.ReadsFrom (this)) {
+			foreach (var write in writes)
+				write (target);
+			return;
+		}
+
+		// Otherwise a copy makes the target hold the source's value, so the write-back no-op in the
+		// setters is off for the duration, also for tags a wrapper target forwards to.
 		t_copyDepth++;
 		try {
-			CopyValuesTo (target, options);
+			foreach (var write in writes)
+				write (target);
 		} finally {
 			t_copyDepth--;
 		}
 	}
 
-	void CopyValuesTo (Tag target, TagCopyOptions options)
+	/// <summary>
+	/// True when this tag is <paramref name="tag"/> or reads its values from it, as a file's combined
+	/// view reads from the tags it combines.
+	/// </summary>
+	internal virtual bool ReadsFrom (Tag tag) => ReferenceEquals (this, tag);
+
+	/// <summary>
+	/// Reads every value to copy before writing any, so a source that reads from the target (a file's
+	/// combined view copied into one of its tags) sees the target as it was, not half-written.
+	/// </summary>
+	List<Action<Tag>> SnapshotCopyWrites (TagCopyOptions options)
 	{
+		var writes = new List<Action<Tag>> ();
+
 		// Basic metadata (always copied unless explicitly excluded)
 		if ((options & TagCopyOptions.Basic) != 0) {
 			if (Title is not null)
-				target.Title = Title;
+				Queue (writes, Title, static (t, v) => t.Title = v);
 			if (Artist is not null)
-				target.Artist = Artist;
+				Queue (writes, Artist, static (t, v) => t.Artist = v);
 			if (Album is not null)
-				target.Album = Album;
+				Queue (writes, Album, static (t, v) => t.Album = v);
 			var copyableDate = CopyableDate;
 			if (copyableDate is not null)
-				target.Year = copyableDate;
+				Queue (writes, copyableDate, static (t, v) => t.Year = v);
 			if (Comment is not null)
-				target.Comment = Comment;
+				Queue (writes, Comment, static (t, v) => t.Comment = v);
 			if (Genre is not null)
-				target.Genre = Genre;
+				Queue (writes, Genre, static (t, v) => t.Genre = v);
 			if (Track.HasValue)
-				target.Track = Track;
+				Queue (writes, Track, static (t, v) => t.Track = v);
 		}
 
 		// Extended metadata
 		if ((options & TagCopyOptions.Extended) != 0) {
 			// Arrays
 			if (Performers is { Length: > 0 })
-				target.Performers = Performers;
+				QueueList (writes, Performers, static t => t.Performers, static (t, v) => t.Performers = v);
 			if (AlbumArtists is { Length: > 0 })
-				target.AlbumArtists = AlbumArtists;
+				QueueList (writes, AlbumArtists, static t => t.AlbumArtists, static (t, v) => t.AlbumArtists = v);
 			if (Composers is { Length: > 0 })
-				target.Composers = Composers;
+				QueueList (writes, Composers, static t => t.Composers, static (t, v) => t.Composers = v);
 			if (Genres is { Length: > 0 })
-				target.Genres = Genres;
+				QueueList (writes, Genres, static t => t.Genres, static (t, v) => t.Genres = v);
 
 			// Extended single values
 			// The singular value is the first entry. Writing it after the array
 			// replaces the whole list with that one name.
 			if (AlbumArtist is not null && AlbumArtists is not { Length: > 0 })
-				target.AlbumArtist = AlbumArtist;
+				Queue (writes, AlbumArtist, static (t, v) => t.AlbumArtist = v);
 			if (Composer is not null && Composers is not { Length: > 0 })
-				target.Composer = Composer;
+				Queue (writes, Composer, static (t, v) => t.Composer = v);
 			if (Conductor is not null)
-				target.Conductor = Conductor;
+				Queue (writes, Conductor, static (t, v) => t.Conductor = v);
 			if (Copyright is not null)
-				target.Copyright = Copyright;
+				Queue (writes, Copyright, static (t, v) => t.Copyright = v);
 			if (DiscNumber.HasValue)
-				target.DiscNumber = DiscNumber;
+				Queue (writes, DiscNumber, static (t, v) => t.DiscNumber = v);
 			if (TotalDiscs.HasValue)
-				target.TotalDiscs = TotalDiscs;
+				Queue (writes, TotalDiscs, static (t, v) => t.TotalDiscs = v);
 			if (DiscSubtitle is not null)
-				target.DiscSubtitle = DiscSubtitle;
+				Queue (writes, DiscSubtitle, static (t, v) => t.DiscSubtitle = v);
 			if (TotalTracks.HasValue)
-				target.TotalTracks = TotalTracks;
+				Queue (writes, TotalTracks, static (t, v) => t.TotalTracks = v);
 			if (BeatsPerMinute.HasValue)
-				target.BeatsPerMinute = BeatsPerMinute;
+				Queue (writes, BeatsPerMinute, static (t, v) => t.BeatsPerMinute = v);
 			if (Lyrics is not null)
-				target.Lyrics = Lyrics;
+				Queue (writes, Lyrics, static (t, v) => t.Lyrics = v);
 			if (Isrc is not null)
-				target.Isrc = Isrc;
+				Queue (writes, Isrc, static (t, v) => t.Isrc = v);
 			if (Publisher is not null)
-				target.Publisher = Publisher;
+				Queue (writes, Publisher, static (t, v) => t.Publisher = v);
 			if (EncodedBy is not null)
-				target.EncodedBy = EncodedBy;
+				Queue (writes, EncodedBy, static (t, v) => t.EncodedBy = v);
 			if (EncoderSettings is not null)
-				target.EncoderSettings = EncoderSettings;
+				Queue (writes, EncoderSettings, static (t, v) => t.EncoderSettings = v);
 			if (Grouping is not null)
-				target.Grouping = Grouping;
+				Queue (writes, Grouping, static (t, v) => t.Grouping = v);
 			if (Subtitle is not null)
-				target.Subtitle = Subtitle;
+				Queue (writes, Subtitle, static (t, v) => t.Subtitle = v);
 			if (Remixer is not null)
-				target.Remixer = Remixer;
+				Queue (writes, Remixer, static (t, v) => t.Remixer = v);
 			if (InitialKey is not null)
-				target.InitialKey = InitialKey;
+				Queue (writes, InitialKey, static (t, v) => t.InitialKey = v);
 			if (Mood is not null)
-				target.Mood = Mood;
+				Queue (writes, Mood, static (t, v) => t.Mood = v);
 			if (MediaType is not null)
-				target.MediaType = MediaType;
+				Queue (writes, MediaType, static (t, v) => t.MediaType = v);
 			if (Language is not null)
-				target.Language = Language;
+				Queue (writes, Language, static (t, v) => t.Language = v);
 			if (Barcode is not null)
-				target.Barcode = Barcode;
+				Queue (writes, Barcode, static (t, v) => t.Barcode = v);
 			if (CatalogNumber is not null)
-				target.CatalogNumber = CatalogNumber;
+				Queue (writes, CatalogNumber, static (t, v) => t.CatalogNumber = v);
 			if (OriginalReleaseDate is not null)
-				target.OriginalReleaseDate = OriginalReleaseDate;
+				Queue (writes, OriginalReleaseDate, static (t, v) => t.OriginalReleaseDate = v);
 			if (Description is not null)
-				target.Description = Description;
+				Queue (writes, Description, static (t, v) => t.Description = v);
 			if (DateTagged is not null)
-				target.DateTagged = DateTagged;
+				Queue (writes, DateTagged, static (t, v) => t.DateTagged = v);
 			if (AmazonId is not null)
-				target.AmazonId = AmazonId;
+				Queue (writes, AmazonId, static (t, v) => t.AmazonId = v);
 			if (IsCompilation)
-				target.IsCompilation = true;
+				Queue (writes, true, static (t, v) => t.IsCompilation = v);
 
 			// Classical music metadata
 			if (Work is not null)
-				target.Work = Work;
+				Queue (writes, Work, static (t, v) => t.Work = v);
 			if (Movement is not null)
-				target.Movement = Movement;
+				Queue (writes, Movement, static (t, v) => t.Movement = v);
 			if (MovementNumber.HasValue)
-				target.MovementNumber = MovementNumber;
+				Queue (writes, MovementNumber, static (t, v) => t.MovementNumber = v);
 			if (MovementTotal.HasValue)
-				target.MovementTotal = MovementTotal;
+				Queue (writes, MovementTotal, static (t, v) => t.MovementTotal = v);
 
 			// Performers role
 			if (PerformersRole is { Length: > 0 })
-				target.PerformersRole = PerformersRole;
+				QueueList (writes, PerformersRole, static t => t.PerformersRole, static (t, v) => t.PerformersRole = v);
 		}
 
 		// Sort order
 		if ((options & TagCopyOptions.SortOrder) != 0) {
 			if (AlbumSort is not null)
-				target.AlbumSort = AlbumSort;
+				Queue (writes, AlbumSort, static (t, v) => t.AlbumSort = v);
 			if (ArtistSort is not null)
-				target.ArtistSort = ArtistSort;
+				Queue (writes, ArtistSort, static (t, v) => t.ArtistSort = v);
 			if (TitleSort is not null)
-				target.TitleSort = TitleSort;
+				Queue (writes, TitleSort, static (t, v) => t.TitleSort = v);
 			if (AlbumArtistSort is not null)
-				target.AlbumArtistSort = AlbumArtistSort;
+				Queue (writes, AlbumArtistSort, static (t, v) => t.AlbumArtistSort = v);
 			if (ComposerSort is not null)
-				target.ComposerSort = ComposerSort;
+				Queue (writes, ComposerSort, static (t, v) => t.ComposerSort = v);
 			if (PerformersSort is { Length: > 0 })
-				target.PerformersSort = PerformersSort;
+				QueueList (writes, PerformersSort, static t => t.PerformersSort, static (t, v) => t.PerformersSort = v);
 			if (AlbumArtistsSort is { Length: > 0 })
-				target.AlbumArtistsSort = AlbumArtistsSort;
+				QueueList (writes, AlbumArtistsSort, static t => t.AlbumArtistsSort, static (t, v) => t.AlbumArtistsSort = v);
 			if (ComposersSort is { Length: > 0 })
-				target.ComposersSort = ComposersSort;
+				QueueList (writes, ComposersSort, static t => t.ComposersSort, static (t, v) => t.ComposersSort = v);
 		}
 
 		// ReplayGain and R128
 		if ((options & TagCopyOptions.ReplayGain) != 0) {
 			if (ReplayGainTrackGain is not null)
-				target.ReplayGainTrackGain = ReplayGainTrackGain;
+				Queue (writes, ReplayGainTrackGain, static (t, v) => t.ReplayGainTrackGain = v);
 			if (ReplayGainTrackPeak is not null)
-				target.ReplayGainTrackPeak = ReplayGainTrackPeak;
+				Queue (writes, ReplayGainTrackPeak, static (t, v) => t.ReplayGainTrackPeak = v);
 			if (ReplayGainAlbumGain is not null)
-				target.ReplayGainAlbumGain = ReplayGainAlbumGain;
+				Queue (writes, ReplayGainAlbumGain, static (t, v) => t.ReplayGainAlbumGain = v);
 			if (ReplayGainAlbumPeak is not null)
-				target.ReplayGainAlbumPeak = ReplayGainAlbumPeak;
+				Queue (writes, ReplayGainAlbumPeak, static (t, v) => t.ReplayGainAlbumPeak = v);
 			if (R128TrackGain is not null)
-				target.R128TrackGain = R128TrackGain;
+				Queue (writes, R128TrackGain, static (t, v) => t.R128TrackGain = v);
 			if (R128AlbumGain is not null)
-				target.R128AlbumGain = R128AlbumGain;
+				Queue (writes, R128AlbumGain, static (t, v) => t.R128AlbumGain = v);
 		}
 
 		// MusicBrainz IDs
 		if ((options & TagCopyOptions.MusicBrainz) != 0) {
 			if (MusicBrainzTrackId is not null)
-				target.MusicBrainzTrackId = MusicBrainzTrackId;
+				Queue (writes, MusicBrainzTrackId, static (t, v) => t.MusicBrainzTrackId = v);
 			if (MusicBrainzReleaseId is not null)
-				target.MusicBrainzReleaseId = MusicBrainzReleaseId;
+				Queue (writes, MusicBrainzReleaseId, static (t, v) => t.MusicBrainzReleaseId = v);
 			if (MusicBrainzArtistId is not null)
-				target.MusicBrainzArtistId = MusicBrainzArtistId;
+				Queue (writes, MusicBrainzArtistId, static (t, v) => t.MusicBrainzArtistId = v);
 			if (MusicBrainzReleaseGroupId is not null)
-				target.MusicBrainzReleaseGroupId = MusicBrainzReleaseGroupId;
+				Queue (writes, MusicBrainzReleaseGroupId, static (t, v) => t.MusicBrainzReleaseGroupId = v);
 			if (MusicBrainzAlbumArtistId is not null)
-				target.MusicBrainzAlbumArtistId = MusicBrainzAlbumArtistId;
+				Queue (writes, MusicBrainzAlbumArtistId, static (t, v) => t.MusicBrainzAlbumArtistId = v);
 			if (MusicBrainzRecordingId is not null)
-				target.MusicBrainzRecordingId = MusicBrainzRecordingId;
+				Queue (writes, MusicBrainzRecordingId, static (t, v) => t.MusicBrainzRecordingId = v);
 			if (MusicBrainzWorkId is not null)
-				target.MusicBrainzWorkId = MusicBrainzWorkId;
+				Queue (writes, MusicBrainzWorkId, static (t, v) => t.MusicBrainzWorkId = v);
 			if (MusicBrainzDiscId is not null)
-				target.MusicBrainzDiscId = MusicBrainzDiscId;
+				Queue (writes, MusicBrainzDiscId, static (t, v) => t.MusicBrainzDiscId = v);
 			if (MusicBrainzReleaseStatus is not null)
-				target.MusicBrainzReleaseStatus = MusicBrainzReleaseStatus;
+				Queue (writes, MusicBrainzReleaseStatus, static (t, v) => t.MusicBrainzReleaseStatus = v);
 			if (MusicBrainzReleaseType is not null)
-				target.MusicBrainzReleaseType = MusicBrainzReleaseType;
+				Queue (writes, MusicBrainzReleaseType, static (t, v) => t.MusicBrainzReleaseType = v);
 			if (MusicBrainzReleaseCountry is not null)
-				target.MusicBrainzReleaseCountry = MusicBrainzReleaseCountry;
+				Queue (writes, MusicBrainzReleaseCountry, static (t, v) => t.MusicBrainzReleaseCountry = v);
 			if (AcoustIdId is not null)
-				target.AcoustIdId = AcoustIdId;
+				Queue (writes, AcoustIdId, static (t, v) => t.AcoustIdId = v);
 			if (AcoustIdFingerprint is not null)
-				target.AcoustIdFingerprint = AcoustIdFingerprint;
+				Queue (writes, AcoustIdFingerprint, static (t, v) => t.AcoustIdFingerprint = v);
 		}
 
 		// Pictures
 		if ((options & TagCopyOptions.Pictures) != 0) {
 			if (Pictures is { Length: > 0 })
-				target.Pictures = Pictures;
+				Queue (writes, Pictures, static (t, v) => t.Pictures = v);
 		}
+		return writes;
 	}
+
+	static void Queue<T> (List<Action<Tag>> writes, T value, Action<Tag, T> set) =>
+		writes.Add (t => set (t, value));
+
+	/// <summary>
+	/// Queues a list write that is skipped when the target already holds exactly that list, so a copy
+	/// of a list the target shows leaves its frames, items, or fields as they are.
+	/// </summary>
+	static void QueueList (List<Action<Tag>> writes, string[] value, Func<Tag, string[]?> get, Action<Tag, string[]> set) =>
+		writes.Add (t => {
+			if (get (t) is not { } current || !current.AsSpan ().SequenceEqual (value))
+				set (t, value);
+		});
 }
 
 /// <summary>

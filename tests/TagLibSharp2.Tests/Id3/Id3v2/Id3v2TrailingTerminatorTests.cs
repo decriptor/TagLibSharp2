@@ -386,7 +386,7 @@ public class Id3v2TrailingTerminatorTests
 	}
 
 	[TestMethod]
-	public void Text_LeadingNul_FirstValueIsEmpty ()
+	public void Text_LeadingNul_ReadsTheFirstNonEmptyValue ()
 	{
 		using var builder = new BinaryDataBuilder ();
 		builder.Add ((byte)TextEncodingType.Latin1);
@@ -394,14 +394,14 @@ public class Id3v2TrailingTerminatorTests
 		var leading = builder.ToBinaryData ().ToArray ();
 
 		var v23 = ReadFrame (TestConstants.Id3v2.Version3, "TIT2", leading);
-		Assert.AreEqual ("", v23.GetTextFrame ("TIT2"));
+		Assert.AreEqual ("b", v23.GetTextFrame ("TIT2"));
 		Assert.AreEqual ("\0b", v23.Frames[0].Text);
 		var values23 = v23.GetTextFrameValues ("TIT2");
 		Assert.HasCount (1, values23);
 		Assert.AreEqual ("b", values23[0]);
 
 		var v24 = ReadFrame (TestConstants.Id3v2.Version4, "TIT2", leading);
-		Assert.AreEqual ("", v24.GetTextFrame ("TIT2"));
+		Assert.AreEqual ("b", v24.GetTextFrame ("TIT2"));
 		var values24 = v24.GetTextFrameValues ("TIT2");
 		Assert.HasCount (1, values24);
 		Assert.AreEqual ("b", values24[0]);
@@ -410,7 +410,12 @@ public class Id3v2TrailingTerminatorTests
 		skipped.Add ((byte)TextEncodingType.Latin1);
 		skipped.Add (0, 0, (byte)'T');
 		var allEmpty = ReadFrame (TestConstants.Id3v2.Version3, "TIT2", skipped.ToBinaryData ().ToArray ());
-		Assert.AreEqual ("", allEmpty.GetTextFrame ("TIT2"));
+		Assert.AreEqual ("T", allEmpty.GetTextFrame ("TIT2"));
+
+		using var empties = new BinaryDataBuilder ();
+		empties.Add ((byte)TextEncodingType.Latin1);
+		empties.Add (0, 0);
+		Assert.AreEqual ("", ReadFrame (TestConstants.Id3v2.Version4, "TIT2", empties.ToBinaryData ().ToArray ()).GetTextFrame ("TIT2"));
 		Assert.AreEqual ("T", allEmpty.GetTextFrameValues ("TIT2")[0]);
 		Assert.IsNull (new Id3v2Tag ().GetTextFrame ("TIT2"));
 	}
@@ -536,7 +541,7 @@ public class Id3v2TrailingTerminatorTests
 	}
 
 	[TestMethod]
-	public void Performers_Utf16LeadingNul_FirstValueIsEmpty ()
+	public void Performers_Utf16LeadingNul_SingleValueIsTheFirstName ()
 	{
 		using var builder = new BinaryDataBuilder ();
 		builder.Add ((byte)TextEncodingType.Utf16WithBom);
@@ -546,8 +551,8 @@ public class Id3v2TrailingTerminatorTests
 		var tag = ReadFrame (TestConstants.Id3v2.Version4, "TPE1", builder.ToBinaryData ().ToArray ());
 
 		Assert.AreEqual ("\0b", tag.Frames[0].Text);
-		Assert.AreEqual ("", tag.GetTextFrame ("TPE1"));
-		Assert.AreEqual ("", tag.Artist);
+		Assert.AreEqual ("b", tag.GetTextFrame ("TPE1"));
+		Assert.AreEqual ("b", tag.Artist);
 		var values = tag.GetTextFrameValues ("TPE1");
 		Assert.HasCount (1, values);
 		Assert.AreEqual ("b", values[0]);

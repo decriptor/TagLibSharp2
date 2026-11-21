@@ -84,10 +84,7 @@ public class ApeTagWriteBackTests
 			property.SetValue (tag, read);
 			var after = Snapshot (Reparse (tag));
 
-			// "" is a write-back only when no value holds text: an empty first value reads "",
-			// and "" over a list with text clears it.
-			var clears = read == "" && before.Any (r => r.Contains ("V2", StringComparison.Ordinal));
-			if (clears ? after.Any (r => r.Contains ("V2", StringComparison.Ordinal)) : !before.SequenceEqual (after))
+			if (!before.SequenceEqual (after))
 				failures.Add ($"{property.Name}: [{string.Join (" | ", before)}] -> [{string.Join (" | ", after)}]");
 
 			// A case-only edit, or "" over a list whose later values hold text, is not a write-back.

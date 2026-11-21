@@ -266,7 +266,9 @@ public sealed class Id3v2Tag : Tag
 			return NormalizeYear (GetTextFrame ("TORY")) ?? NormalizeReleaseTimestamp (GetTextFrame ("TDOR"));
 		}
 		set {
-			if (IsWriteBack (value, OriginalReleaseDate))
+			// The value read changes nothing, in a copy too: in a v2.3 tag, TDOR beside TORY is the only
+			// place the month and day live (TORY holds the year, ID3v2.3 §4.2.1).
+			if (IsValueRead (value, OriginalReleaseDate))
 				return;
 			SetDateFrame (
 				Version == 4 ? "TDOR" : "TORY",
@@ -280,7 +282,10 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Comment {
 		get => GetComment ();
-		set => SetComment (value);
+		set {
+			if (!IsWriteBack (value, Comment))
+				SetComment (value);
+		}
 	}
 
 	/// <summary>
@@ -861,7 +866,10 @@ public sealed class Id3v2Tag : Tag
 	/// <inheritdoc/>
 	public override string? Lyrics {
 		get => GetLyrics ();
-		set => SetLyrics (value);
+		set {
+			if (!IsWriteBack (value, Lyrics))
+				SetLyrics (value);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -1020,7 +1028,7 @@ public sealed class Id3v2Tag : Tag
 			return string.IsNullOrEmpty (user) ? apple ?? user : user;
 		}
 		set {
-			if (IsTextWriteBack (value, Movement, GetRawTextFrame ("MVNM"), GetRawUserText ("MOVEMENT")))
+			if (IsWriteBack (value, Movement))
 				return;
 			SetTextFrame ("MVNM", value);
 			SetUserText ("MOVEMENT", value);
@@ -1517,8 +1525,8 @@ public sealed class Id3v2Tag : Tag
 	/// </summary>
 	/// <param name="frameId">The frame ID (e.g., TIT2, TPE1).</param>
 	/// <returns>
-	/// The first value, even when that value is empty, or null when the frame is absent.
-	/// A NUL separates further values and is not included. A slash is not a separator here.
+	/// The first non-empty value, "" when every value is empty, or null when the frame is absent.
+	/// A NUL separates values and is not included. A slash is not a separator here.
 	/// </returns>
 	public string? GetTextFrame (string frameId)
 	{
@@ -1543,16 +1551,23 @@ public sealed class Id3v2Tag : Tag
 	}
 
 	/// <summary>
-	/// Returns the text before the first NUL. A leading NUL is an empty value, not a reason to skip ahead.
+	/// Returns the first non-empty value of NUL-separated text, or "" when every value is empty.
+	/// ID3v2.4 §4.2 stores several strings as a NUL-separated list, so after an empty first value the
+	/// next one is still a value. Reading it means a write-back of what was read keeps the frame,
+	/// and "" is only read back when no value holds text.
 	/// </summary>
 	static string FirstTextValue (string text)
 	{
-		for (var i = 0; i < text.Length; i++) {
-			if (text[i] == '\0')
-				return text.Substring (0, i);
+		var start = 0;
+		for (var i = 0; i <= text.Length; i++) {
+			if (i == text.Length || text[i] == '\0') {
+				if (i > start)
+					return text.Substring (start, i - start);
+				start = i + 1;
+			}
 		}
 
-		return text;
+		return "";
 	}
 
 	/// <summary>
@@ -1762,7 +1777,7 @@ public sealed class Id3v2Tag : Tag
 	/// </summary>
 	void SetTextFrameProperty (string frameId, string? value, string? current)
 	{
-		if (!IsTextWriteBack (value, current, GetRawTextFrame (frameId)))
+		if (!IsWriteBack (value, current))
 			SetTextFrame (frameId, value);
 	}
 
@@ -1771,52 +1786,8 @@ public sealed class Id3v2Tag : Tag
 	/// </summary>
 	void SetUserTextProperty (string description, string? value, string? current)
 	{
-		if (!IsTextWriteBack (value, current, GetRawUserText (description)))
-			SetUserText (description, value);
-	}
-
-	/// <summary>
-	/// <see cref="Tag.IsWriteBack(string?, string?)"/>, except that an empty string is a write-back only
-	/// when none of <paramref name="stored"/> holds text. A getter returns "" for an empty first value
-	/// ("\0V2"), and "" over such a frame still clears it.
-	/// </summary>
-	static bool IsTextWriteBack (string? value, string? current, params string?[] stored)
-	{
 		if (!IsWriteBack (value, current))
-			return false;
-		if (value!.Length != 0)
-			return true;
-		foreach (var text in stored) {
-			if (HasText (text))
-				return false;
-		}
-		return true;
-	}
-
-	/// <summary>
-	/// True when the stored text holds any character other than a NUL value separator.
-	/// </summary>
-	static bool HasText (string? text)
-	{
-		if (text is null)
-			return false;
-		for (var i = 0; i < text.Length; i++) {
-			if (text[i] != '\0')
-				return true;
-		}
-		return false;
-	}
-
-	/// <summary>
-	/// The stored value of the first TXXX frame with this description, including NUL separators.
-	/// </summary>
-	string? GetRawUserText (string description)
-	{
-		for (var i = 0; i < _userTextFrames.Count; i++) {
-			if (string.Equals (_userTextFrames[i].Description, description, StringComparison.OrdinalIgnoreCase))
-				return _userTextFrames[i].Value;
-		}
-		return null;
+			SetUserText (description, value);
 	}
 
 	/// <summary>
@@ -2239,8 +2210,8 @@ public sealed class Id3v2Tag : Tag
 	/// </summary>
 	/// <param name="description">The description (key) of the TXXX frame.</param>
 	/// <returns>
-	/// The first value, even when that value is empty, or null when the frame is absent.
-	/// An embedded NUL is not included. The frame still stores the rest of the text.
+	/// The first non-empty value, "" when every value is empty, or null when the frame is absent.
+	/// An embedded NUL separates values and is not included. The frame still stores the rest of the text.
 	/// </returns>
 	public string? GetUserText (string description)
 	{
