@@ -94,7 +94,9 @@ public sealed class MatroskaTrack
 	/// Setting this marks the track for writing. On save a stored element is rewritten in place.
 	/// A missing or empty element is written only when the stored value differs. It takes its room from the
 	/// <c>Void</c> right after <c>Tracks</c> when there is one, so nothing else moves. Otherwise every later
-	/// element moves once and the SeekHead, Cues, and Cluster <c>Position</c> values follow.
+	/// element moves once and every SeekHead, Cues, and Cluster <c>Position</c> value follows, widened when it
+	/// no longer fits. The EBML header's <c>DocTypeVersion</c> becomes at least 2. A save fails only when the
+	/// only <c>Tracks</c> has an unknown size and no Void follows it, or a second <c>Tracks</c> needs room.
 	/// </remarks>
 	public bool IsEnabled {
 		get => _isEnabled;

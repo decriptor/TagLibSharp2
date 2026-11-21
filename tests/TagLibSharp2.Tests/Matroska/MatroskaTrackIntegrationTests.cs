@@ -77,11 +77,83 @@ public class MatroskaTrackIntegrationTests : FileFormatTestBase
 
 		// Blocks are byte-identical; only a moved cluster's Position value differs.
 		CollectionAssert.AreEqual (Children (original, MatroskaIds.Cluster), Children (toggled, MatroskaIds.Cluster));
+		// Every Seek that named an element still names one with its ID (RFC 9559 section 6.3).
+		CollectionAssert.AreEquivalent (LandingSeeks (original), LandingSeeks (toggled));
 
 		again.Tracks[index].IsEnabled = before;
 		var restored = again.Render (toggled).ToArray ();
 		Assert.AreEqual (before, Open (restored).Tracks[index].IsEnabled);
 		Assert.AreEqual (toggled.Length, restored.Length, "a stored flag is rewritten in place");
+	}
+
+	/// <summary>The ID of every Seek, in every SeekHead, whose position names an element with that ID.</summary>
+	static List<ulong> LandingSeeks (byte[] file)
+	{
+		var found = new List<ulong> ();
+		var offset = 0;
+		while (offset < file.Length && EbmlReader.TryRead (file, offset, file.Length, out var element)) {
+			if (element.Id != MatroskaIds.Segment) {
+				if (element.UnknownSize)
+					break;
+				offset = element.End;
+				continue;
+			}
+
+			var end = MatroskaFile.PayloadEnd (file, element);
+			var bodyAt = element.DataOffset;
+			var at = bodyAt;
+			while (at < end) {
+				if (!EbmlReader.TryRead (file, at, end, out var child)) {
+					at++;
+					continue;
+				}
+
+				if (child.UnknownSize)
+					break;
+				if (child.Id == MatroskaIds.SeekHead) {
+					var seek = child.DataOffset;
+					while (seek < child.End && EbmlReader.TryRead (file, seek, child.End, out var entry) && !entry.UnknownSize) {
+						if (entry.Id == 0x4DBB && TrySeek (file, entry, out var id, out var position)) {
+							var target = bodyAt + (long)position;
+							if (target < end && EbmlReader.TryRead (file, (int)target, end, out var named) && named.Id == id)
+								found.Add (id);
+						}
+
+						seek = entry.End;
+					}
+				}
+
+				at = child.End;
+			}
+
+			break;
+		}
+
+		return found;
+	}
+
+	static bool TrySeek (byte[] file, EbmlElement seek, out ulong id, out ulong position)
+	{
+		id = 0;
+		position = 0;
+		var sawId = false;
+		var sawPosition = false;
+		var at = seek.DataOffset;
+		while (at < seek.End && EbmlReader.TryRead (file, at, seek.End, out var child) && !child.UnknownSize) {
+			var payload = file.AsSpan (child.DataOffset, (int)child.DataLength);
+			if (child.Id == 0x53AB) {
+				foreach (var b in payload)
+					id = (id << 8) | b;
+				sawId = true;
+			} else if (child.Id == 0x53AC) {
+				position = EbmlReader.ReadUInt (payload);
+				sawPosition = true;
+			}
+
+			at = child.End;
+		}
+
+		return sawId && sawPosition;
 	}
 
 	static MatroskaFile Open (byte[] data)

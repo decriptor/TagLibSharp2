@@ -49,8 +49,10 @@ static partial class MatroskaRewrite
 	/// the save, since only one is allowed (RFC 9559 §5.1.4, maxOccurs 1).
 	/// </para>
 	/// <para>
-	/// FlagEnabled has minver 2. A stored <c>DocTypeVersion</c> of 1 is raised to 2 when an element is added
-	/// (RFC 8794 §11.2.7). A file that omits DocTypeVersion is left as it is.
+	/// FlagEnabled has minver 2, and DocTypeVersion must be at least the highest version of any element
+	/// present (RFC 9559 section 7). When an element is added, a stored DocTypeVersion below 2 is raised,
+	/// and an empty or missing one (which means 1, RFC 8794 sections 6.1 and 11.2.7) is written as 2.
+	/// The EBML header is outside the Segment, so this moves no Segment Position (RFC 9559 section 16).
 	/// </para>
 	/// </remarks>
 	/// <param name="data">The whole file.</param>
@@ -115,7 +117,7 @@ static partial class MatroskaRewrite
 		}
 
 		if (inserted && updated is not null)
-			RaiseDocTypeVersion (updated, 2);
+			updated = RaiseDocTypeVersion (updated, 2);
 		return true;
 	}
 
@@ -341,8 +343,10 @@ static partial class MatroskaRewrite
 				: 0;
 			if (extra > 0 && room != extra && room - extra < 2) {
 				if (i != growable) {
-					error = "Matroska FlagEnabled needs " + extra.ToString (System.Globalization.CultureInfo.InvariantCulture)
-						+ " more octets in a second Tracks and no Void right after Tracks can give them";
+					var octets = extra.ToString (System.Globalization.CultureInfo.InvariantCulture);
+					error = piece.UnknownSize
+						? "Matroska FlagEnabled needs " + octets + " more octets, but Tracks has an unknown size and no Void right after it"
+						: "Matroska FlagEnabled needs " + octets + " more octets in a second Tracks and no Void right after Tracks can give them";
 					return false;
 				}
 
@@ -365,26 +369,56 @@ static partial class MatroskaRewrite
 		return true;
 	}
 
-	/// <summary>Raises a stored <c>DocTypeVersion</c> in the first EBML header, in place.</summary>
-	static void RaiseDocTypeVersion (byte[] file, ulong version)
+	/// <summary>
+	/// Makes the first EBML header's <c>DocTypeVersion</c> at least <paramref name="version"/>. A stored value
+	/// is rewritten in place. An empty or missing one is written as a new 1-octet element and the header
+	/// grows; its CRC-32 is recomputed. A header that cannot be read is left as it is.
+	/// </summary>
+	static byte[] RaiseDocTypeVersion (byte[] file, ulong version)
 	{
 		if (!EbmlReader.TryRead (file, 0, file.Length, out var header) || header.Id != MatroskaIds.Ebml || header.UnknownSize)
-			return;
+			return file;
 		var offset = header.DataOffset;
+		EbmlElement? stored = null;
+		var insertAt = header.End;
 		while (offset < header.End) {
 			if (!EbmlReader.TryRead (file, offset, header.End, out var child) || child.UnknownSize)
-				return;
-			if (child.Id == MatroskaIds.DocTypeVersion) {
-				if (child.DataLength is < 1 or > 8)
-					return;
-				var stored = EbmlReader.ReadUInt (file.AsSpan (child.DataOffset, (int)child.DataLength));
-				if (stored >= version || !TryWriteUnsigned (file, child.DataOffset, (int)child.DataLength, version))
-					return;
-				UpdateElementCrc (file, header.Position, header.End);
-				return;
-			}
-
+				return file;
+			if (child.Id == MatroskaIds.DocTypeVersion)
+				stored = child;
+			else if (child.Id == MatroskaIds.DocType)
+				insertAt = child.End;
 			offset = child.End;
 		}
+
+		if (stored is { DataLength: > 0 } present) {
+			if (present.DataLength > 8)
+				return file;
+			var value = EbmlReader.ReadUInt (file.AsSpan (present.DataOffset, (int)present.DataLength));
+			if (value < version && TryWriteUnsigned (file, present.DataOffset, (int)present.DataLength, version))
+				UpdateElementCrc (file, header.Position, header.End);
+			return file;
+		}
+
+		// Insert after DocType, or replace the empty element where it was.
+		var element = EbmlWriter.Unsigned (MatroskaIds.DocTypeVersion, version).ToArray ();
+		var cutFrom = stored is { } empty ? empty.Position : insertAt;
+		var cutTo = stored is { } empty2 ? empty2.End : insertAt;
+		var payloadLength = (ulong)header.DataLength - (ulong)(cutTo - cutFrom) + (ulong)element.Length;
+		if (!EbmlReader.TryReadVint (file, 0, header.DataOffset, true, 4, out _, out var idWidth, out _))
+			return file;
+		var size = EncodeFittedSize (payloadLength, header.HeaderLength - idWidth);
+		if (size.Length == 0)
+			return file;
+
+		var grown = new byte[(long)file.Length - header.HeaderLength - (cutTo - cutFrom) + idWidth + size.Length + element.Length];
+		var at = 0L;
+		Put (grown, ref at, file.AsSpan (0, idWidth));
+		Put (grown, ref at, size);
+		Put (grown, ref at, file.AsSpan (header.DataOffset, cutFrom - header.DataOffset));
+		Put (grown, ref at, element);
+		Put (grown, ref at, file.AsSpan (cutTo));
+		UpdateElementCrc (grown, 0, idWidth + size.Length + (int)payloadLength);
+		return grown;
 	}
 }

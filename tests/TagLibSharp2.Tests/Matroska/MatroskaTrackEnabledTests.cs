@@ -192,6 +192,17 @@ public partial class MatroskaFileTests
 			(seekHead, positions) => Concat (seekHead, info, tracks, hole, tags, CueElement (positions[4]), cluster));
 	}
 
+	/// <summary>
+	/// An EBML header with DocTypeVersion 4, as muxers write it, and a Segment. A FlagEnabled insert
+	/// leaves such a header alone (RFC 9559 section 7 is already met).
+	/// </summary>
+	static byte[] TrackFile (params byte[][] segmentChildren) =>
+		TrackMatroska (Master (0x18538067, Concat (segmentChildren)));
+
+	static byte[] TrackMatroska (byte[] segment) => Concat (
+		Master (0x1A45DFA3, Concat (Element (0x4282, "matroska"u8), Element (0x4287, new byte[] { 4 }), Element (0x4285, new byte[] { 2 }))),
+		segment);
+
 	static byte[] MakeVoid (int total) =>
 		total == 2 ? new byte[] { 0xEC, 0x80 } : Element (0xEC, new byte[total - 2]);
 
@@ -211,7 +222,7 @@ public partial class MatroskaFileTests
 			for (var i = 0; i < ids.Length; i++)
 				found[i] = (ulong)FirstChild (body, ids[i]);
 			if (pass > 0 && found.AsSpan ().SequenceEqual (positions))
-				return FileWith (body);
+				return TrackFile (body);
 			positions = found;
 		}
 
