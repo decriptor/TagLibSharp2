@@ -749,6 +749,17 @@ public sealed class Mp4File : IMediaFile
 	/// QuickTime chapter list covers the whole timeline.
 	/// </para>
 	/// <para>
+	/// Only the first chapter text track is rewritten. Any other text track a <c>chap</c> reference names is
+	/// kept as it is: Apple files hold the chapter URLs in one, and neither QTFF nor Apple's documentation gives
+	/// a way to tell a second title track from a URL track. A file with more than one title track keeps the old
+	/// titles in the others, and a reader that picks another one shows them.
+	/// </para>
+	/// <para>
+	/// A file whose traks reuse a track_ID (invalid per ISO 14496-12 §8.3.2.3, but seen) is handled by trak:
+	/// a <c>chap</c> entry names the first trak with the ID, and only that trak is the chapter track or
+	/// chapter media. A later trak that shares the ID is a presentation track.
+	/// </para>
+	/// <para>
 	/// The new samples go in their own <c>mdat</c> right after <c>moov</c>, and every chunk offset after it
 	/// moves in the same update that a tag edit makes. That <c>mdat</c> replaces the one an earlier chapter save
 	/// wrote, so repeated edits do not grow the file. Old chapter samples that share an <c>mdat</c> with other
@@ -1640,7 +1651,7 @@ public sealed class Mp4File : IMediaFile
 
 		var newMoov = RebuildMoovWithMetadata (boxes[moovIndex].Box, chapterPlan);
 		// New chapter samples get their own mdat right after moov, so they move the rest of the file too.
-		var chapterData = chapterPlan is null || chapterPlan.TrackId == 0
+		var chapterData = chapterPlan is null || chapterPlan.TrakOrdinal < 0
 			? BinaryData.Empty
 			: WrapBox ("mdat", new BinaryData (chapterPlan.SampleData));
 		// The mdat an earlier chapter save wrote sits right after moov and holds only the samples this save
@@ -1657,7 +1668,7 @@ public sealed class Mp4File : IMediaFile
 			// The chapter track was built with offset 0, which no shift moves. Point it at the new mdat now.
 			var moovBytes = newMoov.ToArray ();
 			var samplesAt = (uint)(oldMoovStart + moovBytes.Length + Mp4Box.HeaderSize);
-			Mp4ChapterCodec.WriteChunkOffset (moovBytes, chapterPlan!.TrackId, samplesAt);
+			Mp4ChapterCodec.WriteChunkOffset (moovBytes, chapterPlan!.TrakOrdinal, samplesAt);
 			newMoov = new BinaryData (moovBytes);
 		}
 

@@ -25,6 +25,10 @@ public class Mp4ChapterTests
 	static readonly string[] WithoutChapterData = ["ftyp", "mdat", "moov"];
 	static readonly string[] WithoutChapterDataMoovFirst = ["ftyp", "moov", "mdat"];
 
+	// Positions among moov's traks in the built fixtures: the audio trak, then the chapter text trak.
+	const int AudioTrak = 0;
+	const int TextTrak = 1;
+
 	static Mp4ChapterTestBuilder.Options ThreeChapterTrack () => new () {
 		Track = [("Intro", 900), ("Cafè über 日本", 1200), ("Outro", 3900)],
 	};
@@ -1020,7 +1024,7 @@ public class Mp4ChapterTests
 		var moofBytes = Mp4TestBuilder.CreateBox ("moof", [.. traf, .. (variant == 1 ? bad : [])]);
 		var moof = Mp4Box.Parse (moofBytes).Box!;
 		var moov = Mp4ChapterTestBuilder.Moov (edited);
-		var plan = new Mp4ChapterCodec.ChapterPlan (BinaryData.Empty, [], Mp4ChapterTestBuilder.TextTrackId, [], [Mp4ChapterTestBuilder.TextTrackId]);
+		var plan = new Mp4ChapterCodec.ChapterPlan (BinaryData.Empty, [], TextTrak, [], null, [Mp4ChapterCodec.FindChapterTrack (moov)!]);
 
 		var drop = Mp4ChapterCodec.HoldsOnlyReplacedSamples (moov, [(moof, edited.Length)], plan, chapterMdat, chapterMdat + 8, chapterEnd);
 
@@ -1367,7 +1371,7 @@ public class Mp4ChapterTests
 		var inMoov = containers.Contains (moovAt) ? inserted.Length - removed : 0;
 		var chapterPayload = moovEnd + 8 + inMoov;
 		var moov = edited.AsSpan (moovAt, moovEnd - moovAt).ToArray ();
-		Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.TextTrackId, (uint)chapterPayload);
+		Mp4ChapterCodec.WriteChunkOffset (moov, TextTrak, (uint)chapterPayload);
 		// Rows that reach the mdat through another box leave the parsed audio stco alone.
 		var chunkLength = variant switch {
 			19 or 20 => count * Mp4ChapterTestBuilder.AudioSampleSize,
@@ -1383,7 +1387,7 @@ public class Mp4ChapterTests
 			_ => chapterPayload,
 		};
 		if (variant is 0 or 1 or 2 or 4 or 7 or 14 or 17 or 19 or 20 or 21 or 22 or 26)
-			Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.AudioTrackId, (uint)audioChunk);
+			Mp4ChapterCodec.WriteChunkOffset (moov, AudioTrak, (uint)audioChunk);
 		moov.CopyTo (edited, moovAt);
 
 		switch (variant) {
@@ -1391,7 +1395,7 @@ public class Mp4ChapterTests
 			case 16: {
 					// A copy of the audio trak whose chunk sits in the mdat: behind a bad box (3), or as track 2 (16).
 					var copy = Mp4TestBuilder.CreateMoovBox (edited.AsSpan (trakAt, trakLength).ToArray ());
-					Mp4ChapterCodec.WriteChunkOffset (copy, Mp4ChapterTestBuilder.AudioTrackId, (uint)chapterPayload);
+					Mp4ChapterCodec.WriteChunkOffset (copy, 0, (uint)chapterPayload);
 					var trak = copy.AsSpan (8).ToArray ();
 					if (variant == 16)
 						BinaryPrimitives.WriteUInt32BigEndian (trak.AsSpan (trak.AsSpan ().IndexOf ("tkhd"u8) + 16), Mp4ChapterTestBuilder.TextTrackId);
@@ -1493,16 +1497,18 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
-	[DataRow (false)]
-	[DataRow (true)]
-	public void Save_ClearChapters_SharedTrackId_DropsTheChapReferenceAndKeepsTheTrex (bool keepTref)
+	[DataRow (false, false)]
+	[DataRow (true, false)]
+	[DataRow (true, true)]
+	public void Save_ClearChapters_SharedTrackId_DropsTheChapReferenceAndKeepsTheTrex (bool keepTref, bool onlyCopyHolds)
 	{
 		// A sound trak shares the chapter track's track_ID 2 (invalid per §8.3.2.3, but seen). Clearing removes
 		// the chapter trak object and every chap entry for ID 2, which meant the chapter track. The sound trak
 		// stays, and so does trex 2, which it still uses. With keepTref the copied sound trak keeps its own
 		// chap reference to 2: it is a presentation track (a holder) by object, which must not hide the chapter
-		// text track that ID 2 resolves to.
-		var file = SharedTrackIdFile (keepTref);
+		// text track that ID 2 resolves to. With onlyCopyHolds trak 1 has no tref, so the copy's chap 2 is the
+		// only reference: a self-reference test by ID (the copy's own ID is 2) would wrongly skip it.
+		var file = SharedTrackIdFile (keepTref, onlyCopyHolds);
 		var parsed = Mp4ChapterTestBuilder.ReadFile (file);
 
 		Assert.AreEqual (3, parsed.Chapters.Count, "ID 2 resolves to the chapter text track first");
@@ -1512,6 +1518,7 @@ public class Mp4ChapterTests
 
 		Assert.AreEqual (0, Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Count, "nothing reads back");
 		CollectionAssert.AreEqual (new uint[] { 1, 2 }, Mp4ChapterTestBuilder.TrackIds (cleared), "the sound trak with ID 2 stays");
+		Assert.IsFalse (cleared.Children.Any (c => c.Type == "trak" && HandlerOf (c) == "text"), "the chapter text trak is gone");
 		Assert.IsNull (cleared.Children.Where (c => c.Type == "trak").Last ().FindChild ("tref"), "its own chap entry for 2 is gone too");
 		Assert.AreEqual ("soun", Encoding.ASCII.GetString (cleared.Children.Where (c => c.Type == "trak").Last ().FindDescendant ("mdia", "hdlr")!.Data.Span.Slice (8, 4)));
 		Assert.AreEqual (0, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (cleared, 1)!).Length, "no chap entry is left");
@@ -1520,14 +1527,15 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
-	[DataRow (false)]
-	[DataRow (true)]
-	public void Save_EditChapters_SharedTrackId_RewritesOnlyTheChapterTrack (bool keepTref)
+	[DataRow (false, false)]
+	[DataRow (true, false)]
+	[DataRow (true, true)]
+	public void Save_EditChapters_SharedTrackId_RewritesOnlyTheChapterTrack (bool keepTref, bool onlyCopyHolds)
 	{
 		// The edit path's track_ID lookups (the in-place replacement, the chunk offset written after layout, and
 		// the chap entry added to presentation tracks) must all land on the chapter trak that ID 2 resolves to,
 		// the first, and leave the later sound trak that shares the ID reading its own audio.
-		var file = SharedTrackIdFile (keepTref);
+		var file = SharedTrackIdFile (keepTref, onlyCopyHolds);
 
 		var saved = EditChapters (file, 1);
 		var moov = Mp4ChapterTestBuilder.Moov (saved);
@@ -1541,14 +1549,16 @@ public class Mp4ChapterTests
 		var audio = Mp4ChapterTestBuilder.SampleBytes (saved, Mp4ChapterTestBuilder.AudioTrackId);
 		CollectionAssert.AreEqual (audio, saved.AsSpan ((int)BinaryPrimitives.ReadUInt32BigEndian (stco.Slice (8)), audio.Length).ToArray (), "the sound trak still reads the audio");
 		CollectionAssert.AreEqual (keepTref ? new uint[] { 2 } : [], Mp4ChapterTestBuilder.ChapReferences (sound), "its own tref is left as it was");
-		CollectionAssert.AreEqual (new uint[] { 2 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		CollectionAssert.AreEqual (onlyCopyHolds ? [] : new uint[] { 2 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		Assert.AreEqual (1, moov.Children.Count (c => c.Type == "trak" && HandlerOf (c) == "text"), "one chapter track, not a second one");
 	}
 
 	/// <summary>
 	/// The chapter-track fixture with a copy of the audio trak appended to moov under the text track's track_ID 2.
 	/// With <paramref name="keepTref"/> the copy keeps the audio trak's tref (chap 2); without, it becomes free.
+	/// With <paramref name="onlyCopyHolds"/> the audio trak's own tref becomes free, so only the copy holds chap 2.
 	/// </summary>
-	static byte[] SharedTrackIdFile (bool keepTref)
+	static byte[] SharedTrackIdFile (bool keepTref, bool onlyCopyHolds = false)
 	{
 		var options = ThreeChapterTrack ();
 		options.Mvex = true;
@@ -1563,7 +1573,125 @@ public class Mp4ChapterTests
 		Assert.AreEqual (data.Length, moovAt + (int)BinaryPrimitives.ReadUInt32BigEndian (data.AsSpan (moovAt)), "moov is last");
 		byte[] file = [.. data, .. audio];
 		BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (moovAt), BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (moovAt)) + (uint)audio.Length);
+		if (onlyCopyHolds)
+			"free"u8.CopyTo (file.AsSpan (moovAt + file.AsSpan (moovAt).IndexOf ("tref"u8)));
 		return file;
+	}
+
+	static string HandlerOf (Mp4Box trak) =>
+		Encoding.ASCII.GetString (trak.FindDescendant ("mdia", "hdlr")!.Data.Span.Slice (8, 4));
+
+	/// <summary>
+	/// Shared-ID shapes (track_ID reused, invalid per §8.3.2.3 but seen), built from the chapter-track fixture:
+	/// audio trak A (ID 1, chap [2]) and text trak T (ID 2). S is a copy of A under ID 2, without A's tref.
+	/// dup [A, T, S]; dup_tref [A, T, S with chap 2]; sonly [A without tref, T, S with chap 2];
+	/// cm_img [A, T as vide, S]; cm_sfirst [A, S, T]; cm_audref [A, S, T as ID 3]; cm_only [T as vide, A as ID 2].
+	/// </summary>
+	static byte[] SharedTrackIdShape (string shape)
+	{
+		var data = Mp4ChapterTestBuilder.Build (ThreeChapterTrack ());
+		var moov = Mp4ChapterTestBuilder.Moov (data);
+		var moovAt = data.AsSpan ().IndexOf ("moov"u8) - 4;
+		Assert.AreEqual (data.Length, moovAt + (int)BinaryPrimitives.ReadUInt32BigEndian (data.AsSpan (moovAt)), "moov is last");
+		var a = Mp4ChapterTestBuilder.Trak (moov, Mp4ChapterTestBuilder.AudioTrackId)!;
+		var t = Mp4ChapterTestBuilder.Trak (moov, Mp4ChapterTestBuilder.TextTrackId)!;
+		var s = WithTrackId (WithChild (a, "tref", null), Mp4ChapterTestBuilder.TextTrackId);
+		var sTref = WithTrackId (a, Mp4ChapterTestBuilder.TextTrackId);
+		var tVide = WithChild (t, "mdia", m => WithChild (m, "hdlr", h => {
+			var bytes = h.Data.ToArray ();
+			"vide"u8.CopyTo (bytes.AsSpan (8));
+			return new Mp4Box ("hdlr", new BinaryData (bytes));
+		}));
+		Mp4Box[] traks = shape switch {
+			"dup" => [a, t, s],
+			"dup_tref" => [a, t, sTref],
+			"sonly" => [WithChild (a, "tref", null), t, sTref],
+			"cm_img" => [a, tVide, s],
+			"cm_sfirst" => [a, s, t],
+			"cm_audref" => [a, s, WithTrackId (t, 3)],
+			"cm_only" => [tVide, WithTrackId (a, Mp4ChapterTestBuilder.TextTrackId)],
+			_ => throw new ArgumentException (shape),
+		};
+		var children = moov.Children.Where (c => c.Type != "trak").ToList ();
+		children.InsertRange (children.FindIndex (c => c.Type == "mvhd") + 1, traks);
+		return [.. data.AsSpan (0, moovAt), .. new Mp4Box ("moov", moov.Data, children).Render ().Span];
+	}
+
+	/// <summary>The box with its first <paramref name="type"/> child replaced by <paramref name="change"/>, or removed when that is null.</summary>
+	static Mp4Box WithChild (Mp4Box box, string type, Func<Mp4Box, Mp4Box>? change)
+	{
+		var children = new List<Mp4Box> ();
+		var done = false;
+		foreach (var child in box.Children) {
+			if (!done && child.Type == type) {
+				done = true;
+				if (change is not null)
+					children.Add (change (child));
+				continue;
+			}
+
+			children.Add (child);
+		}
+
+		return new Mp4Box (box.Type, box.Data, children, box.UsesExtendedSize, box.UnparsedTail, box.HeaderPrefix);
+	}
+
+	[TestMethod]
+	[DataRow ("dup")]
+	[DataRow ("dup_tref")]
+	[DataRow ("sonly")]
+	[DataRow ("cm_img")]
+	[DataRow ("cm_sfirst")]
+	[DataRow ("cm_audref")]
+	[DataRow ("cm_only")]
+	public void Save_RepeatedEdits_SharedTrackIdShapes_KeepOneChapterTrackAndTheSize (string shape)
+	{
+		// Identity is the trak object once IDs collide. Every path must agree on which trak is the chapter track,
+		// so each edit replaces it instead of adding another that no chap names.
+		var file = SharedTrackIdShape (shape);
+		var sizes = new List<int> ();
+		for (var round = 1; round <= 4; round++) {
+			file = EditChapters (file, round);
+			sizes.Add (file.Length);
+			var track = Mp4ChapterCodec.FindChapterTrack (Mp4ChapterTestBuilder.Moov (file));
+			Assert.IsNotNull (track, $"{shape} round {round}: a chap names the chapter text track");
+			CollectionAssert.AreEqual (Edit (round).Select (c => c.Title).ToArray (), Mp4ChapterTestBuilder.ReadFile (file).Chapters.Select (c => c.Title).ToArray (), $"{shape} round {round}");
+			var text = Encoding.UTF8.GetString (Mp4ChapterTestBuilder.SampleBytes (file, track.Id));
+			Assert.IsTrue (text.Contains ($"Opening {round}", StringComparison.Ordinal), $"{shape} round {round}: the chapter track holds the titles");
+		}
+
+		Assert.IsTrue (sizes.All (size => size == sizes[0]), $"{shape}: {string.Join (", ", sizes)}");
+		CollectionAssert.AreEqual (file, EditChapters (file, 4), $"{shape}: the same edit again changes nothing");
+
+		var cleared = Mp4ChapterTestBuilder.ReadFile (file);
+		cleared.Chapters = [];
+		var empty = Save (cleared, file);
+		Assert.AreEqual (0, Mp4ChapterTestBuilder.ReadFile (empty).Chapters.Count, $"{shape}: clear");
+		Assert.IsNull (Mp4ChapterCodec.FindChapterTrack (Mp4ChapterTestBuilder.Moov (empty)), $"{shape}: no chapter track after the clear");
+	}
+
+	[TestMethod]
+	[DataRow ("cm_only")]
+	[DataRow ("cm_img")]
+	[DataRow ("cm_sfirst")]
+	[DataRow ("cm_audref")]
+	public void Save_NewTrack_EverySoundTrakThatIsNotChapterMedia_GetsTheReference (string shape)
+	{
+		// A chap names a track_ID, which resolves to the first trak with it. Chapter media is that trak object
+		// unless it holds a chap of its own or is a sound trak, the read path's rule. So a sound trak that only
+		// shares an ID with a chapter image trak (cm_only, cm_img), or that a chap names (cm_sfirst, cm_audref),
+		// is a presentation track and gets the new chapter track's entry. A chapter image trak gets none.
+		var original = SharedTrackIdShape (shape);
+		var ids = Mp4ChapterTestBuilder.TrackIds (Mp4ChapterTestBuilder.Moov (original));
+		var moov = Mp4ChapterTestBuilder.Moov (EditChapters (original, 1));
+		var track = Mp4ChapterCodec.FindChapterTrack (moov);
+
+		Assert.IsNotNull (track, "a chap names the new chapter track");
+		CollectionAssert.DoesNotContain (ids, track.Id, "a new chapter track");
+		foreach (var sound in moov.Children.Where (c => c.Type == "trak" && HandlerOf (c) == "soun"))
+			CollectionAssert.Contains (Mp4ChapterTestBuilder.ChapReferences (sound), track.Id, $"{shape}: every sound trak names it");
+		foreach (var image in moov.Children.Where (c => c.Type == "trak" && HandlerOf (c) == "vide"))
+			Assert.IsNull (image.FindChild ("tref"), "the chapter image trak gets none");
 	}
 
 	[TestMethod]
