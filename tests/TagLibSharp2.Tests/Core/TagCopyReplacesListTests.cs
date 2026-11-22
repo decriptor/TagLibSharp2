@@ -430,32 +430,32 @@ public class TagCopyReplacesListTests
 	}
 
 	/// <summary>
-	/// Every Tag type in the library that keeps another tag, or a file that holds tags, is a view.
-	/// A view must name the tags it reads (Leaves), or a copy between it and one of them cuts lists.
-	/// This catches the next view added without that override.
+	/// Format tags that store their own fields and read no other tag. Every other Tag type is a view.
+	/// </summary>
+	static readonly string[] LeafTagTypes = [
+		"ApeTag", "AsfTag", "Id3v1Tag", "Id3v2Tag", "MatroskaTag", "Mp4Tag", "RiffInfoTag", "VorbisComment",
+	];
+
+	/// <summary>
+	/// Every concrete Tag type in the library is either a leaf format tag on the list above, or a view
+	/// that names the tags it reads (Leaves). A new type fails here until someone decides which it is,
+	/// whatever shape it uses to hold its tags; a view that does not name them would cut lists on a copy
+	/// between it and one of its own tags.
 	/// </summary>
 	[TestMethod]
-	public void EveryViewType_NamesTheTagsItReads ()
+	public void EveryTagType_IsALeafOrAViewThatNamesItsTags ()
 	{
-		static bool HoldsTags (Type type) =>
-			typeof (Tag).IsAssignableFrom (type)
-			|| (type.IsArray && typeof (Tag).IsAssignableFrom (type.GetElementType ()!))
-			|| type.GetProperties (BindingFlags.Public | BindingFlags.Instance).Any (p => typeof (Tag).IsAssignableFrom (p.PropertyType));
-
+		var unclassified = new List<string> ();
 		var views = new List<string> ();
-		var missing = new List<string> ();
 		foreach (var type in typeof (Tag).Assembly.GetTypes ().Where (t => t.IsClass && !t.IsAbstract && typeof (Tag).IsAssignableFrom (t))) {
-			var wraps = type.GetFields (BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-				.Any (f => HoldsTags (f.FieldType));
-			if (!wraps)
-				continue;
-			views.Add (type.Name);
 			var leaves = type.GetMethod ("Leaves", BindingFlags.Instance | BindingFlags.NonPublic)!;
-			if (leaves.DeclaringType != type)
-				missing.Add (type.Name);
+			if (leaves.DeclaringType != typeof (Tag))
+				views.Add (type.Name);
+			else if (!LeafTagTypes.Contains (type.Name) || type.BaseType != typeof (Tag))
+				unclassified.Add (type.FullName!);
 		}
 
-		Assert.IsEmpty (missing, string.Join (",", missing));
+		Assert.IsEmpty (unclassified, string.Join (",", unclassified));
 		foreach (var name in new[] { "CombinedTag", "FlacTag", "AiffTag" })
 			Assert.Contains (name, views);
 	}
