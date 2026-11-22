@@ -62,8 +62,8 @@ public sealed class Mp4File : IMediaFile
 	/// </remarks>
 	public Mp4Tag? Tag { get; set; }
 
-	// The tag as read. A different tag assigned to Tag replaces the whole tag on save: it is
-	// written as plain values, and the fields of a second meta (moov/meta) the read tag knew go.
+	// The tag as read. A different tag assigned to Tag replaces the mapped fields on save, in
+	// every meta, and the items the tag does not map stay; null removes all metadata, as Clear.
 	readonly Mp4Tag? _readTag;
 
 	/// <summary>
@@ -2225,12 +2225,10 @@ public sealed class Mp4File : IMediaFile
 		}
 	}
 
-	/// <summary>
-	/// Rebuilds the moov box with updated metadata in udta/meta/ilst.
-	/// </summary>
-	// The tag as it is written. A tag assigned in place of the one read (or null) replaces the
-	// mapped fields only: the file's tag is read again, cleared (which keeps the items the tag
-	// does not map, such as Apple's make, model and location), and given the assigned values.
+	// The tag as it is written. A tag assigned in place of the one read replaces the mapped
+	// fields only: the file's tag is read again, its mapped fields cleared (the items the tag does
+	// not map, such as Apple's make, model and location, stay), and given the assigned values.
+	// Null removes all metadata of every meta, the same as Clear on the tag read.
 	Mp4Tag? TagToSave (Mp4Box originalMoov)
 	{
 		if (Tag is not null && ReferenceEquals (Tag, _readTag))
@@ -2240,12 +2238,19 @@ public sealed class Mp4File : IMediaFile
 		if (fileTag is null)
 			return Tag?.Detached ();
 
-		fileTag.Clear ();
-		if (Tag is not null)
-			fileTag.TakeValuesFrom (Tag);
+		if (Tag is null) {
+			fileTag.Clear ();
+			return fileTag;
+		}
+
+		fileTag.ClearMappedFields ();
+		fileTag.TakeValuesFrom (Tag);
 		return fileTag;
 	}
 
+	/// <summary>
+	/// Rebuilds the moov box with updated metadata in udta/meta/ilst.
+	/// </summary>
 	BinaryData RebuildMoovWithMetadata (Mp4Box originalMoov)
 	{
 		using var moovContent = new BinaryDataBuilder ();

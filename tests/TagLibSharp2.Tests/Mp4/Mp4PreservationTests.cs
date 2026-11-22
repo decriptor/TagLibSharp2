@@ -433,8 +433,8 @@ public class Mp4PreservationTests
 		file.SetFreeformTag (mean, "EMPTYF", "filled");
 
 		var rendered = file.Render (data);
-		// Clear removes the fields and their items; an atom the tag does not map stays.
-		Assert.AreEqual (1, Count (rendered.Span, "orch"u8));
+		// Clear removes all metadata, including an atom the tag does not map.
+		Assert.AreEqual (0, Count (rendered.Span, "orch"u8));
 		Assert.AreEqual (1, Count (rendered.Span, NameType ()));
 		Assert.AreEqual (0, Count (rendered.Span, "Artist"u8));
 		Assert.AreEqual (2, Count (rendered.Span, "----"u8));
