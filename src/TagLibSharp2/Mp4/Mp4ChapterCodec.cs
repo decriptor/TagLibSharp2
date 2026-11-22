@@ -572,6 +572,24 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
+	/// A cap on steps of work, shared by every pass that the file can make repeat (one per track, one per
+	/// sample). <see cref="Steps"/> counts what was taken, for the work-bound tests.
+	/// </summary>
+	internal sealed class StepBudget (long limit)
+	{
+		public long Steps { get; private set; }
+
+		/// <summary>Takes one step; false once the limit is spent, and the caller stops.</summary>
+		public bool Take ()
+		{
+			if (Steps >= limit)
+				return false;
+			Steps++;
+			return true;
+		}
+	}
+
+	/// <summary>
 	/// A file range that references must avoid. Each range is tested as it is found and none is stored, so the
 	/// work is bounded by the bytes that describe the ranges, not by how many ranges they declare.
 	/// </summary>
@@ -972,6 +990,14 @@ internal static class Mp4ChapterCodec
 	/// image tracks), and the references to them.
 	/// </para>
 	/// <para>
+	/// A set replaces every chapter title track with the one list. The first text track a <c>chap</c> names is
+	/// rebuilt, and every other one goes the way a clear removes it, so no reader shows old titles: ffprobe can
+	/// take a later one, and AVFoundation picks one per locale. Two kinds of text track stay. A chapter URL
+	/// track (Apple enhanced podcasts) has samples that carry a hypertext modifier box (<c>href</c>, 3GPP
+	/// TS 26.245 §5.17). A text track whose samples cannot all be read cannot be told apart, so it stays too.
+	/// Chapter image tracks are video tracks and are not touched.
+	/// </para>
+	/// <para>
 	/// No track is added to a fragmented movie (<c>mvex</c>, §8.8.1, needs a trex per track) or to a moov with
 	/// no trak; chpl alone carries the list there. A chapter track with samples in movie fragments is refused
 	/// (<see cref="ChapterPlan.Error"/>): fragments add samples to tracks that moov declares (§8.8.1), so a
@@ -983,12 +1009,19 @@ internal static class Mp4ChapterCodec
 	/// position of the sample data is known.
 	/// </para>
 	/// </remarks>
+	/// <param name="moov">The movie box.</param>
+	/// <param name="fragments">Top-level moof boxes in file order, with their file offsets.</param>
+	/// <param name="chapters">The list to write; empty clears.</param>
+	/// <param name="duration">The movie duration, for the last chapter.</param>
+	/// <param name="quickTime">Whether a new track uses the QuickTime layout.</param>
+	/// <param name="file">The whole file, to read the samples of extra chapter text tracks.</param>
 	public static ChapterPlan Plan (
 		Mp4Box moov,
 		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
 		IReadOnlyList<Mp4Chapter> chapters,
 		TimeSpan duration,
-		bool quickTime)
+		bool quickTime,
+		ReadOnlySpan<byte> file = default)
 	{
 		var chapterTracks = FindChapterTracks (moov);
 		var existing = chapterTracks.Count > 0 ? chapterTracks[0] : null;
@@ -998,31 +1031,26 @@ internal static class Mp4ChapterCodec
 			// chapter images (video). Apple players show chapters from any of them, so all of them go.
 			// The trak objects go, not every trak with their IDs: a trak that shares an ID is not chapter media.
 			var media = FindChapterTracks (moov, textOnly: false);
-			var removed = new HashSet<uint> (media.Select (t => t.Id));
-			if (HasFragments (fragments, removed))
+			if (HasFragments (fragments, new HashSet<uint> (media.Select (t => t.Id))))
 				return ChapterPlan.Refused (FragmentedChapterTrackError);
 
-			var removedTraks = new TrakSet (media);
-			children.RemoveAll (removedTraks.Contains);
-
-			// Every chap entry for a removed track goes, even when another trak shares its ID: the reference
-			// meant the chapter track. A trex stays while a remaining trak has its ID.
-			if (removed.Count > 0)
-				ReplaceReferences (children, removed, add: false);
-			var unused = new HashSet<uint> (removed);
-			foreach (var child in children) {
-				if (child.Type == "trak" && TryReadTrackId (child, out var id))
-					unused.Remove (id);
-			}
-
-			if (unused.Count > 0)
-				WithoutTrex (children, unused);
-
-			return new ChapterPlan (BinaryData.Empty, children, -1, [], null, media) { TrakLookups = removedTraks.Steps };
+			var lookups = RemoveTraks (children, media);
+			return new ChapterPlan (BinaryData.Empty, children, -1, [], null, media) { TrakLookups = lookups };
 		}
 
-		if (existing is not null && HasFragments (fragments, [existing.Id]))
+		// The other title tracks go (see remarks). Their fragment samples, if any, would stay as a stale list.
+		// One budget for all of them: a file declares how many tracks and samples there are, not how many bytes.
+		var extras = new List<ChapterTrack> ();
+		var budget = new StepBudget (file.Length);
+		for (var i = 1; i < chapterTracks.Count; i++) {
+			if (IsTitleTrack (chapterTracks[i].Trak, file, budget))
+				extras.Add (chapterTracks[i]);
+		}
+
+		if (existing is not null && HasFragments (fragments, [existing.Id, .. extras.Select (t => t.Id)]))
 			return ChapterPlan.Refused (FragmentedChapterTrackError);
+		if (extras.Count > 0)
+			RemoveTraks (children, extras);
 
 		var chpl = RenderChpl (chapters);
 		var lastTrak = children.FindLastIndex (b => b.Type == "trak");
@@ -1062,7 +1090,105 @@ internal static class Mp4ChapterCodec
 		if (existing is null)
 			ReplaceReferences (children, new HashSet<uint> { trackId }, add: true);
 		var ordinal = children.Where (b => b.Type == "trak").ToList ().IndexOf (trak);
-		return new ChapterPlan (chpl, children, ordinal, samples, null, existing is null ? [] : [existing]);
+		// Only the rebuilt track's old samples count as replaced: a removed extra title track's samples stay as
+		// dead bytes, so an mdat that holds them is kept, as when they share an mdat with other media.
+		return new ChapterPlan (chpl, children, ordinal, samples, null, existing is null ? [] : [existing]) {
+			SampleSteps = budget.Steps,
+		};
+	}
+
+	/// <summary>
+	/// Removes <paramref name="tracks"/> from <paramref name="children"/> by trak object, every <c>chap</c> entry
+	/// for their IDs (the entry meant that trak, even when another trak shares its ID), and the trex (§8.8.3) of
+	/// each ID no remaining trak has. Returns the set lookups made, a step count for the work-bound tests.
+	/// </summary>
+	static long RemoveTraks (List<Mp4Box> children, List<ChapterTrack> tracks)
+	{
+		var removedTraks = new TrakSet (tracks);
+		children.RemoveAll (removedTraks.Contains);
+
+		var removed = new HashSet<uint> (tracks.Select (t => t.Id));
+		if (removed.Count > 0)
+			ReplaceReferences (children, removed, add: false);
+		var unused = new HashSet<uint> (removed);
+		foreach (var child in children) {
+			if (child.Type == "trak" && TryReadTrackId (child, out var id))
+				unused.Remove (id);
+		}
+
+		if (unused.Count > 0)
+			WithoutTrex (children, unused);
+		return removedTraks.Steps;
+	}
+
+	/// <summary>
+	/// True when the chapter text trak <paramref name="trak"/> has samples in its moov sample table, every one
+	/// lies in <paramref name="file"/>, and none carries a hypertext modifier box (<c>href</c>, 3GPP TS 26.245
+	/// §5.17): a title track. False for a chapter URL track. Also false when that cannot be told: a sample
+	/// outside the file, tables that do not parse, no samples in moov, or <paramref name="budget"/> spent.
+	/// Each sample and each modifier box costs one step from <paramref name="budget"/>, and no sample table is
+	/// copied, so the work across every extra track is bounded by the file's length.
+	/// </summary>
+	static bool IsTitleTrack (Mp4Box trak, ReadOnlySpan<byte> file, StepBudget budget)
+	{
+		var stbl = trak.FindChild ("mdia")?.FindChild ("minf")?.FindChild ("stbl");
+		var co64 = stbl?.FindChild ("co64");
+		var stco = stbl?.FindChild ("stco");
+		var stsc = stbl?.FindChild ("stsc");
+		if (stbl is null || (stco is null && co64 is null) || stsc is null)
+			return false;
+
+		var width = co64 is not null ? 8 : 4;
+		var chunkTable = (co64 ?? stco)!.Data.Span;
+		if (!TableComplete (chunkTable, 8, width) || !TableComplete (stsc.Data.Span, 8, 12) || !SampleSizes.TryRead (stbl, out var sizes))
+			return false;
+
+		var chunks = ReadChunkOffsets (chunkTable, width);
+		var rows = ReadStscRows (stsc.Data.Span);
+		var row = 0;
+		long sample = 0;
+		for (var chunk = 0; chunk < chunks.Count && sample < sizes.Count; chunk++) {
+			var chunkNumber = (uint)chunk + 1;
+			while (row + 1 < rows.Count && rows[row + 1].FirstChunk <= chunkNumber)
+				row++;
+			var perChunk = rows.Count > 0 && rows[row].FirstChunk <= chunkNumber ? rows[row].SamplesPerChunk : 0u;
+			var offset = chunks[chunk];
+			for (var k = 0u; k < perChunk && sample < sizes.Count; k++, sample++) {
+				if (!budget.Take () || !sizes.TrySum (sample, 1, out var size))
+					return false;
+				var readLength = (int)Math.Min (size, SampleReadLimit);
+				if (offset < 0 || offset > file.Length - readLength)
+					return false;
+				if (HasHyperText (file.Slice ((int)offset, readLength), budget))
+					return false;
+				offset += size;
+			}
+		}
+
+		return sample > 0;
+	}
+
+	/// <summary>
+	/// True when a text sample (16-bit length, text, then sample modifier boxes; 3GPP TS 26.245 §5.16-5.17)
+	/// carries an <c>href</c> modifier box. The walk stops at the first box that does not fit, and each box
+	/// costs one step from <paramref name="budget"/>; a spent budget also stops it.
+	/// </summary>
+	internal static bool HasHyperText (ReadOnlySpan<byte> sample, StepBudget budget)
+	{
+		if (sample.Length < 2)
+			return false;
+
+		var pos = 2 + Math.Min (BinaryPrimitives.ReadUInt16BigEndian (sample), sample.Length - 2);
+		while (sample.Length - pos >= 8 && budget.Take ()) {
+			if (sample.Slice (pos + 4, 4).SequenceEqual ("href"u8))
+				return true;
+			var size = BinaryPrimitives.ReadUInt32BigEndian (sample.Slice (pos));
+			if (size < 8 || size > (uint)(sample.Length - pos))
+				return false;
+			pos += (int)size;
+		}
+
+		return false;
 	}
 
 	/// <summary>
@@ -2427,6 +2553,12 @@ internal static class Mp4ChapterCodec
 
 		/// <summary>Lookups a clear made in the set of removed traks: a step count for the work-bound tests.</summary>
 		public long TrakLookups { get; init; }
+
+		/// <summary>
+		/// Samples and modifier boxes a set examined to tell title tracks from URL tracks: a step count for the
+		/// work-bound tests. It never exceeds the file's length.
+		/// </summary>
+		public long SampleSteps { get; init; }
 
 		public static ChapterPlan Refused (string error) => new (BinaryData.Empty, [], -1, [], error);
 
