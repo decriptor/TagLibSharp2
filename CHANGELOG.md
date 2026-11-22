@@ -49,10 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - AVI INFO text honours a `CSET` chunk (code page 65001, 1252, 0 or 28591); without one, valid UTF-8 (ffmpeg's and TagLib#'s encoding) is read as UTF-8 and other text as Windows-1252. On save, an unchanged value keeps its exact bytes and the file keeps its `CSET` (or its absence); changed values are written in the file's code page when they fit it (ASCII only when there is no `CSET`), otherwise the list becomes UTF-8 with a `CSET` of code page 65001 before it. A save that would have to rewrite an untouched value in another code page (for example Shift-JIS or cp1251) as UTF-8 is refused, naming the field. WAV INFO is unchanged (Latin-1).
   - Limits: a save loads the whole file (about the file's size in memory when nothing moves, twice that when data moves), so AVI files of 2 GiB or more cannot be saved yet. `MediaFile.Read` and `AviFile.ReadFromFile` read only the header and tag chunks.
 
-### Fixed
-
-- `MediaFile.Read` (path or stream) takes the long detection peek whenever the first 32 bytes match no magic, even when the file name has a known extension, so a mislabeled file (an MP3 named `.avi`, `.wav` or `.mkv`) is found by its content as `MediaFile.ReadFromData` already did.
-
 #### Raw AAC (ADTS/ADIF) Support
 - `AacFile` reads and writes raw AAC files (`.aac`): ADTS (ISO/IEC 13818-7 §6.2, MPEG-2 and MPEG-4) and ADIF (§6.1)
 - `AacAudioProperties`: duration from every ADTS frame header (1024 samples per raw data block), average bitrate, sample rate, channels (including a program config element when channel_configuration is 0), profile, MPEG version, and frame count. ADIF duration comes from the header bitrate
