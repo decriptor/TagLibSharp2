@@ -683,9 +683,9 @@ public sealed class Mp4File : IMediaFile
 	}
 
 	/// <summary>
-	/// Clears all metadata from this file.
+	/// Clears the tag: every tag field, mapped and unmapped. Chapters are file structure, not tag fields, and
+	/// stay; set <see cref="Chapters"/> to an empty list to remove them.
 	/// </summary>
-	/// <remarks>Chapters are not tag fields and stay; <c>Chapters = []</c> removes them.</remarks>
 	public void ClearAllMetadata () => Tag?.Clear ();
 
 	/// <summary>
@@ -753,8 +753,8 @@ public sealed class Mp4File : IMediaFile
 	/// A set replaces every chapter title track with this one list. A file can hold several, for example one
 	/// per language (AVFoundation picks one by locale), and the list has no locale. So the first title track
 	/// is rebuilt and the others are removed, the way a clear removes them, and every reader shows the new
-	/// list. Two kinds of text track stay. A chapter URL track (Apple enhanced podcasts) has samples that carry
-	/// an <c>href</c> hypertext modifier (3GPP TS 26.245 §5.17). A text track whose samples cannot all be read
+	/// list. A track whose chapter reference named a removed title track then names the rebuilt one. Two kinds of text track stay. A chapter URL track (Apple enhanced podcasts) has samples that carry
+	/// an <c>href</c> hypertext modifier (3GPP TS 26.245 §5.17.1.5). A text track whose samples cannot all be read
 	/// cannot be told apart from one, so it stays too. Chapter image tracks stay.
 	/// </para>
 	/// <para>

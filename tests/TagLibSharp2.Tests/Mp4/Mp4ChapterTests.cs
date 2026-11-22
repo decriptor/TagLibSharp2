@@ -1837,7 +1837,9 @@ public class Mp4ChapterTests
 	/// The chapter-track fixture (A: audio, chap [2]; T: titles, ID 2, English) plus a third trak X with ID 3
 	/// that A's chap also names. title: X is T in German, with the same samples. url: X's three samples are
 	/// URLs that carry an href modifier (3GPP TS 26.245 §5.17), in an mdat before moov. unreadable: X's chunk
-	/// lies past the end of the file. empty: X has no samples in moov.
+	/// lies past the end of the file. empty: X has no samples in moov. split: X is German titles, and a second
+	/// sound trak S (ID 4) names X while A names T, so each audio track has its own language's chapters.
+	/// titlechap: title, and T itself holds a chap naming X.
 	/// </summary>
 	static byte[] ExtraTextTrackShape (string kind)
 	{
@@ -1851,6 +1853,7 @@ public class Mp4ChapterTests
 		byte[] before = [];
 		switch (kind) {
 			case "title":
+			case "titlechap":
 				x = WithLanguage (x, German);
 				break;
 			case "url": {
@@ -1873,18 +1876,33 @@ public class Mp4ChapterTests
 				x = WithSamples (x, (uint)(data.Length + 1000), [10, 10, 10]);
 				break;
 			case "empty":
-				x = WithSamples (x, 0, []);
+			case "split":
+				x = kind == "split" ? WithLanguage (x, German) : WithSamples (x, 0, []);
 				break;
 			default:
 				throw new ArgumentException (kind);
 		}
 
-		var chap = new byte[8];
-		BinaryPrimitives.WriteUInt32BigEndian (chap, Mp4ChapterTestBuilder.TextTrackId);
-		BinaryPrimitives.WriteUInt32BigEndian (chap.AsSpan (4), 3);
-		a = WithChild (a, "tref", _ => new Mp4Box ("tref", new BinaryData (Mp4TestBuilder.CreateBox ("chap", chap))));
+		static Mp4Box Chap (Mp4Box trak, params uint[] ids)
+		{
+			var chap = new byte[ids.Length * 4];
+			for (var i = 0; i < ids.Length; i++)
+				BinaryPrimitives.WriteUInt32BigEndian (chap.AsSpan (i * 4), ids[i]);
+			var tref = new Mp4Box ("tref", new BinaryData (Mp4TestBuilder.CreateBox ("chap", chap)));
+			if (trak.FindChild ("tref") is not null)
+				return WithChild (trak, "tref", _ => tref);
+			var children = trak.Children.ToList ();
+			children.Insert (children.FindIndex (c => c.Type == "mdia"), tref);
+			return new Mp4Box ("trak", trak.Data, children);
+		}
+
+		Mp4Box[] traks = kind switch {
+			"split" => [Chap (a, Mp4ChapterTestBuilder.TextTrackId), Chap (WithTrackId (a, 4), 3), t, x],
+			"titlechap" => [Chap (a, Mp4ChapterTestBuilder.TextTrackId, 3), Chap (t, 3), x],
+			_ => [Chap (a, Mp4ChapterTestBuilder.TextTrackId, 3), t, x],
+		};
 		var children = moov.Children.Where (c => c.Type != "trak").ToList ();
-		children.InsertRange (children.FindIndex (c => c.Type == "mvhd") + 1, [a, t, x]);
+		children.InsertRange (children.FindIndex (c => c.Type == "mvhd") + 1, traks);
 		return [.. data.AsSpan (0, moovAt), .. before, .. new Mp4Box ("moov", moov.Data, children).Render ().Span];
 	}
 
@@ -1933,6 +1951,60 @@ public class Mp4ChapterTests
 		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Select (c => c.Title).ToArray ());
 		var again = EditChapters (saved, 2);
 		Assert.AreEqual (saved.Length, again.Length, "the next edit keeps the size");
+	}
+
+	[TestMethod]
+	public void Save_SetChapters_TrackNamingARemovedTitleTrack_NamesTheRebuiltOne ()
+	{
+		// S's only chap named the German title track. A set leaves one title track, and S then names it: every
+		// track that had a chapter list still has one. A clear drops the reference as before.
+		var original = ExtraTextTrackShape ("split");
+
+		var saved = EditChapters (original, 1);
+		var moov = Mp4ChapterTestBuilder.Moov (saved);
+
+		CollectionAssert.AreEqual (new uint[] { 1, 4, 2 }, Mp4ChapterTestBuilder.TrackIds (moov), "the German title trak is gone");
+		CollectionAssert.AreEqual (new uint[] { 2 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		CollectionAssert.AreEqual (new uint[] { 2 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 4)!), "S names the rebuilt title track");
+		Assert.AreEqual (saved.Length, EditChapters (saved, 2).Length, "the next edit keeps the size");
+
+		var file = Mp4ChapterTestBuilder.ReadFile (saved);
+		file.Chapters = [];
+		var cleared = Mp4ChapterTestBuilder.Moov (Save (file, saved));
+		Assert.IsNull (Mp4ChapterTestBuilder.Trak (cleared, 4)!.FindChild ("tref"), "a clear drops it");
+		Assert.IsNull (Mp4ChapterTestBuilder.Trak (cleared, 1)!.FindChild ("tref"));
+	}
+
+	[TestMethod]
+	public void Save_SetChapters_TitleTrackHoldingAChapToTheRemovedOne_IsRebuilt ()
+	{
+		// The first title track itself names the German one. Removing the German track must not first rewrite
+		// the trak the set is about to replace: the set succeeds and leaves one title track.
+		var saved = EditChapters (ExtraTextTrackShape ("titlechap"), 1);
+		var moov = Mp4ChapterTestBuilder.Moov (saved);
+
+		CollectionAssert.AreEqual (new uint[] { 1, 2 }, Mp4ChapterTestBuilder.TrackIds (moov));
+		CollectionAssert.AreEqual (new uint[] { 2 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Select (c => c.Title).ToArray ());
+	}
+
+	[TestMethod]
+	[DataRow (new uint[] { 3 }, new uint[] { 2 })]
+	[DataRow (new uint[] { 3, 2 }, new uint[] { 2 })]
+	[DataRow (new uint[] { 2, 3 }, new uint[] { 2 })]
+	[DataRow (new uint[] { 3, 5 }, new uint[] { 2, 5 })]
+	[DataRow (new uint[] { 5, 3, 6, 3 }, new uint[] { 5, 2 })]
+	public void RebuildTref_Retarget_NamesTheRebuiltTrackOnceInPlace (uint[] chap, uint[] expected)
+	{
+		// Removed title tracks 3 and 6 retarget to the rebuilt title track 2: once, at the first removed or
+		// existing entry for it; other entries (5, an image track) keep their order.
+		var ids = new byte[chap.Length * 4];
+		for (var i = 0; i < chap.Length; i++)
+			BinaryPrimitives.WriteUInt32BigEndian (ids.AsSpan (i * 4), chap[i]);
+		var tref = Mp4ChapterCodec.RebuildTref (Mp4TestBuilder.CreateBox ("chap", ids), [3, 6], add: false, retarget: 2);
+
+		var trak = new Mp4Box ("trak", BinaryData.Empty, [new Mp4Box ("tref", tref)]);
+		CollectionAssert.AreEqual (expected, Mp4ChapterTestBuilder.ChapReferences (trak));
 	}
 
 	[TestMethod]
