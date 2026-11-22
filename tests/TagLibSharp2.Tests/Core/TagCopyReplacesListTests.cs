@@ -430,33 +430,6 @@ public class TagCopyReplacesListTests
 	}
 
 	/// <summary>
-	/// Format tags that store their own fields and read no other tag, by full name. Every other Tag type
-	/// is a view.
-	/// </summary>
-	static readonly string[] LeafTagTypes = [
-		"TagLibSharp2.Ape.ApeTag", "TagLibSharp2.Asf.AsfTag", "TagLibSharp2.Id3.Id3v1Tag", "TagLibSharp2.Id3.Id3v2.Id3v2Tag",
-		"TagLibSharp2.Matroska.MatroskaTag", "TagLibSharp2.Mp4.Mp4Tag", "TagLibSharp2.Riff.RiffInfoTag", "TagLibSharp2.Xiph.VorbisComment",
-	];
-
-	/// <summary>
-	/// Null when <paramref name="type"/> is a listed leaf that derives directly from Tag and keeps the base
-	/// Leaves, or a view that declares its own Leaves. Otherwise why it is unclassified. A view must name
-	/// its tags itself: an inherited Leaves was written for the base's tags, not the ones this type adds.
-	/// </summary>
-	static string? Unclassified (Type type)
-	{
-		var declaring = type.GetMethod ("Leaves", BindingFlags.Instance | BindingFlags.NonPublic)!.DeclaringType;
-		if (declaring == type)
-			return null;
-		if (declaring == typeof (Tag) && type.BaseType == typeof (Tag) && LeafTagTypes.Contains (type.FullName))
-			return null;
-		return $"{type.FullName} (Leaves from {declaring!.Name})";
-	}
-
-	static IEnumerable<Type> ConcreteTagTypes (Assembly assembly) =>
-		assembly.GetTypes ().Where (t => t.IsClass && !t.IsAbstract && typeof (Tag).IsAssignableFrom (t));
-
-	/// <summary>
 	/// Every concrete Tag type in the library is either a listed leaf format tag, or a view that declares
 	/// the tags it reads (Leaves). A new type fails here until someone decides which it is, whatever
 	/// shape it uses to hold its tags; a view that does not name them would cut lists on a copy between it
@@ -465,14 +438,15 @@ public class TagCopyReplacesListTests
 	[TestMethod]
 	public void EveryTagType_IsALeafOrAViewThatNamesItsTags ()
 	{
-		var types = ConcreteTagTypes (typeof (Tag).Assembly).ToList ();
-		var unclassified = types.Select (Unclassified).OfType<string> ().ToList ();
+		var types = TagTypeClassification.ConcreteTagTypes ();
+		var unclassified = TagTypeClassification.Unclassified ();
 
 		Assert.IsEmpty (unclassified, string.Join (",", unclassified));
-		foreach (var name in LeafTagTypes)
+		foreach (var name in TagTypeClassification.LeafTagTypeNames)
 			Assert.IsTrue (types.Any (t => t.FullName == name), name);
+		var views = TagTypeClassification.ViewTypes ().Select (t => t.Name).ToList ();
 		foreach (var name in new[] { "CombinedTag", "FlacTag", "AiffTag" })
-			Assert.IsTrue (types.Any (t => t.Name == name && t.GetMethod ("Leaves", BindingFlags.Instance | BindingFlags.NonPublic)!.DeclaringType == t), name);
+			Assert.Contains (name, views);
 	}
 
 	[TestMethod]
@@ -481,7 +455,7 @@ public class TagCopyReplacesListTests
 		var dummies = typeof (GuardDummies).GetNestedTypes (BindingFlags.NonPublic)
 			.Where (t => !t.IsAbstract && typeof (Tag).IsAssignableFrom (t)).ToList ();
 
-		var missed = dummies.Where (t => Unclassified (t) is null).Select (t => t.Name).ToList ();
+		var missed = dummies.Where (t => TagTypeClassification.Unclassified (t) is null).Select (t => t.Name).ToList ();
 
 		Assert.HasCount (11, dummies);
 		Assert.IsEmpty (missed, string.Join (",", missed));
