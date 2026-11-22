@@ -39,6 +39,12 @@ namespace TagLibSharp2.Matroska;
 /// not block other edits.
 /// </para>
 /// <para>
+/// When a save has to move the <c>Chapters</c> element, it goes in front of the first Cluster, right after
+/// the SeekHead; with an ordered edition, right after the first Info and before the first Tracks when the
+/// file has them in that order (RFC 9559 section 6.6). A Chapters element that still fits where it was, or
+/// in a Void, is written there instead.
+/// </para>
+/// <para>
 /// Untrusted input is bounded: atoms nest at most <c>32</c> levels, and at most 65,536 child elements are
 /// parsed. Past either limit the bytes are kept, the rest of a parent as one copy, so memory stays linear.
 /// </para>
