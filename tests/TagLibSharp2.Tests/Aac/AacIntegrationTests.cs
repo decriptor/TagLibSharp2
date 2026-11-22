@@ -22,6 +22,10 @@ public class AacIntegrationTests : FileFormatTestBase
 {
 	const string TestFileEnvVar = "TAGLIBSHARP2_TEST_AAC";
 
+	// A negative control: a file that looks like AAC but is not a valid stream, for example an ADTS header
+	// with a reserved sampling_frequency_index (ISO/IEC 13818-7 Table 35).
+	const string InvalidFileEnvVar = "TAGLIBSHARP2_TEST_AAC_INVALID";
+
 	public TestContext TestContext { get; set; } = null!;
 
 	[TestMethod]
@@ -73,5 +77,17 @@ public class AacIntegrationTests : FileFormatTestBase
 		Assert.AreEqual ("Integration", reread.File!.Tag!.Title);
 		Assert.AreEqual (file.Properties!.Duration, reread.File.Properties!.Duration);
 		CollectionAssert.AreEqual (frames, saved.AsSpan (reread.File.Id3v2Size, frames.Length).ToArray ());
+	}
+
+	[TestMethod]
+	public void Read_InvalidAac_DoesNotOpenAsAac ()
+	{
+		var path = SkipIfNoTestFile (InvalidFileEnvVar, "invalid AAC");
+
+		var direct = AacFile.ReadFromFile (path);
+		var streamed = MediaFile.Read (path);
+
+		Assert.IsFalse (direct.IsSuccess, "an invalid stream must not open as AAC");
+		Assert.IsFalse (streamed.IsSuccess && streamed.Format == MediaFormat.Aac, $"{streamed.Format} {streamed.Error}");
 	}
 }

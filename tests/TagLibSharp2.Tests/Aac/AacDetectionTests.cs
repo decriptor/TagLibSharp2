@@ -165,7 +165,9 @@ public class AacDetectionTests
 			("adts", Adts (100, length: 400), true) }) {
 			using var stream = new CountingStream (data);
 			Assert.AreEqual (aac, AacFile.IsValidFormat (stream), label);
-			Assert.IsTrue (stream.BytesRead <= 10 + 16 + 7, $"{label}: read {stream.BytesRead} bytes");
+			// An AAC start also checks the trailing-tag markers: 3 bytes at EOF-128 and 8 at EOF-32.
+			var budget = 10 + 16 + 7 + (aac ? 3 + 8 : 0);
+			Assert.IsTrue (stream.BytesRead <= budget, $"{label}: read {stream.BytesRead} bytes, budget {budget}");
 		}
 	}
 
@@ -232,6 +234,46 @@ public class AacDetectionTests
 		for (var length = tagEnd + 1; length <= data.Length; length++) {
 			Assert.AreNotEqual (MediaFormat.Aac, MediaFile.DetectFormat (data.AsSpan (0, length)), $"prefix {length}");
 			Assert.IsFalse (AacFile.IsValidFormat (data.AsSpan (0, length)), $"prefix {length}");
+
+			// The stream twin, which MediaFile.Read (path or stream) uses.
+			var prefix = data.AsSpan (0, length).ToArray ();
+			using (var stream = new MemoryStream (prefix))
+				Assert.IsFalse (AacFile.IsValidFormat (stream), $"stream prefix {length}");
+			using (var stream = new MemoryStream (prefix))
+				Assert.AreNotEqual (MediaFormat.Aac, MediaFile.Read (stream).Format, $"MediaFile.Read prefix {length}");
+		}
+	}
+
+	/// <summary>The trailing tags a cut start header can run into.</summary>
+	static IEnumerable<(string Name, byte[] Bytes)> TrailingTags () => [
+		("none", []),
+		("ID3v1", Id3v1Bytes ("Back")),
+		("APEv2", new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ()),
+		("APEv2+ID3v1", Concat (new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray (), Id3v1Bytes ("Back")))
+	];
+
+	[TestMethod]
+	public async Task StartHeaderCutByATrailingTag_IsNeverAac ()
+	{
+		// A start header must lie inside the audio region. With a trailing tag after a cut header, the tag's
+		// bytes would otherwise complete it ("TAG..." parsed as ADIF or ADTS fields).
+		var adif = Adif (64_000, comment: "x", payloadBytes: 0);
+		var adts = AdtsFrame (64)[..7];
+		foreach (var (kind, header) in new[] { ("ADIF", adif), ("ADTS", adts) }) {
+			foreach (var (tagName, tail) in TrailingTags ()) {
+				for (var cut = 3; cut < header.Length; cut++) {
+					var data = Concat (Id3v2Bytes ("Front"), header[..cut], tail);
+					var label = $"{kind} cut {cut} + {tagName}";
+
+					Assert.AreNotEqual (MediaFormat.Aac, await DetectEverywhere (data), label);
+					Assert.IsFalse (AacFile.Read (data).IsSuccess, label);
+					Assert.IsFalse (AacFile.IsValidFormat (data), label);
+				}
+
+				// The whole header (for ADTS, the whole frame, which the tag then confirms) opens as AAC.
+				var whole = Concat (Id3v2Bytes ("Front"), kind == "ADTS" ? AdtsFrame (64) : header, tail);
+				Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (whole), $"{kind} whole + {tagName}");
+			}
 		}
 	}
 
@@ -258,8 +300,8 @@ public class AacDetectionTests
 
 			// Both twins name the same first frame, so no frame is lost.
 			using var stream = new MemoryStream (data);
-			Assert.AreEqual (gap, AacStream.FindStart (data.AsSpan (tag.Length), AacStream.FirstFrameSearchBytes), $"span, gap {gap}");
-			Assert.AreEqual (tag.Length + gap, AacStream.FindStart (stream, tag.Length, data.Length, AacStream.FirstFrameSearchBytes), $"stream, gap {gap}");
+			Assert.AreEqual (gap, AacStream.FindStart (data.AsSpan (tag.Length), AacStream.FirstFrameSearchBytes, out _), $"span, gap {gap}");
+			Assert.AreEqual (tag.Length + gap, AacStream.FindStart (stream, tag.Length, data.Length, AacStream.FirstFrameSearchBytes, out _), $"stream, gap {gap}");
 			Assert.AreEqual (20, MediaFile.ReadFromData (data).GetFileAs<AacFile> ()!.Properties!.FrameCount, $"gap {gap}");
 		}
 	}
