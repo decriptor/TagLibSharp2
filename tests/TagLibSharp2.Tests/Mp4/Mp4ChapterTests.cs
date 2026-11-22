@@ -1279,6 +1279,11 @@ public class Mp4ChapterTests
 	[DataRow (21)]
 	[DataRow (22)]
 	[DataRow (23)]
+	[DataRow (24)]
+	[DataRow (25)]
+	[DataRow (26)]
+	[DataRow (27)]
+	[DataRow (28)]
 	public void Save_ChapterMdatReferencedByAnotherTrack_IsKept (int variant)
 	{
 		// One rule: the earlier chapter mdat goes only when every byte range anything else references can be
@@ -1301,7 +1306,12 @@ public class Mp4ChapterTests
 		// 21  stz2 4-bit sizes of 15, the chunk ending exactly at the mdat (drop); 22 one byte later (keep)
 		// 23  a moov meta that stops parsing at a bad box, with no iloc in its unread bytes (drop: every box carries
 		//     its type code, so no iloc hides there; iTunes files have metas with stray trailing bytes)
-		var keep = variant is not (10 or 12 or 15 or 18 or 19 or 21 or 23);
+		// 24  an unread file tail (after a bad box) that holds a meta whose iloc points into the mdat (keep)
+		// 25  a file-level iloc extent of length 0 that starts before the mdat: it runs to the end (keep)
+		// 26  stz2 4-bit sizes 0x0F (entry 0 is 0, entry 1 is 15), one sample per chunk, the chunk 10 bytes
+		//     before the mdat: its single sample is 0 bytes long (drop; the low nibble first would reach it)
+		// 27  audio aux info (saiz + saio, §8.7.8-9) at an offset in the mdat (keep); 28 elsewhere (drop)
+		var keep = variant is not (10 or 12 or 15 or 18 or 19 or 21 or 23 or 26 or 28);
 		var edited = EditChapters (Mp4ChapterTestBuilder.Build (new ()), 1);
 		byte[] bad = [0, 0, 0, 3, (byte)'b', (byte)'a', (byte)'d', (byte)'!'];
 		var moovAt = edited.AsSpan ().IndexOf ("moov"u8) - 4;
@@ -1322,6 +1332,7 @@ public class Mp4ChapterTests
 			19 or 20 => Mp4TestBuilder.CreateFullBox ("stz2", 0, 0, [0, 0, 0, 16, 0, 0, 0, count,
 				.. Enumerable.Range (0, count).SelectMany (_ => new byte[] { 0, Mp4ChapterTestBuilder.AudioSampleSize })]),
 			21 or 22 => Mp4TestBuilder.CreateFullBox ("stz2", 0, 0, [0, 0, 0, 4, 0, 0, 0, count, .. Enumerable.Repeat ((byte)0xFF, count / 2)]),
+			26 => Mp4TestBuilder.CreateFullBox ("stz2", 0, 0, [0, 0, 0, 4, 0, 0, 0, count, .. Enumerable.Repeat ((byte)0x0F, count / 2)]),
 			_ => Mp4TestBuilder.CreateFullBox ("stz2", 0, 0, [0, 0, 0, 8, 0, 0, 0, count,
 				.. Enumerable.Repeat ((byte)Mp4ChapterTestBuilder.AudioSampleSize, count)]),
 		};
@@ -1339,7 +1350,10 @@ public class Mp4ChapterTests
 			23 => (moovEnd, 0, Meta (hdlr, bad, Mp4TestBuilder.CreateBox ("free", [1, 2, 3, 4])), new[] { moovAt }),
 			12 => (edited.Length, 0, Meta (hdlr), Array.Empty<int> ()),
 			13 => (edited.Length, 0, Meta (hdlr, Iloc (0, 0)), Array.Empty<int> ()),
-			14 or 15 or 19 or 20 or 21 or 22 => (stszAt, stszLength, stz2, inStbl),
+			14 or 15 or 19 or 20 or 21 or 22 or 26 => (stszAt, stszLength, stz2, inStbl),
+			24 => (edited.Length, 0, [.. bad, .. Meta (hdlr, Iloc (0, 0))], Array.Empty<int> ()),
+			25 => (edited.Length, 0, Meta (hdlr, Iloc (0, 100, 0)), Array.Empty<int> ()),
+			27 or 28 => (stblEnd, 0, new byte[Saiz ().Length + Saio (0).Length], inStbl),
 			_ => (moovEnd, 0, Array.Empty<byte> (), new[] { moovAt }),
 		};
 
@@ -1358,10 +1372,11 @@ public class Mp4ChapterTests
 		var audioChunk = variant switch {
 			4 or 7 or 17 => chapterPayload - 50,
 			19 or 21 => boxStart - chunkLength,
+			26 => boxStart - 10,
 			20 or 22 => boxStart - chunkLength + 1,
 			_ => chapterPayload,
 		};
-		if (variant is 0 or 1 or 2 or 4 or 7 or 14 or 17 or 19 or 20 or 21 or 22)
+		if (variant is 0 or 1 or 2 or 4 or 7 or 14 or 17 or 19 or 20 or 21 or 22 or 26)
 			Mp4ChapterCodec.WriteChunkOffset (moov, Mp4ChapterTestBuilder.AudioTrackId, (uint)audioChunk);
 		moov.CopyTo (edited, moovAt);
 
@@ -1403,6 +1418,17 @@ public class Mp4ChapterTests
 			case 9:
 				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 16), Mp4ChapterTestBuilder.AudioSampleCount + 1);
 				break;
+			case 24:
+				inserted = [.. bad, .. Meta (hdlr, Iloc (0, chapterPayload))];
+				break;
+			case 26:
+				// One sample per chunk: the single chunk holds entry 0 only.
+				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stscAt + 20), 1);
+				break;
+			case 27:
+			case 28:
+				inserted = [.. Saiz (), .. Saio (variant == 27 ? chapterPayload : 120)];
+				break;
 			case 17:
 				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 12), uint.MaxValue);
 				BinaryPrimitives.WriteUInt32BigEndian (edited.AsSpan (stszAt + 16), uint.MaxValue);
@@ -1419,7 +1445,7 @@ public class Mp4ChapterTests
 		Assert.AreEqual (keep ? 3 : 2, ReadableTopLevelTypes (again).Count (t => t == "mdat"), keep ? "kept" : "dropped");
 		if (!keep)
 			Assert.AreEqual (EditChapters (again, 3).Length, again.Length, "a dropped mdat keeps the size constant");
-		if (variant is 3 or 5 or 6 or 10 or 12 or 13 or 16 or 18)
+		if (variant is 3 or 5 or 6 or 10 or 12 or 13 or 16 or 18 or 24 or 25 or 27 or 28)
 			CollectionAssert.AreEqual (Mp4ChapterTestBuilder.AudioPayload (), Mp4ChapterTestBuilder.SampleBytes (again, 1), "the parsed audio track is intact");
 		if (variant == 0) {
 			var audioAt = BinaryPrimitives.ReadUInt32BigEndian (Mp4ChapterTestBuilder.Trak (Mp4ChapterTestBuilder.Moov (again), 1)!
@@ -1428,13 +1454,73 @@ public class Mp4ChapterTests
 		}
 	}
 
+	[TestMethod]
+	[TestCategory ("Security")]
+	public void Save_ZeroWidthIlocExtents_CostOnlyTheirBytes ()
+	{
+		// iloc (§8.11.3) field sizes may be 0, so an extent can take no bytes: 64 eight-byte items declare
+		// 64 x 65,535 extents in about 530 bytes. The drop check tests each item's extent once, as it reads it,
+		// and stores nothing per extent. Each extent here covers the whole file, so the chapter mdat is kept.
+		var edited = EditChapters (Mp4ChapterTestBuilder.Build (new ()), 1);
+		const int items = 64;
+		var body = new byte[2 + 2 + (items * 8)];
+		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (2), items);
+		for (var i = 0; i < items; i++) {
+			BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (4 + (i * 8)), (ushort)(i + 1));
+			BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (4 + (i * 8) + 6), ushort.MaxValue);
+		}
+
+		var hdlr = Mp4TestBuilder.CreateFullBox ("hdlr", 0, 0, [0, 0, 0, 0, .. "pict"u8, .. new byte[13]]);
+		byte[] file = [.. edited, .. Meta (hdlr, Mp4TestBuilder.CreateFullBox ("iloc", 1, 0, body))];
+		var parsed = Mp4ChapterTestBuilder.ReadFile (file);
+		parsed.Chapters = Edit (2);
+
+		var before = GC.GetAllocatedBytesForCurrentThread ();
+		var again = parsed.Render (file).ToArray ();
+		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+
+		Assert.AreEqual (3, Mp4ChapterTestBuilder.TopLevelTypes (again).Count (t => t == "mdat"), "kept");
+		Assert.IsTrue (allocated < 8 * 1024 * 1024, $"{allocated:N0} bytes allocated for a {file.Length:N0}-byte file");
+	}
+
+	[TestMethod]
+	public void Save_ClearChapters_SharedTrackId_DropsTheChapReferenceAndKeepsTheTrex ()
+	{
+		// A sound trak shares the chapter track's track_ID 2 (invalid per §8.3.2.3, but seen). Clearing removes
+		// the chapter trak object and every chap entry for ID 2, which meant the chapter track. The sound trak
+		// stays, and so does trex 2, which it still uses.
+		var options = ThreeChapterTrack ();
+		options.Mvex = true;
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var moov = Mp4ChapterTestBuilder.Moov (data);
+		var moovAt = data.AsSpan ().IndexOf ("moov"u8) - 4;
+		var audio = Mp4ChapterTestBuilder.Trak (moov, Mp4ChapterTestBuilder.AudioTrackId)!.Render ().ToArray ();
+		var tkhd = audio.AsSpan ().IndexOf ("tkhd"u8);
+		BinaryPrimitives.WriteUInt32BigEndian (audio.AsSpan (tkhd + 16), Mp4ChapterTestBuilder.TextTrackId);
+		var tref = audio.AsSpan ().IndexOf ("tref"u8);
+		"free"u8.CopyTo (audio.AsSpan (tref));
+		Assert.AreEqual (data.Length, moovAt + (int)BinaryPrimitives.ReadUInt32BigEndian (data.AsSpan (moovAt)), "moov is last");
+		byte[] file = [.. data, .. audio];
+		BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (moovAt), BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (moovAt)) + (uint)audio.Length);
+		var parsed = Mp4ChapterTestBuilder.ReadFile (file);
+
+		parsed.Chapters = [];
+		var cleared = Mp4ChapterTestBuilder.Moov (Save (parsed, file));
+
+		CollectionAssert.AreEqual (new uint[] { 1, 2 }, Mp4ChapterTestBuilder.TrackIds (cleared), "the sound trak with ID 2 stays");
+		Assert.AreEqual ("soun", Encoding.ASCII.GetString (cleared.Children.Where (c => c.Type == "trak").Last ().FindDescendant ("mdia", "hdlr")!.Data.Span.Slice (8, 4)));
+		Assert.AreEqual (0, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (cleared, 1)!).Length, "no chap entry is left");
+		var trex = cleared.FindChild ("mvex")!.Children.Select (t => BinaryPrimitives.ReadUInt32BigEndian (t.Data.Span.Slice (4))).ToArray ();
+		CollectionAssert.AreEqual (new uint[] { 1, 2 }, trex, "trex 2 stays for the sound trak");
+	}
+
 	static byte[] Meta (params byte[][] children) => Mp4TestBuilder.CreateFullBox ("meta", 0, 0, [.. children.SelectMany (c => c)]);
 
 	/// <summary>
 	/// iloc (§8.11.3) version 1, 4-byte offsets and lengths, no base or index: one item, one 4-byte extent at
 	/// <paramref name="offset"/>, with <paramref name="method"/> as its construction method.
 	/// </summary>
-	static byte[] Iloc (int method, int offset)
+	static byte[] Iloc (int method, int offset, int length = 4)
 	{
 		var body = new byte[2 + 2 + 2 + 2 + 2 + 2 + 4 + 4];
 		body[0] = 0x44;
@@ -1443,9 +1529,15 @@ public class Mp4ChapterTests
 		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (6), (ushort)method);
 		BinaryPrimitives.WriteUInt16BigEndian (body.AsSpan (10), 1);
 		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (12), (uint)offset);
-		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (16), 4);
+		BinaryPrimitives.WriteUInt32BigEndian (body.AsSpan (16), (uint)length);
 		return Mp4TestBuilder.CreateFullBox ("iloc", 1, 0, body);
 	}
+
+	/// <summary>saiz (§8.7.8): every sample's aux info is 4 bytes, one sample.</summary>
+	static byte[] Saiz () => Mp4TestBuilder.CreateFullBox ("saiz", 0, 0, [4, 0, 0, 0, 1]);
+
+	/// <summary>saio (§8.7.9) version 0: one 32-bit offset.</summary>
+	static byte[] Saio (int offset) => Mp4TestBuilder.CreateFullBox ("saio", 0, 0, [0, 0, 0, 1, (byte)(offset >> 24), (byte)(offset >> 16), (byte)(offset >> 8), (byte)offset]);
 
 	[TestMethod]
 	public void Save_ChapterSamplesShareMdatWithAudio_LeavesThatMdatAlone ()

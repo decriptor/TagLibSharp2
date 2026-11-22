@@ -330,7 +330,7 @@ internal static class Mp4ChapterCodec
 		List<TextSample> samples,
 		ref ulong time,
 		ref long budget,
-		List<(long Start, long End)>? runs)
+		Exclusion? runs)
 	{
 		// Measuring (no track) serves a guard that must fail closed: it stops at the first thing it cannot read.
 		// Reading goes on past it, as other readers do, and keeps every sample it can locate.
@@ -388,7 +388,8 @@ internal static class Mp4ChapterCodec
 						continue;
 					var runStart = runEnd;
 					var ok = ReadRun (trun.Data.Span, baseOffset, ref runStart, ref runEnd, defaultDuration, defaultSize, mine, samples, ref time, ref budget);
-					runs?.Add ((runStart, runEnd));
+					if (runs is not null && !runs.Add (runStart, runEnd))
+						return false;
 					if (!ok) {
 						if (measuring)
 							return false;
@@ -397,6 +398,10 @@ internal static class Mp4ChapterCodec
 						break;
 					}
 				}
+
+				// Auxiliary information (saio, §8.7.9) in a traf is located from the traf's base data offset.
+				if (runs is not null && !TryAuxRanges (traf, baseOffset, runs))
+					return false;
 
 				previousEnd = runEnd;
 				previousEndKnown = trafComplete;
@@ -526,15 +531,94 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// The file ranges every traf run of every track covers (the data offsets of §8.8.7 and §8.8.8), or null
-	/// when a fragment cannot be read to the end.
+	/// True when every traf run (§8.8.7, §8.8.8) and traf aux-info range (§8.7.9) of every track can be read
+	/// and avoids <paramref name="exclusion"/>.
 	/// </summary>
-	static List<(long Start, long End)>? FragmentRuns (IReadOnlyList<(Mp4Box Moof, long Start)> fragments, Mp4Box moov)
+	static bool FragmentsAvoid (IReadOnlyList<(Mp4Box Moof, long Start)> fragments, Mp4Box moov, Exclusion exclusion)
 	{
-		var runs = new List<(long Start, long End)> ();
 		ulong time = 0;
 		var budget = 0L;
-		return AppendFragmentSamples (null, fragments, moov, [], ref time, ref budget, runs) ? runs : null;
+		return AppendFragmentSamples (null, fragments, moov, [], ref time, ref budget, exclusion);
+	}
+
+	/// <summary>
+	/// A file range that references must avoid. Each range is tested as it is found and none is stored, so the
+	/// work is bounded by the bytes that describe the ranges, not by how many ranges they declare.
+	/// </summary>
+	internal sealed class Exclusion (long start, long end)
+	{
+		/// <summary>True when [<paramref name="rangeStart"/>, <paramref name="rangeEnd"/>) avoids the range.</summary>
+		public bool Add (long rangeStart, long rangeEnd) => rangeEnd <= start || rangeStart >= end;
+	}
+
+	/// <summary>
+	/// Adds the ranges of the auxiliary information in <paramref name="container"/> (an stbl, or a traf with its
+	/// base data offset). saio (§8.7.9) gives one offset per chunk or one for the whole track or traf; saiz
+	/// gives the sizes. Each offset is counted with the total aux size after it, which covers every layout.
+	/// False when a saio has no saiz, or either does not parse.
+	/// </summary>
+	static bool TryAuxRanges (Mp4Box container, long baseOffset, Exclusion exclusion)
+	{
+		foreach (var saio in container.Children) {
+			if (saio.Type != "saio")
+				continue;
+
+			if (!TryAuxSize (container, out var total))
+				return false;
+
+			var body = saio.Data.Span;
+			if (body.Length < 8)
+				return false;
+
+			var version = body[0];
+			var pos = (BinaryPrimitives.ReadUInt32BigEndian (body) & 1) != 0 ? 12 : 4;
+			if (!TryReadWidth (body, ref pos, 4, out var count))
+				return false;
+
+			var width = version == 0 ? 4 : 8;
+			if (count > (ulong)(body.Length - pos) / (ulong)width)
+				return false;
+
+			for (var i = 0UL; i < count; i++) {
+				TryReadWidth (body, ref pos, width, out var offset);
+				if (offset > (ulong)(long.MaxValue / 2) || baseOffset > long.MaxValue / 2)
+					return false;
+
+				var start = baseOffset + (long)offset;
+				if (total > long.MaxValue - start || !exclusion.Add (start, start + Math.Max (total, 1)))
+					return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// The total size of the auxiliary information saiz (§8.7.8) describes: the default size times the count,
+	/// or the sum of the per-sample sizes. False without a saiz, or with one that does not parse.
+	/// </summary>
+	static bool TryAuxSize (Mp4Box container, out long total)
+	{
+		total = 0;
+		var saiz = container.FindChild ("saiz");
+		var body = saiz is null ? ReadOnlySpan<byte>.Empty : saiz.Data.Span;
+		var pos = body.Length >= 4 && (BinaryPrimitives.ReadUInt32BigEndian (body) & 1) != 0 ? 12 : 4;
+		if (body.Length < pos + 5)
+			return false;
+
+		var defaultSize = body[pos];
+		var count = BinaryPrimitives.ReadUInt32BigEndian (body.Slice (pos + 1));
+		pos += 5;
+		if (defaultSize != 0) {
+			total = (long)defaultSize * count;
+			return true;
+		}
+
+		if (count > (ulong)(body.Length - pos))
+			return false;
+		for (var i = 0; i < count; i++)
+			total += body[pos + i];
+		return true;
 	}
 
 	/// <summary>
@@ -877,15 +961,19 @@ internal static class Mp4ChapterCodec
 				return ChapterPlan.Refused (FragmentedChapterTrackError);
 
 			children.RemoveAll (b => media.Exists (t => ReferenceEquals (t.Trak, b)));
+
+			// Every chap entry for a removed track goes, even when another trak shares its ID: the reference
+			// meant the chapter track. A trex stays while a remaining trak has its ID.
+			if (removed.Count > 0)
+				ReplaceReferences (children, removed, add: false);
+			var unused = new HashSet<uint> (removed);
 			foreach (var child in children) {
 				if (child.Type == "trak" && TryReadTrackId (child, out var id))
-					removed.Remove (id);
+					unused.Remove (id);
 			}
 
-			if (removed.Count > 0) {
-				ReplaceReferences (children, removed, add: false);
-				WithoutTrex (children, removed);
-			}
+			if (unused.Count > 0)
+				WithoutTrex (children, unused);
 
 			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed, null, media);
 		}
@@ -999,24 +1087,13 @@ internal static class Mp4ChapterCodec
 		if (replaced.Count == 0)
 			return false;
 
-		// Fail closed: a fragment that cannot be read could point into the box.
-		var runs = FragmentRuns (fragments, moov);
-		if (runs is null)
-			return false;
-
 		if (!TilesExactly (moov, replaced, payloadStart, boxEnd))
 			return false;
 
-		var references = new List<(long Start, long End)> (runs);
-		if (!TryCollectReferences (moov, topLevel, replaced, references))
-			return false;
-
-		foreach (var (start, end) in references) {
-			if (start < boxEnd && end > boxStart)
-				return false;
-		}
-
-		return true;
+		// Fail closed: a fragment that cannot be read could point into the box. Every reference is tested as it
+		// is found; the first that overlaps, or that cannot be computed, keeps the box.
+		var exclusion = new Exclusion (boxStart, boxEnd);
+		return FragmentsAvoid (fragments, moov, exclusion) && TryCollectReferences (moov, topLevel, replaced, exclusion);
 	}
 
 	/// <summary>
@@ -1055,7 +1132,7 @@ internal static class Mp4ChapterCodec
 	/// tail (it can hold a trak), a trak whose tables cannot be read, an iloc that does not parse, or an unread
 	/// box tail that holds an iloc.
 	/// </summary>
-	static bool TryCollectReferences (Mp4Box moov, IReadOnlyList<Mp4Box> topLevel, List<ChapterTrack> replaced, List<(long Start, long End)> ranges)
+	static bool TryCollectReferences (Mp4Box moov, IReadOnlyList<Mp4Box> topLevel, List<ChapterTrack> replaced, Exclusion ranges)
 	{
 		if (moov.UnparsedTail.Length > 0)
 			return false;
@@ -1081,13 +1158,17 @@ internal static class Mp4ChapterCodec
 	/// when an extent cannot be computed: an unread tail on the trak, mdia, minf, or stbl, a missing table, a
 	/// count past its box, an stz2 field size other than 4, 8, or 16, or arithmetic that does not fit 63 bits.
 	/// </summary>
-	static bool TryTrackRanges (Mp4Box trak, List<(long Start, long End)> ranges)
+	static bool TryTrackRanges (Mp4Box trak, Exclusion ranges)
 	{
 		var mdia = trak.FindChild ("mdia");
 		var minf = mdia?.FindChild ("minf");
 		var stbl = minf?.FindChild ("stbl");
 		if (stbl is null || trak.UnparsedTail.Length > 0 || mdia!.UnparsedTail.Length > 0
 			|| minf!.UnparsedTail.Length > 0 || stbl.UnparsedTail.Length > 0)
+			return false;
+
+		// Auxiliary information (saio, §8.7.9) in an stbl is at absolute file offsets.
+		if (!TryAuxRanges (stbl, 0, ranges))
 			return false;
 
 		var co64 = stbl.FindChild ("co64");
@@ -1122,7 +1203,8 @@ internal static class Mp4ChapterCodec
 				|| length > long.MaxValue - offset)
 				return false;
 
-			ranges.Add ((offset, offset + Math.Max (length, 1)));
+			if (!ranges.Add (offset, offset + Math.Max (length, 1)))
+				return false;
 			sample += inChunk;
 		}
 
@@ -1219,7 +1301,7 @@ internal static class Mp4ChapterCodec
 	/// every box carries its type code; that keeps a meta with stray trailing bytes (seen in iTunes files)
 	/// from blocking.
 	/// </summary>
-	static bool TryItemRanges (Mp4Box box, List<(long Start, long End)> ranges, int depth)
+	static bool TryItemRanges (Mp4Box box, Exclusion ranges, int depth)
 	{
 		if (depth > 32)
 			return false;
@@ -1247,7 +1329,7 @@ internal static class Mp4ChapterCodec
 	/// Methods 1 (idat) and 2 (item) are not file offsets. False when the box is cut short, a field size is not
 	/// 0, 4, or 8, or a sum does not fit 63 bits.
 	/// </summary>
-	static bool TryIlocRanges (ReadOnlySpan<byte> iloc, List<(long Start, long End)> ranges)
+	static bool TryIlocRanges (ReadOnlySpan<byte> iloc, Exclusion ranges)
 	{
 		if (iloc.Length < 8)
 			return false;
@@ -1287,6 +1369,14 @@ internal static class Mp4ChapterCodec
 				|| !TryReadWidth (iloc, ref pos, 2, out var extents))
 				return false;
 
+			// Extents with no index, offset, or length fields take no bytes and are all the same extent, so one
+			// stands for them all. Any other extent count must fit the bytes left in the box.
+			var extentBytes = indexSize + offsetSize + lengthSize;
+			if (extentBytes == 0)
+				extents = Math.Min (extents, 1UL);
+			else if (extents > (ulong)(iloc.Length - pos) / (ulong)extentBytes)
+				return false;
+
 			for (var extent = 0UL; extent < extents; extent++) {
 				if (!TryReadWidth (iloc, ref pos, indexSize, out _) || !TryReadWidth (iloc, ref pos, offsetSize, out var extentOffset)
 					|| !TryReadWidth (iloc, ref pos, lengthSize, out var extentLength))
@@ -1296,14 +1386,13 @@ internal static class Mp4ChapterCodec
 				if (baseOffset > long.MaxValue || extentOffset > (ulong)long.MaxValue - baseOffset)
 					return false;
 
+				// An extent_length of 0 is the whole referenced data from the offset (§8.11.3).
 				var start = (long)(baseOffset + extentOffset);
-				if (extentLength == 0) {
-					ranges.Add ((start, long.MaxValue));
-				} else {
-					if (extentLength > (ulong)(long.MaxValue - start))
-						return false;
-					ranges.Add ((start, start + (long)extentLength));
-				}
+				if (extentLength > (ulong)(long.MaxValue - start))
+					return false;
+				var end = extentLength == 0 ? long.MaxValue : start + (long)extentLength;
+				if (!ranges.Add (start, end))
+					return false;
 			}
 		}
 
