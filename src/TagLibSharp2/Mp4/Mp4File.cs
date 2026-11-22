@@ -2172,6 +2172,10 @@ public sealed class Mp4File : IMediaFile
 				return;
 			var extents = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos));
 			pos += 2;
+			// Extents with no index, offset, or length fields take no bytes and hold nothing to move, so a large
+			// extent_count of them costs nothing (§8.11.3 allows field sizes of 0).
+			if (indexSize == 0 && offsetSize == 0 && lengthSize == 0)
+				extents = 0;
 			// Construction method 0: the file position is base_offset + extent_offset.
 			// A base at or past the old moov is the item's file position, so it moves once
 			// and the extent stays relative. A zero base makes each extent a file offset.
