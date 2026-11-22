@@ -1694,6 +1694,140 @@ public class Mp4ChapterTests
 			Assert.IsNull (image.FindChild ("tref"), "the chapter image trak gets none");
 	}
 
+	// ---- chapters and tags are separate (a tag Clear keeps chapters; a chapter clear keeps the tag)
+
+	static Mp4ChapterTestBuilder.Options TaggedChapters () => new () {
+		Track = [("Intro", 900), ("Cafè über 日本", 1200), ("Outro", 3900)],
+		Chpl = [(TimeSpan.Zero, "Intro"), (TimeSpan.FromSeconds (0.9), "Cafè über 日本"), (TimeSpan.FromSeconds (2.1), "Outro")],
+		Title = "Tagged",
+	};
+
+	[TestMethod]
+	[DataRow ("ClearAllMetadata")]
+	[DataRow ("TagNull")]
+	public void Save_TagClear_KeepsTheChapters (string how)
+	{
+		// Clear and Tag = null remove the metadata in the ilst and keys. Chapters are not tag fields: the chapter
+		// track and chpl stay, and Chapters = [] is how they go.
+		var original = Mp4ChapterTestBuilder.Build (TaggedChapters ());
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+		var chapters = file.Chapters.ToArray ();
+		if (how == "TagNull")
+			file.Tag = null;
+		else
+			file.ClearAllMetadata ();
+
+		var saved = Mp4ChapterTestBuilder.ReadFile (Save (file, original));
+
+		Assert.IsNull (saved.Title, "the tag is cleared");
+		CollectionAssert.AreEqual (chapters, saved.Chapters.ToArray (), "the chapters stay");
+		var moov = Mp4ChapterTestBuilder.Moov (Save (file, original));
+		Assert.IsNotNull (Mp4ChapterCodec.FindChapterTrack (moov), "the chapter track stays");
+		Assert.AreEqual (3, Mp4ChapterCodec.ReadChpl (moov)!.Count, "chpl stays");
+	}
+
+	[TestMethod]
+	public void Save_ChapterClear_KeepsTheTag ()
+	{
+		var original = Mp4ChapterTestBuilder.Build (TaggedChapters ());
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+
+		file.Chapters = [];
+		var saved = Save (file, original);
+
+		var reread = Mp4ChapterTestBuilder.ReadFile (saved);
+		Assert.AreEqual ("Tagged", reread.Title);
+		Assert.AreEqual (0, reread.Chapters.Count);
+		var before = Mp4ChapterTestBuilder.Moov (original).FindDescendant ("udta", "meta")!.Render ().ToArray ();
+		CollectionAssert.AreEqual (before, Mp4ChapterTestBuilder.Moov (saved).FindDescendant ("udta", "meta")!.Render ().ToArray (), "udta/meta keeps its bytes");
+	}
+
+	/// <summary>
+	/// The chapter fixture (chapter track and chpl in udta, no udta/meta) with a moov/meta holding the tag:
+	/// hdlr mdir and an ilst with ©nam "Movie", as QuickTime and Apple devices write it.
+	/// </summary>
+	static byte[] MovieMetaChapters ()
+	{
+		var options = TaggedChapters ();
+		options.Title = null;
+		var data = Mp4ChapterTestBuilder.Build (options);
+		var moovAt = data.AsSpan ().IndexOf ("moov"u8) - 4;
+		Assert.AreEqual (data.Length, moovAt + (int)BinaryPrimitives.ReadUInt32BigEndian (data.AsSpan (moovAt)), "moov is last");
+		var hdlr = Mp4TestBuilder.CreateFullBox ("hdlr", 0, 0, [0, 0, 0, 0, .. "mdir"u8, .. "appl"u8, .. new byte[9]]);
+		var value = Mp4TestBuilder.CreateBox ("data", [0, 0, 0, 1, 0, 0, 0, 0, .. "Movie"u8]);
+		byte[] item = [0, 0, 0, (byte)(8 + value.Length), 0xA9, (byte)'n', (byte)'a', (byte)'m', .. value];
+		var meta = Mp4TestBuilder.CreateBox ("meta", [0, 0, 0, 0, .. hdlr, .. Mp4TestBuilder.CreateBox ("ilst", item)]);
+		byte[] file = [.. data, .. meta];
+		BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (moovAt), (uint)(file.Length - moovAt));
+		return file;
+	}
+
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Save_Chapters_TagInMovieMeta_RewritesOnlyTheChapters (bool clear)
+	{
+		// The tag lives in moov/meta and udta is otherwise copied as it was. chpl lives in udta, so a chapter
+		// save still rewrites it there, and moov/meta keeps its bytes.
+		var original = MovieMetaChapters ();
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+		Assert.AreEqual ("Movie", file.Title);
+		var movieMeta = Mp4ChapterTestBuilder.Moov (original).FindChild ("meta")!.Render ().ToArray ();
+
+		file.Chapters = clear ? [] : Edit (1);
+		var saved = Save (file, original);
+
+		var moov = Mp4ChapterTestBuilder.Moov (saved);
+		CollectionAssert.AreEqual (movieMeta, moov.FindChild ("meta")!.Render ().ToArray (), "moov/meta keeps its bytes");
+		var reread = Mp4ChapterTestBuilder.ReadFile (saved);
+		Assert.AreEqual ("Movie", reread.Title);
+		var expected = clear ? [] : Edit (1).Select (c => c.Title).ToArray ();
+		CollectionAssert.AreEqual (expected, reread.Chapters.Select (c => c.Title).ToArray ());
+		if (clear)
+			Assert.IsNull (Mp4ChapterCodec.ReadChpl (moov), "chpl is gone from udta");
+		else
+			CollectionAssert.AreEqual (expected, Mp4ChapterCodec.ReadChpl (moov)!.Select (c => c.Title).ToArray (), "chpl is rewritten in udta");
+	}
+
+	[TestMethod]
+	public void Save_Chapters_TagInMovieMeta_CopiesUdtaMetaAsItWas ()
+	{
+		// udta also holds a meta with no ilst (a handler, then bytes that do not parse as a box). The tag is in
+		// moov/meta, so a chapter save copies that meta byte for byte, unread bytes and all.
+		var original = MovieMetaChapters ();
+		var moovAt = original.AsSpan ().IndexOf ("moov"u8) - 4;
+		var udtaAt = moovAt + original.AsSpan (moovAt).IndexOf ("udta"u8) - 4;
+		var hdlr = Mp4TestBuilder.CreateFullBox ("hdlr", 0, 0, [0, 0, 0, 0, .. "mdir"u8, .. "appl"u8, .. new byte[9]]);
+		var udtaMeta = Mp4TestBuilder.CreateBox ("meta", [0, 0, 0, 0, .. hdlr, 0, 0, 0, 3, 1, 2, 3]);
+		var at = udtaAt + 8;
+		byte[] file = [.. original.AsSpan (0, at), .. udtaMeta, .. original.AsSpan (at)];
+		BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (udtaAt), BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (udtaAt)) + (uint)udtaMeta.Length);
+		BinaryPrimitives.WriteUInt32BigEndian (file.AsSpan (moovAt), BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (moovAt)) + (uint)udtaMeta.Length);
+		var parsed = Mp4ChapterTestBuilder.ReadFile (file);
+		Assert.AreEqual ("Movie", parsed.Title, "the tag is in moov/meta");
+
+		parsed.Chapters = Edit (1);
+		var saved = Save (parsed, file);
+
+		Assert.IsTrue (saved.AsSpan ().IndexOf (udtaMeta) > 0, "udta/meta is copied as it was");
+		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Select (c => c.Title).ToArray ());
+	}
+
+	[TestMethod]
+	public void Save_TitleAndChapters_TagInMovieMeta_WritesBoth ()
+	{
+		var original = MovieMetaChapters ();
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+
+		file.Title = "Renamed";
+		file.Chapters = Edit (1);
+		var reread = Mp4ChapterTestBuilder.ReadFile (Save (file, original));
+
+		Assert.AreEqual ("Renamed", reread.Title);
+		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), reread.Chapters.Select (c => c.Title).ToArray ());
+		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), Mp4ChapterCodec.ReadChpl (Mp4ChapterTestBuilder.Moov (Save (file, original)))!.Select (c => c.Title).ToArray ());
+	}
+
 	// ---- extra chapter text tracks (a set replaces every title track with one list)
 
 	const ushort English = 0x15C7;

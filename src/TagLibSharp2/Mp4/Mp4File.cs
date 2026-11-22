@@ -2469,11 +2469,11 @@ public sealed class Mp4File : IMediaFile
 		var inMovieMeta = MetaPlacement == Mp4MetaPlacement.Movie;
 		var tag = TagToSave (originalMoov);
 		var movieSource = !inMovieMeta && tag?.HasMovieMeta == true ? tag : null;
-		// chpl lives in udta, so a chapter save rewrites udta even when the tag is in moov/meta;
-		// then udta's own meta is copied as it was.
+		// chpl lives in udta, so a chapter save rewrites udta even when the tag is in moov/meta. No tag goes
+		// there then, and a meta without an ilst is rebuilt byte for byte (RebuildMeta keeps every child).
 		var chpl = chapterPlan?.Chpl;
 		var copyUdta = inMovieMeta && chpl is null;
-		var newUdta = copyUdta ? BinaryData.Empty : BuildUdtaBox (originalMoov, inMovieMeta ? null : tag, chpl, keepMeta: inMovieMeta);
+		var newUdta = copyUdta ? BinaryData.Empty : BuildUdtaBox (originalMoov, inMovieMeta ? null : tag, chpl);
 		var replacedMeta = false;
 		var emittedChild = false;
 		var placedUdta = false;
@@ -2595,9 +2595,8 @@ public sealed class Mp4File : IMediaFile
 	/// Builds moov/udta. An existing udta keeps every child except meta, and meta keeps
 	/// every child except ilst. Chapters and the meta version/flags survive a tag edit.
 	/// A non-null <paramref name="chpl"/> replaces the first chpl and drops the rest; empty removes it.
-	/// With <paramref name="keepMeta"/> (the tag is saved to moov/meta), udta's meta is copied as it was.
 	/// </summary>
-	static BinaryData BuildUdtaBox (Mp4Box originalMoov, Mp4Tag? tag, BinaryData? chpl, bool keepMeta = false)
+	static BinaryData BuildUdtaBox (Mp4Box originalMoov, Mp4Tag? tag, BinaryData? chpl)
 	{
 		var original = originalMoov.FindChild ("udta");
 		var (ilstContent, keysContent) = RenderTag (original?.FindChild ("meta"), tag);
@@ -2613,7 +2612,7 @@ public sealed class Mp4File : IMediaFile
 			return WrapBox ("udta", body.ToBinaryData ());
 		}
 
-		return RebuildUdta (original, ilstContent, keysContent, tag?.DropsUnreadKeys == true, chpl, keepMeta);
+		return RebuildUdta (original, ilstContent, keysContent, tag?.DropsUnreadKeys == true, chpl);
 	}
 
 	/// <summary>
@@ -2632,7 +2631,7 @@ public sealed class Mp4File : IMediaFile
 		return (ilst, tag.QuickTimeKeys?.Render ());
 	}
 
-	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent, bool dropUnreadKeys, BinaryData? chpl, bool keepMeta)
+	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent, bool dropUnreadKeys, BinaryData? chpl)
 	{
 		using var content = new BinaryDataBuilder ();
 		var payload = udta.Data.Span;
@@ -2666,10 +2665,7 @@ public sealed class Mp4File : IMediaFile
 			}
 
 			var isMeta = payload.Slice (offset + 4, 4).SequenceEqual ("meta"u8);
-			if (isMeta && keepMeta) {
-				// The tag lives in moov/meta; only chpl changes here.
-				content.Add (payload.Slice (offset, size));
-			} else if (isMeta && !replacedMeta) {
+			if (isMeta && !replacedMeta) {
 				var meta = udta.FindChild ("meta");
 				if (meta is not null) {
 					var rebuilt = RebuildMeta (meta, ilstContent, keysContent, dropUnreadKeys);
