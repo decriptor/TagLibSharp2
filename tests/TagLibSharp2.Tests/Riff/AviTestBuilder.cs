@@ -43,8 +43,14 @@ public sealed class AviTestBuilder
 	/// <summary>The text encoding of INFO values. RIFF INFO has no fixed encoding; ffmpeg writes UTF-8.</summary>
 	public Encoding InfoEncoding { get; set; } = Encoding.Latin1;
 
+	/// <summary>INFO fields written after <see cref="Info"/> with exactly these data bytes (terminator included).</summary>
+	public List<(string Id, byte[] Bytes)> InfoBytes { get; } = [];
+
 	/// <summary>When set, a CSET chunk with this wCodePage is written just before the INFO list.</summary>
 	public ushort? CharacterSet { get; set; }
+
+	/// <summary>wCountryCode, wLanguageCode and wDialect written after <see cref="CharacterSet"/>.</summary>
+	public (ushort Country, ushort Language, ushort Dialect) CharacterSetCodes { get; set; }
 
 	/// <summary>A chunk written right after the RIFF header, before <c>hdrl</c>.</summary>
 	public (string FourCC, byte[] Data)? ChunkBeforeHeaders { get; set; }
@@ -188,10 +194,13 @@ public sealed class AviTestBuilder
 		if (CharacterSet is { } codePage) {
 			var cset = new byte[8];
 			BinaryPrimitives.WriteUInt16LittleEndian (cset, codePage);
+			BinaryPrimitives.WriteUInt16LittleEndian (cset.AsSpan (2), CharacterSetCodes.Country);
+			BinaryPrimitives.WriteUInt16LittleEndian (cset.AsSpan (4), CharacterSetCodes.Language);
+			BinaryPrimitives.WriteUInt16LittleEndian (cset.AsSpan (6), CharacterSetCodes.Dialect);
 			w.Chunk ("CSET", cset);
 		}
-		if (Info.Count > 0)
-			InfoList (w, Info);
+		if (Info.Count > 0 || InfoBytes.Count > 0)
+			InfoList (w, Info, InfoBytes);
 		if (Id3 is not null)
 			w.Chunk ("ID32", Id3);
 		if (ChunkBeforeJunk is { } extra)
@@ -342,11 +351,13 @@ public sealed class AviTestBuilder
 		w.Zero (8);
 	}
 
-	void InfoList (Writer w, List<(string Id, string Value)> fields)
+	void InfoList (Writer w, List<(string Id, string Value)> fields, List<(string Id, byte[] Bytes)>? raw = null)
 	{
 		var list = w.BeginList ("INFO");
 		foreach (var (id, value) in fields)
 			w.Chunk (id, InfoEncoding.GetBytes (value + "\0"));
+		foreach (var (id, bytes) in raw ?? [])
+			w.Chunk (id, bytes);
 		w.EndList (list);
 	}
 
@@ -450,6 +461,25 @@ public sealed class AviTestBuilder
 			form += 8 + formSize + (formSize & 1);
 		}
 		return chunks;
+	}
+
+	/// <summary>The data bytes of INFO field <paramref name="id"/> in the first LIST INFO of the first form, or null.</summary>
+	public static byte[]? InfoField (byte[] file, string id)
+	{
+		foreach (var (name, offset, size) in TopLevel (file)) {
+			if (name != "LIST INFO")
+				continue;
+			for (var p = offset + 12; p + 8 <= offset + 8 + size;) {
+				var fieldSize = U32At (file, p + 4);
+				if (Id (file, p) == id)
+					return file.AsSpan ((int)p + 8, (int)fieldSize).ToArray ();
+				p += 8 + fieldSize + (fieldSize & 1);
+			}
+
+			return null;
+		}
+
+		return null;
 	}
 
 	sealed class Writer : IDisposable

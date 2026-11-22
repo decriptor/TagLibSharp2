@@ -523,15 +523,6 @@ public class AviFileTests
 	}
 
 	[TestMethod]
-	public void Read_UnknownCodePage_FallsBackToDetection ()
-	{
-		var builder = new AviTestBuilder { CharacterSet = 1252, InfoEncoding = System.Text.Encoding.UTF8 };
-		builder.Info.Add (("INAM", "Café"));
-
-		Assert.AreEqual ("Café", AviFile.Read (builder.Build ()).File!.InfoTag.Title);
-	}
-
-	[TestMethod]
 	public void Read_ShortCset_FallsBackToDetection ()
 	{
 		var builder = new AviTestBuilder { InfoEncoding = System.Text.Encoding.UTF8, ChunkBeforeJunk = ("CSET", [0xE9]) };

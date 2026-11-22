@@ -114,6 +114,9 @@ internal static class AviChunks
 	/// <summary>CSET wCodePage for ISO 8859-1.</summary>
 	const ushort Latin1CodePage = 28591;
 
+	/// <summary>CSET wCodePage for Windows-1252.</summary>
+	const ushort Windows1252CodePage = 1252;
+
 	/// <summary>A FourCC as the little-endian value its four bytes read as.</summary>
 	public static uint Code (string fourCC) =>
 		(uint)fourCC[0] | ((uint)fourCC[1] << 8) | ((uint)fourCC[2] << 16) | ((uint)fourCC[3] << 24);
@@ -174,8 +177,9 @@ internal static class AviChunks
 	/// <summary>
 	/// The character set the first <c>CSET</c> chunk declares (Multimedia Programming Interface and
 	/// Data Specifications 1.0, "CSET (Character Set) Chunk": wCodePage, wCountryCode, wLanguageCode,
-	/// wDialect). Code page 0 is the spec's ISO 8859-1 default. A code page this reader does not
-	/// decode, or no CSET at all, leaves detection on.
+	/// wDialect). Code page 0 is the spec's ISO 8859-1 default. Code pages other than 0, 28591, 1252
+	/// and 65001 are <see cref="InfoCharacterSet.Other"/>; no CSET, or one without a wCodePage, is
+	/// <see cref="InfoCharacterSet.None"/>.
 	/// </summary>
 	public static InfoCharacterSet CharacterSet (ReadOnlySpan<byte> data)
 	{
@@ -185,15 +189,31 @@ internal static class AviChunks
 				continue;
 			var body = Body (data, chunk);
 			if (body.Length < 2)
-				return InfoCharacterSet.Detect;
+				return InfoCharacterSet.None;
 			return BinaryPrimitives.ReadUInt16LittleEndian (body) switch {
 				Utf8CodePage => InfoCharacterSet.Utf8,
 				0 or Latin1CodePage => InfoCharacterSet.Latin1,
-				_ => InfoCharacterSet.Detect
+				Windows1252CodePage => InfoCharacterSet.Windows1252,
+				_ => InfoCharacterSet.Other
 			};
 		}
 
-		return InfoCharacterSet.Detect;
+		return InfoCharacterSet.None;
+	}
+
+	/// <summary>The first whole CSET chunk, header and pad included, to write again in front of a rewritten INFO list.</summary>
+	public static byte[]? FirstCharacterSetChunk (ReadOnlySpan<byte> data)
+	{
+		var reader = new AviChunkReader (data);
+		while (reader.TryNext (out var chunk)) {
+			if (!chunk.IsCharacterSet)
+				continue;
+			if (chunk.Truncated)
+				return null;
+			return data.Slice ((int)chunk.Offset, (int)(chunk.End - chunk.Offset)).ToArray ();
+		}
+
+		return null;
 	}
 
 	/// <summary>A CSET chunk declaring UTF-8: wCodePage 65001, with no country, language or dialect.</summary>
