@@ -186,4 +186,80 @@ public partial class MatroskaFileTests
 		Assert.AreEqual ("A chapter title long enough not to fit where the old one was", again.Chapters.Editions[0].Chapters[0].Title);
 		Assert.IsTrue (ReadSeeks (saved).Find (entry => entry.Id == MatroskaIds.Chapters).Position < cluster);
 	}
+
+	[TestMethod]
+	public void SaveChapters_OrderedEdition_GoesAfterInfoAndBeforeTracks ()
+	{
+		// RFC 9559 section 6.6: ordered chapters SHOULD come after the first Info and before the first
+		// Tracks. Plain chapters keep the other placement, right after the SeekHead.
+		var original = Layout (new[] { MatroskaIds.Info, MatroskaIds.Tracks, MatroskaIds.Cues, MatroskaIds.Cluster },
+			(seekHead, positions) => Concat (
+				seekHead,
+				Master (0x1549A966, Element (0x7BA9, "Ordered"u8)),
+				Master (0x1654AE6B, AudioEntry (1, 22050)),
+				CueElement (positions[3]),
+				Master (0x1F43B675, Concat (Element (0xE7, new byte[] { 0 }), Element (0xA7, new byte[] { 0, (byte)positions[3] }), Element (0xA3, ClusterMarker)))));
+
+		var ordered = MatroskaFile.Read (original).File!;
+		var edition = ordered.Chapters.AddEdition ();
+		edition.IsOrdered = true;
+		edition.AddChapter (TimeSpan.Zero, TimeSpan.FromSeconds (1), "Ordered part");
+		var saved = Save (ordered, original);
+
+		AssertSeeksPreserved (original, saved);
+		AssertEverySeekAndCue (saved);
+		Assert.AreEqual (1, CountOf (saved, ClusterMarker));
+		var info = ReadSeeks (saved).Find (entry => entry.Id == MatroskaIds.Info).Position;
+		var chapters = ReadSeeks (saved).Find (entry => entry.Id == MatroskaIds.Chapters).Position;
+		var tracks = ReadSeeks (saved).Find (entry => entry.Id == MatroskaIds.Tracks).Position;
+		Assert.IsTrue (info < chapters && chapters < tracks, $"Info {info}, Chapters {chapters}, Tracks {tracks}");
+		Assert.IsTrue (MatroskaFile.Read (saved).File!.Chapters.Editions[0].IsOrdered);
+
+		var plain = MatroskaFile.Read (original).File!;
+		plain.Chapters.AddChapter (TimeSpan.Zero, TimeSpan.FromSeconds (1), "Plain");
+		var plainSaved = Save (plain, original);
+		Assert.IsTrue (ReadSeeks (plainSaved).Find (entry => entry.Id == MatroskaIds.Chapters).Position
+			< ReadSeeks (plainSaved).Find (entry => entry.Id == MatroskaIds.Info).Position);
+	}
+
+	[TestMethod]
+	public void SaveChapters_OrderedEditionWithoutASeekHead_GoesAfterInfo ()
+	{
+		var original = FileWith (
+			Master (0x1549A966, Element (0x7BA9, "NoSeek"u8)),
+			Master (0x1654AE6B, AudioEntry (1, 22050)),
+			Master (0x1F43B675, Element (0xA3, ClusterMarker)));
+		var file = MatroskaFile.Read (original).File!;
+		var edition = file.Chapters.AddEdition ();
+		edition.IsOrdered = true;
+		edition.AddChapter (TimeSpan.Zero, TimeSpan.FromSeconds (1), "Ordered");
+
+		var saved = Save (file, original);
+
+		var info = MarkerOffsetOf (saved, Id (MatroskaIds.Info));
+		var chapters = MarkerOffsetOf (saved, Id (MatroskaIds.Chapters));
+		var tracks = MarkerOffsetOf (saved, Id (MatroskaIds.Tracks));
+		Assert.IsTrue (info < chapters && chapters < tracks, $"Info {info}, Chapters {chapters}, Tracks {tracks}");
+		Assert.AreEqual (1, CountOf (saved, ClusterMarker));
+	}
+
+	[TestMethod]
+	public void SaveChapters_WithATrackFlagAtItsStoredValue_SavesTheChapters ()
+	{
+		// Setting IsEnabled to the value already stored writes no flag, but the chapter edit still goes in.
+		var original = FileWith (
+			Master (0x1549A966, Element (0x7BA9, "Same"u8)),
+			Master (0x1654AE6B, AudioEntry (1, 22050)),
+			ChaptersElement (EditionEntry (Atom (1, 0, Second, Display ("Old")))),
+			Master (0x1F43B675, Element (0xA3, ClusterMarker)));
+		var file = MatroskaFile.Read (original).File!;
+		file.Tracks[0].IsEnabled = file.Tracks[0].IsEnabled;
+		file.Chapters.Editions[0].Chapters[0].Title = "New";
+
+		var saved = Save (file, original);
+
+		var again = MatroskaFile.Read (saved).File!;
+		Assert.AreEqual ("New", again.Chapters.Editions[0].Chapters[0].Title);
+		Assert.IsTrue (again.Tracks[0].IsEnabled);
+	}
 }

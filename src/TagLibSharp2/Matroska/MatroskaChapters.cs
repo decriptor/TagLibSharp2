@@ -172,6 +172,23 @@ public sealed class MatroskaChapters
 		}
 	}
 
+	/// <summary>
+	/// Gets a value indicating whether an edition that is written is ordered. WebM stores no ordered flag.
+	/// RFC 9559 section 6.6 places such a Chapters element after the first Info and before the first Tracks.
+	/// </summary>
+	internal bool HasOrderedEdition {
+		get {
+			if (IsWebM)
+				return false;
+			foreach (var edition in _editions) {
+				if (edition is not null && edition.IsOrdered && edition.HasAtoms)
+					return true;
+			}
+
+			return false;
+		}
+	}
+
 	/// <summary>An edition added in code without a chapter is never written, so it is not an edit.</summary>
 	static bool IsUnwritten (MatroskaEdition edition) => !((IReadFromFile)edition).IsFromFile && !edition.HasAtoms;
 
