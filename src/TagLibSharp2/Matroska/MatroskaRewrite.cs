@@ -557,8 +557,9 @@ static partial class MatroskaRewrite
 		var codecState = element.Id is MatroskaIds.CueCodecState or MatroskaIds.CueRefCodecState;
 		if (element.DataLength > 8)
 			return false;
-		// RFC 8794 section 7.2: an empty unsigned integer with no default is 0. None of these four has a
-		// default (RFC 9559 sections 5.1.5.1.2.2, 5.1.5.1.2.6, A.37, A.39), so an empty one is 0 too.
+		// CueClusterPosition and the historic CueRefCluster and CueRefCodecState have no default, so an
+		// empty one is 0 (RFC 8794 section 7.2); CueCodecState's default is 0 (RFC 9559 section
+		// 5.1.5.1.2.6), so an empty one reads the same.
 		var old = element.DataLength == 0 ? 0 : EbmlReader.ReadUInt (source.Slice (element.DataOffset, (int)element.DataLength));
 		if (codecState && old == 0)
 			return true;
