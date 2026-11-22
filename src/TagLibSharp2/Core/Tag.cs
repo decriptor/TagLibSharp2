@@ -84,6 +84,22 @@ public abstract class Tag
 	static int t_copyDepth;
 
 	/// <summary>
+	/// The first non-empty entry of a list, or null when there is none. A tag that stores one name
+	/// keeps the name a reader shows: an empty first entry (a leading NUL in ID3v2.4, a repeated empty
+	/// Vorbis field) is not that name.
+	/// </summary>
+	internal static string? FirstNonEmpty (string[]? values)
+	{
+		if (values is null)
+			return null;
+		foreach (var value in values) {
+			if (!string.IsNullOrEmpty (value))
+				return value;
+		}
+		return null;
+	}
+
+	/// <summary>
 	/// True when a setter is handed exactly the value its getter returned, compared ordinally, as when an
 	/// editor writes back what it read. The setter then leaves the tag alone, so the other values of a
 	/// multi-value field and any fallback field stay. Never true for null, which always clears, or while
@@ -145,7 +161,7 @@ public abstract class Tag
 	/// <remarks>
 	/// <para>
 	/// This is the primary array of artists. The <see cref="Artist"/> property returns
-	/// the first value from this array.
+	/// the first value from this array. A tag that stores one name keeps the first non-empty entry.
 	/// </para>
 	/// <para>
 	/// <b>Design Note:</b> This property uses an array type for compatibility with
@@ -158,7 +174,7 @@ public abstract class Tag
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public virtual string[] Performers {
 		get => string.IsNullOrEmpty (Artist) ? [] : [Artist!];
-		set => Artist = value is { Length: > 0 } ? value[0] : null;
+		set => Artist = FirstNonEmpty (value);
 	}
 #pragma warning restore CA1819
 
@@ -245,7 +261,7 @@ public abstract class Tag
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public virtual string[] Genres {
 		get => string.IsNullOrEmpty (Genre) ? [] : [Genre!];
-		set => Genre = value is { Length: > 0 } ? value[0] : null;
+		set => Genre = FirstNonEmpty (value);
 	}
 #pragma warning restore CA1819
 
@@ -290,7 +306,7 @@ public abstract class Tag
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public virtual string[] AlbumArtists {
 		get => string.IsNullOrEmpty (AlbumArtist) ? [] : [AlbumArtist!];
-		set => AlbumArtist = value is { Length: > 0 } ? value[0] : null;
+		set => AlbumArtist = FirstNonEmpty (value);
 	}
 #pragma warning restore CA1819
 
@@ -328,7 +344,7 @@ public abstract class Tag
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public virtual string[] Composers {
 		get => string.IsNullOrEmpty (Composer) ? [] : [Composer!];
-		set => Composer = value is { Length: > 0 } ? value[0] : null;
+		set => Composer = FirstNonEmpty (value);
 	}
 #pragma warning restore CA1819
 

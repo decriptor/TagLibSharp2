@@ -125,7 +125,7 @@ public class RiffInfoTag : Tag
 				? []
 				: [artist!];
 		}
-		set => SetField (IART, value?.Length > 0 ? value[0] : null);
+		set => SetField (IART, FirstNonEmpty (value));
 	}
 #pragma warning restore CA1819
 
@@ -156,7 +156,7 @@ public class RiffInfoTag : Tag
 				? []
 				: [genre!];
 		}
-		set => SetField (IGNR, value?.Length > 0 ? value[0] : null);
+		set => SetField (IGNR, FirstNonEmpty (value));
 	}
 #pragma warning restore CA1819
 

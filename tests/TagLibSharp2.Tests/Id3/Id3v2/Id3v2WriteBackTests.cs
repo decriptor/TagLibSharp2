@@ -210,6 +210,27 @@ public class Id3v2WriteBackTests
 	}
 
 	[TestMethod]
+	[DataRow (TestConstants.Id3v2.Version3)]
+	[DataRow (TestConstants.Id3v2.Version4)]
+	public void CommentAndLyrics_DescribedOnly_ReadTheDescribedFrame (byte version)
+	{
+		// With no frame lacking a description, the getter shows the first non-empty described one,
+		// and writing it back changes nothing.
+		var body = Join (
+			TestBuilders.Id3v2.CreateFrame ("COMM", Join ([0x00], "eng"u8.ToArray (), "notes"u8.ToArray (), [0x00], "Liner"u8.ToArray ()), version),
+			TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x00], "eng"u8.ToArray (), "verse"u8.ToArray (), [0x00]), version),
+			TestBuilders.Id3v2.CreateFrame ("USLT", Join ([0x00], "eng"u8.ToArray (), "notes"u8.ToArray (), [0x00], "Liner"u8.ToArray ()), version));
+		var tag = Id3v2Tag.Read (Join (TestBuilders.Id3v2.CreateHeader (version, (uint)body.Length), body)).Tag!;
+		Assert.AreEqual ("Liner", tag.Comment);
+		Assert.AreEqual ("Liner", tag.Lyrics);
+
+		var before = tag.Render ().ToArray ();
+		tag.Comment = tag.Comment;
+		tag.Lyrics = tag.Lyrics;
+		CollectionAssert.AreEqual (before, tag.Render ().ToArray ());
+	}
+
+	[TestMethod]
 	public void CommentAndLyrics_EveryFrameEmpty_ReadEmpty ()
 	{
 		var body = Join (
