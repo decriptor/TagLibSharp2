@@ -1736,7 +1736,7 @@ public sealed class Mp4File : IMediaFile
 		else if (type.SequenceEqual ("saio"u8))
 			PatchSaio (payload, threshold, delta);
 		else if (type.SequenceEqual ("iloc"u8))
-			PatchIloc (payload, threshold, delta);
+			_ = PatchIloc (payload, threshold, delta);
 		else if (type.SequenceEqual ("trak"u8))
 			PatchTrakOffsets (payload, threshold, delta);
 		else if (adjust.InTrak && type.SequenceEqual ("stbl"u8))
@@ -2120,11 +2120,13 @@ public sealed class Mp4File : IMediaFile
 
 	/// <summary>
 	/// iloc base_offset and extent_offset move only for construction method 0 in this file. §8.11.3.
+	/// Returns the number of extents walked; zero-width extents hold nothing to move and are not walked.
 	/// </summary>
-	static void PatchIloc (Span<byte> payload, int threshold, int delta)
+	internal static long PatchIloc (Span<byte> payload, int threshold, int delta)
 	{
+		long steps = 0;
 		if (payload.Length < 8)
-			return;
+			return steps;
 
 		var version = payload[0];
 		var offsetSize = payload[4] >> 4;
@@ -2135,12 +2137,12 @@ public sealed class Mp4File : IMediaFile
 		uint count;
 		if (version < 2) {
 			if (payload.Length < pos + 2)
-				return;
+				return steps;
 			count = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos));
 			pos += 2;
 		} else {
 			if (payload.Length < pos + 4)
-				return;
+				return steps;
 			count = BinaryPrimitives.ReadUInt32BigEndian (payload.Slice (pos));
 			pos += 4;
 		}
@@ -2148,28 +2150,28 @@ public sealed class Mp4File : IMediaFile
 		for (var i = 0u; i < count; i++) {
 			var idSize = version < 2 ? 2 : 4;
 			if (pos > payload.Length - idSize)
-				return;
+				return steps;
 			pos += idSize;
 
 			var construction = 0;
 			if (version is 1 or 2) {
 				if (pos > payload.Length - 2)
-					return;
+					return steps;
 				construction = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos)) & 0xF;
 				pos += 2;
 			}
 
 			if (pos > payload.Length - 2)
-				return;
+				return steps;
 			var dataReference = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos));
 			pos += 2;
 			var inThisFile = dataReference == 0 && construction == 0;
 			var basePos = pos;
 			if (!TryReadWide (payload, pos, baseSize, out var baseValue))
-				return;
+				return steps;
 			pos += WidthBytes (baseSize);
 			if (pos > payload.Length - 2)
-				return;
+				return steps;
 			var extents = BinaryPrimitives.ReadUInt16BigEndian (payload.Slice (pos));
 			pos += 2;
 			// Extents with no index, offset, or length fields take no bytes and hold nothing to move, so a large
@@ -2181,11 +2183,12 @@ public sealed class Mp4File : IMediaFile
 			// and the extent stays relative. A zero base makes each extent a file offset.
 			var moveBase = inThisFile && baseSize != 0 && baseValue >= (ulong)threshold;
 			for (var extent = 0; extent < extents; extent++) {
+				steps++;
 				if (indexSize > 0 && !SkipOrPatch (payload, ref pos, indexSize, false, threshold, delta))
-					return;
+					return steps;
 				var extentPos = pos;
 				if (!TryReadWide (payload, pos, offsetSize, out var extentValue))
-					return;
+					return steps;
 				pos += WidthBytes (offsetSize);
 				if (inThisFile && !moveBase && offsetSize != 0) {
 					var absolute = baseValue + extentValue;
@@ -2193,11 +2196,13 @@ public sealed class Mp4File : IMediaFile
 						AddDelta (payload.Slice (extentPos, offsetSize), offsetSize, delta);
 				}
 				if (!SkipOrPatch (payload, ref pos, lengthSize, false, threshold, delta))
-					return;
+					return steps;
 			}
 			if (moveBase)
 				AddDelta (payload.Slice (basePos, baseSize), baseSize, delta);
 		}
+
+		return steps;
 	}
 
 	static int WidthBytes (int width) => width is 4 or 8 ? width : 0;

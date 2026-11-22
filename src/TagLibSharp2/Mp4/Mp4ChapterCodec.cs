@@ -161,27 +161,30 @@ internal static class Mp4ChapterCodec
 				byId[id] = child;
 		}
 
-		var holders = new HashSet<uint> ();
-		foreach (var (trak, id) in traks) {
+		// Holders are trak objects: a target is a presentation track when that trak holds a chap reference,
+		// not when another trak with the same (invalidly shared, §8.3.2.3) track_ID does.
+		var holders = new HashSet<Mp4Box> ();
+		foreach (var (trak, _) in traks) {
 			var tref = trak.FindChild ("tref");
 			if (tref is not null && ReadChapterReferences (tref.Data.Span).Count > 0)
-				holders.Add (id);
+				holders.Add (trak);
 		}
 
 		var found = new List<ChapterTrack> ();
 		var seen = new HashSet<uint> ();
-		foreach (var (trak, id) in traks) {
+		foreach (var (trak, _) in traks) {
 			var tref = trak.FindChild ("tref");
 			if (tref is null)
 				continue;
 
 			foreach (var reference in ReadChapterReferences (tref.Data.Span)) {
-				if (reference == id || !byId.TryGetValue (reference, out var target))
+				// A chap reference names a track_ID, which resolves to the first trak that has it.
+				if (!byId.TryGetValue (reference, out var target) || ReferenceEquals (target, trak))
 					continue;
 
 				var media = textOnly
 					? IsTextHandler (target)
-					: !holders.Contains (reference) && HandlerType (target) != "soun";
+					: !holders.Contains (target) && HandlerType (target) != "soun";
 				if (media && seen.Add (reference))
 					found.Add (new ChapterTrack (target, reference));
 			}
@@ -388,7 +391,7 @@ internal static class Mp4ChapterCodec
 						continue;
 					var runStart = runEnd;
 					var ok = ReadRun (trun.Data.Span, baseOffset, ref runStart, ref runEnd, defaultDuration, defaultSize, mine, samples, ref time, ref budget);
-					if (runs is not null && !runs.Add (runStart, runEnd))
+					if (runs is not null && !runs.Avoids (runStart, runEnd))
 						return false;
 					if (!ok) {
 						if (measuring)
@@ -547,8 +550,20 @@ internal static class Mp4ChapterCodec
 	/// </summary>
 	internal sealed class Exclusion (long start, long end)
 	{
+		/// <summary>
+		/// How many extents, runs, chunks, and aux offsets were walked. Tests use it to bound the work.
+		/// </summary>
+		public long Steps { get; private set; }
+
+		/// <summary>Counts one step of a walk that may not call <see cref="Avoids"/>.</summary>
+		public void Step () => Steps++;
+
 		/// <summary>True when [<paramref name="rangeStart"/>, <paramref name="rangeEnd"/>) avoids the range.</summary>
-		public bool Add (long rangeStart, long rangeEnd) => rangeEnd <= start || rangeStart >= end;
+		public bool Avoids (long rangeStart, long rangeEnd)
+		{
+			Steps++;
+			return rangeEnd <= start || rangeStart >= end;
+		}
 	}
 
 	/// <summary>
@@ -585,7 +600,7 @@ internal static class Mp4ChapterCodec
 					return false;
 
 				var start = baseOffset + (long)offset;
-				if (total > long.MaxValue - start || !exclusion.Add (start, start + Math.Max (total, 1)))
+				if (total > long.MaxValue - start || !exclusion.Avoids (start, start + Math.Max (total, 1)))
 					return false;
 			}
 		}
@@ -1046,9 +1061,9 @@ internal static class Mp4ChapterCodec
 	/// </summary>
 	/// <remarks>
 	/// <para>
-	/// The references are: every other trak's chunks (<see cref="TryTrackRanges"/>), every item extent of every
-	/// iloc in a meta at file, movie or track level (<see cref="TryItemRanges"/>, §8.11.3), and every traf run
-	/// (§8.8.7, §8.8.8). Traks are compared by object, not track_ID, so a trak that shares the replaced track's
+	/// The references are: every other trak's chunks and stbl aux info (<see cref="TryTrackRanges"/>, saio
+	/// §8.7.9), every item extent of every iloc in a meta at file, movie or track level
+	/// (<see cref="TryItemRanges"/>, §8.11.3), and every traf run and traf aux info (§8.8.7, §8.8.8, §8.7.9). Traks are compared by object, not track_ID, so a trak that shares the replaced track's
 	/// ID is still checked.
 	/// </para>
 	/// </remarks>
@@ -1127,8 +1142,8 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// Every file range the movie references outside the replaced traks: the other traks' chunks and every iloc
-	/// item extent under <paramref name="topLevel"/>. False when any of them cannot be computed: an unread moov
+	/// Every file range the movie references outside the replaced traks: the other traks' chunks and saio aux
+	/// info, and every iloc item extent under <paramref name="topLevel"/>. False when any of them cannot be computed: an unread moov
 	/// tail (it can hold a trak), a trak whose tables cannot be read, an iloc that does not parse, or an unread
 	/// box tail that holds an iloc.
 	/// </summary>
@@ -1154,9 +1169,10 @@ internal static class Mp4ChapterCodec
 
 	/// <summary>
 	/// Adds the chunk extents of <paramref name="trak"/>: each chunk's offset (stco/co64) plus the sizes of its
-	/// samples (stsc with stsz or stz2; §8.7.3 to §8.7.5). A trak with no chunk offset table has no data. False
-	/// when an extent cannot be computed: an unread tail on the trak, mdia, minf, or stbl, a missing table, a
-	/// count past its box, an stz2 field size other than 4, 8, or 16, or arithmetic that does not fit 63 bits.
+	/// samples (stsc with stsz or stz2; §8.7.3 to §8.7.5), and its stbl aux info (saio with saiz, §8.7.8-9). A
+	/// trak with no chunk offset table has no chunk data. False when an extent cannot be computed: an unread
+	/// tail on the trak, mdia, minf, or stbl, a missing table, a count past its box, an stz2 field size other
+	/// than 4, 8, or 16, a saio without a saiz or either cut short, or arithmetic that does not fit 63 bits.
 	/// </summary>
 	static bool TryTrackRanges (Mp4Box trak, Exclusion ranges)
 	{
@@ -1203,7 +1219,7 @@ internal static class Mp4ChapterCodec
 				|| length > long.MaxValue - offset)
 				return false;
 
-			if (!ranges.Add (offset, offset + Math.Max (length, 1)))
+			if (!ranges.Avoids (offset, offset + Math.Max (length, 1)))
 				return false;
 			sample += inChunk;
 		}
@@ -1329,7 +1345,7 @@ internal static class Mp4ChapterCodec
 	/// Methods 1 (idat) and 2 (item) are not file offsets. False when the box is cut short, a field size is not
 	/// 0, 4, or 8, or a sum does not fit 63 bits.
 	/// </summary>
-	static bool TryIlocRanges (ReadOnlySpan<byte> iloc, Exclusion ranges)
+	internal static bool TryIlocRanges (ReadOnlySpan<byte> iloc, Exclusion ranges)
 	{
 		if (iloc.Length < 8)
 			return false;
@@ -1381,6 +1397,7 @@ internal static class Mp4ChapterCodec
 				if (!TryReadWidth (iloc, ref pos, indexSize, out _) || !TryReadWidth (iloc, ref pos, offsetSize, out var extentOffset)
 					|| !TryReadWidth (iloc, ref pos, lengthSize, out var extentLength))
 					return false;
+				ranges.Step ();
 				if (method != 0)
 					continue;
 				if (baseOffset > long.MaxValue || extentOffset > (ulong)long.MaxValue - baseOffset)
@@ -1391,7 +1408,7 @@ internal static class Mp4ChapterCodec
 				if (extentLength > (ulong)(long.MaxValue - start))
 					return false;
 				var end = extentLength == 0 ? long.MaxValue : start + (long)extentLength;
-				if (!ranges.Add (start, end))
+				if (!ranges.Avoids (start, end))
 					return false;
 			}
 		}
@@ -1858,7 +1875,10 @@ internal static class Mp4ChapterCodec
 			var trak = children[i];
 			if (trak.Type != "trak")
 				continue;
-			if (TryReadTrackId (trak, out var id) && trackIds.Contains (id))
+			// Adding: the new chapter track does not reference itself. Removing: the removed traks are already gone
+			// from children, so every remaining trak drops its chap entries for those IDs, even one that shares an ID.
+			var hasId = TryReadTrackId (trak, out var id);
+			if (add && hasId && trackIds.Contains (id))
 				continue;
 
 			var tref = trak.FindChild ("tref");
