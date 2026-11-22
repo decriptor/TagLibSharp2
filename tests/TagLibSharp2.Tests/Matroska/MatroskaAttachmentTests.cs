@@ -465,6 +465,99 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_NewAttachments_ShiftClusterPositionAndCues_LikeATagsInsert ()
+	{
+		// Attachments go in before the last, unknown-size Cluster, so that Cluster moves. Its Position
+		// (RFC 9559 section 5.1.3.2) and its CueClusterPosition move with it; the earlier Cluster stays.
+		static byte[] Two (ulong value) => [(byte)(value >> 8), (byte)value];
+		static byte[] Cue (ulong time, ulong at) => Master (0xBB, Concat (
+			Element (0xB3, new[] { (byte)time }),
+			Master (0xB7, Concat (Element (0xF7, new byte[] { 1 }), Element (MatroskaIds.CueClusterPosition, Two (at))))));
+		var info = Info ();
+		var room = Element (MatroskaIds.Void, new byte[24]);
+		byte[] Build (ulong first, ulong second)
+		{
+			var seekHead = Master (MatroskaIds.SeekHead, Concat (SeekEntry (MatroskaIds.Info, 0x10), SeekEntry (MatroskaIds.Cues, 0x10), room));
+			var cues = Master (MatroskaIds.Cues, Concat (Cue (0, first), Cue (1, second)));
+			var known = Master (MatroskaIds.Cluster, Concat (Element (0xE7, new byte[] { 0 }), Element (MatroskaIds.Position, Two (first))));
+			var unknown = Unknown (MatroskaIds.Cluster, Concat (Element (0xE7, new byte[] { 1 }), Element (MatroskaIds.Position, Two (second))));
+			return Concat (seekHead, info, cues, known, unknown);
+		}
+
+		var probe = Build (0x100, 0x100);
+		var firstAt = (ulong)IndexOf (probe, Id (MatroskaIds.Cluster));
+		var secondAt = (ulong)probe.AsSpan ((int)firstAt + 1).IndexOf (Id (MatroskaIds.Cluster)) + firstAt + 1;
+		var original = Matroska (Unknown (MatroskaIds.Segment, Build (firstAt, secondAt)));
+		Assert.IsTrue (IsElementAtUnknown (original, firstAt, MatroskaIds.Cluster));
+		Assert.IsTrue (IsElementAtUnknown (original, secondAt, MatroskaIds.Cluster));
+		var file = MatroskaFile.Read (original).File!;
+		file.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg)];
+
+		var bytes = Save (file, original);
+
+		var bodyAt = UnknownSegmentBodyAt (bytes);
+		var attachmentsAt = ReadSeeksUnknown (bytes).Single (s => s.Id == MatroskaIds.Attachments).Position;
+		Assert.AreEqual (secondAt, attachmentsAt);
+		var positions = ClusterPositions (bytes, bodyAt);
+		Assert.AreEqual (2, positions.Count);
+		Assert.AreEqual ((firstAt, firstAt), positions[0]);
+		Assert.IsTrue (positions[1].At > secondAt);
+		Assert.AreEqual (positions[1].At, positions[1].Stored);
+		CollectionAssert.AreEqual (new[] { firstAt, positions[1].At }, CueClusterPositions (bytes, bodyAt));
+		Assert.AreEqual (1, MatroskaFile.Read (bytes).File!.Tag.Pictures.Length);
+	}
+
+	/// <summary>Each Cluster's segment offset and the Position it stores.</summary>
+	static List<(ulong At, ulong Stored)> ClusterPositions (byte[] file, int bodyAt)
+	{
+		// Known-size children are stepped over; an unknown-size Cluster runs to the end of the file.
+		var found = new List<(ulong, ulong)> ();
+		var at = bodyAt;
+		while (at < file.Length && EbmlReader.TryRead (file, at, file.Length, out var element)) {
+			var end = element.UnknownSize ? file.Length : element.End;
+			if (element.Id == MatroskaIds.Cluster) {
+				var offset = element.DataOffset;
+				while (offset < end && EbmlReader.TryRead (file, offset, end, out var child) && !child.UnknownSize) {
+					if (child.Id == MatroskaIds.Position)
+						found.Add (((ulong)(at - bodyAt), EbmlReader.ReadUInt (file.AsSpan (child.DataOffset, (int)child.DataLength))));
+					offset = child.End;
+				}
+			}
+
+			at = end;
+		}
+
+		return found;
+	}
+
+	static List<ulong> CueClusterPositions (byte[] file, int bodyAt)
+	{
+		var found = new List<ulong> ();
+		var at = bodyAt;
+		EbmlElement cues;
+		while (true) {
+			Assert.IsTrue (EbmlReader.TryRead (file, at, file.Length, out cues) && !cues.UnknownSize);
+			if (cues.Id == MatroskaIds.Cues)
+				break;
+			at = cues.End;
+		}
+
+		void Walk (int offset, int end)
+		{
+			while (offset < end && EbmlReader.TryRead (file, offset, end, out var element) && !element.UnknownSize) {
+				if (element.Id == MatroskaIds.CueClusterPosition)
+					found.Add (EbmlReader.ReadUInt (file.AsSpan (element.DataOffset, (int)element.DataLength)));
+				else if (element.Id is 0xBB or 0xB7)
+					Walk (element.DataOffset, element.End);
+				offset = element.End;
+			}
+		}
+
+		Walk (cues.DataOffset, cues.End);
+		return found;
+	}
+
+	[TestMethod]
 	public void Save_NewAttachments_WithoutSeekHeadRoom_FailsAndLeavesTheFile ()
 	{
 		// RFC 9559 section 6.3: the SeekHead MUST reference every Top-Level Element.
