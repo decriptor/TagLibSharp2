@@ -43,8 +43,19 @@ for file in "${changed[@]}"; do
 	args+=(--mutate "**/${file#src/TagLibSharp2/}")
 done
 
+# Stryker injects a public MutantControl type, so any PublicApi snapshot test that still runs writes a
+# .received.txt beside its snapshot. stryker-config.json filters those tests out; remove any file a run
+# leaves anyway, but never one that was there before.
+snapshots="$tests/PublicApi/Snapshots"
+received_before=$(ls "$snapshots"/*.received.* 2> /dev/null || true)
 cleanup=()
-trap 'for f in "${cleanup[@]-}"; do [[ -n "$f" ]] && rm -f "$f"; done' EXIT
+remove_new_received () {
+	for f in "$snapshots"/*.received.*; do
+		[[ -e "$f" ]] || continue
+		grep -qxF "$f" <<< "$received_before" || rm -f "$f"
+	done
+}
+trap 'for f in "${cleanup[@]-}"; do [[ -n "$f" ]] && rm -f "$f"; done; remove_new_received' EXIT
 major=$(cd "$tests" && dotnet --version | cut -d. -f1)
 if [[ "$major" -ge 11 && ! -e "$tests/global.json" ]]; then
 	sdk10=$(dotnet --list-sdks | awk '/^10\./ { print $1 }' | sort -V | tail -1)

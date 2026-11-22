@@ -486,3 +486,6 @@ $RECYCLE.BIN/
 
 # Stryker.NET mutation reports (dotnet stryker)
 StrykerOutput/
+
+# Verify snapshot mismatches (only *.verified.* files are committed)
+*.received.*
