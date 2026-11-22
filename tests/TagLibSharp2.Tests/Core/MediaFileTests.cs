@@ -639,6 +639,23 @@ public class MediaFileTests
 	}
 
 	[TestMethod]
+	[DataRow ("clip.aac")]
+	[DataRow ("clip.avi")]
+	public void Detect_AviAndAac_FollowTheirMagicNotTheirName (string name)
+	{
+		var avi = new TagLibSharp2.Tests.Riff.AviTestBuilder ().Build ();
+		var aac = TagLibSharp2.Tests.Aac.AacTestBuilder.Adts (20);
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/v" + name, avi);
+		fs.AddFile ("/a" + name, aac);
+
+		Assert.AreEqual (MediaFormat.Avi, MediaFile.Read ("/v" + name, fs).Format);
+		Assert.AreEqual (MediaFormat.Avi, MediaFile.ReadFromData (avi, name).Format);
+		Assert.AreEqual (MediaFormat.Aac, MediaFile.Read ("/a" + name, fs).Format);
+		Assert.AreEqual (MediaFormat.Aac, MediaFile.ReadFromData (aac, name).Format);
+	}
+
+	[TestMethod]
 	[DataRow ("clip.mpg")]
 	[DataRow ("clip.vob")]
 	[DataRow ("clip.avi")]
