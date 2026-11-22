@@ -66,17 +66,28 @@ Example output from the TagLib# sample files, with columns cut for width:
 file              format  title      artist      album      year  track  duration_ms  span  noop               title         artist        longtitle           clear
 Turning Lime.mpg  MpegPs  -          -           -          -     -      1130         =     no-tag             no-tag        no-tag        no-tag              no-tag
 sample.m4a        Mp4     M4A title  M4A artist  M4A album  1234  6      5253         =     30745F14CA5A       2DA3AE441A55  98C8CE90E147  C659E838A85D        F67E933BC2E1
-sample.wav        Wav     Title      Artist      Album      2009  1      2000         =     394DAEAC9520       6F9151B06505  624785CDA978  F5DAB4123A5D        9A91B179E1A3!value
+sample.wav        Wav     Title      Artist      Album      2009  1      2000         =     580E3F312678       6FCA1671EF91  4B170CE9B501  A66623BDE9B9        9A91B179E1A3!value
 sample_v1_only.mp3 Mp3    MP3 title  MP3 artist  MP3 album  1234  6      1306         =     001209053E95=same  60FA44AE35BD  1F34858C9188  16DC1B9F572C!value  06F613BCAC49
 a.mp3             FAIL Invalid MP3 file: data too short
 ```
 
-The same run with `--lib` pointed at a worktree from before MPEG program stream support differs in exactly
-the two `.mpg` lines:
+Run with `--lib` pointed at a worktree of `4ef8e24~1`, the commit before MPEG program stream support,
+and diffed against `main` at `577eaaf`, the grid changes on 10 of the 49 lines. Each change traces to a
+commit in between:
+
+- the two `.mpg` files, from MPEG-PS support;
+- `sample.aac` and `corrupt/a.aac`, from the AAC format;
+- `Turning Lime.mkv`, where the no-op save became byte-identical;
+- the `null_title_v2.mp3` title;
+- the save hashes of `sample.mp3`, `sample.wav`, `sample_replaygain.mp3` and `sample_v2_4_unsynch.mp3`.
 
 ```text
 < Turning Lime.mpg	FAIL Unknown or unsupported file format: .../Turning Lime.mpg
 > Turning Lime.mpg	MpegPs	-	-	-	-	-	1130	=	no-tag	no-tag	no-tag	no-tag	no-tag
+< sample.aac	Mp3	AAC title	AAC artist	AAC album	1234	6	-	=	CA51FF50BF34	...
+> sample.aac	Aac	AAC title	AAC artist	AAC album	1234	6	7337	=	CA51FF50BF34	...
+< Turning Lime.mkv	Matroska	Turning Lime	...	BECEFFE62710	...
+> Turning Lime.mkv	Matroska	Turning Lime	...	326890A266A0=same	...
 ```
 
 ## compare/readers.sh
@@ -197,7 +208,7 @@ Stryker 5.1.0:
 | mutants created for the whole library | 23,258 |
 | mutants tested (one changed file) | 578 |
 | result | 406 killed, 153 survived, 19 timeouts, 12 not covered: score 72.03% |
-| wall time | 22.4 minutes in total, of which Stryker reports 9 minutes 38 seconds after its setup. The build, the first run of 4,831 tests and coverage capture took between 3 and 12 minutes, depending on machine load. |
+| wall time | 22.4 minutes in total, of which Stryker reports 9 minutes 38 seconds after its setup. The build, the first run of the 4,831 tests Stryker found at that commit (`ebd6138`) and coverage capture took between 3 and 12 minutes, depending on machine load. |
 
 Testing all 23,000 mutants would take hours, and even a one-file diff takes tens of minutes, so mutation
 testing is not part of CI. Run it before you open a PR and before each fix round, then read the

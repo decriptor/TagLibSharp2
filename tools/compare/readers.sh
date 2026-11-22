@@ -118,7 +118,7 @@ FIELDS = {
     "albumartist": ["album_artist", "albumartist", "tpe2", "aart", "band", "album_performer", "wm/albumartist"],
     "date": ["date", "year", "tdrc", "tyer", "©day", "recorded_date", "wm/year", "recordingtime", "contentcreatedate"],
     "track": ["track", "tracknumber", "trck", "trkn", "track_position", "wm/tracknumber"],
-    "disc": ["disc", "discnumber", "tpos", "disk", "part_position", "partofset"],
+    "disc": ["disc", "discnumber", "disknumber", "tpos", "disk", "part_position", "partofset"],
     "genre": ["genre", "tcon", "©gen", "wm/genre"],
     "comment": ["comment", "©cmt", "description"],
     "composer": ["composer", "tcom", "©wrt", "wm/composer"],
