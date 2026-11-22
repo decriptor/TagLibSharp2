@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and flags. New tracks use `nmhd` and `tx3g` in MP4 (Apple TN2174) and `gmhd` and the QTFF `text`
   description in QuickTime files (major brand `qt  `, or no `ftyp`). A chapter sample that is not valid
   UTF-8/UTF-16 text yields to `chpl`. Clearing also removes Apple chapter image and URL tracks.
+  A set replaces every chapter title track with the one list: other title tracks (for example one per
+  language) are removed. A chapter URL track (samples with an `href` modifier) and chapter image tracks stay.
 
 #### Raw AAC (ADTS/ADIF) Support
 - `AacFile` reads and writes raw AAC files (`.aac`): ADTS (ISO/IEC 13818-7 §6.2, MPEG-2 and MPEG-4) and ADIF (§6.1)

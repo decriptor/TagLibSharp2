@@ -1694,6 +1694,186 @@ public class Mp4ChapterTests
 			Assert.IsNull (image.FindChild ("tref"), "the chapter image trak gets none");
 	}
 
+	// ---- extra chapter text tracks (a set replaces every title track with one list)
+
+	const ushort English = 0x15C7;
+	const ushort German = 0x10B5;
+
+	/// <summary>
+	/// The chapter-track fixture (A: audio, chap [2]; T: titles, ID 2, English) plus a third trak X with ID 3
+	/// that A's chap also names. title: X is T in German, with the same samples. url: X's three samples are
+	/// URLs that carry an href modifier (3GPP TS 26.245 §5.17), in an mdat before moov. unreadable: X's chunk
+	/// lies past the end of the file.
+	/// </summary>
+	static byte[] ExtraTextTrackShape (string kind)
+	{
+		var data = Mp4ChapterTestBuilder.Build (ThreeChapterTrack ());
+		var moov = Mp4ChapterTestBuilder.Moov (data);
+		var moovAt = data.AsSpan ().IndexOf ("moov"u8) - 4;
+		Assert.AreEqual (data.Length, moovAt + (int)BinaryPrimitives.ReadUInt32BigEndian (data.AsSpan (moovAt)), "moov is last");
+		var a = Mp4ChapterTestBuilder.Trak (moov, Mp4ChapterTestBuilder.AudioTrackId)!;
+		var t = WithLanguage (Mp4ChapterTestBuilder.Trak (moov, Mp4ChapterTestBuilder.TextTrackId)!, English);
+		var x = WithTrackId (t, 3);
+		byte[] before = [];
+		switch (kind) {
+			case "title":
+				x = WithLanguage (x, German);
+				break;
+			case "url": {
+					var samples = new List<byte> ();
+					var sizes = new List<uint> ();
+					foreach (var url in new[] { "https://example.com/1", "https://example.com/2", "https://example.com/3" }) {
+						var text = Encoding.UTF8.GetBytes (url);
+						byte[] href = [0, 0, 0, (byte)text.Length, (byte)text.Length, .. text, 0];
+						byte[] sample = [(byte)(text.Length >> 8), (byte)text.Length, .. text, .. Mp4TestBuilder.CreateBox ("href", href)];
+						samples.AddRange (sample);
+						sizes.Add ((uint)sample.Length);
+					}
+
+					before = Mp4TestBuilder.CreateBox ("mdat", [.. samples]);
+					x = WithSamples (x, (uint)(moovAt + 8), [.. sizes]);
+					break;
+				}
+
+			case "unreadable":
+				x = WithSamples (x, (uint)(data.Length + 1000), [10, 10, 10]);
+				break;
+			default:
+				throw new ArgumentException (kind);
+		}
+
+		var chap = new byte[8];
+		BinaryPrimitives.WriteUInt32BigEndian (chap, Mp4ChapterTestBuilder.TextTrackId);
+		BinaryPrimitives.WriteUInt32BigEndian (chap.AsSpan (4), 3);
+		a = WithChild (a, "tref", _ => new Mp4Box ("tref", new BinaryData (Mp4TestBuilder.CreateBox ("chap", chap))));
+		var children = moov.Children.Where (c => c.Type != "trak").ToList ();
+		children.InsertRange (children.FindIndex (c => c.Type == "mvhd") + 1, [a, t, x]);
+		return [.. data.AsSpan (0, moovAt), .. before, .. new Mp4Box ("moov", moov.Data, children).Render ().Span];
+	}
+
+	static Mp4Box WithLanguage (Mp4Box trak, ushort language) =>
+		WithChild (trak, "mdia", m => WithChild (m, "mdhd", h => {
+			var bytes = h.Data.ToArray ();
+			BinaryPrimitives.WriteUInt16BigEndian (bytes.AsSpan (bytes[0] == 1 ? 32 : 20), language);
+			return new Mp4Box ("mdhd", new BinaryData (bytes));
+		}));
+
+	/// <summary>The trak with one chunk at <paramref name="offset"/> holding samples of <paramref name="sizes"/>.</summary>
+	static Mp4Box WithSamples (Mp4Box trak, uint offset, uint[] sizes)
+	{
+		var stsz = new byte[8 + (sizes.Length * 4)];
+		BinaryPrimitives.WriteUInt32BigEndian (stsz.AsSpan (4), (uint)sizes.Length);
+		for (var i = 0; i < sizes.Length; i++)
+			BinaryPrimitives.WriteUInt32BigEndian (stsz.AsSpan (8 + (i * 4)), sizes[i]);
+		var stco = new byte[8];
+		BinaryPrimitives.WriteUInt32BigEndian (stco, 1);
+		BinaryPrimitives.WriteUInt32BigEndian (stco.AsSpan (4), offset);
+		var stsc = new byte[16];
+		BinaryPrimitives.WriteUInt32BigEndian (stsc, 1);
+		BinaryPrimitives.WriteUInt32BigEndian (stsc.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (stsc.AsSpan (8), (uint)sizes.Length);
+		BinaryPrimitives.WriteUInt32BigEndian (stsc.AsSpan (12), 1);
+		Mp4Box Full (string type, byte[] body) => new (type, new BinaryData ([0, 0, 0, 0, .. body]));
+		return WithChild (trak, "mdia", m => WithChild (m, "minf", n => WithChild (n, "stbl", b =>
+			WithChild (WithChild (WithChild (b, "stsz", _ => Full ("stsz", stsz)), "stco", _ => Full ("stco", stco)), "stsc", _ => Full ("stsc", stsc)))));
+	}
+
+	[TestMethod]
+	public void Save_SetChapters_SecondTitleTrack_IsReplacedByTheOneList ()
+	{
+		// A file can hold one chapter title track per language (AVFoundation picks one by locale; ffprobe can
+		// take a later one). The list has no locale, so a set leaves one title track: the first, rebuilt. The
+		// German one goes the way a clear removes it, with A's chap entry for it.
+		var original = ExtraTextTrackShape ("title");
+		Assert.AreEqual (2, Mp4ChapterCodec.FindChapterTracks (Mp4ChapterTestBuilder.Moov (original)).Count, "two title tracks before");
+
+		var saved = EditChapters (original, 1);
+		var moov = Mp4ChapterTestBuilder.Moov (saved);
+
+		CollectionAssert.AreEqual (new uint[] { 1, 2 }, Mp4ChapterTestBuilder.TrackIds (moov), "the German title trak is gone");
+		CollectionAssert.AreEqual (new uint[] { 2 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		Assert.AreEqual (1, Mp4ChapterCodec.FindChapterTracks (Mp4ChapterTestBuilder.Moov (saved)).Count, "one title track after");
+		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Select (c => c.Title).ToArray ());
+		var again = EditChapters (saved, 2);
+		Assert.AreEqual (saved.Length, again.Length, "the next edit keeps the size");
+	}
+
+	[TestMethod]
+	public void Save_SetChapters_UrlTrackWithHref_IsKept ()
+	{
+		// Apple enhanced podcasts keep chapter links in a text track whose samples carry an href modifier.
+		// That is not a title track: it stays, with its chap entry and its samples.
+		var original = ExtraTextTrackShape ("url");
+		var urls = Mp4ChapterTestBuilder.SampleBytes (original, 3);
+
+		var saved = EditChapters (original, 1);
+		var moov = Mp4ChapterTestBuilder.Moov (saved);
+
+		CollectionAssert.AreEqual (new uint[] { 1, 2, 3 }, Mp4ChapterTestBuilder.TrackIds (moov));
+		CollectionAssert.AreEqual (new uint[] { 2, 3 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+		CollectionAssert.AreEqual (urls, Mp4ChapterTestBuilder.SampleBytes (saved, 3), "the URL samples are unchanged");
+		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), Mp4ChapterTestBuilder.ReadFile (saved).Chapters.Select (c => c.Title).ToArray ());
+	}
+
+	[TestMethod]
+	public void Save_SetChapters_ExtraTextTrackWithUnreadableSamples_IsKept ()
+	{
+		// A text track whose samples lie outside the file cannot be told from a URL track, so it stays.
+		var saved = EditChapters (ExtraTextTrackShape ("unreadable"), 1);
+		var moov = Mp4ChapterTestBuilder.Moov (saved);
+
+		CollectionAssert.AreEqual (new uint[] { 1, 2, 3 }, Mp4ChapterTestBuilder.TrackIds (moov));
+		CollectionAssert.AreEqual (new uint[] { 2, 3 }, Mp4ChapterTestBuilder.ChapReferences (Mp4ChapterTestBuilder.Trak (moov, 1)!));
+	}
+
+	[TestMethod]
+	public void Save_SetChapters_ExtraTitleTrackWithFragmentSamples_IsRefused ()
+	{
+		// Removing the German title track would leave its fragment samples as a stale list, as a clear would.
+		var shape = ExtraTextTrackShape ("title");
+		var tfhd = Mp4TestBuilder.CreateFullBox ("tfhd", 0, 0, [0, 0, 0, 3]);
+		var trun = Mp4TestBuilder.CreateFullBox ("trun", 0, 0, [0, 0, 0, 0]);
+		byte[] data = [.. shape, .. Mp4TestBuilder.CreateBox ("moof", Mp4TestBuilder.CreateBox ("traf", [.. tfhd, .. trun]))];
+		var file = Mp4ChapterTestBuilder.ReadFile (data);
+
+		file.Chapters = Edit (1);
+
+		Assert.IsTrue (file.Render (data).IsEmpty, "refused");
+	}
+
+	[TestMethod]
+	[TestCategory ("Security")]
+	public void Plan_ManyExtraTitleTracks_ExamineAtMostTheFileLength ()
+	{
+		// Each extra text track's samples are examined to tell titles from URLs. A file sets how many tracks and
+		// samples there are: here 300 tracks, each one chunk at offset 0 of 65,535 one-byte samples (a constant
+		// stsz), every one inside the file until its end. One budget, the file's length, covers every track.
+		var data = Mp4ChapterTestBuilder.Build (ThreeChapterTrack ());
+		var moov = ManyChapterTracksMoov (300);
+		var stsz = new byte[12];
+		BinaryPrimitives.WriteUInt32BigEndian (stsz.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (stsz.AsSpan (8), 65_535);
+		var stsc = new byte[20];
+		BinaryPrimitives.WriteUInt32BigEndian (stsc.AsSpan (4), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (stsc.AsSpan (8), 1);
+		BinaryPrimitives.WriteUInt32BigEndian (stsc.AsSpan (12), 65_535);
+		BinaryPrimitives.WriteUInt32BigEndian (stsc.AsSpan (16), 1);
+		var stco = new byte[12];
+		BinaryPrimitives.WriteUInt32BigEndian (stco.AsSpan (4), 1);
+		Mp4Box Tables (Mp4Box stbl) =>
+			WithChild (WithChild (WithChild (stbl, "stsz", _ => new Mp4Box ("stsz", new BinaryData (stsz))), "stsc", _ => new Mp4Box ("stsc", new BinaryData (stsc))), "stco", _ => new Mp4Box ("stco", new BinaryData (stco)));
+		var first = Mp4ChapterCodec.FindChapterTrack (moov)!.Trak;
+		var children = moov.Children.Select (c => c.Type == "trak" && c != first && HandlerOf (c) == "text"
+			? WithChild (c, "mdia", m => WithChild (m, "minf", n => WithChild (n, "stbl", Tables)))
+			: c).ToList ();
+		moov = new Mp4Box ("moov", moov.Data, children);
+
+		var plan = Mp4ChapterCodec.Plan (moov, [], Edit (1), TimeSpan.FromSeconds (10), quickTime: false, data);
+
+		Assert.IsNull (plan.Error);
+		Assert.IsTrue (plan.SampleSteps > 0 && plan.SampleSteps <= data.Length, $"{plan.SampleSteps:N0} steps for a {data.Length:N0}-byte file");
+	}
+
 	[TestMethod]
 	[TestCategory ("Security")]
 	public void ClearChapters_ManyChapterTracks_LooksEachTrakUpOnce ()

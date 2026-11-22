@@ -749,10 +749,12 @@ public sealed class Mp4File : IMediaFile
 	/// QuickTime chapter list covers the whole timeline.
 	/// </para>
 	/// <para>
-	/// Only the first chapter text track is rewritten. Any other text track a <c>chap</c> reference names is
-	/// kept as it is: Apple files hold the chapter URLs in one, and neither QTFF nor Apple's documentation gives
-	/// a way to tell a second title track from a URL track. A file with more than one title track keeps the old
-	/// titles in the others, and a reader that picks another one shows them.
+	/// A set replaces every chapter title track with this one list. A file can hold several, for example one
+	/// per language (AVFoundation picks one by locale), and the list has no locale. So the first title track
+	/// is rebuilt and the others are removed, the way a clear removes them, and every reader shows the new
+	/// list. Two kinds of text track stay. A chapter URL track (Apple enhanced podcasts) has samples that carry
+	/// an <c>href</c> hypertext modifier (3GPP TS 26.245 §5.17). A text track whose samples cannot all be read
+	/// cannot be told apart from one, so it stays too. Chapter image tracks stay.
 	/// </para>
 	/// <para>
 	/// A file whose traks reuse a track_ID (invalid per ISO 14496-12 §8.3.2.3, but seen) is handled by trak:
@@ -2452,7 +2454,7 @@ public sealed class Mp4File : IMediaFile
 		// QuickTime evidence: the "qt  " major brand, or no ftyp at all. ISO 14496-12 §4.3 requires ftyp in
 		// an ISO file; QuickTime movies may omit it (QTFF, "File type compatibility atom").
 		var quickTime = ftyp is null || ExtractFileType (ftyp) == "qt";
-		return Mp4ChapterCodec.Plan (moov, fragments, _chapters, duration, quickTime);
+		return Mp4ChapterCodec.Plan (moov, fragments, _chapters, duration, quickTime, originalData);
 	}
 
 	/// <summary>
