@@ -96,20 +96,29 @@ static partial class MatroskaRewrite
 		// Seek. Without a SeekHead it goes before the first Cluster (section 25.3.4). Everything after
 		// moves once. Only one body is kept: the first is dropped before the move is built, and built
 		// again only when the move cannot be planned.
+		var moveError = "";
 		if (NeedsMove (layout, plan, seekHeadCount, referenced)) {
 			body = [];
 			if (TryPlanMove (data, layout, id, element, out var moved)
-				&& TryApply (data, layout, moved, out var movedBody, out var movedHeads, out var movedReferenced, out _)) {
+				&& TryApply (data, layout, moved, out var movedBody, out var movedHeads, out var movedReferenced, out moveError)) {
 				plan = moved;
 				body = movedBody;
 				seekHeadCount = movedHeads;
 				referenced = movedReferenced;
-			} else if (!TryApply (data, layout, plan, out body, out seekHeadCount, out referenced, out error))
+			} else if (!TryApply (data, layout, plan, out body, out seekHeadCount, out referenced, out error)) {
+				// Both plans failed. Why the move failed is what the file needs fixed.
+				if (moveError.Length > 0)
+					error = moveError;
 				return false;
+			}
 		}
 
-		if (!IsReachable (layout, plan, seekHeadCount, referenced, out error))
+		if (!IsReachable (layout, plan, seekHeadCount, referenced, out error)) {
+			// The first plan left the element unlisted because the move failed; say why it did.
+			if (moveError.Length > 0)
+				error = moveError;
 			return false;
+		}
 
 		return TryFinish (data, layout, body, out rewritten, out error);
 	}
@@ -550,11 +559,11 @@ static partial class MatroskaRewrite
 		value = 0;
 		keep = true;
 		var codecState = element.Id is MatroskaIds.CueCodecState or MatroskaIds.CueRefCodecState;
-		if (element.DataLength == 0)
-			return codecState;
 		if (element.DataLength > 8)
 			return false;
-		var old = EbmlReader.ReadUInt (source.Slice (element.DataOffset, (int)element.DataLength));
+		// RFC 8794 section 7.2: an empty unsigned integer with no default is 0. None of these four has a
+		// default (RFC 9559 sections 5.1.5.1.2.2, 5.1.5.1.2.6, A.37, A.39), so an empty one is 0 too.
+		var old = element.DataLength == 0 ? 0 : EbmlReader.ReadUInt (source.Slice (element.DataOffset, (int)element.DataLength));
 		if (codecState && old == 0)
 			return true;
 		value = plan.Map (old);
@@ -1357,8 +1366,6 @@ static partial class MatroskaRewrite
 			if (!EbmlReader.TryRead (body, offset, end, out var element) || element.UnknownSize)
 				return false;
 			if (IsCuePosition (parent, element.Id)) {
-				if (element.Id == MatroskaIds.CueClusterPosition && element.DataLength < 1)
-					return false;
 				if (!TryMoveCueValue (body, element, plan, out var updated, out var keep))
 					return false;
 				if (!keep) {
