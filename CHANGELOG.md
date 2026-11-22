@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AacAudioProperties`: duration from every ADTS frame header (1024 samples per raw data block), average bitrate, sample rate, channels (including a program config element when channel_configuration is 0), profile, MPEG version, and frame count. ADIF duration comes from the header bitrate
 - `AacProfile` and `AacStreamFormat` enums, and `MediaFormat.Aac`
 - ID3v2 in front, APEv2 and ID3v1 at the end, unified through `AacFile.Tag`. Saving rewrites only the tags and copies the AAC frames unchanged. An APEv2 tag is written with a header and a footer, except that a footer-only tag that was read keeps its layout
-- `MediaFile` detection uses the reader's rule: "ADIF" or a confirmed ADTS sync (layer '00') at offset 0, or after a leading ID3v2 tag "ADIF" right after the tag or the first confirmed ADTS sync in the next 8 KB, is AAC. An MPEG audio frame that comes first stays MP3. `.aac` is an extension fallback
+- `MediaFile` detection and `AacFile.Read` share one start rule. Without a tag, offset 0 is checked; after a leading ID3v2 tag, the next 8 KB. "ADIF" counts only at the first byte and only when its header parses. An ADTS header (layer '00') counts when the next frame header names the same stream or a trailing ID3v1, APEv2, or Lyrics3 tag begins where the frame ends, and at the first byte also when its frame runs past the data. An MPEG audio frame header that is confirmed or runs past the data ends the search as MP3, so ID3-tagged MP3, even truncated, stays MP3. The start header must lie before the trailing tags. `.aac` is an extension fallback
 
 ### Changed
 
