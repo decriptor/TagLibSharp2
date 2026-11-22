@@ -74,12 +74,44 @@ public partial class MatroskaFileTests
 		read.File.Tag.Artist = "Someone";
 		var rendered = read.File.Render (original).ToArray ();
 		Assert.AreNotEqual (0, rendered.Length);
-		Assert.IsTrue (rendered.AsSpan ().IndexOf (leaf) >= 0, "the deepest SimpleTag is written back");
+		Assert.AreEqual (1, Occurrences (rendered, KeptSlice (chain)), "the SimpleTags below the parse depth are written back as stored, once");
 		Assert.AreEqual (HostileDepth, NestingBelowTitle (rendered));
 
 		var reread = MatroskaFile.Read (rendered).File!;
 		Assert.AreEqual ("Outer", reread.Tag.Title);
 		Assert.AreEqual ("Someone", reread.Tag.Artist);
+	}
+
+	// TITLE is level 1 and each chain link is one level deeper, so the leaf sits at level depth + 2.
+	// Levels up to MaxSimpleTagDepth are parsed and re-encoded with minimal sizes; anything deeper is
+	// kept as stored. Every element here is written with an 8-octet size, so a parsed one changes bytes
+	// and a kept one does not.
+	[TestMethod]
+	[DataRow (MatroskaFile.MaxSimpleTagDepth - 2, false)]
+	[DataRow (MatroskaFile.MaxSimpleTagDepth - 1, true)]
+	[DataRow (MatroskaFile.MaxSimpleTagDepth, true)]
+	[DataRow (MatroskaFile.MaxSimpleTagDepth + 1, true)]
+	[DataRow (MatroskaFile.MaxSimpleTagDepth + 5, true)]
+	public void Save_SimpleTagsAtAndPastTheParseDepth_KeepOnlyTheDeeperOnesAsStored (int depth, bool kept)
+	{
+		var leaf = Wide (0x67C8, Concat (Element (0x45A3, "LEAF"u8), Element (0x4487, "v"u8)));
+		var chain = Nested (0x67C8, depth, Element (0x45A3, "N"u8), leaf);
+		var title = Wide (0x67C8, Concat (Element (0x45A3, "TITLE"u8), Element (0x4487, "Outer"u8), chain));
+		var original = DeepWideFile (
+			Master (0x1549A966, Element (0x7BA9, "Deep"u8)),
+			Wide (0x1254C367, Wide (0x7373, Concat (Master (0x63C0, Element (0x68CA, new byte[] { 30 })), title))));
+		var file = MatroskaFile.Read (original).File!;
+
+		file.Tag.Artist = "Someone";
+		var rendered = file.Render (original).ToArray ();
+
+		Assert.AreEqual (depth, NestingBelowTitle (rendered));
+		Assert.AreEqual (kept ? 1 : 0, Occurrences (rendered, leaf), "the leaf's stored bytes");
+		if (kept)
+			Assert.AreEqual (1, Occurrences (rendered, KeptSlice (chain)));
+		Assert.IsTrue (MatroskaFile.Read (rendered).IsSuccess);
+		Assert.AreEqual (1, Occurrences (rendered, Element (0x45A3, "LEAF"u8)), "the leaf is written once");
+		Assert.AreEqual (1, Occurrences (rendered, Element (0x4487, "v"u8)), "with its value");
 	}
 
 	[TestMethod]
@@ -103,7 +135,7 @@ public partial class MatroskaFileTests
 		var restored = rendered.Render (file.Render (original).ToArray ()).ToArray ();
 
 		Assert.AreEqual (depth, NestingBelowTitle (restored));
-		Assert.IsTrue (restored.AsSpan ().IndexOf (leaf) >= 0);
+		Assert.AreEqual (1, Occurrences (restored, KeptSlice (chain)), "the kept SimpleTags survive two saves byte for byte");
 	}
 
 	[TestMethod]
@@ -124,7 +156,29 @@ public partial class MatroskaFileTests
 
 		Assert.AreEqual ("Renamed", MatroskaFile.Read (rendered).File!.Tag.Title);
 		Assert.AreEqual (depth, NestingBelowTitle (rendered));
-		Assert.IsTrue (rendered.AsSpan ().IndexOf (leaf) >= 0);
+		Assert.AreEqual (1, Occurrences (rendered, KeptSlice (chain)));
+	}
+
+	// The stored bytes of the first SimpleTag below the parse depth: chain link MaxSimpleTagDepth - 1
+	// (link i is level i + 2), through the end of the chain, which is that link's whole subtree.
+	static byte[] KeptSlice (byte[] chain)
+	{
+		var link = Id (0x67C8).Length + 8 + Element (0x45A3, "N"u8).Length;
+		return chain.AsSpan ((MatroskaFile.MaxSimpleTagDepth - 1) * link).ToArray ();
+	}
+
+	static int Occurrences (byte[] data, byte[] pattern)
+	{
+		var count = 0;
+		var span = data.AsSpan ();
+		var at = span.IndexOf (pattern);
+		while (at >= 0) {
+			count++;
+			span = span.Slice (at + 1);
+			at = span.IndexOf (pattern);
+		}
+
+		return count;
 	}
 
 	// Counts the SimpleTags nested under the first TITLE SimpleTag by walking the bytes.
