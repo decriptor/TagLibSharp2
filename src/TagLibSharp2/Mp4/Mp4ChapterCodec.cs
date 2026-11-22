@@ -1040,14 +1040,19 @@ internal static class Mp4ChapterCodec
 
 		// The other title tracks go (see remarks). Their fragment samples, if any, would stay as a stale list.
 		// One budget for all of them: a file declares how many tracks and samples there are, not how many bytes.
+		// Only a proven URL track may keep fragment samples: a track that cannot be told apart could hold titles.
 		var extras = new List<ChapterTrack> ();
+		var notUrl = new HashSet<uint> ();
 		var budget = new StepBudget (file.Length);
 		for (var i = 1; i < chapterTracks.Count; i++) {
-			if (IsTitleTrack (chapterTracks[i].Trak, file, budget))
+			var kind = ClassifyTextTrack (chapterTracks[i].Trak, file, budget);
+			if (kind == TextTrackKind.Title)
 				extras.Add (chapterTracks[i]);
+			if (kind != TextTrackKind.Url)
+				notUrl.Add (chapterTracks[i].Id);
 		}
 
-		if (existing is not null && HasFragments (fragments, [existing.Id, .. extras.Select (t => t.Id)]))
+		if (existing is not null && HasFragments (fragments, [existing.Id, .. notUrl]))
 			return ChapterPlan.Refused (FragmentedChapterTrackError);
 		if (extras.Count > 0)
 			RemoveTraks (children, extras);
@@ -1121,27 +1126,40 @@ internal static class Mp4ChapterCodec
 		return removedTraks.Steps;
 	}
 
+	internal enum TextTrackKind
+	{
+		/// <summary>Every sample read, none with an href: chapter titles.</summary>
+		Title,
+
+		/// <summary>A sample carries an href modifier: chapter URLs (Apple enhanced podcasts).</summary>
+		Url,
+
+		/// <summary>Cannot be told: see <see cref="ClassifyTextTrack"/>.</summary>
+		Unknown,
+	}
+
 	/// <summary>
-	/// True when the chapter text trak <paramref name="trak"/> has samples in its moov sample table, every one
-	/// lies in <paramref name="file"/>, and none carries a hypertext modifier box (<c>href</c>, 3GPP TS 26.245
-	/// §5.17): a title track. False for a chapter URL track. Also false when that cannot be told: a sample
-	/// outside the file, tables that do not parse, no samples in moov, or <paramref name="budget"/> spent.
-	/// Each sample and each modifier box costs one step from <paramref name="budget"/>, and no sample table is
-	/// copied, so the work across every extra track is bounded by the file's length.
+	/// Classifies the chapter text trak <paramref name="trak"/> by the samples in its moov sample table. Any
+	/// sample with a hypertext modifier box (<c>href</c>, 3GPP TS 26.245 §5.17) makes it a URL track. When
+	/// every sample lies in <paramref name="file"/> and none has one, it is a title track. Otherwise it is
+	/// unknown: a sample outside the file, tables that do not parse, no samples in moov (they may be in
+	/// fragments), or <paramref name="budget"/> spent. Each sample and each modifier box costs one step from
+	/// <paramref name="budget"/>, and no sample table is copied, so the work across every extra track is
+	/// bounded by the file's length.
 	/// </summary>
-	static bool IsTitleTrack (Mp4Box trak, ReadOnlySpan<byte> file, StepBudget budget)
+	static TextTrackKind ClassifyTextTrack (Mp4Box trak, ReadOnlySpan<byte> file, StepBudget budget)
 	{
 		var stbl = trak.FindChild ("mdia")?.FindChild ("minf")?.FindChild ("stbl");
 		var co64 = stbl?.FindChild ("co64");
 		var stco = stbl?.FindChild ("stco");
 		var stsc = stbl?.FindChild ("stsc");
 		if (stbl is null || (stco is null && co64 is null) || stsc is null)
-			return false;
+			return TextTrackKind.Unknown;
 
 		var width = co64 is not null ? 8 : 4;
 		var chunkTable = (co64 ?? stco)!.Data.Span;
 		if (!TableComplete (chunkTable, 8, width) || !TableComplete (stsc.Data.Span, 8, 12) || !SampleSizes.TryRead (stbl, out var sizes))
-			return false;
+			return TextTrackKind.Unknown;
 
 		var chunks = ReadChunkOffsets (chunkTable, width);
 		var rows = ReadStscRows (stsc.Data.Span);
@@ -1155,17 +1173,17 @@ internal static class Mp4ChapterCodec
 			var offset = chunks[chunk];
 			for (var k = 0u; k < perChunk && sample < sizes.Count; k++, sample++) {
 				if (!budget.Take () || !sizes.TrySum (sample, 1, out var size))
-					return false;
+					return TextTrackKind.Unknown;
 				var readLength = (int)Math.Min (size, SampleReadLimit);
 				if (offset < 0 || offset > file.Length - readLength)
-					return false;
+					return TextTrackKind.Unknown;
 				if (HasHyperText (file.Slice ((int)offset, readLength), budget))
-					return false;
+					return TextTrackKind.Url;
 				offset += size;
 			}
 		}
 
-		return sample > 0;
+		return sample > 0 ? TextTrackKind.Title : TextTrackKind.Unknown;
 	}
 
 	/// <summary>
