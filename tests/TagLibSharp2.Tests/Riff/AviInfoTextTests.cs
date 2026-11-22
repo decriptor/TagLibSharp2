@@ -184,9 +184,9 @@ public class AviInfoTextTests
 	}
 
 	[TestMethod]
-	[DataRow (1252, new byte[] { 0x41, 0x81, 0x42, 0x00 })]
-	[DataRow (0, new byte[] { 0x41, 0x96, 0x42, 0x00 })]
-	public void Save_UndefinedByteInTheDeclaredCodePage_Refuses (int codePage, byte[] legacy)
+	[DataRow (1252, new byte[] { 0x41, 0x81, 0x42, 0x00 }, "holds byte 0x81, which code page 1252 leaves undefined")]
+	[DataRow (0, new byte[] { 0x41, 0x96, 0x42, 0x00 }, "holds byte 0x96, which the CSET's code page 0")]
+	public void Save_UndefinedByteInTheDeclaredCodePage_Refuses (int codePage, byte[] legacy, string reason)
 	{
 		// 0x81 is unassigned in Windows-1252, and columns 8 and 9 are undefined in CSET 0's ISO 8859/1.
 		var builder = new AviTestBuilder { CharacterSet = (ushort)codePage };
@@ -199,6 +199,88 @@ public class AviInfoTextTests
 
 		Assert.IsFalse (saved.IsSuccess);
 		StringAssert.Contains (saved.Error, "IART");
+		StringAssert.Contains (saved.Error, reason);
+		StringAssert.Contains (saved.Error, codePage == 1252 ? "'A\\u0081B'" : "'A\\u0096B'", "Control characters are shown escaped.");
+	}
+
+	[TestMethod]
+	[DataRow (-1, "is not UTF-8 and the file has no CSET, so its code page is only a guess")]
+	[DataRow (932, "is in code page 932, which this library does not decode")]
+	[DataRow (1251, "is in code page 1251, which this library does not decode")]
+	public void Save_RefusalNamesItsReason (int codePage, string reason)
+	{
+		var builder = new AviTestBuilder { CharacterSet = codePage < 0 ? null : (ushort?)codePage };
+		builder.InfoBytes.Add (("IART", Windows1251Alice));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = ChangedNonAscii;
+
+		var saved = file.SaveToFile ("/x.avi", original, new MockFileSystem ());
+
+		Assert.IsFalse (saved.IsSuccess);
+		StringAssert.Contains (saved.Error, reason);
+	}
+
+	[TestMethod]
+	[DataRow ('\u0081')]
+	[DataRow ('\u008D')]
+	[DataRow ('\u008F')]
+	[DataRow ('\u0090')]
+	[DataRow ('\u009D')]
+	public void Save_UnassignedWindows1252CodePoint_GoesToUtf8AndCanBeEditedAgain (char c)
+	{
+		// The five code points CP1252.TXT leaves UNDEFINED do not fit 1252, so the list becomes UTF-8,
+		// and a later non-ASCII edit of what the library wrote saves too.
+		var builder = new AviTestBuilder { CharacterSet = 1252 };
+		builder.Info.Add (("INAM", "Old"));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "A" + c + "B";
+
+		var first = file.Render (original).ToArray ();
+
+		Assert.AreEqual ((ushort)65001, CodePage (first));
+		var again = AviFile.Read (first).File!;
+		Assert.AreEqual ("A" + c + "B", again.InfoTag.Title);
+		again.InfoTag.Artist = "☕";
+		var second = again.SaveToFile ("/x.avi", first, new MockFileSystem ());
+		Assert.IsTrue (second.IsSuccess, second.Error);
+	}
+
+	/// <summary>
+	/// Round trip, both directions, for every declared code page this library encodes: whatever the
+	/// encoder writes, the decoder reads back as the same text and as exact (never a guess); and every
+	/// byte the decoder reads as exact, the encoder writes back as the same byte.
+	/// </summary>
+	[TestMethod]
+	public void Encoding_RoundTripsInEveryEncodedCodePage ()
+	{
+		InfoCharacterSet[] sets = [InfoCharacterSet.Latin1, InfoCharacterSet.Latin1Default, InfoCharacterSet.Windows1252, InfoCharacterSet.Utf8];
+		var checkedCells = 0;
+		foreach (var set in sets) {
+			for (var code = 0x80; code <= 0x3000; code++) {
+				var value = "A" + (char)code + "B";
+				if (!InfoText.CanEncode (value, set))
+					continue;
+				var bytes = InfoText.Encode (value, set);
+				var decoded = InfoText.Decode (bytes, set, out var kind);
+				Assert.AreEqual (value, decoded, $"{set} U+{code:X4}");
+				Assert.AreNotEqual (InfoTextKind.Guess, kind, $"{set} U+{code:X4}: the encoder wrote bytes its decoder calls a guess");
+				checkedCells++;
+			}
+
+			for (var b = 0x80; b <= 0xFF; b++) {
+				byte[] bytes = [0x41, (byte)b, 0x42, 0];
+				var decoded = InfoText.Decode (bytes, set, out var kind);
+				if (kind == InfoTextKind.Guess)
+					continue;
+				Assert.IsTrue (InfoText.CanEncode (decoded, set) || set == InfoCharacterSet.Utf8, $"{set} byte 0x{b:X2}");
+				if (set != InfoCharacterSet.Utf8)
+					CollectionAssert.AreEqual (bytes, InfoText.Encode (decoded, set), $"{set} byte 0x{b:X2}");
+			}
+		}
+
+		Assert.IsGreaterThan (1000, checkedCells);
 	}
 
 	[TestMethod]
@@ -372,6 +454,47 @@ public class AviInfoTextTests
 		Assert.AreEqual (names.IndexOf ("LIST INFO") - 1, names.IndexOf ("CSET"));
 		Assert.AreEqual ((ushort)1252, CodePage (saved));
 		CollectionAssert.AreEqual (Windows1252Halo, AviTestBuilder.InfoField (saved, "IART"));
+	}
+
+	[TestMethod]
+	public void Save_ListThatBecomesUtf8_KeepsTheCsetsCountryLanguageAndDialect ()
+	{
+		// MPIDS 1.0 reads zero country, language and dialect codes as USA and US English; a German
+		// file (49, 7, 1) must keep them when only its code page changes.
+		var builder = new AviTestBuilder { CharacterSet = 1252, CharacterSetCodes = (49, 7, 1) };
+		builder.InfoBytes.Add (("INAM", [.. "Song"u8, 0]));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Artist = "Müller ☕";
+
+		var saved = file.Render (original).ToArray ();
+
+		var cset = (int)AviSaveTests.Offset (saved, "CSET") + 8;
+		Assert.AreEqual ((ushort)65001, BinaryPrimitives.ReadUInt16LittleEndian (saved.AsSpan (cset)));
+		Assert.AreEqual ((ushort)49, BinaryPrimitives.ReadUInt16LittleEndian (saved.AsSpan (cset + 2)));
+		Assert.AreEqual ((ushort)7, BinaryPrimitives.ReadUInt16LittleEndian (saved.AsSpan (cset + 4)));
+		Assert.AreEqual ((ushort)1, BinaryPrimitives.ReadUInt16LittleEndian (saved.AsSpan (cset + 6)));
+	}
+
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Save_ListThatBecomesUtf8_WritesZeroCodesWithoutAFullCset (bool shortCset)
+	{
+		// No CSET, or one holding only wCodePage: there are no codes to keep.
+		var builder = shortCset
+			? new AviTestBuilder { ChunkBeforeJunk = ("CSET", [0xE4, 0x04]) }
+			: new AviTestBuilder ();
+		builder.Info.Add (("INAM", "Song"));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Artist = "Müller ☕";
+
+		var saved = file.Render (original).ToArray ();
+
+		var cset = (int)AviSaveTests.Offset (saved, "CSET") + 8;
+		CollectionAssert.AreEqual (new byte[] { 0xE9, 0xFD, 0, 0, 0, 0, 0, 0 }, saved.AsSpan (cset, 8).ToArray ());
+		Assert.AreEqual (1, AviSaveTests.Names (saved).Count (n => n == "CSET"));
 	}
 
 	[TestMethod]

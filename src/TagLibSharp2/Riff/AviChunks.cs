@@ -217,14 +217,42 @@ internal static class AviChunks
 		return null;
 	}
 
-	/// <summary>A CSET chunk declaring UTF-8: wCodePage 65001, with no country, language or dialect.</summary>
-	public static byte[] Utf8CharacterSetChunk ()
+	/// <summary>
+	/// A CSET chunk declaring UTF-8 (wCodePage 65001). The file's first CSET keeps its wCountryCode,
+	/// wLanguage and wDialect: MPIDS 1.0 reads a zero there as USA and US English, so zeroing them would
+	/// change what the file declares. With no CSET, or one too short to hold them, they are zero.
+	/// </summary>
+	public static byte[] Utf8CharacterSetChunk (ReadOnlySpan<byte> data)
 	{
 		var chunk = new byte[RiffChunk.HeaderSize + 8];
 		BinaryPrimitives.WriteUInt32LittleEndian (chunk, Cset);
 		BinaryPrimitives.WriteUInt32LittleEndian (chunk.AsSpan (4), 8);
+		var reader = new AviChunkReader (data);
+		while (reader.TryNext (out var existing)) {
+			if (!existing.IsCharacterSet)
+				continue;
+			var body = Body (data, existing);
+			if (body.Length >= 8)
+				body.Slice (2, 6).CopyTo (chunk.AsSpan (RiffChunk.HeaderSize + 2));
+			break;
+		}
+
 		BinaryPrimitives.WriteUInt16LittleEndian (chunk.AsSpan (8), Utf8CodePage);
 		return chunk;
+	}
+
+	/// <summary>The first CSET's wCodePage, or -1 when there is no CSET or it is too short to hold one.</summary>
+	public static int CodePage (ReadOnlySpan<byte> data)
+	{
+		var reader = new AviChunkReader (data);
+		while (reader.TryNext (out var chunk)) {
+			if (!chunk.IsCharacterSet)
+				continue;
+			var body = Body (data, chunk);
+			return body.Length < 2 ? -1 : BinaryPrimitives.ReadUInt16LittleEndian (body);
+		}
+
+		return -1;
 	}
 
 	/// <summary>
@@ -234,12 +262,13 @@ internal static class AviChunks
 	public static RiffInfoTag? MergeInfo (ReadOnlySpan<byte> data)
 	{
 		var characterSet = CharacterSet (data);
+		var codePage = CodePage (data);
 		RiffInfoTag? info = null;
 		var reader = new AviChunkReader (data);
 		while (reader.TryNext (out var chunk)) {
 			if (!chunk.IsList (Info) || !IsReadable (chunk))
 				continue;
-			var parsed = RiffInfoTag.Parse (new BinaryData (Body (data, chunk)), characterSet);
+			var parsed = RiffInfoTag.Parse (new BinaryData (Body (data, chunk)), characterSet, codePage);
 			if (parsed is null)
 				continue;
 			if (info is null)
