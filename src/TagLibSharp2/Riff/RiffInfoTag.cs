@@ -35,7 +35,7 @@ public class RiffInfoTag : Tag
 	/// The stored bytes of each field, kept by a tag in AVI text mode, and whether they are UTF-8
 	/// (so they can share a UTF-8 list). An unchanged field is written back with exactly these bytes.
 	/// </summary>
-	readonly Dictionary<string, (string Value, byte[] Bytes, bool Utf8)>? _stored;
+	readonly Dictionary<string, (string Value, byte[] Bytes, InfoTextKind Kind)>? _stored;
 
 	/// <summary>The code page the file's CSET declared, for a tag in AVI text mode.</summary>
 	readonly InfoCharacterSet _characterSet;
@@ -53,12 +53,14 @@ public class RiffInfoTag : Tag
 	/// <remarks>
 	/// <para>Values are decoded as <see cref="InfoText"/> describes.</para>
 	/// <para>
-	/// Invariant on save: a value the caller did not change keeps its exact bytes, and so its meaning
-	/// under the file's CSET. Changed values are encoded in the file's declared code page when they all
-	/// fit it (with no CSET, or one this library does not encode, only ASCII fits); the CSET is then kept
-	/// as it is. When a changed value does not fit, the list becomes UTF-8 under a CSET of code page 65001.
-	/// That is only done when every unchanged value is ASCII or already UTF-8; otherwise
-	/// <see cref="TryRenderAvi"/> refuses, because rewriting those bytes would change their text.
+	/// Invariant on save: a value the caller did not change keeps its meaning under the file's CSET.
+	/// Changed values are encoded in the file's declared code page when they all fit it (with no CSET,
+	/// or one this library does not encode, only ASCII fits); unchanged values then keep their exact
+	/// bytes and the CSET is kept as it is. When a changed value does not fit, the list becomes UTF-8
+	/// under a CSET of code page 65001: ASCII and UTF-8 values keep their bytes, and a value decoded
+	/// exactly in its declared code page (<see cref="InfoTextKind.Exact"/>) is written as UTF-8 of the
+	/// same text. A value whose code page is a guess (<see cref="InfoTextKind.Guess"/>) cannot be
+	/// rewritten, so <see cref="TryRenderAvi"/> refuses instead.
 	/// </para>
 	/// </remarks>
 	internal RiffInfoTag (InfoCharacterSet characterSet)
@@ -345,10 +347,10 @@ public class RiffInfoTag : Tag
 			string value;
 			if (characterSet is { } set) {
 				var bytes = span.Slice (offset, (int)fieldSize).ToArray ();
-				value = InfoText.Decode (bytes, set, out var isUtf8);
+				value = InfoText.Decode (bytes, set, out var kind);
 				tag._stored!.Remove (fieldId);
 				if (value.Length > 0)
-					tag._stored[fieldId] = (value, bytes, isUtf8);
+					tag._stored[fieldId] = (value, bytes, kind);
 			} else {
 				value = data.Slice (offset, (int)fieldSize).ToStringLatin1NullTerminated ();
 			}
@@ -388,14 +390,14 @@ public class RiffInfoTag : Tag
 		return true;
 	}
 
-	bool IsUnchanged (string id, string value, out (string Value, byte[] Bytes, bool Utf8) stored) =>
+	bool IsUnchanged (string id, string value, out (string Value, byte[] Bytes, InfoTextKind Kind) stored) =>
 		_stored!.TryGetValue (id, out stored) && stored.Value == value;
 
 	/// <summary>
 	/// Renders the list in AVI text mode, keeping the invariant on <see cref="RiffInfoTag(InfoCharacterSet)"/>.
 	/// <paramref name="declareUtf8"/> is true when the list became UTF-8 and needs a CSET of code page
 	/// 65001 in place of the file's own CSET. Returns false, with <paramref name="error"/>, when a changed
-	/// value does not fit the file's code page and an unchanged value is in a code page other than UTF-8.
+	/// value does not fit the file's code page and an unchanged value's code page is a guess.
 	/// </summary>
 	internal bool TryRenderAvi (out BinaryData list, out bool declareUtf8, out string? error)
 	{
@@ -417,9 +419,10 @@ public class RiffInfoTag : Tag
 
 		if (declareUtf8) {
 			foreach (var kvp in _fields) {
-				if (IsUnchanged (kvp.Key, kvp.Value, out var stored) && !stored.Utf8 && !InfoText.IsAscii (stored.Bytes)) {
-					error = $"Cannot save the INFO list: '{kvp.Value}' in {kvp.Key} is stored in a code page other than UTF-8, "
-						+ "and a changed value needs UTF-8. Set or remove that field too, so it is written in UTF-8.";
+				if (IsUnchanged (kvp.Key, kvp.Value, out var stored) && stored.Kind == InfoTextKind.Guess) {
+					error = $"Cannot save the INFO list: a changed value needs UTF-8, and '{kvp.Value}' in {kvp.Key} is in a code page "
+						+ "the file does not declare or this library does not decode, so it cannot be rewritten as UTF-8 without "
+						+ "guessing its text. Set or remove that field too.";
 					return false;
 				}
 			}
@@ -456,7 +459,10 @@ public class RiffInfoTag : Tag
 			if (string.IsNullOrEmpty (kvp.Key) || kvp.Key.Length != 4)
 				continue;
 
+			// An unchanged value keeps its bytes, except an exactly decoded legacy value in a list that
+			// became UTF-8: that one is written as UTF-8 of the same text.
 			var bytes = keepStored && IsUnchanged (kvp.Key, kvp.Value, out var stored)
+					&& !(stored.Kind == InfoTextKind.Exact && target == InfoCharacterSet.Utf8)
 				? stored.Bytes
 				: _stored is null ? BinaryData.FromStringLatin1NullTerminated (kvp.Value).ToArray () : InfoText.Encode (kvp.Value, target);
 			encodedFields.Add ((kvp.Key, bytes));

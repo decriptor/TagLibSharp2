@@ -192,7 +192,8 @@ internal static class AviChunks
 				return InfoCharacterSet.None;
 			return BinaryPrimitives.ReadUInt16LittleEndian (body) switch {
 				Utf8CodePage => InfoCharacterSet.Utf8,
-				0 or Latin1CodePage => InfoCharacterSet.Latin1,
+				0 => InfoCharacterSet.Latin1Default,
+				Latin1CodePage => InfoCharacterSet.Latin1,
 				Windows1252CodePage => InfoCharacterSet.Windows1252,
 				_ => InfoCharacterSet.Other
 			};

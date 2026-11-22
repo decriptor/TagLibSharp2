@@ -14,14 +14,42 @@ internal enum InfoCharacterSet
 	/// <summary>CSET wCodePage 65001.</summary>
 	Utf8,
 
-	/// <summary>CSET wCodePage 0 (the spec's ISO 8859/1 default) or 28591.</summary>
+	/// <summary>CSET wCodePage 28591 (ISO 8859-1, with its C1 controls).</summary>
 	Latin1,
+
+	/// <summary>
+	/// CSET wCodePage 0: the spec's "standard ISO 8859/1 code page ... without code points defined in hex
+	/// columns 0, 1, 8, and 9". Read as ISO 8859-1; bytes 0x80-0x9F have no defined character.
+	/// </summary>
+	Latin1Default,
 
 	/// <summary>CSET wCodePage 1252.</summary>
 	Windows1252,
 
 	/// <summary>Any other code page, which this library does not decode (for example 932 or 1251).</summary>
 	Other
+}
+
+/// <summary>How surely a stored INFO value's text is known.</summary>
+internal enum InfoTextKind
+{
+	/// <summary>Only ASCII bytes: the same text in every code page this library meets.</summary>
+	Ascii,
+
+	/// <summary>Valid UTF-8, under a CSET of 65001 or with no CSET.</summary>
+	Utf8,
+
+	/// <summary>
+	/// Decoded exactly in a declared code page (CSET 28591, 0 or 1252) with no byte that code page
+	/// leaves undefined, so the text can be written as UTF-8 without changing it.
+	/// </summary>
+	Exact,
+
+	/// <summary>
+	/// Text whose code page is a guess: no CSET and not UTF-8 (read as Windows-1252), a code page this
+	/// library does not decode, or a byte the declared code page leaves undefined.
+	/// </summary>
+	Guess
 }
 
 /// <summary>
@@ -38,7 +66,7 @@ internal enum InfoCharacterSet
 /// Reading: CSET 65001 is UTF-8, 1252 is Windows-1252, 0 and 28591 are ISO 8859-1. With no CSET, valid
 /// UTF-8 is UTF-8 and anything else is read as Windows-1252, which fills the columns 8 and 9 that the
 /// spec's default leaves undefined (exiftool reads it the same way). Another code page is read the same
-/// way, as a best effort, and its non-ASCII values are marked as not understood.
+/// way, as a best effort. <see cref="InfoTextKind"/> records which of these readings are exact.
 /// </para>
 /// </remarks>
 internal static class InfoText
@@ -54,28 +82,51 @@ internal static class InfoText
 	];
 
 	/// <summary>
-	/// The text of a field up to its first NUL. <paramref name="utf8"/> is true when the bytes were read
-	/// as UTF-8 under a CSET of 65001 or no CSET, so they can share a UTF-8 list unchanged.
+	/// The text of a field up to its first NUL, and how surely it is known (<paramref name="kind"/>).
 	/// </summary>
-	public static string Decode (byte[] field, InfoCharacterSet characterSet, out bool utf8)
+	public static string Decode (byte[] field, InfoCharacterSet characterSet, out InfoTextKind kind)
 	{
-		utf8 = false;
 		var end = Array.IndexOf (field, (byte)0);
 		var length = end < 0 ? field.Length : end;
 		var text = field.AsSpan (0, length);
+		if (IsAscii (text)) {
+			kind = InfoTextKind.Ascii;
+			return Latin1 (text);
+		}
+
 		switch (characterSet) {
 			case InfoCharacterSet.Latin1:
+				kind = InfoTextKind.Exact;
+				return Latin1 (text);
+			case InfoCharacterSet.Latin1Default:
+				kind = HasByteIn (text, IsC1) ? InfoTextKind.Guess : InfoTextKind.Exact;
 				return Latin1 (text);
 			case InfoCharacterSet.Windows1252:
+				kind = HasByteIn (text, IsUnassigned1252) ? InfoTextKind.Guess : InfoTextKind.Exact;
 				return Windows1252 (text);
 		}
 
 		if (TryUtf8 (field, length, out var decoded)) {
-			utf8 = characterSet is InfoCharacterSet.Utf8 or InfoCharacterSet.None;
+			kind = characterSet is InfoCharacterSet.Utf8 or InfoCharacterSet.None ? InfoTextKind.Utf8 : InfoTextKind.Guess;
 			return decoded;
 		}
 
+		kind = InfoTextKind.Guess;
 		return Windows1252 (text);
+	}
+
+	static bool IsC1 (byte b) => b is >= 0x80 and <= 0x9F;
+
+	static bool IsUnassigned1252 (byte b) => b is 0x81 or 0x8D or 0x8F or 0x90 or 0x9D;
+
+	static bool HasByteIn (ReadOnlySpan<byte> text, Func<byte, bool> test)
+	{
+		foreach (var b in text) {
+			if (test (b))
+				return true;
+		}
+
+		return false;
 	}
 
 	/// <summary>True when every character of <paramref name="value"/> has a byte in <paramref name="characterSet"/>.</summary>
@@ -88,6 +139,7 @@ internal static class InfoText
 			var fits = characterSet switch {
 				InfoCharacterSet.Utf8 => true,
 				InfoCharacterSet.Latin1 => c <= '\u00FF',
+				InfoCharacterSet.Latin1Default => c is >= '\u00A0' and <= '\u00FF',
 				InfoCharacterSet.Windows1252 => Windows1252Byte (c) >= 0,
 				_ => false
 			};
