@@ -81,12 +81,13 @@ internal static class AacStream
 	}
 
 	/// <summary>
-	/// Decides one candidate. <paramref name="room"/> is the bytes from the candidate to the end of the data;
-	/// <paramref name="successor"/> holds the header the candidate points at when that header lies inside the data.
+	/// Decides one candidate. <paramref name="room"/> is the bytes from the candidate to the end of the audio;
+	/// <paramref name="successor"/> holds the header the candidate points at when that header lies inside the audio.
 	/// A confirmed header decides for its format. An MPEG header that cannot be checked (its frame or its
-	/// successor runs past the data, or it is free format) also decides MP3, so truncated MP3 data stays MP3.
+	/// successor runs past the audio, or it is free format) also decides MP3, so truncated MP3 data stays MP3.
 	/// An ADTS header that cannot be checked decides AAC only as the first byte of the search.
-	/// A contradicted header is skipped.
+	/// A contradicted header is skipped. The end of the audio is the end of the data or the start of a trailing
+	/// tag, and either one ends a frame the same way, so a trailing tag never changes the answer.
 	/// </summary>
 	static Verdict Judge (Candidate candidate, long room, bool first, ReadOnlySpan<byte> successor)
 	{
@@ -97,37 +98,49 @@ internal static class AacStream
 		if (candidate.Kind == SyncKind.Mpeg) {
 			if (!checkable)
 				return Verdict.Mp3;
-			return MpegFrame.TryParse (successor, out _) || IsTrailingTag (successor) ? Verdict.Mp3 : Verdict.Skip;
+			return MpegFrame.TryParse (successor, out _) ? Verdict.Mp3 : Verdict.Skip;
 		}
 
 		if (!checkable)
 			return first ? Verdict.Aac : Verdict.Skip;
 
-		var confirmed = (AdtsHeader.TryParse (successor, out var next) && next.SameStream (candidate.Adts))
-			|| IsTrailingTag (successor);
-		return confirmed ? Verdict.Aac : Verdict.Skip;
+		return AdtsHeader.TryParse (successor, out var next) && next.SameStream (candidate.Adts) ? Verdict.Aac : Verdict.Skip;
 	}
 
-	// The frame ends where an ID3v1, APEv2 (with a header), or Lyrics3 tag begins.
-	static bool IsTrailingTag (ReadOnlySpan<byte> next) =>
-		next.StartsWith ("TAG"u8) || next.StartsWith ("APETAGE"u8) || next.StartsWith ("LYRICSB"u8);
+	// A candidate judged against the audio end. Its own header must lie inside the audio: a header cut by a
+	// trailing tag is not a header.
+	static Verdict JudgeAt (ReadOnlySpan<byte> data, int i, Candidate candidate, long audioEnd)
+	{
+		if (i + (long)candidate.Need > audioEnd)
+			return Verdict.Skip;
+
+		var at = (long)i + candidate.Distance;
+		var successor = at + candidate.Need <= audioEnd ? data.Slice ((int)at, candidate.Need) : [];
+		return Judge (candidate, audioEnd - i, i == 0, successor);
+	}
 
 	/// <summary>
 	/// The one rule, for detection and for reading, that says where an AAC stream starts in
-	/// <paramref name="data"/>. "ADIF" at offset 0 starts an ADIF stream. Otherwise the first decisive sync in
-	/// the first <paramref name="searchBytes"/> bytes decides (see <see cref="Judge"/>): an ADTS header starts
-	/// an ADTS stream, an MPEG audio frame means the data is not AAC.
+	/// <paramref name="data"/>, which runs from the earliest possible start to the end of the file.
+	/// "ADIF" at offset 0 starts an ADIF stream when its header parses inside the audio. Otherwise the first decisive
+	/// sync in the first <paramref name="searchBytes"/> bytes decides (see <see cref="Judge"/>): an ADTS header
+	/// starts an ADTS stream, an MPEG audio frame means the data is not AAC.
 	/// </summary>
-	/// <param name="data">The bytes from the earliest possible start.</param>
+	/// <param name="data">The bytes from the earliest possible start to the end of the file.</param>
 	/// <param name="searchBytes">How many start offsets to try.</param>
-	/// <param name="headerLength">The length of the start header: 7 for ADTS, the ADIF header's size.
-	/// A caller that knows where the audio ends rejects a start whose header runs past it.</param>
+	/// <param name="audioEnd">Where the audio ends in <paramref name="data"/> (before any trailing tags), or -1 to
+	/// find it with <see cref="AacFile.AudioEnd(ReadOnlySpan{byte})"/> when a candidate first needs it.
+	/// An MPEG frame decided at the first byte, the usual MP3, never needs it.</param>
+	/// <param name="headerLength">The length of the start header: 7 for ADTS, the ADIF header's size.</param>
 	/// <returns>The offset of the stream in <paramref name="data"/>, or -1.</returns>
-	public static int FindStart (ReadOnlySpan<byte> data, int searchBytes, out int headerLength)
+	public static int FindStart (ReadOnlySpan<byte> data, int searchBytes, long audioEnd, out int headerLength)
 	{
 		headerLength = AdtsHeader.Size;
 		if (AdifHeader.HasMagic (data)) {
-			if (!AdifHeader.TryParse (data[..Math.Min (AdifHeader.MaxSize, data.Length)], out var adif))
+			if (audioEnd < 0)
+				audioEnd = AacFile.AudioEnd (data);
+			var bound = (int)Math.Min (AdifHeader.MaxSize, audioEnd);
+			if (!AdifHeader.TryParse (data[..bound], out var adif))
 				return -1;
 			headerLength = adif.Size;
 			return 0;
@@ -138,9 +151,18 @@ internal static class AacStream
 			if (data[i] != 0xFF || !TryCandidate (data[i..], out var candidate))
 				continue;
 
-			var at = (long)i + candidate.Distance;
-			var successor = at + candidate.Need <= data.Length ? data.Slice ((int)at, candidate.Need) : [];
-			switch (Judge (candidate, data.Length - i, i == 0, successor)) {
+			// An ADTS candidate always needs the audio end. An MPEG candidate is judged against the end of the
+			// data first: MP3 decided there is MP3 against any earlier audio end too (a successor past the audio
+			// is uncheckable, which also decides MP3), so a plain MP3 never reads its tail here.
+			if (audioEnd < 0 && candidate.Kind == SyncKind.Adts)
+				audioEnd = AacFile.AudioEnd (data);
+			var verdict = JudgeAt (data, i, candidate, audioEnd < 0 ? data.Length : audioEnd);
+			if (audioEnd < 0 && verdict != Verdict.Mp3) {
+				audioEnd = AacFile.AudioEnd (data);
+				verdict = JudgeAt (data, i, candidate, audioEnd);
+			}
+
+			switch (verdict) {
 				case Verdict.Aac:
 					return i;
 				case Verdict.Mp3:
@@ -152,13 +174,16 @@ internal static class AacStream
 	}
 
 	/// <summary>
-	/// The stream twin of <see cref="FindStart(ReadOnlySpan{byte}, int, out int)"/>. It reads 16 bytes, then 4 KB chunks
-	/// only while no sync has decided, and each successor header on its own, so a file decided at its first
-	/// byte costs about 23 bytes. The stream position moves.
+	/// The stream twin of <see cref="FindStart(ReadOnlySpan{byte}, int, long, out int)"/>, for the data from
+	/// <paramref name="offset"/> to the end of the stream. It reads 16 bytes, then 4 KB chunks only while no sync has
+	/// decided, and each successor header on its own, so a file decided at its first byte costs about 23 bytes.
+	/// The tail is read (<see cref="AacFile.AudioEnd(Stream, long)"/>) only when <paramref name="audioEnd"/> is -1 and
+	/// a candidate needs it. The stream position moves.
 	/// </summary>
-	public static long FindStart (Stream stream, long offset, long end, int searchBytes, out int headerLength)
+	public static long FindStart (Stream stream, long offset, int searchBytes, long audioEnd, out int headerLength)
 	{
 		headerLength = AdtsHeader.Size;
+		var end = stream.Length;
 		if (offset < 0 || offset >= end)
 			return -1;
 
@@ -171,7 +196,9 @@ internal static class AacStream
 			if (!ReadAt (stream, pos, chunk, length))
 				return -1;
 			if (pos == offset && AdifHeader.HasMagic (chunk.AsSpan (0, length))) {
-				if (!TryReadAdifHeader (stream, offset, end, out var adif))
+				if (audioEnd < 0)
+					audioEnd = AacFile.AudioEnd (stream, offset);
+				if (!TryReadAdifHeader (stream, offset, audioEnd, out var adif))
 					return -1;
 				headerLength = adif.Size;
 				return offset;
@@ -194,14 +221,16 @@ internal static class AacStream
 				if (!TryCandidate (head, out var candidate))
 					continue;
 
-				var at = here + candidate.Distance;
-				ReadOnlySpan<byte> successor = [];
-				if (at + candidate.Need <= pos + length)
-					successor = chunk.AsSpan ((int)(at - pos), candidate.Need);
-				else if (at + candidate.Need <= end && ReadAt (stream, at, small, candidate.Need))
-					successor = small.AsSpan (0, candidate.Need);
+				var context = new ChunkView (chunk, pos, length);
+				if (audioEnd < 0 && candidate.Kind == SyncKind.Adts)
+					audioEnd = AacFile.AudioEnd (stream, offset);
+				var verdict = JudgeAt (stream, context, small, here, offset, candidate, audioEnd < 0 ? end : audioEnd);
+				if (audioEnd < 0 && verdict != Verdict.Mp3) {
+					audioEnd = AacFile.AudioEnd (stream, offset);
+					verdict = JudgeAt (stream, context, small, here, offset, candidate, audioEnd);
+				}
 
-				switch (Judge (candidate, end - here, here == offset, successor)) {
+				switch (verdict) {
 					case Verdict.Aac:
 						return here;
 					case Verdict.Mp3:
@@ -217,6 +246,31 @@ internal static class AacStream
 		return -1;
 	}
 
+	readonly struct ChunkView (byte[] bytes, long start, int length)
+	{
+		public byte[] Bytes => bytes;
+		public long Start => start;
+		public int Length => length;
+	}
+
+	// The stream twin of the span JudgeAt: the successor comes from the chunk when it is there, else one read.
+	static Verdict JudgeAt (Stream stream, ChunkView chunk, byte[] small, long here, long offset, Candidate candidate, long audioEnd)
+	{
+		if (here + candidate.Need > audioEnd)
+			return Verdict.Skip;
+
+		var at = here + candidate.Distance;
+		ReadOnlySpan<byte> successor = [];
+		if (at + candidate.Need <= audioEnd) {
+			if (at + candidate.Need <= chunk.Start + chunk.Length)
+				successor = chunk.Bytes.AsSpan ((int)(at - chunk.Start), candidate.Need);
+			else if (ReadAt (stream, at, small, candidate.Need))
+				successor = small.AsSpan (0, candidate.Need);
+		}
+
+		return Judge (candidate, audioEnd - here, here == offset, successor);
+	}
+
 	/// <summary>
 	/// True when the header at the start of <paramref name="rest"/> is confirmed. Its successor names the same
 	/// stream, or is a trailing tag, or cannot be checked: the frame reaches the end of the data
@@ -229,22 +283,17 @@ internal static class AacStream
 			return true;
 
 		var next = rest.Slice (header.FrameLength, AdtsHeader.Size);
-		if (AdtsHeader.TryParse (next, out var following))
-			return following.SameStream (header);
-
-		// The frame ends where an ID3v1, APEv2, or Lyrics3 tag begins.
-		return IsTrailingTag (next);
+		return AdtsHeader.TryParse (next, out var following) && following.SameStream (header);
 	}
 
 	/// <summary>
 	/// Reads the stream properties from the audio region [<paramref name="start"/>, <paramref name="end"/>).
-	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, int, out int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
+	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, int, long, out int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
 	/// </summary>
 	/// <remarks>
-	/// The start is judged against the whole stream, as detection judges it, so a frame that ends where a
-	/// trailing tag begins is confirmed by that tag on both paths. The start header itself must lie inside the
-	/// audio region, on both paths too: a header cut by a trailing tag is not AAC. Frames are counted only inside
-	/// the audio region.
+	/// The start is judged against the audio region, as detection judges it: the start header and any successor
+	/// that checks it must lie before the trailing tags, so a header cut by a trailing tag is not AAC and a tag
+	/// never confirms or contradicts a frame. Frames are counted only inside the audio region.
 	/// </remarks>
 	public static bool TryRead (Stream stream, long start, long end, out AacAudioProperties? properties)
 	{
@@ -252,8 +301,8 @@ internal static class AacStream
 		if (start < 0 || end > stream.Length || start > end)
 			return false;
 
-		var first = FindStart (stream, start, stream.Length, FirstFrameSearchBytes, out var headerLength);
-		if (first < 0 || first + headerLength > end)
+		var first = FindStart (stream, start, FirstFrameSearchBytes, end, out _);
+		if (first < 0)
 			return false;
 
 		var magic = new byte[4];
@@ -287,8 +336,8 @@ internal static class AacStream
 	static bool TryReadAdif (Stream stream, long start, long end, out AacAudioProperties? properties)
 	{
 		properties = null;
-		// The header is bounded by the stream, as detection bounds it. The payload ends at the trailing tags.
-		if (!TryReadAdifHeader (stream, start, stream.Length, out var header))
+		// The header and the payload both end at the trailing tags, as detection bounds them.
+		if (!TryReadAdifHeader (stream, start, end, out var header))
 			return false;
 
 		var payload = end - start - header.Size;

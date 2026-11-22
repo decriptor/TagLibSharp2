@@ -160,15 +160,63 @@ public class AacDetectionTests
 		var tag = Id3v2Bytes ("T");
 		foreach (var (label, data, aac) in new[] {
 			("id3+mp3", Concat (tag, Mp3Frames (100)), false),
+			("id3+mp3+id3v1", Concat (tag, Mp3Frames (100), Id3v1Bytes ("Back")), false),
 			("mp3", Mp3Frames (100), false),
 			("id3+adts", Concat (tag, Adts (100, length: 400)), true),
 			("adts", Adts (100, length: 400), true) }) {
 			using var stream = new CountingStream (data);
 			Assert.AreEqual (aac, AacFile.IsValidFormat (stream), label);
-			// An AAC start also checks the trailing-tag markers: 3 bytes at EOF-128 and 8 at EOF-32.
+			// An AAC start also checks the trailing-tag markers: 3 bytes at EOF-128 and 8 at EOF-32. An MP3, even
+			// with an ID3v1 tag, is decided at its first frame and never reads the tail.
 			var budget = 10 + 16 + 7 + (aac ? 3 + 8 : 0);
 			Assert.IsTrue (stream.BytesRead <= budget, $"{label}: read {stream.BytesRead} bytes, budget {budget}");
 		}
+	}
+
+	// The fewest bytes one call allocates over a few runs, so a one-off runtime allocation (a JIT or a
+	// lazily built cache landing on this thread) does not count against the code under test.
+	static long Allocated (Action action)
+	{
+		action ();
+		var least = long.MaxValue;
+		for (var run = 0; run < 5; run++) {
+			var before = GC.GetAllocatedBytesForCurrentThread ();
+			action ();
+			least = Math.Min (least, GC.GetAllocatedBytesForCurrentThread () - before);
+		}
+		return least;
+	}
+
+	[TestMethod]
+	public void SpanDetectionAndReadFromData_OnALargeTaggedFile_DoNotCopyIt ()
+	{
+		// 4 MB of ADTS frames with trailing tags: every span entry point finds the audio end on the span itself.
+		var frames = Adts (10_000, length: 400);
+		var ape = new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ();
+		foreach (var (label, data) in new[] {
+			("ADTS + ID3v1", Concat (frames, Id3v1Bytes ("Back"))),
+			("ID3v2 + ADTS + ID3v1", Concat (Id3v2Bytes ("Front"), frames, Id3v1Bytes ("Back"))),
+			("ID3v2 + ADTS + APEv2 + Lyrics3 + ID3v1", Concat (Id3v2Bytes ("Front"), frames, ape, Lyrics3V2 (), Id3v1Bytes ("Back"))) }) {
+			Assert.IsTrue (data.Length > 4_000_000);
+			Assert.IsTrue (Allocated (() => MediaFile.DetectFormat (data)) < 64 * 1024, $"{label}: DetectFormat");
+			Assert.IsTrue (Allocated (() => AacFile.IsValidFormat (data)) < 64 * 1024, $"{label}: AacFile.IsValidFormat");
+			Assert.IsTrue (Allocated (() => Mp3File.IsValidFormat (data)) < 64 * 1024, $"{label}: Mp3File.IsValidFormat");
+			var read = Allocated (() => MediaFile.ReadFromData (data));
+			Assert.IsTrue (read < 512 * 1024, $"{label}: ReadFromData allocated {read} bytes");
+			Assert.AreEqual (MediaFormat.Aac, MediaFile.DetectFormat (data), label);
+		}
+	}
+
+	[TestMethod]
+	public void SpanDetection_OfATaggedMp3_DoesNotParseItsTrailingTags ()
+	{
+		// The first MPEG frame decides MP3 before the audio end is needed, so the tail tags are never parsed.
+		var ape = new TagLibSharp2.Ape.ApeTag { Title = "Ape", Album = "Album", Comment = new string ('c', 2000) }.RenderWithOptions (includeHeader: true).ToArray ();
+		var data = Concat (Id3v2Bytes ("T"), Mp3Frames (50), ape, Id3v1Bytes ("Back"));
+
+		Assert.IsTrue (Mp3File.IsValidFormat (data));
+		var allocated = Allocated (() => Mp3File.IsValidFormat (data));
+		Assert.IsTrue (allocated < 1024, $"allocated {allocated} bytes");
 	}
 
 	[TestMethod]
@@ -187,29 +235,63 @@ public class AacDetectionTests
 	}
 
 	[TestMethod]
-	public async Task Id3v2ThenPaddingThenOneFrameThenId3v1_DetectsAndOpens ()
+	public async Task Id3v2ThenPaddingThenOneFrame_ATrailingTagDoesNotChangeTheAnswer ()
 	{
-		// The ID3v1 tag after the only frame confirms it. Detection and the reader judge against the same
-		// bytes, so the file opens on every path (DetectEverywhere fails on a surface that does not open).
-		var data = Concat (Id3v2Bytes ("T"), new byte[100], AdtsFrame (300), Id3v1Bytes ("Back"));
-
-		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (data, "song.aac"));
-		var file = MediaFile.ReadFromData (data, "song.aac").GetFileAs<AacFile> ()!;
-		Assert.AreEqual (1, file.Properties!.FrameCount);
-		Assert.AreEqual ("Back", file.Id3v1Tag!.Title);
+		// The frame after the gap cannot be checked: it ends where the audio ends, at the end of the file or at
+		// a trailing tag alike. It is not the first byte, so it is not AAC either way, and the file stays MP3.
+		var audio = Concat (Id3v2Bytes ("T"), new byte[100], AdtsFrame (300));
+		foreach (var (name, tail) in TrailingTags ()) {
+			var data = Concat (audio, tail);
+			Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (data, "song.aac"), name);
+		}
 	}
 
 	[TestMethod]
-	public async Task FalseMpegHeaderInTheGap_WhoseSuccessorIsInTheTrailingTag_DetectsAndOpens ()
+	public async Task FalseMpegHeaderInTheGap_ATrailingTagDoesNotChangeTheAnswer ()
 	{
-		// MPEG-2 Layer II, 160 kbps, 16 kHz: a 1440-byte frame whose successor falls inside the ID3v1 tag, so it is
-		// contradicted there. The audio region alone could not check it. Both paths must see the tag bytes.
+		// MPEG-2 Layer II, 160 kbps, 16 kHz: a 1440-byte frame that runs past the audio, with or without a tag
+		// after it. An MPEG header that cannot be checked decides MP3.
 		byte[] falseMpeg = [0xFF, 0xF5, 0xE8, 0x00];
 		var gap = Concat (new byte[10], falseMpeg, new byte[10]);
-		var data = Concat (Id3v2Bytes ("T"), gap, Adts (3, length: 450), Id3v1Bytes ("Back"));
+		var audio = Concat (Id3v2Bytes ("T"), gap, Adts (3, length: 450));
+		foreach (var (name, tail) in TrailingTags ())
+			Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (Concat (audio, tail)), name);
+	}
 
-		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (data));
-		Assert.AreEqual (3, MediaFile.ReadFromData (data).GetFileAs<AacFile> ()!.Properties!.FrameCount);
+	/// <summary>Audio shapes whose answer and frame count must not depend on a trailing tag.</summary>
+	static IEnumerable<(string Name, byte[] Bytes)> AudioShapes () => [
+		("one frame", AdtsFrame (300)),
+		("one frame cut", AdtsFrame (300)[..200]),
+		("three frames", Adts (3, length: 300)),
+		("three frames, last cut", Adts (3, length: 300)[..750]),
+		("header only", AdtsFrame (300)[..7]),
+		("padding then frames", Concat (new byte[100], Adts (3, length: 300))),
+		("padding then one frame", Concat (new byte[100], AdtsFrame (300))),
+		("ADIF", Adif (64_000, payloadBytes: 500))
+	];
+
+	[TestMethod]
+	public async Task ATrailingTag_NeverChangesTheAnswerOrTheFrameCount ()
+	{
+		// The audio ends at the end of the file or at a trailing tag. Either one ends a frame the same way, so
+		// detection and the frame count are those of the same audio with no tag.
+		foreach (var withId3v2 in new[] { false, true }) {
+			foreach (var (shape, audio) in AudioShapes ()) {
+				var bare = withId3v2 ? Concat (Id3v2Bytes ("T"), audio) : audio;
+				// By content (no extension to fall back on), and the reader on its own.
+				var expected = await DetectEverywhere (bare);
+				var expectedRead = AacFile.Read (bare);
+				foreach (var (tagName, tail) in TrailingTags ()) {
+					var data = Concat (bare, tail);
+					var label = $"{shape} + {tagName}, ID3v2 {withId3v2}";
+					Assert.AreEqual (expected, await DetectEverywhere (data), label);
+					var read = AacFile.Read (data);
+					Assert.AreEqual (expectedRead.IsSuccess, read.IsSuccess, label);
+					Assert.AreEqual (expectedRead.File?.Properties?.FrameCount, read.File?.Properties?.FrameCount, label);
+					Assert.AreEqual (expectedRead.File?.Properties?.Duration, read.File?.Properties?.Duration, label);
+				}
+			}
+		}
 	}
 
 	[TestMethod]
@@ -249,8 +331,23 @@ public class AacDetectionTests
 		("none", []),
 		("ID3v1", Id3v1Bytes ("Back")),
 		("APEv2", new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ()),
-		("APEv2+ID3v1", Concat (new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray (), Id3v1Bytes ("Back")))
+		("APEv2+ID3v1", Concat (new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray (), Id3v1Bytes ("Back"))),
+		("footer-only APEv2", ApeBytes ("Ape")),
+		("Lyrics3v1+ID3v1", Concat (Lyrics3V1 (), Id3v1Bytes ("Back"))),
+		("Lyrics3v2+ID3v1", Concat (Lyrics3V2 (), Id3v1Bytes ("Back"))),
+		("APEv2+Lyrics3v2+ID3v1", Concat (new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray (), Lyrics3V2 (), Id3v1Bytes ("Back")))
 	];
+
+	// Lyrics3 v1 (https://id3.org/Lyrics3): LYRICSBEGIN, text, LYRICSEND, directly before ID3v1.
+	static byte[] Lyrics3V1 () => Concat ("LYRICSBEGIN"u8.ToArray (), "la la la"u8.ToArray (), "LYRICSEND"u8.ToArray ());
+
+	// Lyrics3 v2 (https://id3.org/Lyrics3v2): LYRICSBEGIN and fields, a 6-digit size of that body, LYRICS200.
+	static byte[] Lyrics3V2 ()
+	{
+		var body = Concat ("LYRICSBEGIN"u8.ToArray (), "IND00003110"u8.ToArray (), "LYR00008la la la"u8.ToArray ());
+		var size = System.Text.Encoding.ASCII.GetBytes (body.Length.ToString ("D6", System.Globalization.CultureInfo.InvariantCulture));
+		return Concat (body, size, "LYRICS200"u8.ToArray ());
+	}
 
 	[TestMethod]
 	public async Task StartHeaderCutByATrailingTag_IsNeverAac ()
@@ -300,8 +397,8 @@ public class AacDetectionTests
 
 			// Both twins name the same first frame, so no frame is lost.
 			using var stream = new MemoryStream (data);
-			Assert.AreEqual (gap, AacStream.FindStart (data.AsSpan (tag.Length), AacStream.FirstFrameSearchBytes, out _), $"span, gap {gap}");
-			Assert.AreEqual (tag.Length + gap, AacStream.FindStart (stream, tag.Length, data.Length, AacStream.FirstFrameSearchBytes, out _), $"stream, gap {gap}");
+			Assert.AreEqual (gap, AacStream.FindStart (data.AsSpan (tag.Length), AacStream.FirstFrameSearchBytes, -1, out _), $"span, gap {gap}");
+			Assert.AreEqual (tag.Length + gap, AacStream.FindStart (stream, tag.Length, AacStream.FirstFrameSearchBytes, -1, out _), $"stream, gap {gap}");
 			Assert.AreEqual (20, MediaFile.ReadFromData (data).GetFileAs<AacFile> ()!.Properties!.FrameCount, $"gap {gap}");
 		}
 	}
