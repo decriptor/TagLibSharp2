@@ -10,6 +10,8 @@
 		<Verify_SponsorshipExemption>OpenSource</Verify_SponsorshipExemption>
 		<Verify_SponsorshipExemptionUntil>2027-11</Verify_SponsorshipExemptionUntil>
 		<NoWarn>$(NoWarn);CA1707;CA1515;MSTEST0037;CA1310;CA1806;MSTEST0032</NoWarn>
+		<!-- Kit/KitProgram.cs is the entry point: the depth tests run this assembly as a child process. -->
+		<GenerateProgramFile>false</GenerateProgramFile>
 	</PropertyGroup>
 
 	<ItemGroup>
