@@ -40,6 +40,9 @@ public class RiffInfoTag : Tag
 	/// <summary>The code page the file's CSET declared, for a tag in AVI text mode.</summary>
 	readonly InfoCharacterSet _characterSet;
 
+	/// <summary>The CSET's wCodePage, or -1 when the file has none, for messages.</summary>
+	readonly int _codePage;
+
 	/// <summary>
 	/// Creates an empty tag whose text is Latin-1, as WAV INFO is read and written.
 	/// </summary>
@@ -63,9 +66,10 @@ public class RiffInfoTag : Tag
 	/// rewritten, so <see cref="TryRenderAvi"/> refuses instead.
 	/// </para>
 	/// </remarks>
-	internal RiffInfoTag (InfoCharacterSet characterSet)
+	internal RiffInfoTag (InfoCharacterSet characterSet, int codePage = -1)
 	{
 		_characterSet = characterSet;
+		_codePage = codePage;
 		_stored = new (StringComparer.OrdinalIgnoreCase);
 	}
 
@@ -312,9 +316,9 @@ public class RiffInfoTag : Tag
 
 	/// <summary>
 	/// Parses a RIFF INFO tag. A <paramref name="characterSet"/> selects AVI text mode (see
-	/// <see cref="RiffInfoTag(InfoCharacterSet)"/>); null reads every value as Latin-1, as WAV does.
+	/// <see cref="RiffInfoTag(InfoCharacterSet, int)"/>); null reads every value as Latin-1, as WAV does.
 	/// </summary>
-	internal static RiffInfoTag? Parse (BinaryData data, InfoCharacterSet? characterSet)
+	internal static RiffInfoTag? Parse (BinaryData data, InfoCharacterSet? characterSet, int codePage = -1)
 	{
 		// LIST chunk data starts with type (INFO) then fields
 		if (data.Length < 4)
@@ -324,7 +328,7 @@ public class RiffInfoTag : Tag
 		if (listType != "INFO")
 			return null;
 
-		var tag = characterSet is { } declared ? new RiffInfoTag (declared) : new RiffInfoTag ();
+		var tag = characterSet is { } declared ? new RiffInfoTag (declared, codePage) : new RiffInfoTag ();
 		var offset = 4;
 
 		var span = data.Span;
@@ -394,7 +398,7 @@ public class RiffInfoTag : Tag
 		_stored!.TryGetValue (id, out stored) && stored.Value == value;
 
 	/// <summary>
-	/// Renders the list in AVI text mode, keeping the invariant on <see cref="RiffInfoTag(InfoCharacterSet)"/>.
+	/// Renders the list in AVI text mode, keeping the invariant on <see cref="RiffInfoTag(InfoCharacterSet, int)"/>.
 	/// <paramref name="declareUtf8"/> is true when the list became UTF-8 and needs a CSET of code page
 	/// 65001 in place of the file's own CSET. Returns false, with <paramref name="error"/>, when a changed
 	/// value does not fit the file's code page and an unchanged value's code page is a guess.
@@ -420,9 +424,9 @@ public class RiffInfoTag : Tag
 		if (declareUtf8) {
 			foreach (var kvp in _fields) {
 				if (IsUnchanged (kvp.Key, kvp.Value, out var stored) && stored.Kind == InfoTextKind.Guess) {
-					error = $"Cannot save the INFO list: a changed value needs UTF-8, and '{kvp.Value}' in {kvp.Key} is in a code page "
-						+ "the file does not declare or this library does not decode, so it cannot be rewritten as UTF-8 without "
-						+ "guessing its text. Set or remove that field too.";
+					var reason = InfoText.GuessReason (stored.Bytes, _characterSet, _codePage);
+					error = $"Cannot save the INFO list: a changed value needs UTF-8, and {kvp.Key} ('{InfoText.Escape (kvp.Value)}') "
+						+ $"{reason}, so it cannot be rewritten as UTF-8 without guessing its text. Set or remove that field too.";
 					return false;
 				}
 			}

@@ -101,7 +101,7 @@ internal static class AviRewrite
 			}
 
 			// The CSET goes right before the list; exiftool honours only a CSET it meets first.
-			characterSet = declareUtf8 ? AviChunks.Utf8CharacterSetChunk () : AviChunks.FirstCharacterSetChunk (original);
+			characterSet = declareUtf8 ? AviChunks.Utf8CharacterSetChunk (original) : AviChunks.FirstCharacterSetChunk (original);
 		}
 
 		var blob = Blob (list, characterSet, id3, id3Changed, id3Present ? AviChunks.Name (id3Chunk.Id) : "ID32");

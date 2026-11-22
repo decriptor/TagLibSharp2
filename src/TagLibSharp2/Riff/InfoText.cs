@@ -211,11 +211,63 @@ internal static class InfoText
 		return new string (chars);
 	}
 
+	/// <summary>
+	/// The Windows-1252 byte for <paramref name="c"/>, or -1. The five unassigned bytes (CP1252.TXT:
+	/// 0x81, 0x8D, 0x8F, 0x90, 0x9D are UNDEFINED) are never written, because <see cref="Decode"/> reads
+	/// them as undefined: whatever the encoder writes, the decoder reads back as exact.
+	/// </summary>
 	static int Windows1252Byte (char c)
 	{
 		if (c is >= '\u00A0' and <= '\u00FF')
 			return c;
 		var index = Array.IndexOf (Windows1252High, c);
-		return index < 0 ? -1 : 0x80 + index;
+		return index < 0 || IsUnassigned1252 ((byte)(0x80 + index)) ? -1 : 0x80 + index;
+	}
+
+	/// <summary>
+	/// Why an unchanged value of kind <see cref="InfoTextKind.Guess"/> cannot be rewritten as UTF-8,
+	/// for the refusal message. <paramref name="codePage"/> is the CSET's wCodePage, or -1 for none.
+	/// </summary>
+	public static string GuessReason (ReadOnlySpan<byte> field, InfoCharacterSet characterSet, int codePage)
+	{
+		var end = field.IndexOf ((byte)0);
+		if (end >= 0)
+			field = field.Slice (0, end);
+		switch (characterSet) {
+			case InfoCharacterSet.Latin1Default:
+				foreach (var b in field) {
+					if (IsC1 (b))
+						return $"holds byte 0x{b:X2}, which the CSET's code page 0 (ISO 8859/1 without columns 8 and 9) leaves undefined";
+				}
+
+				break;
+			case InfoCharacterSet.Windows1252:
+				foreach (var b in field) {
+					if (IsUnassigned1252 (b))
+						return $"holds byte 0x{b:X2}, which code page 1252 leaves undefined";
+				}
+
+				break;
+			case InfoCharacterSet.Other:
+				return $"is in code page {codePage}, which this library does not decode";
+		}
+
+		return codePage < 0
+			? "is not UTF-8 and the file has no CSET, so its code page is only a guess"
+			: $"is not valid in the declared code page {codePage}";
+	}
+
+	/// <summary>The value with control characters (C0, DEL, C1) written as \uXXXX, for a message.</summary>
+	public static string Escape (string value)
+	{
+		var builder = new System.Text.StringBuilder (value.Length);
+		foreach (var c in value) {
+			if (c < '\u0020' || c is >= '\u007F' and <= '\u009F')
+				builder.Append ("\\u").Append (((int)c).ToString ("X4", System.Globalization.CultureInfo.InvariantCulture));
+			else
+				builder.Append (c);
+		}
+
+		return builder.ToString ();
 	}
 }

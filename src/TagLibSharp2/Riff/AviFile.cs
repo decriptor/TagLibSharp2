@@ -77,9 +77,11 @@ public sealed class AviFile : IMediaFile
 	/// or one this library does not encode, only ASCII fits. Otherwise the list becomes UTF-8 with a CSET
 	/// of code page 65001 in front of it: unchanged UTF-8 and ASCII values keep their bytes, and unchanged
 	/// text in a declared code page this library decodes exactly (1252, 28591, 0) is written as UTF-8 of
-	/// the same text. When an unchanged value's code page is a guess (no CSET and not UTF-8) or is not
-	/// decoded here (932 or 1251, say), the save is refused with an error naming the field rather than
-	/// changing its text. mediainfo ignores CSET.
+	/// the same text; the new CSET keeps the old one's country, language and dialect codes. The save is
+	/// refused, with an error naming the field and the reason, rather than changing an unchanged value's
+	/// text when its code page is a guess (no CSET and not UTF-8), is not decoded here (932 or 1251, say),
+	/// or the value holds a byte its declared code page leaves undefined (0x81, 0x8D, 0x8F, 0x90 or 0x9D
+	/// in 1252; 0x80-0x9F under code page 0). mediainfo ignores CSET.
 	/// </para>
 	/// </remarks>
 	public RiffInfoTag InfoTag { get; }
@@ -147,6 +149,7 @@ public sealed class AviFile : IMediaFile
 		var sawId3 = false;
 		AviHeaders? headers = null;
 		var characterSet = AviChunks.CharacterSet (data);
+		var codePage = AviChunks.CodePage (data);
 		var reader = new AviChunkReader (data);
 		while (reader.TryNext (out var chunk)) {
 			if (!AviChunks.IsReadable (chunk))
@@ -155,7 +158,7 @@ public sealed class AviFile : IMediaFile
 				sawHeaders = true;
 				headers = AviHeaders.Parse (AviChunks.Body (data, chunk).Slice (4));
 			} else if (chunk.IsList (AviChunks.Info)) {
-				var parsed = RiffInfoTag.Parse (new BinaryData (AviChunks.Body (data, chunk)), characterSet);
+				var parsed = RiffInfoTag.Parse (new BinaryData (AviChunks.Body (data, chunk)), characterSet, codePage);
 				if (parsed is null)
 					continue;
 				if (info is null)
@@ -180,7 +183,7 @@ public sealed class AviFile : IMediaFile
 
 		var duration = AviProperties.Duration (headers);
 		return AviFileReadResult.Success (new AviFile (
-			info ?? new RiffInfoTag (characterSet),
+			info ?? new RiffInfoTag (characterSet, codePage),
 			id3,
 			duration,
 			AviProperties.Audio (headers, duration),
