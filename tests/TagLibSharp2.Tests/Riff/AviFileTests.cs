@@ -578,6 +578,28 @@ public class AviFileTests
 		Assert.IsFalse ((await AviFile.ReadFromFileAsync ("/clip.avi", fs, new CancellationToken (true))).IsSuccess);
 	}
 
+	[TestMethod]
+	public void Read_ManyInfoFields_AllocatesInProportion ()
+	{
+		// Each field costs its id, its bytes and its text: linear in the list, never more.
+		static long Allocated (int fields)
+		{
+			var builder = new AviTestBuilder ();
+			for (var i = 0; i < fields; i++)
+				builder.InfoBytes.Add (("ICMT", [(byte)'x', 0]));
+			var bytes = builder.Build ();
+			var before = GC.GetAllocatedBytesForCurrentThread ();
+			Assert.IsTrue (AviFile.Read (bytes).IsSuccess);
+			return GC.GetAllocatedBytesForCurrentThread () - before;
+		}
+
+		var small = Allocated (20_000);
+		var large = Allocated (80_000);
+
+		Assert.IsLessThan (80_000L * 10 * 16, large, $"allocated {large} for 80,000 ten-byte fields");
+		Assert.IsLessThan (small * 6, large, $"20,000 fields: {small}; 80,000 fields: {large}");
+	}
+
 	internal static byte[] WithTinyChunks (int count)
 	{
 		var builder = new AviTestBuilder { JunkBeforeMovi = -1 };

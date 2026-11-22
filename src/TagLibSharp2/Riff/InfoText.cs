@@ -57,11 +57,12 @@ internal static class InfoText
 	/// The text of a field up to its first NUL. <paramref name="utf8"/> is true when the bytes were read
 	/// as UTF-8 under a CSET of 65001 or no CSET, so they can share a UTF-8 list unchanged.
 	/// </summary>
-	public static string Decode (ReadOnlySpan<byte> field, InfoCharacterSet characterSet, out bool utf8)
+	public static string Decode (byte[] field, InfoCharacterSet characterSet, out bool utf8)
 	{
 		utf8 = false;
-		var end = field.IndexOf ((byte)0);
-		var text = end < 0 ? field : field.Slice (0, end);
+		var end = Array.IndexOf (field, (byte)0);
+		var length = end < 0 ? field.Length : end;
+		var text = field.AsSpan (0, length);
 		switch (characterSet) {
 			case InfoCharacterSet.Latin1:
 				return Latin1 (text);
@@ -69,7 +70,7 @@ internal static class InfoText
 				return Windows1252 (text);
 		}
 
-		if (TryUtf8 (text, out var decoded)) {
+		if (TryUtf8 (field, length, out var decoded)) {
 			utf8 = characterSet is InfoCharacterSet.Utf8 or InfoCharacterSet.None;
 			return decoded;
 		}
@@ -128,11 +129,10 @@ internal static class InfoText
 		return true;
 	}
 
-	static bool TryUtf8 (ReadOnlySpan<byte> text, out string decoded)
+	static bool TryUtf8 (byte[] bytes, int length, out string decoded)
 	{
-		var bytes = text.ToArray ();
 		try {
-			decoded = StrictUtf8.GetString (bytes, 0, bytes.Length);
+			decoded = StrictUtf8.GetString (bytes, 0, length);
 			return true;
 		} catch (System.Text.DecoderFallbackException) {
 			decoded = "";
