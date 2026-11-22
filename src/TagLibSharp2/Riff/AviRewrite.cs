@@ -84,8 +84,7 @@ internal static class AviRewrite
 		}
 
 		var hasHeaders = AviChunks.TryFindHeaderList (original, out var hdrl);
-		var originalInfo = AviChunks.MergeInfo (original)?.Render () ?? BinaryData.Empty;
-		var infoChanged = !originalInfo.Equals (info.Render ());
+		var infoChanged = !info.SameFieldsAs (AviChunks.MergeInfo (original));
 		var id3Present = AviChunks.TryFindId3 (original, out var id3Chunk, out var originalId3);
 		var id3Changed = Id3Changed (id3Present, originalId3, id3);
 		if (!infoChanged && !id3Changed) {
@@ -93,8 +92,20 @@ internal static class AviRewrite
 			return true;
 		}
 
-		var blob = Blob (info, infoChanged, id3, id3Changed, id3Present ? AviChunks.Name (id3Chunk.Id) : "ID32");
-		var plan = Plan (original, movi, hasHeaders ? hdrl.Offset : -1, infoChanged, id3Changed, blob.Length);
+		var list = BinaryData.Empty;
+		byte[]? characterSet = null;
+		if (infoChanged && !info.IsEmpty) {
+			if (!info.TryRenderAvi (out list, out var declareUtf8, out var refused)) {
+				error = refused!;
+				return false;
+			}
+
+			// The CSET goes right before the list; exiftool honours only a CSET it meets first.
+			characterSet = declareUtf8 ? AviChunks.Utf8CharacterSetChunk () : AviChunks.FirstCharacterSetChunk (original);
+		}
+
+		var blob = Blob (list, characterSet, id3, id3Changed, id3Present ? AviChunks.Name (id3Chunk.Id) : "ID32");
+		var plan = Plan (original, movi, hasHeaders ? hdrl.Offset : -1, new Changes (infoChanged, characterSet is not null, id3Changed), blob.Length);
 		if (blob.Length == 0 || plan.Target is not null) {
 			output = owned ?? original.ToArray ();
 			if (plan.Target is { } target) {
@@ -117,7 +128,7 @@ internal static class AviRewrite
 	/// holds <paramref name="blobLength"/>. Every other changed tag chunk, wherever it is, is rewritten as JUNK.
 	/// Only slots that hold a tag chunk are kept, so the plan's size does not grow with the JUNK count.
 	/// </summary>
-	static SavePlan Plan (ReadOnlySpan<byte> original, AviTopChunk movi, long hdrlOffset, bool infoChanged, bool id3Changed, int blobLength)
+	static SavePlan Plan (ReadOnlySpan<byte> original, AviTopChunk movi, long hdrlOffset, Changes changes, int blobLength)
 	{
 		var plan = new SavePlan ();
 		var afterHeaders = hdrlOffset < 0;
@@ -126,7 +137,7 @@ internal static class AviRewrite
 		var runHasTag = false;
 		var reader = new AviChunkReader (original);
 		while (reader.TryNext (out var chunk)) {
-			var isTag = IsChangedTag (chunk, infoChanged, id3Changed);
+			var isTag = IsChangedTag (chunk, changes);
 			var isFree = beforeMovi && afterHeaders && !chunk.Truncated && (isTag || chunk.IsJunk);
 			if (isFree) {
 				run = run is { } open ? new Range (open.Start, chunk.End) : new Range (chunk.Offset, chunk.End);
@@ -169,9 +180,24 @@ internal static class AviRewrite
 	/// A tag chunk is rewritten only when its tag changed, so an unchanged ID3v2 or INFO chunk keeps
 	/// its bytes and its place. A CSET chunk belongs to the INFO text and is rewritten with it. A cut-off chunk counts: its value was read, so it must not outlive a change.
 	/// </summary>
-	static bool IsChangedTag (AviTopChunk chunk, bool infoChanged, bool id3Changed) =>
+	static bool IsChangedTag (AviTopChunk chunk, Changes changes) =>
 		AviChunks.IsReadable (chunk)
-		&& ((infoChanged && (chunk.IsList (AviChunks.Info) || chunk.IsCharacterSet)) || (id3Changed && chunk.IsId3));
+		&& ((changes.Info && chunk.IsList (AviChunks.Info))
+			|| (changes.CharacterSet && chunk.IsCharacterSet)
+			|| (changes.Id3 && chunk.IsId3));
+
+	/// <summary>
+	/// What the save rewrites. A CSET is rewritten only when a new list is written with one in front:
+	/// the file's own CSET again, or a 65001 CSET for a list that became UTF-8. A cleared list leaves it.
+	/// </summary>
+	readonly struct Changes (bool info, bool characterSet, bool id3)
+	{
+		public bool Info { get; } = info;
+
+		public bool CharacterSet { get; } = characterSet;
+
+		public bool Id3 { get; } = id3;
+	}
 
 	static bool Id3Changed (bool present, Id3v2Tag? original, Id3v2Tag? current)
 	{
@@ -185,15 +211,15 @@ internal static class AviRewrite
 	/// <summary>An ID3v2 tag in a RIFF chunk needs no padding of its own; JUNK holds the spare room.</summary>
 	static BinaryData RenderId3 (Id3v2Tag tag) => tag.Render (0);
 
-	static byte[] Blob (RiffInfoTag info, bool infoChanged, Id3v2Tag? id3, bool id3Changed, string id3FourCC)
+	static byte[] Blob (BinaryData list, byte[]? characterSet, Id3v2Tag? id3, bool id3Changed, string id3FourCC)
 	{
 		using var builder = new BinaryDataBuilder ();
-		if (infoChanged && !info.IsEmpty) {
-			// The CSET goes before the list; a reader that walks the file in order meets it first.
-			if (info.NeedsUtf8CharacterSet)
-				builder.Add (AviChunks.Utf8CharacterSetChunk ());
-			builder.Add (info.Render ());
+		if (list.Length > 0) {
+			if (characterSet is not null)
+				builder.Add (characterSet);
+			builder.Add (list);
 		}
+
 		if (id3Changed && id3 is { IsEmpty: false })
 			builder.Add (new RiffChunk (id3FourCC, RenderId3 (id3)).Render ());
 		return builder.ToBinaryData ().ToArray ();

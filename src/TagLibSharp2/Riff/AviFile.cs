@@ -67,12 +67,17 @@ public sealed class AviFile : IMediaFile
 	/// <para>
 	/// INFO text is in the code page of the file's <c>CSET</c> chunk, ISO 8859-1 when there is none
 	/// (Multimedia Programming Interface and Data Specifications 1.0, "CSET (Character Set) Chunk").
-	/// ffmpeg and TagLib# write UTF-8 without a CSET, so with no CSET a value whose bytes are valid
-	/// UTF-8 is read as UTF-8 and any other as ISO 8859-1; a CSET of code page 65001 (UTF-8), 0 or
-	/// 28591 (ISO 8859-1) is honoured. On save, an all-ASCII list is written plain with no CSET;
-	/// otherwise the list is UTF-8 and a CSET of code page 65001 is written before it. mediainfo
-	/// ignores CSET and shows such text as Latin-1. An unchanged value keeps its original bytes
-	/// when they are ASCII or UTF-8.
+	/// A CSET of 65001 (UTF-8), 1252 (Windows-1252), 0 or 28591 (ISO 8859-1) is honoured. ffmpeg and
+	/// TagLib# write UTF-8 without a CSET, so with no CSET valid UTF-8 is read as UTF-8 and other text
+	/// as Windows-1252; another code page is read as a best effort.
+	/// </para>
+	/// <para>
+	/// On save, a value that was not changed keeps its exact bytes, and the file keeps its CSET (or its
+	/// absence). Changed values are written in the file's code page when they all fit it; with no CSET,
+	/// or one this library does not encode, only ASCII fits. Otherwise the list becomes UTF-8 with a CSET
+	/// of code page 65001 in front of it. That needs every unchanged non-ASCII value to be UTF-8 already;
+	/// when one is not (Shift-JIS or cp1251 text, say), the save is refused with an error naming the
+	/// field rather than changing its text. mediainfo ignores CSET.
 	/// </para>
 	/// </remarks>
 	public RiffInfoTag InfoTag { get; }
@@ -173,7 +178,7 @@ public sealed class AviFile : IMediaFile
 
 		var duration = AviProperties.Duration (headers);
 		return AviFileReadResult.Success (new AviFile (
-			info ?? new RiffInfoTag (aviText: true),
+			info ?? new RiffInfoTag (characterSet),
 			id3,
 			duration,
 			AviProperties.Audio (headers, duration),
@@ -278,7 +283,7 @@ public sealed class AviFile : IMediaFile
 		return WithSource (Read (kept.GetBuffer ().AsSpan (0, (int)kept.Length)), sourcePath, fileSystem);
 	}
 
-	/// <summary>The chunks <see cref="Read(ReadOnlySpan{byte})"/> uses: <c>LIST hdrl</c>, <c>LIST INFO</c>, and an ID3v2 chunk.</summary>
+	/// <summary>The chunks <see cref="Read(ReadOnlySpan{byte})"/> uses: <c>LIST hdrl</c>, <c>LIST INFO</c>, <c>CSET</c> (which decides how INFO text decodes), and an ID3v2 chunk.</summary>
 	static bool IsKept (byte[] probe, int length)
 	{
 		var id = BinaryPrimitives.ReadUInt32LittleEndian (probe);
