@@ -46,6 +46,30 @@ public class ApeTagItemMeasureTests
 	}
 
 	[TestMethod]
+	[DataRow (2, true, 14)]
+	[DataRow (254, true, 266)]
+	[DataRow (255, true, 267)]
+	[DataRow (256, false, 0)]
+	public void Measure_KeyLengthsAroundTheLimit (int keyLength, bool valid, int consumed)
+	{
+		// A 3-byte value after the key: consumed = 8 + key + 1 + 3.
+		var item = new byte[8 + keyLength + 1 + 3];
+		BitConverter.GetBytes (3u).CopyTo (item, 0);
+		for (var i = 0; i < keyLength; i++)
+			item[8 + i] = (byte)'K';
+		"abc"u8.CopyTo (item.AsSpan (8 + keyLength + 1));
+
+		var parsed = ApeTagItem.Parse (item);
+		Assert.AreEqual (valid, parsed.IsSuccess, parsed.Error);
+		Assert.AreEqual (valid ? consumed : 0, parsed.IsSuccess ? parsed.BytesConsumed : 0);
+
+		// The window the tail walk reads: the item's first MeasureWindow bytes.
+		var window = item.AsSpan (0, Math.Min (item.Length, ApeTagItem.MeasureWindow));
+		Assert.AreEqual (valid, ApeTagItem.TryMeasure (window, item.Length, out var measured));
+		Assert.AreEqual (consumed, (int)measured);
+	}
+
+	[TestMethod]
 	[DataRow ("ID3")]
 	[DataRow ("tag")]
 	[DataRow ("oggs")]
