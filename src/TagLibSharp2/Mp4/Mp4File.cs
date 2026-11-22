@@ -702,6 +702,13 @@ public sealed class Mp4File : IMediaFile
 	/// <param name="mean">The mean (namespace) identifier.</param>
 	/// <param name="name">The name identifier.</param>
 	/// <param name="value">The value to set, or null to remove.</param>
+	/// <remarks>
+	/// In a QuickTime "mdta" meta the field is a key named by <paramref name="name"/>, or
+	/// "mean:name" for a mean other than the name's own (com.apple.iTunes, or org.musicbrainz for
+	/// the MusicBrainz names). Such a mean reads back only if it is made of letters, digits, '.',
+	/// '-' and '_' with at least one dot (such as "org.example"); any other mean comes back as part
+	/// of the name.
+	/// </remarks>
 	public void SetFreeformTag (string mean, string name, string? value)
 	{
 		EnsureTag ().SetFreeform (mean, name, value);
@@ -1067,19 +1074,19 @@ public sealed class Mp4File : IMediaFile
 		var movieList = movieMeta?.FindChild ("ilst");
 
 		if (userDataList is not null) {
-			var tag = ParseIlst (userDataList, userDataMeta!);
+			var tag = ParseIlst (userDataList, userDataMeta!, inMovie: false);
 			if (movieList is not null)
 				ReadMovieMeta (tag, movieList, movieMeta!);
 			return (tag, Mp4MetaPlacement.UserData);
 		}
 
 		if (movieList is not null)
-			return (ParseIlst (movieList, movieMeta!), Mp4MetaPlacement.Movie);
+			return (ParseIlst (movieList, movieMeta!, inMovie: true), Mp4MetaPlacement.Movie);
 
 		return (null, Mp4MetaPlacement.UserData);
 	}
 
-	static Mp4Tag ParseIlst (Mp4Box ilst, Mp4Box meta)
+	static Mp4Tag ParseIlst (Mp4Box ilst, Mp4Box meta, bool inMovie)
 	{
 		var tag = new Mp4Tag ();
 		var keys = Mp4QuickTimeKeys.Read (meta);
@@ -1092,7 +1099,7 @@ public sealed class Mp4File : IMediaFile
 
 			// In an "mdta" meta every item that names a field is kept as it is until that field is set.
 			if (keys is not null) {
-				if (ReadSourceItem (atomBox, keys, tag, movie: false))
+				if (ReadSourceItem (atomBox, keys, tag, movie: false, inMovie))
 					continue;
 				if (atomId == Mp4AtomMapping.FreeformAtom)
 					ParseFreeformAtom (atomBox, tag);
@@ -1132,21 +1139,23 @@ public sealed class Mp4File : IMediaFile
 		var keys = Mp4QuickTimeKeys.Read (meta);
 		tag.UseMovieMeta (keys);
 		foreach (var item in ilst.Children) {
-			if (!ReadSourceItem (item, keys, tag, movie: true))
+			if (!ReadSourceItem (item, keys, tag, movie: true, inMovieMeta: true))
 				tag.AddMovieItem (item.Render ());
 		}
 	}
 
 	// Records an item that names a field as a kept source of that field: a keyed item, or an
 	// iTunes atom found in an "mdta" meta or in a second meta. Returns false for any other item.
-	static bool ReadSourceItem (Mp4Box item, Mp4QuickTimeKeys? keys, Mp4Tag tag, bool movie)
+	// movie: the item belongs to a second meta. inMovieMeta: the meta is moov/meta, where a keyed
+	// item beats an iTunes atom (AVFoundation reads only the keyed one there).
+	static bool ReadSourceItem (Mp4Box item, Mp4QuickTimeKeys? keys, Mp4Tag tag, bool movie, bool inMovieMeta)
 	{
 		var type = item.Type.Length == 4
 			? ((uint)item.Type[0] << 24) | ((uint)item.Type[1] << 16) | ((uint)item.Type[2] << 8) | item.Type[3]
 			: 0;
 
 		if (keys is not null && keys.TryResolve (type, out var field)) {
-			var rank = movie ? Mp4SourceRank.Movie : Mp4SourceRank.Keyed;
+			var rank = inMovieMeta ? Mp4SourceRank.MovieKeyed : Mp4SourceRank.Keyed;
 			var keyIndex = type;
 			var dataAtoms = DataAtomsIn (item.Data.Span);
 			switch (field.Kind) {
@@ -1164,7 +1173,7 @@ public sealed class Mp4File : IMediaFile
 			return true;
 		}
 
-		var atomRank = movie ? Mp4SourceRank.Movie : Mp4SourceRank.Atom;
+		var atomRank = inMovieMeta ? Mp4SourceRank.MovieAtom : Mp4SourceRank.Atom;
 		if (item.Type == Mp4AtomMapping.CoverArt) {
 			var pictures = PicturesOf (DataAtomsOf (item));
 			if (pictures is null)

@@ -642,6 +642,34 @@ public class Mp4QuickTimeKeysTests
 			Assert.IsNull (reread.Tag!.MusicBrainzTrackId);
 	}
 
+	// The documented limit: a mean without a dot (or with a space) cannot be told apart from the
+	// name, so it comes back as part of the name under com.apple.iTunes.
+	[TestMethod]
+	[DataRow ("MyApp", "X")]
+	[DataRow ("org.example app", "X")]
+	public void FreeformField_MeanThatIsNotReverseDns_ComesBackInTheName (string mean, string name)
+	{
+		var data = Keyed (["title"], TestBuilders.Mp4.CreateMdtaItem (1, "T"));
+		var file = Mp4File.Read (data).File!;
+		file.SetFreeformTag (mean, name, "hello");
+
+		var reread = Mp4File.Read (file.Render (data).ToArray ()).File!;
+		Assert.IsNull (reread.GetFreeformTag (mean, name));
+		Assert.AreEqual ("hello", reread.GetFreeformTag (Mp4AtomMapping.AppleNamespace, mean + ":" + name));
+	}
+
+	// An unmapped Apple key is not a freeform field; it is kept as it is.
+	[TestMethod]
+	public void UnmappedAppleKey_IsKeptAndNotFreeform ()
+	{
+		var make = TestBuilders.Mp4.CreateMdtaItem (1, "Apple");
+		var data = Keyed (["com.apple.quicktime.make"], make);
+		var file = Mp4File.Read (data).File!;
+		Assert.IsNull (file.GetFreeformTag (Mp4AtomMapping.AppleNamespace, "com.apple.quicktime.make"));
+		file.Title = "New";
+		Assert.AreEqual (1, Count (file.Render (data).ToArray (), make));
+	}
+
 	[TestMethod]
 	public void UnmappedFfmpegKey_IsAnItunesFreeformField ()
 	{
@@ -766,6 +794,103 @@ public class Mp4QuickTimeKeysTests
 		CollectionAssert.AreEqual (DisplayNameOnly, Keys (rendered));
 		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "New")));
 	}
+
+	// In moov/meta a keyed item beats an iTunes atom beside it: AVFoundation reads only the keyed
+	// item there. In udta/meta the iTunes atom (the newer, lenient edit) wins, as before.
+	[TestMethod]
+	[DataRow (true, "Keyed")]
+	[DataRow (false, "Itunes")]
+	public void KeyedItemBesideItunesAtom_WinnerDependsOnTheMeta (bool inMovie, string expected)
+	{
+		var keyed = TestBuilders.Mp4.CreateMdtaItem (1, "Keyed");
+		var itunes = TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Itunes"));
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title"),
+			[itunes, keyed], inMovie, udtaExtra: null);
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual (expected, file.Title);
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, keyed));
+		Assert.AreEqual (0, Count (rendered, itunes));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "New")));
+	}
+
+	// With both metas, moov/meta's keyed value beats an iTunes atom in moov/meta and the udta/meta value.
+	[TestMethod]
+	public void BothMetas_KeyedMovieItemBeatsMovieItunesAtomAndUdta ()
+	{
+		var udta = UdtaMeta (TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("UdtaT")));
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title"),
+			[TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("InjT")), TestBuilders.Mp4.CreateMdtaItem (1, "AppleT")],
+			inMovie: true, udtaExtra: udta);
+		Assert.AreEqual ("AppleT", Mp4File.Read (data).File!.Title);
+	}
+
+	// Items of moov/meta that name no field (Apple's make, model, location) are kept beside
+	// udta/meta on every save, and Clear removes them with everything else.
+	[TestMethod]
+	public void BothMetas_UnmappedMovieItemsAreKeptAndClearRemovesThem ()
+	{
+		var make = TestBuilders.Mp4.CreateMdtaItem (2, "Apple");
+		var location = TestBuilders.Mp4.CreateMdtaItem (3, "+37.3349-122.0090/");
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta",
+			TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title", "com.apple.quicktime.make", "com.apple.quicktime.location.ISO6709"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "AppleT"), make, location], inMovie: true,
+			udtaExtra: UdtaMeta (TestBuilders.Mp4.CreateIlstChild ("©too", 1, Encoding.UTF8.GetBytes ("Lavf"))));
+
+		var file = Mp4File.Read (data).File!;
+		file.Title = "New";
+		file.Tag!.Album = "NewAl";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (1, Count (rendered, make));
+		Assert.AreEqual (1, Count (rendered, location));
+
+		file.Tag.Clear ();
+		file.Title = "Fresh";
+		var cleared = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (cleared, make));
+		Assert.AreEqual (0, Count (cleared, location));
+		Assert.AreEqual (-1, cleared.AsSpan ().IndexOf ("AppleT"u8));
+		var reread = Mp4File.Read (cleared).File!;
+		Assert.AreEqual ("Fresh", reread.Title);
+		Assert.IsNull (reread.Tag!.Album);
+	}
+
+	// A malformed ---- in an mdta meta keeps its mean and name, so setting that field drops it.
+	[TestMethod]
+	public void MalformedFreeformInAnMdtaMeta_IsDroppedWhenItsFieldIsSet ()
+	{
+		var malformed = TestBuilders.Mp4.CreateBox ("----", [
+			.. TestBuilders.Mp4.CreateBox ("mean", [0, 0, 0, 0, .. "com.apple.iTunes"u8]),
+			.. TestBuilders.Mp4.CreateBox ("name", [0, 0, 0, 0, .. "MOOD"u8])]);
+		var data = Keyed (["title"], TestBuilders.Mp4.CreateMdtaItem (1, "T"), malformed);
+		var file = Mp4File.Read (data).File!;
+		Assert.IsNull (file.Tag!.Mood);
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Tag.Mood = "Calm";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, malformed));
+		Assert.AreEqual ("Calm", Mp4File.Read (rendered).File!.Tag!.Mood);
+	}
+
+	// Two iTunes atoms for one field in an mdta meta: the last one is read, as in an iTunes ilst.
+	[TestMethod]
+	public void TwoItunesAtomsInAnMdtaMeta_LastOneIsRead ()
+	{
+		var data = Keyed (["title"], TestBuilders.Mp4.CreateMdtaItem (1, "Keyed"),
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("First")),
+			TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Last")));
+		Assert.AreEqual ("Last", Mp4File.Read (data).File!.Title);
+	}
+
+	static byte[] UdtaMeta (params byte[][] items) => TestBuilders.Mp4.CreateBox ("meta", [
+		0, 0, 0, 0,
+		.. TestBuilders.Mp4.CreateBox ("hdlr", [0, 0, 0, 0, 0, 0, 0, 0, .. "mdirappl"u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+		.. TestBuilders.Mp4.CreateBox ("ilst", [.. items.SelectMany (item => item)])]);
 
 	static byte[] NameType () => [0xA9, (byte)'n', (byte)'a', (byte)'m'];
 
