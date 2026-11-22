@@ -34,6 +34,25 @@ internal readonly ref struct AacTailSource
 	public long Length { get; }
 
 	/// <summary>
+	/// Up to <paramref name="buffer"/>.Length bytes at <paramref name="position"/>, copied into the caller's buffer,
+	/// so a walk over many small reads allocates nothing. Returns the bytes that lie inside the data.
+	/// </summary>
+	public ReadOnlySpan<byte> ReadInto (long position, byte[] buffer, int count)
+	{
+		count = (int)Math.Min (Math.Min (count, buffer.Length), Length - position);
+		if (count <= 0 || position < 0)
+			return [];
+		if (_stream is null) {
+			_span.Slice ((int)position, count).CopyTo (buffer);
+			return buffer.AsSpan (0, count);
+		}
+
+		_stream.Position = position;
+		var read = StreamBytes.Read (_stream, buffer, 0, count);
+		return buffer.AsSpan (0, read);
+	}
+
+	/// <summary>
 	/// The <paramref name="count"/> bytes at <paramref name="position"/>, or an empty span when they do not all lie
 	/// inside the data.
 	/// </summary>
@@ -78,9 +97,12 @@ internal readonly struct AacTail
 	const int LyricsEndLength = 9;
 	const int LyricsV1SearchLimit = 64 * 1024;
 
-	AacTail (long audioEnd, ApeTag? apeTag, bool apeHasHeader, Id3v1Tag? id3v1Tag)
+	AacTail (long audioEnd, long apeStart, long lyricsStart, long id3v1Start, ApeTag? apeTag, bool apeHasHeader, Id3v1Tag? id3v1Tag)
 	{
 		AudioEnd = audioEnd;
+		ApeStart = apeStart;
+		LyricsStart = lyricsStart;
+		Id3v1Start = id3v1Start;
 		ApeTag = apeTag;
 		ApeHasHeader = apeHasHeader;
 		Id3v1Tag = id3v1Tag;
@@ -89,7 +111,16 @@ internal readonly struct AacTail
 	/// <summary>Gets the end of the audio region.</summary>
 	public long AudioEnd { get; }
 
-	/// <summary>Gets the trailing APEv2 tag, or null.</summary>
+	/// <summary>Gets the first byte of the trailing APEv2 tag (its header when it has one), or -1.</summary>
+	public long ApeStart { get; }
+
+	/// <summary>Gets the first byte of a Lyrics3 block in front of ID3v1, or -1. It runs to <see cref="Id3v1Start"/>.</summary>
+	public long LyricsStart { get; }
+
+	/// <summary>Gets the first byte of the ID3v1 tag, or -1.</summary>
+	public long Id3v1Start { get; }
+
+	/// <summary>Gets the trailing APEv2 tag when it was asked for and parsed, or null.</summary>
 	public ApeTag? ApeTag { get; }
 
 	/// <summary>Gets a value indicating whether the APEv2 tag had a header in front of its items.</summary>
@@ -100,13 +131,22 @@ internal readonly struct AacTail
 
 	/// <summary>
 	/// Locates the trailing tags. <paramref name="audioStart"/> is the first byte after a leading ID3v2 tag;
-	/// nothing before it is a trailing tag.
+	/// nothing before it is a trailing tag. Placing a tag reads only its footer, header magic, and item headers
+	/// and keys: no item value is copied. <paramref name="readTags"/> also builds the tags for a read; detection
+	/// and save pass false.
 	/// </summary>
-	public static AacTail Locate (AacTailSource source, long audioStart)
+	public static AacTail Locate (AacTailSource source, long audioStart, bool readTags)
 	{
 		var length = source.Length;
 		if (!HasMarker (source))
-			return new AacTail (length, null, false, null);
+			return new AacTail (length, -1, -1, -1, null, false, null);
+
+		var scratch = new byte[ApeTagItem.MeasureWindow];
+
+		// An APEv2 footer that ends the file decides first: nothing follows it, so "TAG" 128 bytes before the end
+		// is inside the APE tag, not an ID3v1 tag (https://id3.org/ID3v1: ID3v1 is the last 128 bytes).
+		if (TryApe (source, length, audioStart, readTags, scratch, out var eofApe, out var eofHeader, out var eofStart))
+			return new AacTail (eofStart >= 0 ? eofStart : length, eofStart, -1, -1, eofApe, eofHeader, null);
 
 		Id3v1Tag? id3v1 = null;
 		long id3Start = -1;
@@ -118,14 +158,14 @@ internal readonly struct AacTail
 			}
 		}
 
-		var lyricsStart = id3Start >= 0 ? LyricsStart (source, id3Start, audioStart) : -1;
+		var lyricsStart = id3Start >= 0 ? FindLyricsStart (source, id3Start, audioStart) : -1;
 
-		// The APEv2 footer: at the end of the file, else in front of Lyrics3, else in front of ID3v1.
+		// The APEv2 footer in front of Lyrics3, else in front of ID3v1.
 		ApeTag? ape = null;
 		var apeHasHeader = false;
 		long apeStart = -1;
-		if (!TryApe (source, length, audioStart, out ape, out apeHasHeader, out apeStart) && id3Start >= 0)
-			TryApe (source, lyricsStart >= 0 ? lyricsStart : id3Start, audioStart, out ape, out apeHasHeader, out apeStart);
+		if (id3Start >= 0)
+			TryApe (source, lyricsStart >= 0 ? lyricsStart : id3Start, audioStart, readTags, scratch, out ape, out apeHasHeader, out apeStart);
 
 		var audioEnd = length;
 		if (apeStart >= 0)
@@ -134,7 +174,7 @@ internal readonly struct AacTail
 			audioEnd = Math.Min (audioEnd, lyricsStart);
 		if (id3Start >= 0)
 			audioEnd = Math.Min (audioEnd, id3Start);
-		return new AacTail (audioEnd, ape, apeHasHeader, id3v1);
+		return new AacTail (audioEnd, apeStart, lyricsStart, id3Start, ape, apeHasHeader, id3v1);
 	}
 
 	// "TAG" opens the last 128 bytes, or an APEv2 footer ends the file. Without either there is no trailing tag:
@@ -144,8 +184,9 @@ internal readonly struct AacTail
 		|| source.Read (source.Length - ApeTagFooter.Size, 8).SequenceEqual (ApeTagFooter.Magic);
 
 	// True when a valid footer (not a header) ends at tagEnd. A footer that is found decides, whether or not its tag
-	// then parses; a footer that is not found leaves the next placement to try.
-	static bool TryApe (AacTailSource source, long tagEnd, long audioStart, out ApeTag? tag, out bool hasHeader, out long start)
+	// is valid; a footer that is not found leaves the next placement to try. The tag is placed only when its items
+	// pass the same rules ApeTag.Parse applies (ItemsAreValid); its object is built only for a read.
+	static bool TryApe (AacTailSource source, long tagEnd, long audioStart, bool readTags, byte[] scratch, out ApeTag? tag, out bool hasHeader, out long start)
 	{
 		tag = null;
 		hasHeader = false;
@@ -166,18 +207,48 @@ internal readonly struct AacTail
 		if (total < ApeTagFooter.Size || total > tagEnd - audioStart || total > int.MaxValue)
 			return true;
 
-		var result = ApeTag.Parse (source.Read (tagEnd - total, (int)total));
-		if (result.IsSuccess && result.Tag is not null) {
-			tag = result.Tag;
-			hasHeader = total > parsed.TagSize;
-			start = tagEnd - total;
+		var itemsSize = (long)parsed.TagSize - ApeTagFooter.Size;
+		if (!ItemsAreValid (source, tagEnd - parsed.TagSize, itemsSize, parsed.ItemCount, scratch))
+			return true;
+
+		start = tagEnd - total;
+		hasHeader = total > parsed.TagSize;
+		if (readTags) {
+			var result = ApeTag.Parse (source.Read (start, (int)total));
+			if (result.IsSuccess)
+				tag = result.Tag;
 		}
 
 		return true;
 	}
 
+	/// <summary>
+	/// The item checks of <see cref="ApeTag.Parse"/>, without copying a value: the 11-byte-per-item budget, each
+	/// item by <see cref="ApeTagItem.TryMeasure"/> (the rules <see cref="ApeTagItem.Parse"/> uses), and the count rule.
+	/// Each item costs one read of at most <see cref="ApeTagItem.MeasureWindow"/> bytes into <paramref name="scratch"/>.
+	/// </summary>
+	static bool ItemsAreValid (AacTailSource source, long itemsStart, long itemsSize, uint count, byte[] scratch)
+	{
+		const int minItemSize = ApeTagItem.MinHeaderSize + ApeTagItem.MinKeyLength + 1;
+		if (itemsSize < 0 || (ulong)count * minItemSize > (ulong)itemsSize)
+			return false;
+
+		long offset = 0;
+		uint parsed = 0;
+		while (offset < itemsSize && parsed < count) {
+			var remaining = itemsSize - offset;
+			var head = source.ReadInto (itemsStart + offset, scratch, (int)Math.Min (ApeTagItem.MeasureWindow, remaining));
+			if (!ApeTagItem.TryMeasure (head, remaining, out var consumed) || consumed <= 0)
+				return false;
+			offset += consumed;
+			parsed++;
+		}
+
+		return parsed == count || (offset == itemsSize && parsed > 0);
+	}
+
 	// The first byte of a Lyrics3 v2 or v1 block that ends right before ID3v1, or -1.
-	static long LyricsStart (AacTailSource source, long id3Start, long audioStart)
+	static long FindLyricsStart (AacTailSource source, long id3Start, long audioStart)
 	{
 		var endMarker = id3Start - LyricsEndLength;
 		var marker = source.Read (endMarker, LyricsEndLength);

@@ -519,11 +519,11 @@ internal readonly struct ApeTagLocation
 		var offset = 0;
 		var parsed = 0u;
 		while (offset < items.Length && parsed < footer.ItemCount) {
-			var item = ApeTagItem.Parse (items[offset..]);
-			if (!item.IsSuccess || item.BytesConsumed <= 0)
+			// The item rules of ApeTagItem.Parse, without copying the value.
+			if (!ApeTagItem.TryMeasure (items[offset..], items.Length - offset, out var consumed) || consumed <= 0)
 				return false;
 
-			offset += item.BytesConsumed;
+			offset += (int)consumed;
 			parsed++;
 		}
 

@@ -238,6 +238,60 @@ public class AacDetectionTests
 		}
 	}
 
+	static byte[] BigApe (bool header)
+	{
+		var tag = new TagLibSharp2.Ape.ApeTag { Title = "Ape" };
+		tag.SetBinaryItem ("Cover Art (Front)", "cover.jpg", new byte[BigItemBytes]);
+		return tag.RenderWithOptions (includeHeader: header).ToArray ();
+	}
+
+	const int BigItemBytes = 1024 * 1024;
+
+	/// <summary>Every trailing tag shape, with APEv2 tags that carry a 1 MB binary item.</summary>
+	static IEnumerable<(string Name, byte[] Bytes)> LargeTails () => [
+		("ID3v1", Id3v1Bytes ("Back")),
+		("APEv2 1 MB", BigApe (header: true)),
+		("footer-only APEv2 1 MB", BigApe (header: false)),
+		("APEv2 1 MB+ID3v1", Concat (BigApe (header: true), Id3v1Bytes ("Back"))),
+		("Lyrics3v1+ID3v1", Concat (Lyrics3V1 (), Id3v1Bytes ("Back"))),
+		("Lyrics3v2+ID3v1", Concat (Lyrics3V2 (), Id3v1Bytes ("Back"))),
+		("APEv2 1 MB+Lyrics3v2+ID3v1", Concat (BigApe (header: true), Lyrics3V2 (), Id3v1Bytes ("Back")))
+	];
+
+	[TestMethod]
+	public void Detection_AllocatesAConstant_WhateverTheTrailingTags ()
+	{
+		// Detection locates the trailing tags from their footers, headers, and item keys; no item value is copied.
+		// The bound is a constant: the largest fixed buffer is the 64 KB Lyrics3 v1 search on a stream.
+		const long detectionBound = 96 * 1024;
+		var frames = Adts (2_000, length: 400);
+		foreach (var withId3v2 in new[] { false, true }) {
+			foreach (var (name, tail) in LargeTails ()) {
+				var data = Concat (withId3v2 ? Id3v2Bytes ("Front") : [], frames, tail);
+				var label = $"{name}, ID3v2 {withId3v2}";
+				using var stream = new MemoryStream (data, writable: false);
+
+				Assert.AreEqual (MediaFormat.Aac, MediaFile.DetectFormat (data), label);
+				AssertAllocatesAtMost (() => MediaFile.DetectFormat (data), detectionBound, $"{label}: DetectFormat (span)");
+				AssertAllocatesAtMost (() => AacFile.IsValidFormat (data), detectionBound, $"{label}: AacFile.IsValidFormat (span)");
+				AssertAllocatesAtMost (() => Mp3File.IsValidFormat (data), detectionBound, $"{label}: Mp3File.IsValidFormat (span)");
+				AssertAllocatesAtMost (() => AacFile.IsValidFormat (stream), detectionBound, $"{label}: AacFile.IsValidFormat (stream)");
+
+				// A read builds the tags, so it copies each item value once (the 1 MB picture). ReadFromData locates
+				// and parses them on the caller's bytes; a stream read also reads the tag bytes out of the stream.
+				var tagBytes = name.Contains ("1 MB") ? BigItemBytes : 0;
+				AssertAllocatesAtMost (() => MediaFile.ReadFromData (data), tagBytes + 256 * 1024, $"{label}: ReadFromData");
+				AssertAllocatesAtMost (() => { stream.Position = 0; MediaFile.Read (stream); }, (2L * tagBytes) + 256 * 1024, $"{label}: Read (stream)");
+			}
+		}
+	}
+
+	static void AssertAllocatesAtMost (Action action, long bound, string label)
+	{
+		var allocated = Allocated (action);
+		Assert.IsTrue (allocated <= bound, $"{label}: allocated {allocated} bytes, bound {bound}");
+	}
+
 	[TestMethod]
 	public void SpanDetection_OfATaggedMp3_DoesNotParseItsTrailingTags ()
 	{
@@ -475,6 +529,188 @@ public class AacDetectionTests
 			fromStream = MediaFile.Read (stream);
 		Assert.AreEqual (detected == MediaFormat.Aac, fromData.IsSuccess && fromData.Format == MediaFormat.Aac, $"{label}: DetectFormat vs ReadFromData");
 		Assert.AreEqual (detected == MediaFormat.Aac, fromStream.IsSuccess && fromStream.Format == MediaFormat.Aac, $"{label}: DetectFormat vs Read (stream)");
+		if (data.Length >= 3 && data[0] == (byte)'I' && data[1] == (byte)'D' && data[2] == (byte)'3')
+			Assert.AreEqual (!spanValid, Mp3File.IsValidFormat (data), $"{label}: Mp3File.IsValidFormat");
+
+		if (spanRead.IsSuccess)
+			AssertUnchangedSaveKeepsTheAudio (data, spanRead.File!, label);
+	}
+
+	// An unchanged save keeps every frame the read saw, byte for byte, and saving the result again changes nothing.
+	static void AssertUnchangedSaveKeepsTheAudio (byte[] data, AacFile file, string label)
+	{
+		var saved = file.Render (data).ToArray ();
+		var reread = AacFile.Read (saved);
+		Assert.IsTrue (reread.IsSuccess, $"{label}: an unchanged save does not open: {reread.Error}");
+		Assert.AreEqual (file.Properties!.FrameCount, reread.File!.Properties!.FrameCount, $"{label}: frames after save");
+		Assert.AreEqual (file.Properties.Duration, reread.File.Properties!.Duration, $"{label}: duration after save");
+
+		var start = AudioStartOf (data);
+		var audio = data.AsSpan (start, (int)AacFile.AudioEnd (data.AsSpan (start)));
+		var savedStart = AudioStartOf (saved);
+		var savedAudio = saved.AsSpan (savedStart, (int)AacFile.AudioEnd (saved.AsSpan (savedStart)));
+		Assert.IsTrue (audio.SequenceEqual (savedAudio[^audio.Length..]) || audio.SequenceEqual (savedAudio), $"{label}: audio bytes after save");
+
+		var again = reread.File.Render (saved).ToArray ();
+		Assert.AreEqual (saved.Length, again.Length, $"{label}: a second unchanged save changes the length");
+		Assert.AreEqual (reread.File.HasApeTag, AacFile.Read (again).File!.HasApeTag, $"{label}: a second save loses the APEv2 tag");
+	}
+
+	// The first byte after a leading ID3v2 tag (header, body, v2.4 footer), as the reader places it.
+	static int AudioStartOf (byte[] data)
+	{
+		var header = TagLibSharp2.Id3.Id3v2.Id3v2Header.Read (data);
+		return header.IsSuccess ? (int)Math.Min (header.Header.TotalSize, (uint)data.Length) : 0;
+	}
+
+	// A raw ID3v2.4 tag: header and a body of padding, with content written at body offset `at`.
+	static byte[] Id3v2WithBody (int bodySize, byte[] content, int at)
+	{
+		var tag = new byte[10 + bodySize];
+		"ID3"u8.CopyTo (tag);
+		tag[3] = 4;
+		tag[6] = (byte)((bodySize >> 21) & 0x7F);
+		tag[7] = (byte)((bodySize >> 14) & 0x7F);
+		tag[8] = (byte)((bodySize >> 7) & 0x7F);
+		tag[9] = (byte)(bodySize & 0x7F);
+		content.CopyTo (tag, 10 + at);
+		return tag;
+	}
+
+	// Puts `content` so it starts `delta` bytes from the end of the ID3v2 tag: inside the tag for a negative
+	// delta (straddling into the audio when it is longer than -delta), at the audio start for 0, after it otherwise.
+	static byte[] PlaceAroundTheAudioStart (byte[] content, int delta, byte[] audio, int bodySize = 200)
+	{
+		if (delta >= 0)
+			return Concat (Id3v2WithBody (bodySize, [], 0), new byte[delta], content, audio);
+		var inside = Math.Min (content.Length, -delta);
+		var tag = Id3v2WithBody (bodySize, content[..inside], bodySize + delta);
+		return Concat (tag, content[inside..], audio);
+	}
+
+	/// <summary>
+	/// Tags that start inside, at, or just after the leading ID3v2 tag: an APEv2 tag whose footer reaches back to
+	/// an item there, LYRICSBEGIN there (v1), a Lyrics3 v2 size that reaches there, and "TAG" 128 bytes before the
+	/// end with fewer than 128 audio bytes.
+	/// </summary>
+	static IEnumerable<(string Name, byte[] Data)> TagsAroundTheId3v2End ()
+	{
+		var frames = Adts (3, length: 300);
+		var item = new TagLibSharp2.Ape.ApeTag { Title = "Hidden" }.Render ().ToArray ()[..^32];
+		foreach (var delta in new[] { -item.Length - 4, -item.Length, -5, -1, 0, 1, 7 }) {
+			foreach (var withId3v1 in new[] { false, true }) {
+				var body = PlaceAroundTheAudioStart (item, delta, frames);
+				var start = AudioStartOf (body);
+				var itemStart = start + delta;
+				var v1 = withId3v1 ? Id3v1Bytes ("Back") : [];
+				var footer = new TagLibSharp2.Ape.ApeTag { Title = "Hidden" }.Render ().ToArray ()[^32..];
+				BitConverter.GetBytes ((uint)(body.Length - itemStart + 32)).CopyTo (footer, 12);
+				yield return ($"APEv2 item at {delta}{(withId3v1 ? " +ID3v1" : "")}", Concat (body, footer, v1));
+			}
+
+			var begin = "LYRICSBEGIN"u8.ToArray ();
+			var v1Body = PlaceAroundTheAudioStart (begin, delta, frames);
+			yield return ($"LYRICSBEGIN (v1) at {delta}", Concat (v1Body, "LYRICSEND"u8.ToArray (), Id3v1Bytes ("Back")));
+
+			var v2Body = PlaceAroundTheAudioStart (begin, delta, frames);
+			var size = v2Body.Length - (AudioStartOf (v2Body) + delta);
+			var digits = System.Text.Encoding.ASCII.GetBytes (size.ToString ("D6", System.Globalization.CultureInfo.InvariantCulture));
+			yield return ($"Lyrics3 v2 reaching {delta}", Concat (v2Body, digits, "LYRICS200"u8.ToArray (), Id3v1Bytes ("Back")));
+		}
+
+		// "TAG" 128 bytes before the end, with fewer, as many, or more audio bytes than 128.
+		foreach (var audioLength in new[] { 60, 100, 127, 128, 129 }) {
+			var audio = AdtsFrame (audioLength);
+			var tag = Id3v2WithBody (200, [], 0);
+			var data = Concat (tag, audio);
+			"TAG"u8.CopyTo (data.AsSpan (data.Length - 128));
+			yield return ($"TAG with {audioLength} audio bytes", data);
+		}
+	}
+
+	[TestMethod]
+	public void TagsAroundTheId3v2End_AllEntryPointsAgreeAndSavesKeepTheAudio ()
+	{
+		var cases = 0;
+		foreach (var (name, data) in TagsAroundTheId3v2End ()) {
+			AssertEntryPointsAgree (data, name);
+			cases++;
+		}
+		Assert.IsTrue (cases > 30);
+	}
+
+	[TestMethod]
+	public void TagsInsideTheId3v2Tag_AreNotTrailingTags ()
+	{
+		// A trailing tag starts at or after the audio start. One that starts inside the ID3v2 tag is not a tag:
+		// the frames all count, and an unchanged save keeps them.
+		foreach (var (name, data) in TagsAroundTheId3v2End ()) {
+			if (!name.Contains ("at -") && !name.Contains ("reaching -"))
+				continue;
+			var file = AacFile.Read (data);
+			Assert.IsTrue (file.IsSuccess, $"{name}: {file.Error}");
+			Assert.AreEqual (3, file.File!.Properties!.FrameCount, name);
+			Assert.IsNull (file.File.ApeTag, name);
+		}
+	}
+
+	[TestMethod]
+	public void ApeTagAtTheEnd_WithTagInsideIt_HasNoId3v1AndSavesStably ()
+	{
+		// An APEv2 footer that ends the file decides first: "TAG" 128 bytes before the end is then inside the APE
+		// tag, not an ID3v1 tag (https://id3.org/ID3v1). Unchanged saves keep the APE tag and the length.
+		var frames = Adts (11, length: 300);
+		// One item, so its value ends right before the 32-byte footer: "TAG" + 93 bytes + footer = 128.
+		var apeTag = new TagLibSharp2.Ape.ApeTag { Comment = new string ('y', 20) + "TAG" + new string ('z', 93) };
+		var ape = apeTag.RenderWithOptions (includeHeader: true).ToArray ();
+		Assert.IsTrue (ape.AsSpan (ape.Length - 128, 3).SequenceEqual ("TAG"u8));
+		var data = Concat (frames, ape);
+
+		var file = AacFile.Read (data).File!;
+		Assert.IsNull (file.Id3v1Tag);
+		Assert.IsNotNull (file.ApeTag);
+		Assert.AreEqual (11, file.Properties!.FrameCount);
+		var saved = data;
+		for (var round = 0; round < 3; round++) {
+			var reread = AacFile.Read (saved).File!;
+			saved = reread.Render (saved).ToArray ();
+			Assert.AreEqual (data.Length, saved.Length, $"save {round}");
+			Assert.IsNotNull (AacFile.Read (saved).File!.ApeTag, $"save {round}");
+		}
+		AssertEntryPointsAgree (data, "APEv2 at EOF with TAG inside");
+	}
+
+	[TestMethod]
+	public void BrokenApeTagAtTheEnd_WithTagInsideIt_StillEndsTheFile ()
+	{
+		// A footer that ends the file decides even when its items do not parse: nothing follows it, so the "TAG"
+		// 128 bytes before the end is not an ID3v1 tag. The broken tag is audio.
+		var apeTag = new TagLibSharp2.Ape.ApeTag { Comment = new string ('y', 20) + "TAG" + new string ('z', 93) };
+		var ape = apeTag.RenderWithOptions (includeHeader: true).ToArray ();
+		ape[32 + 8] = 0x01; // the first item's key gets a control byte
+		var data = Concat (Adts (11, length: 300), ape);
+
+		var file = AacFile.Read (data).File!;
+		Assert.IsNull (file.Id3v1Tag);
+		Assert.IsNull (file.ApeTag);
+		AssertEntryPointsAgree (data, "broken APEv2 at EOF with TAG inside");
+	}
+
+	[TestMethod]
+	public void BrokenApeTagAfterACutFrame_IsAudio ()
+	{
+		// A tag whose item key holds a control byte does not parse, so it is not a tag: its bytes are audio, and the
+		// last frame, which they complete, counts.
+		var broken = new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ();
+		broken[32 + 8] = 0x01; // first byte of the first item's key
+		var frames = Adts (5, length: 300);
+		var data = Concat (frames[..^20], broken);
+		Assert.IsTrue (broken.Length >= 20);
+
+		var file = AacFile.Read (data).File!;
+		Assert.IsNull (file.ApeTag);
+		Assert.AreEqual (5, file.Properties!.FrameCount);
+		AssertEntryPointsAgree (data, "broken APEv2 after a cut frame");
 	}
 
 	[TestMethod]

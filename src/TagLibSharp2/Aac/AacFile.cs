@@ -41,6 +41,10 @@ public sealed class AacFile : IMediaFile
 	bool _disposed;
 	IFileSystem? _sourceFileSystem;
 
+	// The first byte after the leading ID3v2 tag's header, size, and footer: where the read placed the audio start,
+	// even when the tag's body did not parse. Render places the tail against it, as the read did.
+	long _audioStart;
+
 	// The APEv2 tag that was read, when it had only a footer. Spec-valid, so a save keeps that layout
 	// for that tag. Every other tag, including one assigned in its place, is written with a header and
 	// a footer, as ffmpeg writes it; some readers (mediainfo) find the tag only through the header.
@@ -141,8 +145,9 @@ public sealed class AacFile : IMediaFile
 	/// <returns>A result indicating success or failure.</returns>
 	public static AacFileReadResult Read (ReadOnlySpan<byte> data)
 	{
-		using var stream = new MemoryStream (data.ToArray (), writable: false);
-		return ReadSeekable (stream);
+		var copy = data.ToArray ();
+		using var stream = new MemoryStream (copy, writable: false);
+		return ReadSeekable (stream, copy);
 	}
 
 	/// <summary>
@@ -154,7 +159,7 @@ public sealed class AacFile : IMediaFile
 			return Read (data.Span);
 
 		using var stream = new MemoryStream (segment.Array, segment.Offset, segment.Count, writable: false);
-		return ReadSeekable (stream);
+		return ReadSeekable (stream, data);
 	}
 
 	/// <summary>
@@ -178,7 +183,9 @@ public sealed class AacFile : IMediaFile
 		return result;
 	}
 
-	static AacFileReadResult ReadSeekable (Stream stream)
+	// bytes, when given, are the stream's own bytes in memory: the trailing tags are then located and parsed on them
+	// directly instead of being read out of the stream again.
+	static AacFileReadResult ReadSeekable (Stream stream, ReadOnlyMemory<byte> bytes = default)
 	{
 		var length = stream.Length;
 		if (length < 4)
@@ -199,7 +206,12 @@ public sealed class AacFile : IMediaFile
 			}
 		}
 
-		var audioEnd = ReadTail (stream, audioStart, file);
+		file._audioStart = audioStart;
+		var tail = bytes.Length == length
+			? AacTail.Locate (new AacTailSource (bytes.Span), audioStart, readTags: true)
+			: AacTail.Locate (new AacTailSource (stream), audioStart, readTags: true);
+		file.TakeTags (tail);
+		var audioEnd = tail.AudioEnd;
 		if (!AacStream.TryRead (stream, audioStart, audioEnd, out var properties)) {
 			file.Dispose ();
 			return AacFileReadResult.Failure ("Invalid AAC file: no ADTS frame or ADIF header found");
@@ -215,21 +227,24 @@ public sealed class AacFile : IMediaFile
 	/// </summary>
 	internal static long ReadTail (Stream stream, long audioStart, AacFile? file)
 	{
-		var tail = AacTail.Locate (new AacTailSource (stream), audioStart);
-		if (file is not null) {
-			file.ApeTag = tail.ApeTag;
-			if (tail.ApeTag is not null && !tail.ApeHasHeader)
-				file._footerOnlyApeTag = tail.ApeTag;
-			file.Id3v1Tag = tail.Id3v1Tag;
-		}
+		var tail = AacTail.Locate (new AacTailSource (stream), audioStart, readTags: file is not null);
+		file?.TakeTags (tail);
 		return tail.AudioEnd;
+	}
+
+	void TakeTags (AacTail tail)
+	{
+		ApeTag = tail.ApeTag;
+		if (tail.ApeTag is not null && !tail.ApeHasHeader)
+			_footerOnlyApeTag = tail.ApeTag;
+		Id3v1Tag = tail.Id3v1Tag;
 	}
 
 	/// <summary>
 	/// The end of the audio in <paramref name="data"/>, which starts at the first byte after a leading ID3v2 tag and
 	/// runs to the end of the file, by the same rule as <see cref="ReadTail"/>. Nothing is copied.
 	/// </summary>
-	internal static long AudioEnd (ReadOnlySpan<byte> data) => AacTail.Locate (new AacTailSource (data), 0).AudioEnd;
+	internal static long AudioEnd (ReadOnlySpan<byte> data) => AacTail.Locate (new AacTailSource (data), 0, readTags: false).AudioEnd;
 
 	/// <summary>The stream twin of <see cref="AudioEnd(ReadOnlySpan{byte})"/>. The stream position moves.</summary>
 	internal static long AudioEnd (Stream stream, long audioStart) => ReadTail (stream, audioStart, null);
@@ -362,20 +377,21 @@ public sealed class AacFile : IMediaFile
 	/// </returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData)
 	{
+		// The read's tail rule against the read's audio start, so a save keeps every frame the read counted.
 		var audioStart = Math.Min (Id3v2Size, originalData.Length);
-		var location = ApeTagLocation.Locate (originalData);
-		var audioEnd = Math.Max (location.AudioEnd, audioStart);
+		var tail = AacTail.Locate (new AacTailSource (originalData), Math.Min (_audioStart, originalData.Length), readTags: false);
+		var audioEnd = Math.Max (tail.AudioEnd, audioStart);
 
 		var id3v2 = Id3v2Tag?.Render () ?? BinaryData.Empty;
 		var ape = ApeTag?.RenderWithOptions (includeHeader: !ReferenceEquals (ApeTag, _footerOnlyApeTag)) ?? BinaryData.Empty;
 		var id3v1 = Id3v1Tag?.Render () ?? BinaryData.Empty;
 
 		// Lyrics3 belongs in front of ID3v1 and goes when that tag goes.
-		var lyrics = Id3v1Tag is not null && location.LyricsOffset >= audioEnd
-			? originalData.Slice (location.LyricsOffset, location.LyricsLength)
+		var lyrics = Id3v1Tag is not null && tail.LyricsStart >= audioEnd && tail.Id3v1Start > tail.LyricsStart
+			? originalData[(int)tail.LyricsStart..(int)tail.Id3v1Start]
 			: [];
 
-		var audio = originalData.Slice (audioStart, audioEnd - audioStart);
+		var audio = originalData[audioStart..(int)audioEnd];
 		using var builder = new BinaryDataBuilder (id3v2.Length + audio.Length + ape.Length + lyrics.Length + id3v1.Length);
 		builder.Add (id3v2);
 		builder.Add (audio);

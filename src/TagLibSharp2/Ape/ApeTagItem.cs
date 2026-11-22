@@ -219,13 +219,47 @@ public sealed class ApeTagItem
 	/// </summary>
 	public static ApeTagItemParseResult Parse (ReadOnlySpan<byte> data)
 	{
-		if (data.Length < MinHeaderSize) {
-			return ApeTagItemParseResult.Failure (
-				$"Data too short for APE item header: {data.Length} bytes");
-		}
+		var error = Measure (data, data.Length, out var keyLength, out var valueSize, out var flags, out var consumed);
+		if (error is not null)
+			return ApeTagItemParseResult.Failure (error);
 
-		var valueSize = BinaryPrimitives.ReadUInt32LittleEndian (data);
-		var flags = BinaryPrimitives.ReadUInt32LittleEndian (data[4..]);
+		var key = Encoding.ASCII.GetString (data.Slice (MinHeaderSize, keyLength).ToArray ());
+		var valueStart = MinHeaderSize + keyLength + 1;
+		var rawValue = data.Slice (valueStart, (int)valueSize).ToArray ();
+		return ApeTagItemParseResult.Success (new ApeTagItem (key, rawValue, flags), (int)consumed);
+	}
+
+	/// <summary>
+	/// The item rules of <see cref="Parse"/> without copying anything: true when an item starts at the front of
+	/// <paramref name="head"/>, and <paramref name="consumed"/> is its length. <paramref name="head"/> holds at
+	/// least the header and the key (or every remaining byte); <paramref name="remaining"/> is how many bytes the
+	/// item region has from this item to its end, so the value is bounded without being read.
+	/// </summary>
+	internal static bool TryMeasure (ReadOnlySpan<byte> head, long remaining, out long consumed)
+	{
+		var ok = Measure (head, remaining, out _, out _, out _, out consumed) is null;
+		if (!ok)
+			consumed = 0;
+		return ok;
+	}
+
+	/// <summary>
+	/// The bytes <see cref="TryMeasure"/> needs in its window: the header, the longest key, and its NUL.
+	/// </summary>
+	internal const int MeasureWindow = MinHeaderSize + MaxKeyLength + 1;
+
+	// Every accept rule of an item, shared by Parse and TryMeasure. Returns null when the item is valid.
+	static string? Measure (ReadOnlySpan<byte> head, long remaining, out int keyLength, out uint valueSize, out uint flags, out long consumed)
+	{
+		keyLength = 0;
+		valueSize = 0;
+		flags = 0;
+		consumed = 0;
+		if (head.Length < MinHeaderSize || remaining < MinHeaderSize)
+			return $"Data too short for APE item header: {Math.Min (head.Length, remaining)} bytes";
+
+		valueSize = BinaryPrimitives.ReadUInt32LittleEndian (head);
+		flags = BinaryPrimitives.ReadUInt32LittleEndian (head[4..]);
 
 		// Validate flags - only bits 0-2 should be used
 		if ((flags & 0xFFFFFFF8) != 0) {
@@ -233,67 +267,74 @@ public sealed class ApeTagItem
 			flags &= 0x07;
 		}
 
-		// Find key: starts at offset 8, ends with null byte
-		var keyStart = 8;
+		// Find key: starts at offset 8, ends with null byte. TryMeasure passes only the first MeasureWindow bytes:
+		// a key that has no NUL there is longer than MaxKeyLength, or not terminated, and fails either way.
 		var keyEnd = -1;
-
-		for (var i = keyStart; i < data.Length; i++) {
-			if (data[i] == 0) {
+		var searchEnd = (int)Math.Min (head.Length, remaining);
+		for (var i = MinHeaderSize; i < searchEnd; i++) {
+			if (head[i] == 0) {
 				keyEnd = i;
 				break;
 			}
 		}
 
 		if (keyEnd < 0) {
-			return ApeTagItemParseResult.Failure ("APE item key not null-terminated");
+			return "APE item key not null-terminated";
 		}
 
-		var keyLength = keyEnd - keyStart;
+		keyLength = keyEnd - MinHeaderSize;
 
 		// Validate key length
 		if (keyLength < MinKeyLength) {
-			return ApeTagItemParseResult.Failure (
-				$"APE item key too short: {keyLength} chars, minimum is {MinKeyLength}");
+			return $"APE item key too short: {keyLength} chars, minimum is {MinKeyLength}";
 		}
 
 		if (keyLength > MaxKeyLength) {
-			return ApeTagItemParseResult.Failure (
-				$"APE item key too long: {keyLength} chars, maximum is {MaxKeyLength}");
+			return $"APE item key too long: {keyLength} chars, maximum is {MaxKeyLength}";
 		}
 
 		// Validate key characters (ASCII 0x20-0x7E)
-		var keySpan = data.Slice (keyStart, keyLength);
+		var keySpan = head.Slice (MinHeaderSize, keyLength);
 		foreach (var b in keySpan) {
 			if (b < 0x20 || b > 0x7E) {
-				return ApeTagItemParseResult.Failure (
-					$"APE item key contains invalid character: 0x{b:X2}");
+				return $"APE item key contains invalid character: 0x{b:X2}";
 			}
 		}
 
-		var key = Encoding.ASCII.GetString (keySpan.ToArray ());
-
-		// Check for reserved keys
+		// Check for reserved keys (ASCII, case-insensitive)
 		foreach (var reserved in ReservedKeys) {
-			if (key.Equals (reserved, StringComparison.OrdinalIgnoreCase)) {
-				return ApeTagItemParseResult.Failure (
-					$"APE item key '{key}' is reserved and cannot be used");
+			if (EqualsIgnoreCase (keySpan, reserved)) {
+				return $"APE item key '{reserved}' is reserved and cannot be used";
 			}
 		}
 
 		// Value length is a uint32. Compare it with the bytes still left before any int add or Slice:
 		// 0x80000000 and 0xFFFFFFF0 cast negative, and int.MaxValue overflows the end offset.
 		var valueStart = keyEnd + 1;
-		var available = data.Length - valueStart;
-		if (valueSize > (uint)available) {
-			return ApeTagItemParseResult.Failure (
-				$"APE item value extends beyond data: value size {valueSize} exceeds {available} bytes remaining");
+		var available = remaining - valueStart;
+		if (valueSize > available) {
+			return $"APE item value extends beyond data: value size {valueSize} exceeds {available} bytes remaining";
 		}
 
-		var valueLength = (int)valueSize;
-		var rawValue = data.Slice (valueStart, valueLength).ToArray ();
+		consumed = valueStart + valueSize;
+		return null;
+	}
 
-		var item = new ApeTagItem (key, rawValue, flags);
-		return ApeTagItemParseResult.Success (item, valueStart + valueLength);
+	static bool EqualsIgnoreCase (ReadOnlySpan<byte> key, string reserved)
+	{
+		if (key.Length != reserved.Length)
+			return false;
+		for (var i = 0; i < key.Length; i++) {
+			var a = key[i];
+			var b = (byte)reserved[i];
+			if (a is >= (byte)'a' and <= (byte)'z')
+				a -= 32;
+			if (b is >= (byte)'a' and <= (byte)'z')
+				b -= 32;
+			if (a != b)
+				return false;
+		}
+		return true;
 	}
 
 	/// <summary>
