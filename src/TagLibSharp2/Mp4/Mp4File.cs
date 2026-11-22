@@ -2281,7 +2281,7 @@ public sealed class Mp4File : IMediaFile
 			if (!replacedMeta && child.Type == "meta" && (inMovieMeta || movieSource is not null)) {
 				replacedMeta = true;
 				var (ilst, keys) = inMovieMeta ? RenderTag (child, tag) : (movieSource!.RenderMovieIlst (), movieSource.RenderMovieKeys ());
-				var rebuilt = RebuildMeta (child, ilst, keys);
+				var rebuilt = RebuildMeta (child, ilst, keys, tag?.DropsUnreadKeys == true);
 				if (!rebuilt.IsEmpty)
 					moovContent.Add (rebuilt);
 				emittedChild = true;
@@ -2391,7 +2391,7 @@ public sealed class Mp4File : IMediaFile
 			return WrapBox ("udta", FreshMeta (ilstContent));
 		}
 
-		return RebuildUdta (original, ilstContent, keysContent);
+		return RebuildUdta (original, ilstContent, keysContent, tag?.DropsUnreadKeys == true);
 	}
 
 	/// <summary>
@@ -2410,7 +2410,7 @@ public sealed class Mp4File : IMediaFile
 		return (ilst, tag.QuickTimeKeys?.Render ());
 	}
 
-	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent)
+	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent, bool dropUnreadKeys)
 	{
 		using var content = new BinaryDataBuilder ();
 		var payload = udta.Data.Span;
@@ -2438,7 +2438,7 @@ public sealed class Mp4File : IMediaFile
 			if (isMeta && !replacedMeta) {
 				var meta = udta.FindChild ("meta");
 				if (meta is not null) {
-					var rebuilt = RebuildMeta (meta, ilstContent, keysContent);
+					var rebuilt = RebuildMeta (meta, ilstContent, keysContent, dropUnreadKeys);
 					if (!rebuilt.IsEmpty)
 						content.Add (rebuilt);
 				} else if (!ilstContent.IsEmpty) {
@@ -2466,7 +2466,10 @@ public sealed class Mp4File : IMediaFile
 		return WrapBox ("udta", content.ToBinaryData ());
 	}
 
-	static BinaryData RebuildMeta (Mp4Box meta, BinaryData ilstContent, BinaryData? keysContent)
+	// A keys atom the tag could not read is written back as it was, unless the tag was cleared:
+	// then no item is left that could use it, and a damaged one would keep ffmpeg from opening
+	// the file (QTFF Metadata Item Keys atom: each key size counts its size and namespace).
+	static BinaryData RebuildMeta (Mp4Box meta, BinaryData ilstContent, BinaryData? keysContent, bool dropUnreadKeys)
 	{
 		var children = new List<Mp4Box> ();
 		var sawHandler = false;
@@ -2475,6 +2478,8 @@ public sealed class Mp4File : IMediaFile
 		foreach (var child in meta.Children) {
 			if (child.Type == "hdlr")
 				sawHandler = true;
+			if (child.Type == "keys" && keysContent is null && dropUnreadKeys)
+				continue;
 			if (child.Type == "keys" && keysContent is not null) {
 				if (!placedKeys) {
 					children.Add (new Mp4Box ("keys", keysContent.Value));

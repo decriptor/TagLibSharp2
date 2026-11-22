@@ -497,6 +497,43 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
 	}
 
+	// Clear and Tag = null remove a damaged keys atom too: no item is left that could use it, and
+	// ffmpeg cannot open a file whose key size is below the 8 bytes of its size and namespace
+	// (QTFF Metadata Item Keys atom). The corpus files A-ks0 and A-ks4 have these two shapes.
+	[TestMethod]
+	[DataRow (0, false, "clear")]
+	[DataRow (0, false, "null")]
+	[DataRow (4, false, "clear")]
+	[DataRow (4, false, "null")]
+	[DataRow (0, true, "clear")]
+	[DataRow (4, true, "null")]
+	[DataRow (4, false, "clear-then-set")]
+	public void DamagedKeys_AreRemovedByClearAndNull (int keySize, bool inMovie, string operation)
+	{
+		byte[] keysPayload = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, (byte)keySize, (byte)'m', (byte)'d', (byte)'t', (byte)'a'];
+		var keysBox = TestBuilders.Mp4.CreateBox ("keys", keysPayload);
+		var item = TestBuilders.Mp4.CreateMdtaItem (1, "Old");
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", keysPayload, [item], inMovie, udtaExtra: null);
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual (1, Count (file.Render (data).ToArray (), keysBox), "an unedited save keeps it");
+
+		if (operation == "null") {
+			file.Tag = null;
+		} else {
+			file.Tag!.Clear ();
+			if (operation == "clear-then-set")
+				file.Title = "New";
+		}
+
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, keysBox));
+		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("keys"u8));
+		Assert.AreEqual (0, Count (rendered, item));
+		var reread = Mp4File.Read (rendered);
+		Assert.IsTrue (reread.IsSuccess, reread.Error);
+		Assert.AreEqual (operation == "clear-then-set" ? "New" : null, reread.File!.Title);
+	}
+
 	[TestMethod]
 	public void MissingKeysAtom_NamesNoItem ()
 	{

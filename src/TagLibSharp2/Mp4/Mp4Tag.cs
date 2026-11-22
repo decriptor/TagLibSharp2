@@ -69,6 +69,7 @@ public sealed class Mp4Tag : Tag
 	// Set when the ilst belongs to a QuickTime meta whose handler is "mdta". Items are then typed
 	// by key index, so a field remembers the key it was read from and a new field gets a key.
 	Mp4QuickTimeKeys? _keys;
+	bool _cleared;
 	readonly Dictionary<string, uint> _keyIndexByField = new (StringComparer.Ordinal);
 
 	// Items a field was read from when they are kept byte for byte: every item of an "mdta" meta
@@ -102,6 +103,11 @@ public sealed class Mp4Tag : Tag
 	/// Makes this tag render its ilst as items typed by key index.
 	/// </summary>
 	internal void UseQuickTimeKeys (Mp4QuickTimeKeys keys) => _keys = keys;
+
+	/// <summary>
+	/// True once the tag has been cleared, so a save drops a keys atom the tag could not read.
+	/// </summary>
+	internal bool DropsUnreadKeys => _cleared;
 
 	/// <inheritdoc/>
 	public override string? Title {
@@ -935,10 +941,13 @@ public sealed class Mp4Tag : Tag
 	/// Removes all metadata the tag holds: every field, every item it was read from, and every item
 	/// it does not map, in both metas. That includes unknown iTunes atoms (such as an iTunes Store
 	/// purchase's account and IDs) and Apple's make, model, location and creation date keys, whose
-	/// keys go too. Nothing the audio needs to play is in a tag, so nothing is kept.
+	/// keys go too, as does a keys atom that could not be read. It also removes the iTunes gapless
+	/// info (iTunSMPB, <see cref="GaplessInfo"/>): a file without an edit list then has no record
+	/// of its encoder priming and padding, and players that rely on it play those samples.
 	/// </remarks>
 	public override void Clear ()
 	{
+		_cleared = true;
 		_atoms.Clear ();
 		_pictures.Clear ();
 		_freeform.Clear ();
