@@ -464,6 +464,57 @@ public class Mp4PreservationTests
 		Assert.AreEqual ("New", Mp4File.Read (rendered.Span).File!.Title);
 	}
 
+	// A free padding box anywhere in moov (here directly in moov and in trak) goes back as its
+	// original bytes, not rebuilt from what its zeros parse as.
+	[TestMethod]
+	[DataRow ("moov")]
+	[DataRow ("trak")]
+	public void FreePaddingInMovie_IsKeptByteForByte (string parent)
+	{
+		var padding = TestBuilders.Mp4.CreateBox ("free", new byte[64]);
+		var data = InsertChild (TestBuilders.Mp4.CreateWithIlstAtoms (TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("T"))), parent, padding);
+		var file = Mp4File.Read (data).File!;
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Title = "New";
+		Assert.AreEqual (1, Count (file.Render (data).ToArray (), padding));
+	}
+
+	// Inserts a box as the first child of the first box of that type (moov, or trak inside it),
+	// growing every enclosing box.
+	static byte[] InsertChild (byte[] file, string parent, byte[] child)
+	{
+		var bytes = new List<byte> (file);
+		var path = parent == "trak" ? new[] { "moov", "trak" } : new[] { "moov" };
+		var starts = new List<int> ();
+		var offset = 0;
+		var end = bytes.Count;
+		foreach (var type in path) {
+			while (offset + 8 <= end) {
+				var size = (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+				if (Encoding.Latin1.GetString ([bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]]) == type) {
+					starts.Add (offset);
+					end = offset + size;
+					offset += 8;
+					break;
+				}
+
+				offset += size;
+			}
+		}
+
+		bytes.InsertRange (offset, child);
+		foreach (var start in starts) {
+			var size = ((bytes[start] << 24) | (bytes[start + 1] << 16) | (bytes[start + 2] << 8) | bytes[start + 3]) + child.Length;
+			bytes[start] = (byte)(size >> 24);
+			bytes[start + 1] = (byte)(size >> 16);
+			bytes[start + 2] = (byte)(size >> 8);
+			bytes[start + 3] = (byte)size;
+		}
+
+		return [.. bytes];
+	}
+
 	static TimeSpan CpuTimeOfReads (byte[] file, int reads)
 	{
 		GC.Collect ();

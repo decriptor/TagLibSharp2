@@ -1022,7 +1022,7 @@ public sealed class Mp4Tag : Tag
 			return;
 
 		_atoms[atomId] = value;
-		TookValue (atomId, rank);
+		TookValue (atomId, rank, movie);
 	}
 
 	internal void AddSourceFreeform (string mean, string name, List<Mp4DataAtom>? value, BinaryData box, uint keyIndex, Mp4SourceRank rank, bool movie)
@@ -1037,7 +1037,7 @@ public sealed class Mp4Tag : Tag
 		}
 
 		_freeformByKey.Add ((mean, name), _freeform.AddLast (new FreeformField (mean, name, value)));
-		TookValue (id, rank);
+		TookValue (id, rank, movie);
 	}
 
 	internal void AddSourcePictures (Mp4Picture[]? value, BinaryData box, uint keyIndex, Mp4SourceRank rank, bool movie)
@@ -1048,7 +1048,7 @@ public sealed class Mp4Tag : Tag
 
 		_pictures.Clear ();
 		_pictures.AddRange (value);
-		TookValue (id, rank);
+		TookValue (id, rank, movie);
 	}
 
 	bool AddSource (string fieldId, BinaryData box, uint keyIndex, bool movie)
@@ -1090,7 +1090,7 @@ public sealed class Mp4Tag : Tag
 		var current = _valueRank.TryGetValue (fieldId, out var known) ? known : Mp4SourceRank.Atom;
 		var takes = rank switch {
 			Mp4SourceRank.Atom => current <= Mp4SourceRank.Atom,
-			Mp4SourceRank.Movie => current < Mp4SourceRank.Movie,
+			Mp4SourceRank.MovieAtom or Mp4SourceRank.MovieKeyed => current < rank,
 			_ => false
 		};
 
@@ -1100,12 +1100,14 @@ public sealed class Mp4Tag : Tag
 		return takes;
 	}
 
-	void TookValue (string fieldId, Mp4SourceRank rank)
+	void TookValue (string fieldId, Mp4SourceRank rank, bool movie)
 	{
 		_valueRank[fieldId] = rank;
 		_valueFromSources.Add (fieldId);
-		if (rank == Mp4SourceRank.Movie)
+		if (movie)
 			_movieFields.Add (fieldId);
+		else
+			_movieFields.Remove (fieldId);
 	}
 
 	void KeepCurrentValue (string fieldId)

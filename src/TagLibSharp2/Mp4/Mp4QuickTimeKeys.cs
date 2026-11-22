@@ -24,17 +24,23 @@ internal enum Mp4MetaPlacement
 /// </summary>
 internal enum Mp4SourceRank
 {
-	/// <summary>A keyed item.</summary>
+	/// <summary>A keyed item in udta/meta, where ffmpeg writes keys.</summary>
 	Keyed = 1,
 
-	/// <summary>An iTunes atom, which lenient writers such as mutagen add beside keyed items.</summary>
+	/// <summary>
+	/// An iTunes atom in udta/meta, which lenient writers such as mutagen add beside keyed items.
+	/// It is the newer edit, and it is what AVFoundation's common title shows for udta/meta.
+	/// </summary>
 	Atom = 2,
 
+	/// <summary>An iTunes atom in moov/meta. AVFoundation ignores it there, so a keyed item beats it.</summary>
+	MovieAtom = 3,
+
 	/// <summary>
-	/// An item of the second meta (moov/meta beside udta/meta). QTFF: when user data and metadata
-	/// declare the same information, the metadata takes precedence.
+	/// A keyed item in moov/meta, where QuickTime and Apple devices write keys. QTFF: when user
+	/// data and metadata declare the same information, the metadata takes precedence.
 	/// </summary>
-	Movie = 3
+	MovieKeyed = 4
 }
 
 /// <summary>

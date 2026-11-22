@@ -158,9 +158,11 @@ public class Mp4Box
 	/// <returns>The complete box data including header.</returns>
 	public BinaryData Render ()
 	{
-		// For container boxes, render children first
+		// For container boxes, render children first. Padding (free, skip, wide) is parsed as a
+		// container in case it hides boxes, but is written back as its own bytes: rebuilding it
+		// from what its zeros parse as would change them.
 		BinaryData contentData;
-		if (IsContainer) {
+		if (IsContainer && Type is not ("free" or "skip" or "wide")) {
 			using var childBuilder = new BinaryDataBuilder ();
 			if (HeaderPrefix.Length > 0)
 				childBuilder.Add (HeaderPrefix);
