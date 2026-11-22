@@ -156,4 +156,34 @@ public partial class MatroskaFileTests
 
 		CollectionAssert.AreEqual (original, Save (file, original));
 	}
+
+	[TestMethod]
+	public void SaveChapters_WithATrackFlag_WritesBothAndMovesEveryPosition ()
+	{
+		// One save inserts FlagEnabled into Tracks, which moves what follows, and grows Chapters, which
+		// moves again. The SeekHead, the Cues, and Cluster Position follow both moves (RFC 9559 section 16).
+		var original = Layout (new[] { MatroskaIds.Info, MatroskaIds.Tracks, MatroskaIds.Chapters, MatroskaIds.Cues, MatroskaIds.Cluster },
+			(seekHead, positions) => Concat (
+				seekHead,
+				Master (0x1549A966, Element (0x7BA9, "Both"u8)),
+				Master (0x1654AE6B, AudioEntry (1, 22050)),
+				ChaptersElement (EditionEntry (Atom (1, 0, Second, Display ("Old")))),
+				CueElement (positions[4]),
+				Master (0x1F43B675, Concat (Element (0xE7, new byte[] { 0 }), Element (0xA7, new byte[] { 0, (byte)positions[4] }), Element (0xA3, ClusterMarker)))));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tracks[0].IsEnabled = false;
+		parsed.Chapters.Editions[0].Chapters[0].Title = "A chapter title long enough not to fit where the old one was";
+
+		var saved = Save (parsed, original);
+
+		AssertMovedCorrectly (original, saved);
+		Assert.IsTrue (TryReadCueClusterPosition (saved, out var cluster, out _));
+		Assert.IsTrue (IsElementAt (saved, cluster, MatroskaIds.Cluster));
+		Assert.IsTrue (saved.AsSpan ().IndexOf (Element (0xA7, new byte[] { (byte)(cluster >> 8), (byte)cluster })) >= 0, $"Cluster Position should be {cluster}");
+		Assert.AreEqual (1, CountOf (saved, ClusterMarker));
+		var again = MatroskaFile.Read (saved).File!;
+		Assert.IsFalse (again.Tracks[0].IsEnabled);
+		Assert.AreEqual ("A chapter title long enough not to fit where the old one was", again.Chapters.Editions[0].Chapters[0].Title);
+		Assert.IsTrue (ReadSeeks (saved).Find (entry => entry.Id == MatroskaIds.Chapters).Position < cluster);
+	}
 }
