@@ -45,6 +45,12 @@ public static class DepthCases
 			"moov/trak/mdia nested in mdia, 64-bit sizes", Mp4TrackLayout),
 		new ("wav-list", MediaFormat.Wav, ".wav",
 			"RIFF LIST nested in LIST INFO", WavLists),
+		new ("avi-info-list", MediaFormat.Avi, ".avi",
+			"RIFF LIST nested in LIST INFO in the first RIFF 'AVI ' form", AviInfoLists),
+		new ("avi-hdrl-list", MediaFormat.Avi, ".avi",
+			"LIST strl nested in LIST strl inside LIST hdrl (AVI RIFF reference, hdrl)", AviHeaderLists),
+		new ("avi-movi-rec", MediaFormat.Avi, ".avi",
+			"LIST rec nested in LIST rec inside LIST movi, saved so movi moves", AviMoviRecords),
 		new ("mp3-id3v2-chap", MediaFormat.Mp3, ".mp3",
 			"ID3v2.4 CHAP embedded in CHAP (ID3v2 Chapter Frame Addendum §3.1)", Id3Chapters),
 		new ("mp3-id3v2-ctoc", MediaFormat.Mp3, ".mp3",
@@ -149,6 +155,47 @@ public static class DepthCases
 		var wav = Nesting.Concat (TestBuilders.Wav.CreateMinimal (), chain);
 		System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian (wav.AsSpan (4), (uint)(wav.Length - 8));
 		return wav;
+	}
+
+	static byte[] AviInfoLists (int depth)
+	{
+		var name = Nesting.Concat ("INAM"u8.ToArray (), [6, 0, 0, 0], "Inner\0"u8.ToArray ());
+		var builder = new TagLibSharp2.Tests.Riff.AviTestBuilder ();
+		builder.Info.Add (("INAM", "Outer"));
+		return AviAppend (builder.Build (), Nesting.RiffListChain ("INFO", depth, name));
+	}
+
+	static byte[] AviHeaderLists (int depth)
+	{
+		var builder = new TagLibSharp2.Tests.Riff.AviTestBuilder ();
+		builder.Info.Add (("INAM", "Outer"));
+		return AviInsertInList (builder.Build (), "LIST hdrl", Nesting.RiffListChain ("strl", depth, "JUNK\0\0\0\0"u8));
+	}
+
+	static byte[] AviMoviRecords (int depth)
+	{
+		var builder = new TagLibSharp2.Tests.Riff.AviTestBuilder ();
+		builder.Info.Add (("INAM", "Outer"));
+		return AviInsertInList (builder.Build (), "LIST movi", Nesting.RiffListChain ("rec ", depth, "01wb\0\0\0\0"u8));
+	}
+
+	/// <summary>Appends <paramref name="chunk"/> to the end of the first RIFF form and fixes its size.</summary>
+	static byte[] AviAppend (byte[] avi, byte[] chunk)
+	{
+		var file = Nesting.Concat (avi, chunk);
+		System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian (file.AsSpan (4), (uint)(file.Length - 8));
+		return file;
+	}
+
+	/// <summary>Puts <paramref name="chunk"/> at the end of the top-level list <paramref name="list"/> and fixes the list and RIFF sizes.</summary>
+	static byte[] AviInsertInList (byte[] avi, string list, byte[] chunk)
+	{
+		var (_, offset, size) = TagLibSharp2.Tests.Riff.AviTestBuilder.TopLevel (avi).First (c => c.Name == list);
+		var end = (int)(offset + 8 + size);
+		var file = Nesting.Concat (avi.AsSpan (0, end).ToArray (), chunk, avi.AsSpan (end).ToArray ());
+		System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian (file.AsSpan ((int)offset + 4), (uint)(size + chunk.Length));
+		System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian (file.AsSpan (4), (uint)(file.Length - 8));
+		return file;
 	}
 
 	static byte[] Id3Chapters (int depth) => Mp3File (Nesting.Id3v2ChapterChain (depth, "Deepest"));
