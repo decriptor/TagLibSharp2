@@ -14,6 +14,7 @@ using TagLibSharp2.Mpeg;
 using TagLibSharp2.Musepack;
 using TagLibSharp2.Ogg;
 using TagLibSharp2.Riff;
+using TagLibSharp2.Tests.Kit;
 using TagLibSharp2.Tests.Mpeg;
 using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
@@ -966,11 +967,10 @@ public class MalformedInputTests
 		var tagged = MpegPsTestBuilder.Concat (tag, program);
 
 		foreach (var data in new[] { program, dvd, elementary, tagged }) {
-			for (var length = 0; length <= data.Length; length++) {
-				var slice = data.AsSpan (0, length);
+			Hostile.EveryTruncation (data, slice => {
 				_ = MpegPsFile.Read (slice);
-				_ = MediaFile.ReadFromData (slice.ToArray (), "clip.mpg");
-			}
+				_ = MediaFile.ReadFromData (slice, "clip.mpg");
+			});
 		}
 	}
 
@@ -983,15 +983,15 @@ public class MalformedInputTests
 			VideoFrameBytes = 16,
 			AudioKind = MpegPsTestBuilder.Audio.Lpcm
 		});
-		foreach (var value in new byte[] { 0x00, 0x01, 0xBA, 0xFF }) {
-			for (var i = 0; i < original.Length; i++) {
-				var data = (byte[])original.Clone ();
-				data[i] = value;
-				var result = MpegPsFile.Read (data);
-				if (result.IsSuccess)
-					_ = result.File!.Render (data);
-			}
+		static void ReadAndRender (byte[] data)
+		{
+			var result = MpegPsFile.Read (data);
+			if (result.IsSuccess)
+				_ = result.File!.Render (data);
 		}
+
+		ReadAndRender (original);
+		Hostile.ByteFlips (original, ReadAndRender, values: [0x00, 0x01, 0xBA, 0xFF]);
 	}
 
 	[TestMethod]

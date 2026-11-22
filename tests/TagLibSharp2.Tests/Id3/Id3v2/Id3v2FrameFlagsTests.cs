@@ -3,7 +3,9 @@
 
 using System.IO.Compression;
 using System.Text;
+using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Tests.Kit;
 
 namespace TagLibSharp2.Tests.Id3.Id3v2;
 
@@ -325,9 +327,8 @@ public class Id3v2FrameFlagsTests
 		var data = CreateTagWithFrame (TestConstants.Id3v2.Version4, frame);
 
 		Id3v2Tag.Read (data);
-		var before = GC.GetAllocatedBytesForCurrentThread ();
-		var result = Id3v2Tag.Read (data);
-		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+		TagReadResult<Id3v2Tag> result = default;
+		var allocated = Bounds.AllocatedBytes (() => result = Id3v2Tag.Read (data));
 
 		Assert.IsTrue (result.IsSuccess);
 		Assert.IsNull (result.Tag!.Title);

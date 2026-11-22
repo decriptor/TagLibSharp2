@@ -5,6 +5,7 @@ using TagLibSharp2.Aiff;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Tests.Core;
+using TagLibSharp2.Tests.Kit;
 
 namespace TagLibSharp2.Tests.Aiff;
 
@@ -519,15 +520,17 @@ public partial class AiffAnnotationTests
 		chunks.Add (Comm ());
 		var data = Form ([.. chunks]);
 
-		var before = GC.GetAllocatedBytesForCurrentThread ();
-		var file = ReadAiff (data);
-		var comment = file.Tag!.Comment!;
-		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+		AiffFile? file = null;
+		var comment = "";
+		var allocated = Bounds.AllocatedBytes (() => {
+			file = ReadAiff (data);
+			comment = file.Tag!.Comment!;
+		});
 
 		Assert.IsTrue (allocated < 128L * data.Length, $"{allocated:N0} bytes allocated reading {data.Length:N0} bytes");
 		Assert.IsTrue (comment.StartsWith (" Creator: Logic\n\u00D6\n", StringComparison.Ordinal));
 		Assert.AreEqual (extra, comment.Count (ch => ch == 'x'));
-		Assert.AreEqual (TagTypes.RiffInfo, file.Tag.TagType);
+		Assert.AreEqual (TagTypes.RiffInfo, file!.Tag!.TagType);
 	}
 
 	[TestMethod]
