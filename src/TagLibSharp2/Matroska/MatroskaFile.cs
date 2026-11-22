@@ -412,8 +412,9 @@ public sealed class MatroskaFile : IMediaFile
 			: BinaryData.Empty;
 
 	/// <summary>
-	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the attachments (when the
-	/// pictures were set) and the tags. With no track set, the container goes straight to that rewrite.
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the edited attachments
+	/// (when the pictures were set), chapters, and tags. With no track set, or every set track already
+	/// holding that value, the container goes straight to that rewrite.
 	/// Any refusal leaves <paramref name="rewritten"/> empty and names the reason in <paramref name="error"/>.
 	/// </summary>
 	bool TryRender (ReadOnlySpan<byte> originalData, out byte[] rewritten, out string error)
