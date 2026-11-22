@@ -1802,6 +1802,23 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
+	public void Save_SetChapters_TheListAlreadyRead_StillLeavesOneTitleTrack ()
+	{
+		// The first title track already holds the list, but the German one still shows its own titles. Setting
+		// the list the file reads is then not a no-op: it leaves the one list everywhere.
+		var original = ExtraTextTrackShape ("title");
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+		file.Chapters = [.. file.Chapters];
+
+		var saved = Save (file, original);
+
+		CollectionAssert.AreEqual (new uint[] { 1, 2 }, Mp4ChapterTestBuilder.TrackIds (Mp4ChapterTestBuilder.Moov (saved)));
+		var again = Mp4ChapterTestBuilder.ReadFile (saved);
+		again.Chapters = [.. again.Chapters];
+		CollectionAssert.AreEqual (saved, Save (again, saved), "with one title track left, the same list is a no-op again");
+	}
+
+	[TestMethod]
 	public void Save_SetChapters_UrlTrackWithHref_IsKept ()
 	{
 		// Apple enhanced podcasts keep chapter links in a text track whose samples carry an href modifier.

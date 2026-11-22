@@ -1126,6 +1126,22 @@ internal static class Mp4ChapterCodec
 		return removedTraks.Steps;
 	}
 
+	/// <summary>
+	/// True when a chap reference names a title track after the first one (see <see cref="ClassifyTextTrack"/>):
+	/// a set would remove it, so setting the list the file already reads is not a no-op there.
+	/// </summary>
+	public static bool HasExtraTitleTracks (Mp4Box moov, ReadOnlySpan<byte> file)
+	{
+		var tracks = FindChapterTracks (moov);
+		var budget = new StepBudget (file.Length);
+		for (var i = 1; i < tracks.Count; i++) {
+			if (ClassifyTextTrack (tracks[i].Trak, file, budget) == TextTrackKind.Title)
+				return true;
+		}
+
+		return false;
+	}
+
 	internal enum TextTrackKind
 	{
 		/// <summary>Every sample read, none with an href: chapter titles.</summary>
