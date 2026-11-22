@@ -80,6 +80,37 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	public void Save_InsertAtOffsetZero_EmptyValuesThatNameIt_Move ()
+	{
+		// No SeekHead and the Cluster first, at Segment offset 0. Its empty Position and the empty
+		// CueClusterPosition are both 0, so both name that Cluster. New Tags go before the first
+		// Cluster (RFC 9559 section 25.3.4), so offset 0 moves: the CueClusterPosition is written
+		// wider, and the Position, which cannot widen in place, is voided as an optional element.
+		var cluster = Master (MatroskaIds.Cluster, Concat (Element (0xE7, new byte[] { 0 }), new byte[] { 0xA7, 0x80 }, Element (0xA3, new byte[] { 0x81, 0, 0, 0x80, 0xAA })));
+		var cues = Master (MatroskaIds.Cues, Master (0xBB, Concat (Element (0xB3, new byte[] { 0 }),
+			Master (0xB7, Concat (Element (0xF7, new byte[] { 1 }), EmptyCueClusterPosition)))));
+		var info = Master (0x1549A966, Element (0x7BA9, "Zero"u8));
+		var original = FileWith (cluster, cues, info);
+		Assert.IsTrue (IsElementAt (original, 0, MatroskaIds.Cluster));
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Title = "Moved from zero";
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/zero.mkv", original);
+
+		var saved = parsed.SaveToFile ("/zero.mkv", original, fs);
+
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var bytes = fs.ReadAllBytes ("/zero.mkv");
+		Assert.AreEqual ("Moved from zero", MatroskaFile.Read (bytes).File!.Tag.Title);
+		var cue = CueValues (bytes)[0xF1].Single ();
+		Assert.IsTrue (cue > 0, "the CueClusterPosition followed the Cluster");
+		Assert.IsTrue (IsElementAt (bytes, cue, MatroskaIds.Cluster), FormattableString.Invariant ($"CueClusterPosition {cue} names the Cluster"));
+		Assert.AreEqual (0, CountOf (bytes, new byte[] { 0xA7, 0x80 }), "the empty Position no longer claims offset 0");
+		Assert.AreEqual (1, CountOf (bytes, Element (0xA3, new byte[] { 0x81, 0, 0, 0x80, 0xAA })), "the block is kept");
+		Assert.IsTrue (EveryCrcMatches (bytes));
+	}
+
+	[TestMethod]
 	public void Save_NewAttachments_MoveThatCannotUpdateTheCues_NamesTheCues ()
 	{
 		// The SeekHead has no room, so the Attachments must move after it, and the move must update
