@@ -1703,7 +1703,7 @@ public class Mp4ChapterTests
 	/// The chapter-track fixture (A: audio, chap [2]; T: titles, ID 2, English) plus a third trak X with ID 3
 	/// that A's chap also names. title: X is T in German, with the same samples. url: X's three samples are
 	/// URLs that carry an href modifier (3GPP TS 26.245 §5.17), in an mdat before moov. unreadable: X's chunk
-	/// lies past the end of the file.
+	/// lies past the end of the file. empty: X has no samples in moov.
 	/// </summary>
 	static byte[] ExtraTextTrackShape (string kind)
 	{
@@ -1737,6 +1737,9 @@ public class Mp4ChapterTests
 
 			case "unreadable":
 				x = WithSamples (x, (uint)(data.Length + 1000), [10, 10, 10]);
+				break;
+			case "empty":
+				x = WithSamples (x, 0, []);
 				break;
 			default:
 				throw new ArgumentException (kind);
@@ -1816,10 +1819,13 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
-	public void Save_SetChapters_ExtraTextTrackWithUnreadableSamples_IsKept ()
+	[DataRow ("unreadable")]
+	[DataRow ("empty")]
+	public void Save_SetChapters_ExtraTextTrackThatCannotBeTold_IsKept (string kind)
 	{
-		// A text track whose samples lie outside the file cannot be told from a URL track, so it stays.
-		var saved = EditChapters (ExtraTextTrackShape ("unreadable"), 1);
+		// A text track whose samples lie outside the file, or that has none in moov, cannot be told from a URL
+		// track, so it stays.
+		var saved = EditChapters (ExtraTextTrackShape (kind), 1);
 		var moov = Mp4ChapterTestBuilder.Moov (saved);
 
 		CollectionAssert.AreEqual (new uint[] { 1, 2, 3 }, Mp4ChapterTestBuilder.TrackIds (moov));
@@ -1827,10 +1833,14 @@ public class Mp4ChapterTests
 	}
 
 	[TestMethod]
-	public void Save_SetChapters_ExtraTitleTrackWithFragmentSamples_IsRefused ()
+	[DataRow ("title")]
+	[DataRow ("empty")]
+	public void Save_SetChapters_ExtraTextTrackWithFragmentSamples_IsRefused (string kind)
 	{
 		// Removing the German title track would leave its fragment samples as a stale list, as a clear would.
-		var shape = ExtraTextTrackShape ("title");
+		// A track with no samples in moov (empty) may hold its titles in the fragments, so only a proven URL
+		// track lets the set go ahead.
+		var shape = ExtraTextTrackShape (kind);
 		var tfhd = Mp4TestBuilder.CreateFullBox ("tfhd", 0, 0, [0, 0, 0, 3]);
 		var trun = Mp4TestBuilder.CreateFullBox ("trun", 0, 0, [0, 0, 0, 0]);
 		byte[] data = [.. shape, .. Mp4TestBuilder.CreateBox ("moof", Mp4TestBuilder.CreateBox ("traf", [.. tfhd, .. trun]))];
