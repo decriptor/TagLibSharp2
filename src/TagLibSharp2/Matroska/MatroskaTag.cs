@@ -1354,6 +1354,12 @@ internal sealed class SimpleTag
 
 	public List<SimpleTag> Children { get; } = new ();
 
+	/// <summary>
+	/// Nested SimpleTags below <see cref="MatroskaFile.MaxSimpleTagDepth"/>, as their stored bytes.
+	/// They are written back after <see cref="Children"/>, so the nesting is kept without being parsed.
+	/// </summary>
+	public List<byte[]> KeptChildren { get; } = new ();
+
 	public BinaryData Render ()
 	{
 		using var body = new BinaryDataBuilder ();
@@ -1370,6 +1376,8 @@ internal sealed class SimpleTag
 			body.Add (EbmlWriter.Master (MatroskaIds.TagBinary, Binary));
 		foreach (var child in Children)
 			body.Add (child.Render ());
+		foreach (var child in KeptChildren)
+			body.Add (child);
 		return EbmlWriter.Master (MatroskaIds.SimpleTag, body.ToBinaryData ().Span);
 	}
 }
