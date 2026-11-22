@@ -961,9 +961,10 @@ public sealed class Mp4Tag : Tag
 
 		using var builder = new BinaryDataBuilder ();
 
-		// A field whose value still comes from kept items, or that lives in a second meta, is not written here.
+		// A field whose value still comes from kept items is not written here. A field set after it
+		// was read from a second meta is written both there and here, so every reader shows it.
 		foreach (var field in ValuedFields ()) {
-			if (!_valueFromSources.Contains (field.Id) && !_movieFields.Contains (field.Id))
+			if (!_valueFromSources.Contains (field.Id))
 				builder.Add (field.Itunes ());
 		}
 
@@ -1001,9 +1002,74 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <summary>
-	/// The second meta's keys after a render, or null when they did not change or it has none.
+	/// The second meta's keys, including any a render added, or null when it has no keys atom.
 	/// </summary>
 	internal BinaryData? RenderMovieKeys () => _movieKeys?.Render ();
+
+	/// <summary>
+	/// The second meta's items that name no field, as they were. Used when a different tag
+	/// replaces this one: its values are the only ones written.
+	/// </summary>
+	internal BinaryData RenderMovieItemsWithoutFields ()
+	{
+		var fieldItems = new HashSet<int> ();
+		foreach (var list in _sources.Values) {
+			foreach (var (movie, index) in list) {
+				if (movie)
+					fieldItems.Add (index);
+			}
+		}
+
+		using var builder = new BinaryDataBuilder ();
+		for (var i = 0; i < _movieItems.Count; i++) {
+			if (_movieItems[i] is { } item && !fieldItems.Contains (i))
+				builder.Add (item);
+		}
+
+		return builder.ToBinaryData ();
+	}
+
+	/// <summary>
+	/// A copy holding this tag's values and its kept iTunes atoms, without where they were read
+	/// from (keys, kept items, a second meta). Saved into another file or in place of the tag
+	/// that was read, it is written as a fresh tag.
+	/// </summary>
+	internal Mp4Tag Detached ()
+	{
+		var copy = new Mp4Tag ();
+		foreach (var field in ValuedFields ()) {
+			switch (field.Field.Kind) {
+				case Mp4KeyedKind.Atom:
+					copy.SetAtoms (field.Id, new List<Mp4DataAtom> (field.Atoms));
+					break;
+				case Mp4KeyedKind.Freeform:
+					copy.SetFreeformAtoms (field.Field.Mean!, field.Field.Name!, new List<Mp4DataAtom> (field.Atoms));
+					break;
+				default:
+					copy.Pictures = [.. _pictures];
+					break;
+			}
+		}
+
+		// An item typed by a key index means nothing without those keys, so only an iTunes ilst's
+		// kept atoms come along, and not the ones a field was read from.
+		if (_keys is null) {
+			var fieldItems = new HashSet<int> ();
+			foreach (var list in _sources.Values) {
+				foreach (var (movie, index) in list) {
+					if (!movie)
+						fieldItems.Add (index);
+				}
+			}
+
+			for (var i = 0; i < _preservedAtoms.Count; i++) {
+				if (_preservedAtoms[i] is { } kept && !fieldItems.Contains (i))
+					copy.PreserveIlstAtom (kept.Box);
+			}
+		}
+
+		return copy;
+	}
 
 	/// <summary>
 	/// Keeps an item of the second meta that names no field.
@@ -1196,7 +1262,7 @@ public sealed class Mp4Tag : Tag
 		var items = new List<(long Order, BinaryData Box)> ();
 		var appended = 0L;
 		foreach (var field in ValuedFields ()) {
-			if (_valueFromSources.Contains (field.Id) || _movieFields.Contains (field.Id) != movie)
+			if (_valueFromSources.Contains (field.Id) || (movie && !_movieFields.Contains (field.Id)))
 				continue;
 
 			BinaryData box;

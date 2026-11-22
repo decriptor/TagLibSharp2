@@ -48,6 +48,7 @@ public sealed class Mp4File : IMediaFile
 	Mp4File (Mp4Tag? tag, AudioProperties properties, Mp4AudioCodec audioCodec)
 	{
 		Tag = tag;
+		_readTag = tag;
 		Properties = properties;
 		AudioCodec = audioCodec;
 	}
@@ -60,6 +61,10 @@ public sealed class Mp4File : IMediaFile
 	/// Will be automatically created when setting any tag property.
 	/// </remarks>
 	public Mp4Tag? Tag { get; set; }
+
+	// The tag as read. A different tag assigned to Tag replaces the whole tag on save: it is
+	// written as plain values, and the fields of a second meta (moov/meta) the read tag knew go.
+	readonly Mp4Tag? _readTag;
 
 	/// <summary>
 	/// Gets the audio properties (duration, bitrate, sample rate, etc.).
@@ -1136,10 +1141,13 @@ public sealed class Mp4File : IMediaFile
 
 	static void ReadMovieMeta (Mp4Tag tag, Mp4Box ilst, Mp4Box meta)
 	{
+		// Only an "mdta" meta is QuickTime metadata with precedence over user data. An iTunes
+		// (mdir) ilst in moov/meta is read by no common reader beside udta/meta, so it is kept as
+		// it is and names no field.
 		var keys = Mp4QuickTimeKeys.Read (meta);
 		tag.UseMovieMeta (keys);
 		foreach (var item in ilst.Children) {
-			if (!ReadSourceItem (item, keys, tag, movie: true, inMovieMeta: true))
+			if (keys is null || !ReadSourceItem (item, keys, tag, movie: true, inMovieMeta: true))
 				tag.AddMovieItem (item.Render ());
 		}
 	}
@@ -2204,7 +2212,9 @@ public sealed class Mp4File : IMediaFile
 
 		// A tag read from moov/meta is written back there, and udta is copied as it was.
 		var inMovieMeta = MetaPlacement == Mp4MetaPlacement.Movie;
-		var newUdta = inMovieMeta ? BinaryData.Empty : BuildUdtaBox (originalMoov);
+		var tag = Tag is null || ReferenceEquals (Tag, _readTag) ? Tag : Tag.Detached ();
+		var movieSource = !inMovieMeta && _readTag?.HasMovieMeta == true ? _readTag : null;
+		var newUdta = inMovieMeta ? BinaryData.Empty : BuildUdtaBox (originalMoov, tag);
 		var replacedMeta = false;
 		var emittedChild = false;
 		foreach (var child in originalMoov.Children) {
@@ -2216,9 +2226,11 @@ public sealed class Mp4File : IMediaFile
 				continue;
 			}
 
-			if (!replacedMeta && child.Type == "meta" && (inMovieMeta || Tag?.HasMovieMeta == true)) {
+			if (!replacedMeta && child.Type == "meta" && (inMovieMeta || movieSource is not null)) {
 				replacedMeta = true;
-				var (ilst, keys) = inMovieMeta ? RenderTag (child) : (Tag!.RenderMovieIlst (), Tag.RenderMovieKeys ());
+				var (ilst, keys) = inMovieMeta ? RenderTag (child, tag)
+					: ReferenceEquals (tag, movieSource) ? (movieSource!.RenderMovieIlst (), movieSource.RenderMovieKeys ())
+					: (movieSource!.RenderMovieItemsWithoutFields (), (BinaryData?)null);
 				var rebuilt = RebuildMeta (child, ilst, keys);
 				if (!rebuilt.IsEmpty)
 					moovContent.Add (rebuilt);
@@ -2319,10 +2331,10 @@ public sealed class Mp4File : IMediaFile
 	/// Builds moov/udta. An existing udta keeps every child except meta, and meta keeps
 	/// every child except ilst. Chapters and the meta version/flags survive a tag edit.
 	/// </summary>
-	BinaryData BuildUdtaBox (Mp4Box originalMoov)
+	static BinaryData BuildUdtaBox (Mp4Box originalMoov, Mp4Tag? tag)
 	{
 		var original = originalMoov.FindChild ("udta");
-		var (ilstContent, keysContent) = RenderTag (original?.FindChild ("meta"));
+		var (ilstContent, keysContent) = RenderTag (original?.FindChild ("meta"), tag);
 		if (original is null) {
 			if (ilstContent.IsEmpty)
 				return BinaryData.Empty;
@@ -2336,16 +2348,16 @@ public sealed class Mp4File : IMediaFile
 	/// Renders the ilst, and the keys when the target meta's handler is "mdta". A tag that was not
 	/// read from such a meta takes its keys, so no iTunes atom is written into it.
 	/// </summary>
-	(BinaryData Ilst, BinaryData? Keys) RenderTag (Mp4Box? targetMeta)
+	static (BinaryData Ilst, BinaryData? Keys) RenderTag (Mp4Box? targetMeta, Mp4Tag? tag)
 	{
-		if (Tag is null)
+		if (tag is null)
 			return (BinaryData.Empty, null);
 
-		if (Tag.QuickTimeKeys is null && targetMeta is not null && Mp4QuickTimeKeys.Read (targetMeta) is { } keys)
-			Tag.UseQuickTimeKeys (keys);
+		if (tag.QuickTimeKeys is null && targetMeta is not null && Mp4QuickTimeKeys.Read (targetMeta) is { } keys)
+			tag.UseQuickTimeKeys (keys);
 
-		var ilst = Tag.Render ();
-		return (ilst, Tag.QuickTimeKeys?.Render ());
+		var ilst = tag.Render ();
+		return (ilst, tag.QuickTimeKeys?.Render ());
 	}
 
 	static BinaryData RebuildUdta (Mp4Box udta, BinaryData ilstContent, BinaryData? keysContent)
