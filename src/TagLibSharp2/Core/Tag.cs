@@ -151,7 +151,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// <para>This returns the first performer. For multiple performers, use <see cref="Performers"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.</para>
+	/// In ID3v2, APE, Vorbis Comments, and ASF, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.</para>
 	/// <para>Format-specific limitations:</para>
 	/// <list type="bullet">
 	/// <item><description>ID3v1: Truncated to 30 bytes. Latin-1 encoding only (Unicode characters are lost).</description></item>
@@ -248,7 +248,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// <para>This returns the first genre. For multiple genres, use <see cref="Genres"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.</para>
+	/// In ID3v2, APE, Vorbis Comments, and ASF, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.</para>
 	/// <para>Format-specific limitations:</para>
 	/// <list type="bullet">
 	/// <item><description>ID3v1: Single genre only, must match one of 192 predefined genres. Custom genres not supported.</description></item>
@@ -296,7 +296,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// This returns the first album artist. For multiple album artists, use <see cref="AlbumArtists"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.
+	/// In ID3v2, APE, Vorbis Comments, and ASF, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </remarks>
 	public virtual string? AlbumArtist { get => null; set { } }
@@ -336,7 +336,7 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// This returns the first composer. For multiple composers, use <see cref="Composers"/>.
-	/// In ID3v2, APE, and Vorbis Comments, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.
+	/// In ID3v2, APE, Vorbis Comments, and ASF, writing back the value read keeps the other names; any other value, and any value <see cref="CopyTo"/> writes, replaces the list.
 	/// Not all tag formats support this field. Default implementation returns null.
 	/// </remarks>
 	public virtual string? Composer { get => null; set { } }
@@ -836,6 +836,10 @@ public abstract class Tag
 			return q78 / 256.0;
 		}
 		set {
+			// Writing back the gain the getter read is a no-op. Null always clears, text the getter cannot parse
+			// included, and a copy always writes.
+			if (!IsCopying && value.HasValue && value == R128TrackGainDb)
+				return;
 			R128TrackGain = value.HasValue
 				? ClampToQ78 (value.Value).ToString (CultureInfo.InvariantCulture)
 				: null;
@@ -863,6 +867,10 @@ public abstract class Tag
 			return q78 / 256.0;
 		}
 		set {
+			// Writing back the gain the getter read is a no-op. Null always clears, text the getter cannot parse
+			// included, and a copy always writes.
+			if (!IsCopying && value.HasValue && value == R128AlbumGainDb)
+				return;
 			R128AlbumGain = value.HasValue
 				? ClampToQ78 (value.Value).ToString (CultureInfo.InvariantCulture)
 				: null;
@@ -1132,6 +1140,132 @@ public abstract class Tag
 		string.IsNullOrEmpty (Comment) &&
 		string.IsNullOrEmpty (Genre) &&
 		Track is null;
+
+	/// <summary>
+	/// Gets a value indicating whether this tag can store a field under a name the caller chooses.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// When this is false, <see cref="GetCustomField"/> returns no values and <see cref="SetCustomField"/>
+	/// and <see cref="RemoveCustomField"/> return false and change nothing. ID3v1 is such a tag: its
+	/// 128 bytes have no room for a name.
+	/// </para>
+	/// <para>
+	/// When this is true, the format still has its own rules for names and values, so
+	/// <see cref="SetCustomField"/> can return false for one name and true for another.
+	/// </para>
+	/// </remarks>
+	public virtual bool SupportsCustomFields => false;
+
+	/// <summary>
+	/// Gets every value stored under a field name in this tag's native storage.
+	/// </summary>
+	/// <param name="name">The field name. How it is matched depends on the format (see remarks).</param>
+	/// <returns>The values in file order. Empty when the tag holds no text under that name.</returns>
+	/// <exception cref="ArgumentNullException"><paramref name="name"/> is null.</exception>
+	/// <remarks>
+	/// <para>
+	/// The name addresses the format's own key space, so a name that a mapped property also uses reads the
+	/// same data as that property. For example, <c>"TITLE"</c> on a Vorbis comment is the
+	/// <see cref="Title"/> field.
+	/// </para>
+	/// <list type="table">
+	/// <listheader><term>Format</term><description>Where the field lives</description></listheader>
+	/// <item><term>Vorbis comment (FLAC, Ogg)</term><description>A <c>NAME=value</c> field. Names are
+	/// case-insensitive. Each value is its own field.</description></item>
+	/// <item><term>APEv2</term><description>A text item. Keys are case-insensitive. Values are
+	/// separated by U+0000.</description></item>
+	/// <item><term>ID3v2</term><description>A <c>TXXX</c> frame whose description is the name. The
+	/// description is matched case-insensitively, as <c>Id3v2Tag.GetUserText</c> matches it. Values are
+	/// separated by U+0000. The name never addresses a standard frame such as <c>TIT2</c>.</description></item>
+	/// <item><term>MP4</term><description>A freeform <c>----</c> atom with mean
+	/// <c>com.apple.iTunes</c> and the name as its <c>name</c>. Matched exactly. Each value is its own
+	/// <c>data</c> atom.</description></item>
+	/// <item><term>ASF</term><description>An Extended Content Description attribute, matched
+	/// case-insensitively; <c>Title</c>, <c>Author</c>, <c>Copyright</c>, <c>Description</c>, and
+	/// <c>Rating</c> are the Content Description fields. That holds the first value, and the others are
+	/// file-level records of the Metadata Library Object, as Windows writes them.</description></item>
+	/// <item><term>Matroska</term><description>A file-level <c>SimpleTag</c> at the level that
+	/// <see cref="Comment"/> uses. Matched exactly. Each value is its own <c>SimpleTag</c>.</description></item>
+	/// <item><term>RIFF INFO</term><description>A chunk whose four-character code is the name. One value.</description></item>
+	/// </list>
+	/// <para>
+	/// A name the format keeps pictures under (see <see cref="SetCustomField"/>) is not a custom field: it reads
+	/// no values and cannot be removed here.
+	/// </para>
+	/// </remarks>
+	public virtual IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return CustomFieldValues.None;
+	}
+
+	/// <summary>
+	/// Replaces every value stored under a field name with <paramref name="values"/>.
+	/// </summary>
+	/// <param name="name">The field name. See <see cref="GetCustomField"/> for where each format stores it.</param>
+	/// <param name="values">
+	/// The values in order. Null and empty values are skipped. When none remain, the field is removed.
+	/// </param>
+	/// <returns>
+	/// True when the tag now holds exactly the remaining values under <paramref name="name"/>.
+	/// False when the tag cannot store them, and then the tag is unchanged.
+	/// </returns>
+	/// <exception cref="ArgumentNullException"><paramref name="name"/> is null.</exception>
+	/// <remarks>
+	/// <para>The call returns false and stores nothing when:</para>
+	/// <list type="bullet">
+	/// <item><description><see cref="SupportsCustomFields"/> is false.</description></item>
+	/// <item><description>The name is empty or contains U+0000, or a value contains U+0000.</description></item>
+	/// <item><description>The name breaks the format's rules. Vorbis names are ASCII 0x20 to 0x7D without
+	/// <c>=</c>. APE keys are 2 to 255 ASCII characters from 0x20 to 0x7E and are not <c>ID3</c>, <c>TAG</c>,
+	/// <c>OggS</c>, or <c>MP+</c>. RIFF INFO names are four ASCII characters from 0x20 to 0x7E.</description></item>
+	/// <item><description>The name is where the format keeps pictures: <c>METADATA_BLOCK_PICTURE</c> in a
+	/// Vorbis comment, an APE key that starts with <c>Cover Art</c>, or ASF <c>WM/Picture</c>. Use
+	/// <see cref="Pictures"/> instead.</description></item>
+	/// <item><description>The format holds one value under the name and more were given (RIFF
+	/// INFO).</description></item>
+	/// <item><description>The value cannot be encoded: WAV RIFF INFO text outside ISO-8859-1 (AVI INFO takes any
+	/// text, and the save applies the file's CSET), or an ASF name or value longer than its 16-bit length
+	/// field.</description></item>
+	/// <item><description>The ASF file's Metadata or Metadata Library Object could not be parsed, so values
+	/// stored there would survive the write.</description></item>
+	/// </list>
+	/// <para>
+	/// A name that a mapped property also uses is stored in the same place the property reads, not refused
+	/// and not duplicated. A property that parses its text (for example <see cref="Track"/>) then reads the
+	/// new text the way it reads any other file. A property that reads more than that one place can still
+	/// show something else: on Matroska the name is written at the item level, which is the album level
+	/// (50) when the file has only album tags, so <c>"TITLE"</c> there sets <see cref="Album"/>, and
+	/// <see cref="Title"/> prefers the segment title over a <c>TITLE</c> tag below the track level.
+	/// </para>
+	/// <para>
+	/// ID3v2.3 has no multiple-value text. The values are still separated by U+0000 there, as this library
+	/// writes every multiple-value frame; a reader that follows ID3v2.3 strictly shows only the first.
+	/// </para>
+	/// <para>
+	/// A file's <c>Tag</c> that combines several tags (MP3, raw AAC, AVI with an ID3v2 chunk, MPEG program
+	/// streams) writes the values into every tag that can store them and removes the name from a tag that
+	/// cannot, so no tag keeps an older value; it returns false, changing nothing, only when no tag can.
+	/// </para>
+	/// </remarks>
+	public virtual bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return false;
+	}
+
+	/// <summary>
+	/// Removes every value stored under a field name.
+	/// </summary>
+	/// <param name="name">The field name. See <see cref="GetCustomField"/> for how each format matches it.</param>
+	/// <returns>True when the tag held a value under <paramref name="name"/> and no longer does.</returns>
+	/// <exception cref="ArgumentNullException"><paramref name="name"/> is null.</exception>
+	public virtual bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return false;
+	}
 
 	/// <summary>
 	/// Serializes the tag to its binary representation.

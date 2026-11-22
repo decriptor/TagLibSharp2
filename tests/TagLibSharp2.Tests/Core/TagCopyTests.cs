@@ -371,7 +371,7 @@ public class TagCopyTests
 	}
 
 	[TestMethod]
-	public void CopyTo_ApeToMp4AndAsf_KeepsOnlyTheFirstName ()
+	public void CopyTo_ApeToMp4_KeepsOnlyTheFirstName ()
 	{
 		var source = new ApeTag {
 			Performers = ["A", "B"],
@@ -391,18 +391,32 @@ public class TagCopyTests
 		Assert.HasCount (1, mp4.Composers);
 		Assert.AreEqual ("Jazz", mp4.Genre);
 		Assert.HasCount (1, mp4.Genres);
+	}
+
+	[TestMethod]
+	public void CopyTo_ApeToAsf_KeepsEveryName ()
+	{
+		// ASF holds a multi-valued attribute as Windows writes it: the first value in the Content Description or
+		// Extended Content Description, the rest in the Metadata Library (ASF spec rev. 01.20.03 §4.8).
+		var source = new ApeTag {
+			Performers = ["A", "B"],
+			AlbumArtists = ["Ada", "Bea"],
+			Composers = ["Cara", "Dan"],
+			Genres = ["Jazz", "Soul"]
+		};
 
 		var asf = new AsfTag ();
 		source.CopyTo (asf);
+
 		Assert.AreEqual ("A", asf.Artist);
-		Assert.HasCount (1, asf.Performers);
-		Assert.AreEqual ("A", asf.Performers[0]);
+		CollectionAssert.AreEqual (source.Performers, asf.Performers);
 		Assert.AreEqual ("Ada", asf.AlbumArtist);
-		Assert.HasCount (1, asf.AlbumArtists);
+		CollectionAssert.AreEqual (source.AlbumArtists, asf.AlbumArtists);
 		Assert.AreEqual ("Cara", asf.Composer);
-		Assert.HasCount (1, asf.Composers);
+		CollectionAssert.AreEqual (source.Composers, asf.Composers);
 		Assert.AreEqual ("Jazz", asf.Genre);
-		Assert.HasCount (1, asf.Genres);
+		CollectionAssert.AreEqual (source.Genres, asf.Genres);
+		Assert.HasCount (2, asf.Genres);
 	}
 
 	[TestMethod]

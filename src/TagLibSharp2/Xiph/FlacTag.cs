@@ -506,6 +506,43 @@ public sealed class FlacTag : Tag
 		_file.VorbisComment ??= new VorbisComment ("TagLibSharp2");
 
 	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>Reads the VORBIS_COMMENT block (RFC 9639 §8.6).</remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return _file.VorbisComment?.GetCustomField (name) ?? CustomFieldValues.None;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes the VORBIS_COMMENT block (RFC 9639 §8.6). The block is created only when the field is stored,
+	/// so a refused name does not add an empty block to the file.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (_file.VorbisComment is { } existing)
+			return existing.SetCustomField (name, values);
+
+		var created = new VorbisComment ("TagLibSharp2");
+		if (!created.SetCustomField (name, values))
+			return false;
+		if (created.Fields.Count > 0)
+			_file.VorbisComment = created;
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return _file.VorbisComment?.RemoveCustomField (name) ?? false;
+	}
+
+	/// <inheritdoc/>
 #pragma warning disable CA1819 // Properties should not return arrays - Tag API contract
 	public override IPicture[] Pictures {
 		get {

@@ -263,4 +263,15 @@ public class AiffFileRoundTripTests
 		Assert.AreEqual ("-7.25 dB", reloaded.Tag.ReplayGainAlbumGain);
 		Assert.AreEqual ("1.0", reloaded.Tag.ReplayGainAlbumPeak);
 	}
+
+	[TestMethod]
+	public void Id3TagWithOnlyAlbumArtist_IsWritten ()
+	{
+		Assert.IsTrue (AiffFile.TryRead (CreateMinimalAiff (), out var file));
+		file!.Id3v2Tag = new Id3v2Tag { AlbumArtist = "Various" };
+
+		Assert.IsTrue (AiffFile.TryRead (file.Render (), out var reloaded));
+
+		Assert.AreEqual ("Various", reloaded!.Id3v2Tag?.AlbumArtist);
+	}
 }

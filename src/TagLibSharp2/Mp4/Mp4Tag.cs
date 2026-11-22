@@ -937,6 +937,71 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Reads the freeform <c>----</c> field whose <c>mean</c> is <c>com.apple.iTunes</c> and whose <c>name</c>
+	/// equals <paramref name="name"/> exactly, in the iTunes <c>ilst</c> or a QuickTime <c>mdta</c> meta. Each
+	/// <c>data</c> atom of type 1 (UTF-8) or type 0 (implicit, read as UTF-8 as <see cref="Mp4File.GetFreeformTag"/>
+	/// reads it) is one value; other types are not text (Apple, QuickTime File Format, "Well-known types"). The name
+	/// is the whole name: <c>"a:b"</c> is a name with a colon, not a mean and a name. Use
+	/// <see cref="Mp4File.GetFreeformTag"/> for another mean.
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name) || FindFreeform (Mp4AtomMapping.AppleNamespace, name) is not { } field)
+			return CustomFieldValues.None;
+
+		var values = new List<string> (field.Atoms.Count);
+		foreach (var dataAtom in field.Atoms) {
+			if (dataAtom.TypeIndicator is not (Mp4AtomMapping.TypeBinary or Mp4AtomMapping.TypeUtf8))
+				continue;
+			var text = dataAtom.ToUtf8String ();
+			if (!string.IsNullOrEmpty (text))
+				values.Add (text!);
+		}
+		return values;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes one freeform <c>----</c> field with <c>mean</c> <c>com.apple.iTunes</c>, <c>name</c>
+	/// <paramref name="name"/>, and one UTF-8 <c>data</c> atom per value, the layout iTunes uses for its own
+	/// <c>com.apple.iTunes</c> names. It goes where the tag's freeform properties go: the iTunes <c>ilst</c>, or the
+	/// keyed <c>mdta</c> meta the tag was read from, and replaces every item the name was read from.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+
+		var dataAtoms = new List<Mp4DataAtom> (kept.Count);
+		foreach (var value in kept)
+			dataAtoms.Add (new Mp4DataAtom (Mp4AtomMapping.TypeUtf8, BinaryData.FromStringUtf8 (value)));
+		SetFreeformAtoms (Mp4AtomMapping.AppleNamespace, name, dataAtoms);
+		return true;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>Removes the field and every item it was read from, in either meta.</remarks>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!CustomFieldValues.IsUsableName (name))
+			return false;
+
+		const string mean = Mp4AtomMapping.AppleNamespace;
+		var held = FindFreeform (mean, name) is not null ||
+			_preservedFreeformByKey.ContainsKey ((mean, name)) ||
+			_sources.ContainsKey (FreeformId (mean, name));
+		SetFreeformAtoms (mean, name, new List<Mp4DataAtom> ());
+		return held;
+	}
+
+	/// <inheritdoc/>
 	/// <remarks>
 	/// Removes all metadata the tag holds: every field, every item it was read from, and every item
 	/// it does not map, in both metas. That includes unknown iTunes atoms (such as an iTunes Store

@@ -284,29 +284,20 @@ public sealed class ApeTagItem
 
 		keyLength = keyEnd - MinHeaderSize;
 
-		// Validate key length
-		if (keyLength < MinKeyLength) {
-			return $"APE item key too short: {keyLength} chars, minimum is {MinKeyLength}";
-		}
-
-		if (keyLength > MaxKeyLength) {
-			return $"APE item key too long: {keyLength} chars, maximum is {MaxKeyLength}";
-		}
-
-		// Validate key characters (ASCII 0x20-0x7E)
+		// The one copy of the key rules (KeyError). The key is widened into a stack buffer only when its
+		// length is in range, so measuring copies nothing to the heap.
 		var keySpan = head.Slice (MinHeaderSize, keyLength);
-		foreach (var b in keySpan) {
-			if (b < 0x20 || b > 0x7E) {
-				return $"APE item key contains invalid character: 0x{b:X2}";
-			}
+		string? keyError;
+		if (keyLength is >= MinKeyLength and <= MaxKeyLength) {
+			Span<char> keyChars = stackalloc char[keyLength];
+			for (var i = 0; i < keyLength; i++)
+				keyChars[i] = (char)keySpan[i];
+			keyError = KeyError (keyLength, keyChars);
+		} else {
+			keyError = KeyError (keyLength, []);
 		}
-
-		// Check for reserved keys (ASCII, case-insensitive)
-		foreach (var reserved in ReservedKeys) {
-			if (EqualsIgnoreCase (keySpan, reserved)) {
-				return $"APE item key '{reserved}' is reserved and cannot be used";
-			}
-		}
+		if (keyError is not null)
+			return keyError;
 
 		// Value length is a uint32. Compare it with the bytes still left before any int add or Slice:
 		// 0x80000000 and 0xFFFFFFF0 cast negative, and int.MaxValue overflows the end offset.
@@ -318,23 +309,6 @@ public sealed class ApeTagItem
 
 		consumed = valueStart + valueSize;
 		return null;
-	}
-
-	static bool EqualsIgnoreCase (ReadOnlySpan<byte> key, string reserved)
-	{
-		if (key.Length != reserved.Length)
-			return false;
-		for (var i = 0; i < key.Length; i++) {
-			var a = key[i];
-			var b = (byte)reserved[i];
-			if (a is >= (byte)'a' and <= (byte)'z')
-				a -= 32;
-			if (b is >= (byte)'a' and <= (byte)'z')
-				b -= 32;
-			if (a != b)
-				return false;
-		}
-		return true;
 	}
 
 	/// <summary>
@@ -398,22 +372,45 @@ public sealed class ApeTagItem
 		return data;
 	}
 
-	private static void ValidateKey (string key)
-	{
-		if (key.Length < MinKeyLength)
-			throw new ArgumentException ($"Key too short: minimum is {MinKeyLength} characters", nameof (key));
+	/// <summary>
+	/// True when <paramref name="key"/> follows the APEv2 item key rules
+	/// (https://wiki.hydrogenaud.io/index.php?title=APE_key).
+	/// </summary>
+	internal static bool IsValidKey (string key) => KeyError (key.Length, key.AsSpan ()) is null;
 
-		if (key.Length > MaxKeyLength)
-			throw new ArgumentException ($"Key too long: maximum is {MaxKeyLength} characters", nameof (key));
+	/// <summary>
+	/// The one copy of the APEv2 key rules, shared by <see cref="Parse"/>, <see cref="TryMeasure"/>, the Create
+	/// methods, and <see cref="IsValidKey"/>: 2 to 255 characters from 0x20 to 0x7E, and not ID3, TAG, OggS, or
+	/// MP+ in any case (https://wiki.hydrogenaud.io/index.php?title=APE_key).
+	/// </summary>
+	/// <param name="length">The key's length; the characters are checked only when it is in range.</param>
+	/// <param name="key">The key's characters, one per byte for a key read from a file.</param>
+	/// <returns>Why the key is invalid, or null when it is valid.</returns>
+	static string? KeyError (int length, ReadOnlySpan<char> key)
+	{
+		if (length < MinKeyLength)
+			return $"APE item key too short: {length} chars, minimum is {MinKeyLength}";
+
+		if (length > MaxKeyLength)
+			return $"APE item key too long: {length} chars, maximum is {MaxKeyLength}";
 
 		foreach (var c in key) {
 			if (c < 0x20 || c > 0x7E)
-				throw new ArgumentException ($"Key contains invalid character: '{c}'", nameof (key));
+				return $"APE item key contains invalid character: 0x{(int)c:X2}";
 		}
 
 		foreach (var reserved in ReservedKeys) {
-			if (key.Equals (reserved, StringComparison.OrdinalIgnoreCase))
-				throw new ArgumentException ($"Key '{key}' is reserved", nameof (key));
+			if (key.Equals (reserved.AsSpan (), StringComparison.OrdinalIgnoreCase))
+				return $"APE item key '{reserved}' is reserved and cannot be used";
 		}
+
+		return null;
+	}
+
+	private static void ValidateKey (string key)
+	{
+		var error = KeyError (key.Length, key.AsSpan ());
+		if (error is not null)
+			throw new ArgumentException (error, nameof (key));
 	}
 }

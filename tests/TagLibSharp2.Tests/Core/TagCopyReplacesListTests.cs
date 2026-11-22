@@ -4,9 +4,11 @@
 using System.Reflection;
 using System.Text;
 using TagLibSharp2.Ape;
+using TagLibSharp2.Asf;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Mpeg;
+using TagLibSharp2.Tests.Asf;
 using TagLibSharp2.Xiph;
 
 namespace TagLibSharp2.Tests.Core;
@@ -66,10 +68,33 @@ public class TagCopyReplacesListTests
 					tag.AddField (probe.Fields[0].Name, Stale);
 					return VorbisComment.Read (tag.Render ().Span).Tag;
 				}
+			case "asf": {
+					// ASF keeps values 2..n of an attribute in the Metadata Library (ASF spec rev. 01.20.03 §4.8),
+					// so the stale value goes there, as Windows and mutagen write it.
+					var probe = new AsfTag ();
+					property.SetValue (probe, "V1");
+					if (!Equals (property.GetValue (probe), "V1"))
+						return null;
+					var name = probe.ExtendedContentDescription.Descriptors.Count == 1
+						? probe.ExtendedContentDescription.Descriptors[0].Name
+						: AsfContentDescriptionNames.FirstOrDefault (n => probe.GetCustomField (n) is ["V1"]);
+					if (name is null)
+						return null;
+					var file = AsfTestBuilder.CreateHeaderObject (
+						AsfTestBuilder.CreateFilePropertiesObject (1000, 128000),
+						AsfTestBuilder.CreateAudioStreamPropertiesObject (),
+						AsfMetadataLibraryTests.Object (AsfGuids.ContentDescriptionObject, probe.RenderContentDescription ().ToArray ()),
+						AsfMetadataLibraryTests.HeaderExtension (AsfMetadataLibraryTests.Library (AsfMetadataLibraryTests.Record (name, Stale))),
+						AsfMetadataLibraryTests.Object (AsfGuids.ExtendedContentDescriptionObject, probe.Render ().ToArray ()));
+					var tag = AsfFile.Read ([.. file, .. AsfTestBuilder.CreateDataObject (0)]).File!.Tag;
+					return tag.GetCustomField (name).Contains (Stale) ? tag : null;
+				}
 			default:
 				throw new ArgumentOutOfRangeException (nameof (format));
 		}
 	}
+
+	static readonly string[] AsfContentDescriptionNames = ["Title", "Author", "Copyright", "Description", "Rating"];
 
 	static string ApeKey (ApeTag tag)
 	{
@@ -99,20 +124,23 @@ public class TagCopyReplacesListTests
 
 	static bool RenderHolds (Tag tag, string text)
 	{
-		var bytes = tag.Render ().ToArray ();
-		var needle = Encoding.UTF8.GetBytes (text);
-		for (var i = 0; i + needle.Length <= bytes.Length; i++) {
-			if (bytes.AsSpan (i, needle.Length).SequenceEqual (needle))
-				return true;
+		if (tag is AsfTag asf) {
+			var unicode = Encoding.Unicode.GetBytes (text);
+			return asf.LibraryRecords?.Any (r => r.Text == text) == true ||
+				ContainsBytes (asf.Render ().ToArray (), unicode) ||
+				ContainsBytes (asf.RenderContentDescription ().ToArray (), unicode);
 		}
-		return false;
+		return ContainsBytes (tag.Render ().ToArray (), Encoding.UTF8.GetBytes (text));
 	}
+
+	static bool ContainsBytes (byte[] haystack, byte[] needle) => haystack.AsSpan ().IndexOf (needle) >= 0;
 
 	[TestMethod]
 	[DataRow ("id3v23")]
 	[DataRow ("id3v24")]
 	[DataRow ("ape")]
 	[DataRow ("vorbis")]
+	[DataRow ("asf")]
 	public void CopyAll_SourceEqualsTargetFirstValue_ReplacesTheList (string targetFormat)
 	{
 		var covered = new List<string> ();
@@ -145,6 +173,7 @@ public class TagCopyReplacesListTests
 	[DataRow ("id3v24")]
 	[DataRow ("ape")]
 	[DataRow ("vorbis")]
+	[DataRow ("asf")]
 	public void CopyBasic_SourceEqualsTargetFirstValue_ReplacesTheList (string targetFormat)
 	{
 		var failures = new List<string> ();

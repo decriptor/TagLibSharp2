@@ -52,6 +52,13 @@ public sealed class UserTextFrame
 	public TextEncodingType Encoding { get; set; }
 
 	/// <summary>
+	/// Where a UTF-16 value with several strings puts its BOMs. Set on read from the frame's own bytes, so an
+	/// unchanged frame renders the bytes it was read from; ID3v2.3 §3.3 (https://id3.org/id3v2.3.0) asks for a BOM
+	/// before every string.
+	/// </summary>
+	internal Utf16Layout Utf16Layout { get; set; }
+
+	/// <summary>
 	/// Initializes a new instance of the <see cref="UserTextFrame"/> class.
 	/// </summary>
 	/// <param name="description">The description identifying this frame.</param>
@@ -97,9 +104,12 @@ public sealed class UserTextFrame
 		var valueData = valueStart < contentData.Length
 			? contentData.Slice (valueStart)
 			: ReadOnlySpan<byte>.Empty;
-		var value = DecodeText (valueData, encoding);
+		var layout = Utf16Layout.OneBom;
+		var value = encoding == TextEncodingType.Utf16WithBom
+			? (valueData.IsEmpty ? string.Empty : Utf16Text.Decode (valueData, out layout))
+			: DecodeText (valueData, encoding);
 
-		var frame = new UserTextFrame (description, value, encoding);
+		var frame = new UserTextFrame (description, value, encoding) { Utf16Layout = layout };
 		return UserTextFrameReadResult.Success (frame, data.Length);
 	}
 
@@ -111,7 +121,9 @@ public sealed class UserTextFrame
 	{
 		var descriptionBytes = EncodeText (Description, Encoding);
 		var terminatorBytes = GetTerminatorBytes (Encoding);
-		var valueBytes = EncodeText (Value, Encoding);
+		var valueBytes = Encoding == TextEncodingType.Utf16WithBom
+			? Utf16Text.Encode (Value, Utf16Layout)
+			: EncodeText (Value, Encoding);
 
 		using var builder = new BinaryDataBuilder (1 + descriptionBytes.Length + terminatorBytes.Length + valueBytes.Length);
 		builder.Add ((byte)Encoding);
@@ -172,7 +184,7 @@ public sealed class UserTextFrame
 		return encoding switch {
 			TextEncodingType.Latin1 => BinaryData.FromStringLatin1 (text),
 			TextEncodingType.Utf8 => BinaryData.FromStringUtf8 (text),
-			TextEncodingType.Utf16WithBom => BinaryData.FromStringUtf16 (text, includeBom: true),
+			TextEncodingType.Utf16WithBom => Utf16Text.Encode (text, Utf16Layout.OneBom),
 			TextEncodingType.Utf16BE => new BinaryData (System.Text.Encoding.BigEndianUnicode.GetBytes (text)),
 			_ => BinaryData.Empty
 		};

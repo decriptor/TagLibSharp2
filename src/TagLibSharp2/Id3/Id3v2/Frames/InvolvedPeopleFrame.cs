@@ -296,6 +296,12 @@ public sealed class InvolvedPeopleFrame
 
 	static List<string> ParseNullSeparatedStrings (ReadOnlySpan<byte> data, TextEncodingType encoding)
 	{
+		if (encoding == TextEncodingType.Utf16WithBom) {
+			// The shared splitter: each string's own BOM, the frame's first BOM for a string without one, and a
+			// final terminator or lone byte that ends the last string rather than adding one.
+			return Utf16Text.DecodeStrings (data);
+		}
+
 		var result = new List<string> ();
 		var terminatorSize = GetTerminatorSize (encoding);
 		var current = 0;
@@ -352,31 +358,9 @@ public sealed class InvolvedPeopleFrame
 		return encoding switch {
 			TextEncodingType.Latin1 => Polyfills.Latin1.GetString (data),
 			TextEncodingType.Utf8 => System.Text.Encoding.UTF8.GetString (data),
-			TextEncodingType.Utf16WithBom => DecodeUtf16WithBom (data),
 			TextEncodingType.Utf16BE => System.Text.Encoding.BigEndianUnicode.GetString (data),
 			_ => string.Empty
 		};
-	}
-
-	static string DecodeUtf16WithBom (ReadOnlySpan<byte> data)
-	{
-		if (data.Length < 2)
-			return string.Empty;
-
-		// Check BOM
-		var isLittleEndian = data[0] == 0xFF && data[1] == 0xFE;
-		var isBigEndian = data[0] == 0xFE && data[1] == 0xFF;
-
-		if (!isLittleEndian && !isBigEndian)
-			return System.Text.Encoding.Unicode.GetString (data); // Default to LE if no BOM
-
-		// Skip BOM and decode
-		var content = data.Slice (2);
-		var enc = isLittleEndian
-			? System.Text.Encoding.Unicode
-			: System.Text.Encoding.BigEndianUnicode;
-
-		return enc.GetString (content);
 	}
 
 	static BinaryData EncodeText (string text, TextEncodingType encoding)

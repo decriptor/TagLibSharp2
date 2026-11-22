@@ -128,6 +128,9 @@ public sealed class AsfFile : IMediaFile
 		AsfExtendedContentDescription? extendedDesc = null;
 		AsfFileProperties? fileProps = null;
 		AsfStreamProperties? streamProps = null;
+		List<AsfMetadataRecord>? metadata = null;
+		List<AsfMetadataRecord>? library = null;
+		var extensionUnreadable = false;
 
 		for (uint i = 0; i < childCount && offset < data.Length - 24; i++) {
 			// Read object GUID
@@ -173,6 +176,8 @@ public sealed class AsfFile : IMediaFile
 				var result = AsfStreamProperties.Parse (objectContent);
 				if (result.IsSuccess && result.Value.IsAudio)
 					streamProps = result.Value;
+			} else if (objectGuid == AsfGuids.HeaderExtensionObject) {
+				ReadHeaderExtension (objectContent, ref metadata, ref library, ref extensionUnreadable);
 			}
 
 			offset += contentSize;
@@ -180,6 +185,7 @@ public sealed class AsfFile : IMediaFile
 
 		// Create tag
 		var tag = new AsfTag (contentDesc, extendedDesc);
+		tag.AttachHeaderExtension (metadata, library, extensionUnreadable);
 
 		// Create audio properties
 		var audioProps = CreateAudioProperties (fileProps, streamProps);
@@ -187,6 +193,125 @@ public sealed class AsfFile : IMediaFile
 		var file = new AsfFile (tag, audioProps);
 		file._originalData = data.ToArray ();
 		return AsfFileReadResult.Success (file);
+	}
+
+	// Header Extension Object (ASF spec rev. 01.20.03 §3.4): Reserved Field 1 (GUID), Reserved Field 2 (WORD),
+	// Header Extension Data Size (DWORD), then child objects.
+	const int HeaderExtensionFixedSize = 16 + 2 + 4;
+
+	// ASF_Reserved_1, the value of Reserved Field 1 (§3.4).
+	static readonly AsfGuid HeaderExtensionReserved1 = AsfGuid.Parse (
+		new byte[] { 0x11, 0xD2, 0xD3, 0xAB, 0xBA, 0xA9, 0xCF, 0x11, 0x8E, 0xE6, 0x00, 0xC0, 0x0C, 0x20, 0x53, 0x65 }).Value;
+
+	/// <summary>
+	/// Reads the Metadata Object (§4.7) and Metadata Library Object (§4.8) out of a Header Extension Object.
+	/// A second copy of either, or one whose records run past it, makes the extension unreadable: the tag can
+	/// then not promise which values a name holds.
+	/// </summary>
+	static void ReadHeaderExtension (ReadOnlySpan<byte> content, ref List<AsfMetadataRecord>? metadata,
+		ref List<AsfMetadataRecord>? library, ref bool unreadable)
+	{
+		var children = HeaderExtensionChildren (content, out var complete);
+		if (!complete)
+			unreadable = true;
+		foreach (var (guid, body, _) in children) {
+			if (guid != AsfGuids.MetadataObject && guid != AsfGuids.MetadataLibraryObject)
+				continue;
+
+			var isLibrary = guid == AsfGuids.MetadataLibraryObject;
+			if ((isLibrary ? library : metadata) is not null ||
+				!AsfMetadataRecord.TryParseObject (body, out var records)) {
+				unreadable = true;
+				continue;
+			}
+
+			if (isLibrary)
+				library = records;
+			else
+				metadata = records;
+		}
+	}
+
+	/// <summary>
+	/// The child objects of a Header Extension Object's content: GUID, body after GUID and size, and the whole
+	/// object. A child that does not fit ends the walk, and <paramref name="complete"/> is then false: a Metadata
+	/// Library Object could hide past it.
+	/// </summary>
+	static List<(AsfGuid Guid, byte[] Body, byte[] Whole)> HeaderExtensionChildren (ReadOnlySpan<byte> content, out bool complete)
+	{
+		var children = new List<(AsfGuid, byte[], byte[])> ();
+		complete = false;
+		if (content.Length < HeaderExtensionFixedSize)
+			return children;
+
+		var dataSize = BinaryPrimitives.ReadUInt32LittleEndian (content.Slice (18));
+		var data = content.Slice (HeaderExtensionFixedSize);
+		if (dataSize < (uint)data.Length)
+			data = data.Slice (0, (int)dataSize);
+
+		var offset = 0;
+		while (data.Length - offset >= 24) {
+			var guid = AsfGuid.Parse (data.Slice (offset));
+			var size = BinaryPrimitives.ReadUInt64LittleEndian (data.Slice (offset + 16));
+			if (!guid.IsSuccess || size < 24 || size > (ulong)(data.Length - offset))
+				break;
+			var whole = data.Slice (offset, (int)size);
+			children.Add ((guid.Value, whole.Slice (24).ToArray (), whole.ToArray ()));
+			offset += (int)size;
+		}
+
+		complete = offset == data.Length;
+		return children;
+	}
+
+	/// <summary>
+	/// Rebuilds a Header Extension Object with the tag's Metadata and Metadata Library records in place of the
+	/// old objects. Other children keep their bytes and order. Null <paramref name="original"/> builds a new
+	/// object holding only the records.
+	/// </summary>
+	static byte[] RenderHeaderExtension (byte[]? original, AsfTag tag)
+	{
+		var reserved1 = HeaderExtensionReserved1.Render ().ToArray ();
+		ushort reserved2 = 6;
+		var children = new List<byte[]> ();
+		var wroteMetadata = false;
+		var wroteLibrary = false;
+		if (original is not null && original.Length >= 24 + HeaderExtensionFixedSize) {
+			var content = original.AsSpan (24);
+			reserved1 = content.Slice (0, 16).ToArray ();
+			reserved2 = BinaryPrimitives.ReadUInt16LittleEndian (content.Slice (16));
+			foreach (var (guid, _, whole) in HeaderExtensionChildren (content, out _)) {
+				if (guid == AsfGuids.MetadataObject) {
+					if (!wroteMetadata && tag.MetadataRecords is { } metadata)
+						children.Add (AsfMetadataRecord.RenderObject (AsfGuids.MetadataObject, metadata));
+					wroteMetadata = true;
+				} else if (guid == AsfGuids.MetadataLibraryObject) {
+					if (!wroteLibrary && tag.LibraryRecords is { } library)
+						children.Add (AsfMetadataRecord.RenderObject (AsfGuids.MetadataLibraryObject, library));
+					wroteLibrary = true;
+				} else {
+					children.Add (whole);
+				}
+			}
+		}
+		if (!wroteLibrary && tag.LibraryRecords is { Count: > 0 } added)
+			children.Add (AsfMetadataRecord.RenderObject (AsfGuids.MetadataLibraryObject, added));
+
+		var dataSize = 0;
+		foreach (var child in children)
+			dataSize += child.Length;
+		var result = new byte[24 + HeaderExtensionFixedSize + dataSize];
+		AsfGuids.HeaderExtensionObject.Render ().Span.CopyTo (result);
+		BinaryPrimitives.WriteUInt64LittleEndian (result.AsSpan (16), (ulong)result.Length);
+		reserved1.CopyTo (result, 24);
+		BinaryPrimitives.WriteUInt16LittleEndian (result.AsSpan (40), reserved2);
+		BinaryPrimitives.WriteUInt32LittleEndian (result.AsSpan (42), (uint)dataSize);
+		var offset = 24 + HeaderExtensionFixedSize;
+		foreach (var child in children) {
+			child.CopyTo (result, offset);
+			offset += child.Length;
+		}
+		return result;
 	}
 
 	/// <summary>
@@ -336,10 +461,20 @@ public sealed class AsfFile : IMediaFile
 		// Build new header child objects
 		var childObjects = new List<byte[]> ();
 
-		// Copy preserved objects (File Properties, Stream Properties, etc.)
+		// Copy preserved objects (File Properties, Stream Properties, etc.). The Header Extension Object is
+		// rebuilt only when a write changed its Metadata or Metadata Library records.
+		var wroteExtension = false;
 		foreach (var obj in headerInfo.PreservedObjects) {
+			var isExtension = AsfGuid.Parse (obj).Value == AsfGuids.HeaderExtensionObject;
+			if (isExtension && Tag.HeaderExtensionChanged && !wroteExtension) {
+				childObjects.Add (RenderHeaderExtension (obj, Tag));
+				wroteExtension = true;
+				continue;
+			}
 			childObjects.Add (obj);
 		}
+		if (!wroteExtension && Tag.HeaderExtensionChanged && Tag.LibraryRecords is { Count: > 0 })
+			childObjects.Add (RenderHeaderExtension (null, Tag));
 
 		// Add Content Description if tag has content
 		var contentDesc = Tag.ContentDescription;

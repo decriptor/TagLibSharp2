@@ -268,4 +268,15 @@ public class WavFileRoundTripTests
 		Assert.AreEqual ("Info Title", reloaded.InfoTag?.Title);
 		Assert.AreEqual ("ID3 Title", reloaded.Id3v2Tag?.Title);
 	}
+
+	[TestMethod]
+	public void Id3TagWithOnlyAlbumArtist_IsWritten ()
+	{
+		WavFile.TryRead (CreateMinimalWav (), out var file);
+		file!.Id3v2Tag = new Id3v2Tag { AlbumArtist = "Various" };
+
+		WavFile.TryRead (file.Render (), out var reloaded);
+
+		Assert.AreEqual ("Various", reloaded?.Id3v2Tag?.AlbumArtist);
+	}
 }
