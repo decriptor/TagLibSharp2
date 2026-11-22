@@ -932,11 +932,40 @@ public sealed class Mp4Tag : Tag
 
 	/// <inheritdoc/>
 	/// <remarks>
-	/// Removes every field and every item a field was read from, including a malformed atom of a
-	/// mapped field. Items the tag does not map, such as Apple's make, model, location and creation
-	/// date keys or an unknown atom like "orch", are kept with the keys they use.
+	/// Removes all metadata the tag holds: every field, every item it was read from, and every item
+	/// it does not map, in both metas. That includes unknown iTunes atoms (such as an iTunes Store
+	/// purchase's account and IDs) and Apple's make, model, location and creation date keys, whose
+	/// keys go too. Nothing the audio needs to play is in a tag, so nothing is kept.
 	/// </remarks>
 	public override void Clear ()
+	{
+		_atoms.Clear ();
+		_pictures.Clear ();
+		_freeform.Clear ();
+		_freeformByKey.Clear ();
+		_preservedAtoms.Clear ();
+		_preservedByType.Clear ();
+		_preservedFreeformByKey.Clear ();
+		_keys?.Clear ();
+		_keyIndexByField.Clear ();
+		_sources.Clear ();
+		_valueFromSources.Clear ();
+		_valueRank.Clear ();
+		_slotByField.Clear ();
+		_movieItems.Clear ();
+		_movieFields.Clear ();
+		_movieSlotByField.Clear ();
+		_movieKeyIndexByField.Clear ();
+		_movieKeys?.Clear ();
+	}
+
+	/// <summary>
+	/// Removes every field and every item a field was read from, including a malformed atom of a
+	/// mapped field, before an assigned tag's values are taken. Items the tag does not map, such
+	/// as Apple's make, model, location and creation date keys or an unknown atom like "orch",
+	/// are kept with the keys they use.
+	/// </summary>
+	internal void ClearMappedFields ()
 	{
 		foreach (var fieldId in new List<string> (_sources.Keys))
 			DropSources (fieldId);
@@ -967,8 +996,9 @@ public sealed class Mp4Tag : Tag
 
 	/// <summary>
 	/// Takes every value of another tag through the setters, so each replaces this tag's items for
-	/// that field. An iTunes tag's own unknown atoms come along into an iTunes tag (replacing
-	/// atoms of the same type); a keyed tag's items mean nothing without its keys and do not.
+	/// that field. An iTunes tag's own unknown atoms come along only into an iTunes tag (replacing
+	/// atoms of the same type): a keyed meta takes no iTunes atom, and a keyed tag's items mean
+	/// nothing without its keys.
 	/// </summary>
 	internal void TakeValuesFrom (Mp4Tag other)
 	{
@@ -1067,8 +1097,8 @@ public sealed class Mp4Tag : Tag
 
 	/// <summary>
 	/// A copy holding this tag's values and its kept iTunes atoms, without where they were read
-	/// from (keys, kept items, a second meta). Saved into another file or in place of the tag
-	/// that was read, it is written as a fresh tag.
+	/// from (keys, kept items, a second meta). It is what an assigned tag is saved as in a file
+	/// that had no tag, where it is written as a fresh tag.
 	/// </summary>
 	internal Mp4Tag Detached ()
 	{

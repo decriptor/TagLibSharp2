@@ -20,8 +20,7 @@ public class Mp4QuickTimeKeysTests
 	const string Mean = "com.apple.iTunes";
 	const string MusicBrainz = "org.musicbrainz";
 	static readonly byte[] Other = TestBuilders.Mp4.CreateMdtaItem (2, "+12.3456-065.4321/");
-	static readonly string[] ArtistOnly = ["artist"];
-	static readonly string[] TitleCustomMakeArtist = ["title", "custom", "com.apple.quicktime.make", "com.apple.quicktime.artist"];
+	static readonly string[] AppleArtistOnly = ["com.apple.quicktime.artist"];
 	static readonly string[] DisplayNameOnly = ["com.apple.quicktime.displayname"];
 	static readonly string[] ArtistThenTitle = ["com.apple.quicktime.artist", "com.apple.quicktime.title"];
 
@@ -358,9 +357,9 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Old-"u8));
 	}
 
-	// Clear removes every field's items and keeps the items no field names, with their keys.
+	// Clear removes all metadata: every item, mapped or not, and every key.
 	[TestMethod]
-	public void Clear_DropsFieldsAndKeepsUnmappedItemsAndKeys ()
+	public void Clear_RemovesEveryItemAndKey ()
 	{
 		var make = TestBuilders.Mp4.CreateMdtaItem (3, "Apple");
 		var data = Keyed (["title", "custom", "com.apple.quicktime.make"], TestBuilders.Mp4.CreateMdtaItem (1, "Old-T"), TestBuilders.Mp4.CreateMdtaItem (2, "Old-C"), make);
@@ -370,9 +369,11 @@ public class Mp4QuickTimeKeysTests
 
 		var rendered = file.Render (data).ToArray ();
 		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Old-"u8));
-		Assert.AreEqual (1, Count (rendered, make));
-		CollectionAssert.AreEqual (TitleCustomMakeArtist, Keys (rendered).ToArray ());
-		AssertOnlyKeyedItems (rendered, keyCount: 4);
+		Assert.AreEqual (0, Count (rendered, make));
+		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("com.apple.quicktime.make"u8));
+		// The new key is named the way the file named its keys (Apple's style here).
+		CollectionAssert.AreEqual (AppleArtistOnly, Keys (rendered).ToArray ());
+		AssertOnlyKeyedItems (rendered, keyCount: 1);
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Tag!.Artist);
 	}
 
@@ -836,9 +837,9 @@ public class Mp4QuickTimeKeysTests
 	}
 
 	// Items of moov/meta that name no field (Apple's make, model, location) are kept beside
-	// udta/meta on every save, including after Clear, which removes only the fields.
+	// udta/meta through a set; Clear removes them with everything else.
 	[TestMethod]
-	public void BothMetas_UnmappedMovieItemsAreKeptThroughSetAndClear ()
+	public void BothMetas_UnmappedMovieItemsAreKeptThroughASetAndRemovedByClear ()
 	{
 		var make = TestBuilders.Mp4.CreateMdtaItem (2, "Apple");
 		var location = TestBuilders.Mp4.CreateMdtaItem (3, "+37.3349-122.0090/");
@@ -857,8 +858,9 @@ public class Mp4QuickTimeKeysTests
 		file.Tag.Clear ();
 		file.Title = "Fresh";
 		var cleared = file.Render (data).ToArray ();
-		Assert.AreEqual (1, Count (cleared, make));
-		Assert.AreEqual (1, Count (cleared, location));
+		Assert.AreEqual (0, Count (cleared, make));
+		Assert.AreEqual (0, Count (cleared, location));
+		Assert.AreEqual (-1, cleared.AsSpan ().IndexOf ("com.apple.quicktime.location"u8));
 		Assert.AreEqual (-1, cleared.AsSpan ().IndexOf ("AppleT"u8));
 		var reread = Mp4File.Read (cleared).File!;
 		Assert.AreEqual ("Fresh", reread.Title);
@@ -983,10 +985,10 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
 	}
 
-	// Every meta layout × every way to replace the tag. A set, an assigned tag, a tag copied from
-	// another file, Tag = null and Clear replace only the mapped fields: no old value survives
-	// anywhere in the file, and every item the tag does not map (Apple's make key, an unknown
-	// iTunes atom) is kept byte for byte.
+	// Every meta layout × every way to replace the tag. A set, an assigned tag and a tag copied
+	// from another file replace only the mapped fields: no old value survives anywhere in the
+	// file, and every item the tag does not map (Apple's make key, an unknown iTunes atom) is kept
+	// byte for byte. Tag = null and Clear remove all metadata: nothing any reader shows is left.
 	[TestMethod]
 	[DataRow ("udta-itunes", "set")]
 	[DataRow ("udta-itunes", "assign")]
@@ -1013,7 +1015,7 @@ public class Mp4QuickTimeKeysTests
 	[DataRow ("mdir-moov", "copy")]
 	[DataRow ("mdir-moov", "null")]
 	[DataRow ("mdir-moov", "clear")]
-	public void ReplacingTheTag_KeepsUnmappedItemsInEveryLayout (string layout, string operation)
+	public void ReplacingTheTag_InEveryLayout (string layout, string operation)
 	{
 		var (data, unmapped) = Layout (layout);
 		var file = Mp4File.Read (data).File!;
@@ -1039,13 +1041,17 @@ public class Mp4QuickTimeKeysTests
 		}
 
 		var rendered = file.Render (data).ToArray ();
+		var removesAll = operation is "null" or "clear";
 		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Old"u8), "an old value survives");
 		foreach (var item in unmapped)
-			Assert.AreEqual (1, Count (rendered, item), "an unmapped item was dropped");
+			Assert.AreEqual (removesAll ? 0 : 1, Count (rendered, item), removesAll ? "an unmapped item survives" : "an unmapped item was dropped");
+		Assert.AreEqual (removesAll ? 0 : layout is "udta-itunes" or "mdir-moov" ? 0 : 1, Count (rendered, "com.apple.quicktime.make"u8.ToArray ()), "the make key");
 
 		var reread = Mp4File.Read (rendered);
 		Assert.IsTrue (reread.IsSuccess, reread.Error);
-		Assert.AreEqual (operation is "null" or "clear" ? null : "New", reread.File!.Title);
+		Assert.AreEqual (removesAll ? null : "New", reread.File!.Title);
+		if (removesAll)
+			Assert.IsTrue (reread.File.Tag is null || reread.File.Tag.IsEmpty, "the reread tag holds nothing");
 	}
 
 	static (byte[] Data, byte[][] Unmapped) Layout (string layout)
@@ -1127,6 +1133,97 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual (0, Count (rendered, ours));
 		Assert.AreEqual (1, Count (rendered, theirs));
 		Assert.AreEqual (1, Count (rendered, keep), "the target's own unknown atom stays");
+	}
+
+	// A keyed meta takes no iTunes atom: an iTunes tag's unknown atoms stay behind when it is
+	// copied into a file whose tag is keyed, in udta/meta or in moov/meta.
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void CopiedItunesTag_IntoAKeyedFile_LeavesItsUnknownAtomsBehind (bool inMovie)
+	{
+		var orch = TestBuilders.Mp4.CreateBox ("orch", [0x0A, 0x0B]);
+		var source = TestBuilders.Mp4.CreateWithIlstAtoms (TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("T")), orch);
+		var make = TestBuilders.Mp4.CreateMdtaItem (2, "Apple");
+		var target = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta",
+			TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title", "com.apple.quicktime.make"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "Target"), make], inMovie, udtaExtra: null);
+		var to = Mp4File.Read (target).File!;
+		to.Tag = Mp4File.Read (source).File!.Tag;
+
+		var rendered = to.Render (target).ToArray ();
+		Assert.AreEqual (0, Count (rendered, orch));
+		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("orch"u8));
+		Assert.AreEqual (1, Count (rendered, make));
+		AssertOnlyKeyedItems (rendered, Keys (rendered).Count);
+		Assert.AreEqual ("T", Mp4File.Read (rendered).File!.Title);
+	}
+
+	// An iTunes moov/meta's cover and freeform copies are their fields' twins, like its ©nam: a
+	// set of the field, an assigned tag and Clear drop them.
+	[TestMethod]
+	[DataRow ("cover", "set")]
+	[DataRow ("cover", "assign")]
+	[DataRow ("cover", "clear")]
+	[DataRow ("freeform", "set")]
+	[DataRow ("freeform", "assign")]
+	[DataRow ("freeform", "clear")]
+	public void BothMetas_ItunesMovieMetaCoverAndFreeformCopiesAreDropped (string kind, string operation)
+	{
+		var movieCopy = kind == "cover"
+			? TestBuilders.Mp4.CreateCovrAtom ([0xFF, 0xD8, 0xFF, 0x01], Mp4AtomMapping.TypeJpeg)
+			: TestBuilders.Mp4.CreateFreeformAtom ("com.apple.iTunes", "MOOD", "MovieMood");
+		var udtaValue = kind == "cover"
+			? TestBuilders.Mp4.CreateCovrAtom ([0xFF, 0xD8, 0xFF, 0x02], Mp4AtomMapping.TypeJpeg)
+			: TestBuilders.Mp4.CreateFreeformAtom ("com.apple.iTunes", "MOOD", "UdtaMood");
+		var unknown = TestBuilders.Mp4.CreateBox ("orch", [0x0A, 0x0B]);
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdir", null, [movieCopy, unknown], inMovie: true, udtaExtra: UdtaMeta (udtaValue));
+
+		var file = Mp4File.Read (data).File!;
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+		switch (operation) {
+			case "set" when kind == "cover":
+				file.Tag!.Pictures = [];
+				break;
+			case "set":
+				file.Tag!.Mood = "New";
+				break;
+			case "assign":
+				file.Tag = new Mp4Tag { Title = "X" };
+				break;
+			default:
+				file.Tag!.Clear ();
+				break;
+		}
+
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, movieCopy), "the moov/meta copy survives");
+		Assert.AreEqual (0, Count (rendered, udtaValue));
+		Assert.AreEqual (operation == "clear" ? 0 : 1, Count (rendered, unknown));
+		var reread = Mp4File.Read (rendered).File!;
+		if (kind == "cover")
+			Assert.IsEmpty (reread.Tag?.Pictures ?? []);
+		else
+			Assert.AreEqual (operation == "set" ? "New" : null, reread.Tag?.Mood);
+	}
+
+	// An assigned tag replaces every atom of a mapped field, including one that held no value,
+	// so no unreadable title is left beside the new one; an unknown atom stays.
+	[TestMethod]
+	[DataRow ("©nam")]
+	[DataRow ("----")]
+	public void AssignedTag_DropsTheTargetsUnreadableFieldAtoms (string type)
+	{
+		var broken = TestBuilders.Mp4.CreateBox (type, [0x01, 0x02, 0x03, 0x04]);
+		var orch = TestBuilders.Mp4.CreateBox ("orch", [0x0A, 0x0B]);
+		var data = TestBuilders.Mp4.CreateWithIlstAtoms (broken, orch);
+		var file = Mp4File.Read (data).File!;
+		file.Tag = new Mp4Tag { Title = "New" };
+
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (0, Count (rendered, broken));
+		Assert.AreEqual (1, Count (rendered, orch));
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
 	}
 
 	[TestMethod]
