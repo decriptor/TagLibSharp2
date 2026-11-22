@@ -6,6 +6,7 @@ using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using TagLibSharp2.Ape;
 using TagLibSharp2.Core;
+using TagLibSharp2.Tests.Kit;
 
 namespace TagLibSharp2.Tests.Ape;
 
@@ -594,9 +595,8 @@ public class ApeTagTests
 		CreateValidFooter (version: 2000, tagSize: (uint)(itemBytes + ApeTagFooter.Size), itemCount: (uint)itemCount, flags: 0)
 			.CopyTo (data, itemBytes);
 
-		var before = GC.GetAllocatedBytesForCurrentThread ();
-		var result = ApeTag.Parse (data);
-		var allocated = GC.GetAllocatedBytesForCurrentThread () - before;
+		ApeTagParseResult result = default;
+		var allocated = Bounds.AllocatedBytes (() => result = ApeTag.Parse (data));
 
 		Assert.IsFalse (result.IsSuccess);
 		Assert.IsNull (result.Tag);
