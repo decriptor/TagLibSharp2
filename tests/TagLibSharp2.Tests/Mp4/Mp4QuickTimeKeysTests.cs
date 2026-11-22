@@ -955,6 +955,26 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Shadowed"u8));
 	}
 
+	// udta keeps its place in moov. mutagen stops at a moov/meta it cannot parse, so a udta moved
+	// behind it would vanish for mutagen.
+	[TestMethod]
+	public void BothMetas_UdtaKeepsItsPlaceBeforeMovieMeta ()
+	{
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "AppleT")], inMovie: true,
+			udtaExtra: UdtaMeta (TestBuilders.Mp4.CreateIlstChild ("©too", 1, Encoding.UTF8.GetBytes ("Lavf"))), udtaFirst: true);
+
+		var file = Mp4File.Read (data).File!;
+		CollectionAssert.AreEqual (data, file.Render (data).ToArray ());
+
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		var udta = rendered.AsSpan ().IndexOf ("udta"u8);
+		var keys = rendered.AsSpan ().IndexOf ("keys"u8);
+		Assert.IsLessThan (keys, udta, "udta stays ahead of moov/meta");
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
+	}
+
 	static byte[] NameType () => [0xA9, (byte)'n', (byte)'a', (byte)'m'];
 
 	// mutagen pads the meta with a free box of zeros. It goes back as it was, not rebuilt from what

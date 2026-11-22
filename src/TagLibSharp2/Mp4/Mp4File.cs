@@ -2217,10 +2217,17 @@ public sealed class Mp4File : IMediaFile
 		var newUdta = inMovieMeta ? BinaryData.Empty : BuildUdtaBox (originalMoov, tag);
 		var replacedMeta = false;
 		var emittedChild = false;
+		var placedUdta = false;
 		foreach (var child in originalMoov.Children) {
 			if (child.Type == "udta") {
 				if (inMovieMeta) {
 					moovContent.Add (WrapBox ("udta", child.Data));
+					emittedChild = true;
+				} else if (!placedUdta && newUdta.Length > 0) {
+					// The new udta takes the old one's place. Moving it behind a moov/meta hides it
+					// from readers (mutagen) that stop at a meta they cannot parse.
+					moovContent.Add (newUdta);
+					placedUdta = true;
 					emittedChild = true;
 				}
 				continue;
@@ -2246,7 +2253,7 @@ public sealed class Mp4File : IMediaFile
 		// ISO 14496-12 allows one udta in moov, so a replacement drops any udta still in the tail.
 		var tail = originalMoov.UnparsedTail.Span;
 		if (emittedChild) {
-			if (newUdta.Length > 0)
+			if (newUdta.Length > 0 && !placedUdta)
 				moovContent.Add (newUdta);
 			if (tail.Length > 0)
 				AppendMoovTail (moovContent, tail, newUdta.Length > 0, ReadOnlySpan<byte>.Empty);
