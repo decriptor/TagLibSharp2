@@ -325,9 +325,10 @@ public class RiffInfoTag : Tag
 		var tag = characterSet is { } declared ? new RiffInfoTag (declared) : new RiffInfoTag ();
 		var offset = 4;
 
+		var span = data.Span;
 		while (offset + 8 <= data.Length) {
 			// Read field FourCC
-			var fieldId = data.Slice (offset, 4).ToStringLatin1 ();
+			var fieldId = new string ([(char)span[offset], (char)span[offset + 1], (char)span[offset + 2], (char)span[offset + 3]]);
 			offset += 4;
 
 			// Read field size
@@ -339,20 +340,20 @@ public class RiffInfoTag : Tag
 			if ((long)offset + fieldSize > data.Length)
 				break;
 
-			// Read field value (null-terminated string, safe cast after overflow check)
-			var fieldData = data.Slice (offset, (int)fieldSize);
-			var isUtf8 = false;
-			var value = characterSet is { } set
-				? InfoText.Decode (fieldData.Span, set, out isUtf8)
-				: fieldData.ToStringLatin1NullTerminated ();
-
-			if (!string.IsNullOrEmpty (fieldId) && fieldId.Length == 4) {
-				tag._fields[fieldId] = value;
-				tag._stored?.Remove (fieldId);
-				if (tag._stored is not null && value.Length > 0) {
-					tag._stored[fieldId] = (value, fieldData.ToArray (), isUtf8);
-				}
+			// Read field value (null-terminated string, safe cast after overflow check).
+			// AVI text mode copies the field once: that copy is decoded and kept as the stored bytes.
+			string value;
+			if (characterSet is { } set) {
+				var bytes = span.Slice (offset, (int)fieldSize).ToArray ();
+				value = InfoText.Decode (bytes, set, out var isUtf8);
+				tag._stored!.Remove (fieldId);
+				if (value.Length > 0)
+					tag._stored[fieldId] = (value, bytes, isUtf8);
+			} else {
+				value = data.Slice (offset, (int)fieldSize).ToStringLatin1NullTerminated ();
 			}
+
+			tag._fields[fieldId] = value;
 
 			// Field size does not include the pad. Advance in long; a size near int.MaxValue must not throw.
 			var next = (long)offset + fieldSize + (fieldSize & 1);
