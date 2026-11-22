@@ -16,6 +16,10 @@ dotnet test                     # Run all tests
 dotnet test --filter "Name~Id3" # Run specific tests
 ```
 
+## Implementation Process
+
+Follow [docs/IMPLEMENTATION-GUIDE.md](docs/IMPLEMENTATION-GUIDE.md) for every change: behaviour survey, twin table, library rules, the test kit (`tests/TagLibSharp2.Tests/Kit/`, `tools/`) and pre-review.
+
 ## Clean Room Development Rules
 
 **CRITICAL**: This project must avoid any GPL/LGPL contamination.
