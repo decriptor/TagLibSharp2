@@ -1577,7 +1577,8 @@ public sealed class Id3v2Tag : Tag
 	/// <returns>
 	/// A list of values, split by null characters (each value as written, empty values skipped), or by
 	/// "/" when the text has no null character, in any version (each value trimmed, blank values skipped).
-	/// Only for NUL-separated text is the first entry the same as <see cref="GetTextFrame"/>.
+	/// The first entry is the same as <see cref="GetTextFrame"/> unless the text was split on "/"; when every
+	/// value is empty there is no entry and <see cref="GetTextFrame"/> returns "".
 	/// </returns>
 	/// <remarks>
 	/// ID3v2.4 uses null characters as value separators. ID3v2.3 has no official

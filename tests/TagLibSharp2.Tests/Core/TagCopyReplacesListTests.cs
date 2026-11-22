@@ -430,34 +430,61 @@ public class TagCopyReplacesListTests
 	}
 
 	/// <summary>
-	/// Format tags that store their own fields and read no other tag. Every other Tag type is a view.
+	/// Format tags that store their own fields and read no other tag, by full name. Every other Tag type
+	/// is a view.
 	/// </summary>
 	static readonly string[] LeafTagTypes = [
-		"ApeTag", "AsfTag", "Id3v1Tag", "Id3v2Tag", "MatroskaTag", "Mp4Tag", "RiffInfoTag", "VorbisComment",
+		"TagLibSharp2.Ape.ApeTag", "TagLibSharp2.Asf.AsfTag", "TagLibSharp2.Id3.Id3v1Tag", "TagLibSharp2.Id3.Id3v2.Id3v2Tag",
+		"TagLibSharp2.Matroska.MatroskaTag", "TagLibSharp2.Mp4.Mp4Tag", "TagLibSharp2.Riff.RiffInfoTag", "TagLibSharp2.Xiph.VorbisComment",
 	];
 
 	/// <summary>
-	/// Every concrete Tag type in the library is either a leaf format tag on the list above, or a view
-	/// that names the tags it reads (Leaves). A new type fails here until someone decides which it is,
-	/// whatever shape it uses to hold its tags; a view that does not name them would cut lists on a copy
-	/// between it and one of its own tags.
+	/// Null when <paramref name="type"/> is a listed leaf that derives directly from Tag and keeps the base
+	/// Leaves, or a view that declares its own Leaves. Otherwise why it is unclassified. A view must name
+	/// its tags itself: an inherited Leaves was written for the base's tags, not the ones this type adds.
+	/// </summary>
+	static string? Unclassified (Type type)
+	{
+		var declaring = type.GetMethod ("Leaves", BindingFlags.Instance | BindingFlags.NonPublic)!.DeclaringType;
+		if (declaring == type)
+			return null;
+		if (declaring == typeof (Tag) && type.BaseType == typeof (Tag) && LeafTagTypes.Contains (type.FullName))
+			return null;
+		return $"{type.FullName} (Leaves from {declaring!.Name})";
+	}
+
+	static IEnumerable<Type> ConcreteTagTypes (Assembly assembly) =>
+		assembly.GetTypes ().Where (t => t.IsClass && !t.IsAbstract && typeof (Tag).IsAssignableFrom (t));
+
+	/// <summary>
+	/// Every concrete Tag type in the library is either a listed leaf format tag, or a view that declares
+	/// the tags it reads (Leaves). A new type fails here until someone decides which it is, whatever
+	/// shape it uses to hold its tags; a view that does not name them would cut lists on a copy between it
+	/// and one of its own tags.
 	/// </summary>
 	[TestMethod]
 	public void EveryTagType_IsALeafOrAViewThatNamesItsTags ()
 	{
-		var unclassified = new List<string> ();
-		var views = new List<string> ();
-		foreach (var type in typeof (Tag).Assembly.GetTypes ().Where (t => t.IsClass && !t.IsAbstract && typeof (Tag).IsAssignableFrom (t))) {
-			var leaves = type.GetMethod ("Leaves", BindingFlags.Instance | BindingFlags.NonPublic)!;
-			if (leaves.DeclaringType != typeof (Tag))
-				views.Add (type.Name);
-			else if (!LeafTagTypes.Contains (type.Name) || type.BaseType != typeof (Tag))
-				unclassified.Add (type.FullName!);
-		}
+		var types = ConcreteTagTypes (typeof (Tag).Assembly).ToList ();
+		var unclassified = types.Select (Unclassified).OfType<string> ().ToList ();
 
 		Assert.IsEmpty (unclassified, string.Join (",", unclassified));
+		foreach (var name in LeafTagTypes)
+			Assert.IsTrue (types.Any (t => t.FullName == name), name);
 		foreach (var name in new[] { "CombinedTag", "FlacTag", "AiffTag" })
-			Assert.Contains (name, views);
+			Assert.IsTrue (types.Any (t => t.Name == name && t.GetMethod ("Leaves", BindingFlags.Instance | BindingFlags.NonPublic)!.DeclaringType == t), name);
+	}
+
+	[TestMethod]
+	public void TagTypeGuard_FlagsEveryShapeOfAnUnnamedView ()
+	{
+		var dummies = typeof (GuardDummies).GetNestedTypes (BindingFlags.NonPublic)
+			.Where (t => !t.IsAbstract && typeof (Tag).IsAssignableFrom (t)).ToList ();
+
+		var missed = dummies.Where (t => Unclassified (t) is null).Select (t => t.Name).ToList ();
+
+		Assert.HasCount (11, dummies);
+		Assert.IsEmpty (missed, string.Join (",", missed));
 	}
 
 	[TestMethod]
@@ -501,3 +528,77 @@ public class TagCopyReplacesListTests
 		public override void Clear () { }
 	}
 }
+
+/// <summary>
+/// Views that do not name their tags, one per shape a view can use to hold them. The guard in
+/// <see cref="TagCopyReplacesListTests"/> must flag every one.
+/// </summary>
+#pragma warning disable CA1812, IDE0052, CS0169, CS0649, CA1823, IDE0051
+static class GuardDummies
+{
+	abstract class DummyBase : Tag
+	{
+		public override TagTypes TagType => TagTypes.None;
+		public override string? Title { get; set; }
+		public override string? Artist { get; set; }
+		public override string? Album { get; set; }
+		public override string? Year { get; set; }
+		public override string? Comment { get; set; }
+		public override string? Genre { get; set; }
+		public override uint? Track { get; set; }
+		public override BinaryData Render () => BinaryData.Empty;
+		public override void Clear () { }
+	}
+
+	sealed class PlainField : DummyBase { readonly Id3v2Tag _inner = new (Id3v2Version.V24); }
+
+	sealed class Enumerable : DummyBase { readonly IEnumerable<Tag> _inner = []; }
+
+	abstract class PrivateFieldInBase : DummyBase { readonly Id3v2Tag _inner = new (Id3v2Version.V24); }
+
+	sealed class FieldInBase : PrivateFieldInBase { }
+
+	sealed class Delegate : DummyBase { readonly Func<Tag?> _inner = () => null; }
+
+	sealed class Holder { internal Id3v2Tag? Id3; }
+
+	sealed class InternalHolder : DummyBase { readonly Holder _file = new (); }
+
+	sealed class PrimaryConstructor (Id3v2Tag inner) : DummyBase
+	{
+		public override string? Album { get => inner.Album; set => inner.Album = value; }
+	}
+
+	sealed class MediaFile : DummyBase { readonly IMediaFile? _file; }
+
+	sealed class Dictionary : DummyBase { readonly Dictionary<string, Tag> _inner = []; }
+
+	sealed class CombinedSubclass (params Tag?[] tags) : CombinedTag (tags)
+	{
+		readonly Id3v2Tag _extra = new (Id3v2Version.V24);
+	}
+
+	abstract class SelfOnlyLeaves : DummyBase
+	{
+		internal override IEnumerable<Tag> Leaves () { yield return this; }
+	}
+
+	sealed class InheritedLeaves : SelfOnlyLeaves { readonly Id3v2Tag _inner = new (Id3v2Version.V24); }
+
+	/// <summary>A leaf's simple name in another namespace, deriving directly from Tag.</summary>
+	sealed class Mp4Tag : Tag
+	{
+		readonly Id3v2Tag _inner = new (Id3v2Version.V24);
+		public override TagTypes TagType => TagTypes.None;
+		public override string? Title { get => _inner.Title; set => _inner.Title = value; }
+		public override string? Artist { get; set; }
+		public override string? Album { get; set; }
+		public override string? Year { get; set; }
+		public override string? Comment { get; set; }
+		public override string? Genre { get; set; }
+		public override uint? Track { get; set; }
+		public override BinaryData Render () => BinaryData.Empty;
+		public override void Clear () { }
+	}
+}
+#pragma warning restore CA1812, IDE0052, CS0169, CS0649, CA1823, IDE0051
