@@ -53,4 +53,27 @@ public partial class MatroskaFileTests
 		StringAssert.Contains (saved.Error, cause, variant);
 		CollectionAssert.AreEqual (original, bytes, variant + ": the file is left as it was");
 	}
+
+	[TestMethod]
+	public async Task SaveToFileAsync_NewAttachments_MoveThatCannotUpdateTheCues_NamesTheCues ()
+	{
+		// The async twin of the malformed-cue row: the same rewrite, the same error.
+		var info = Master (0x1549A966, Element (0x7BA9, "Async"u8));
+		var headLength = Master (MatroskaIds.SeekHead, Seek2 (MatroskaIds.Info, 0)).Length;
+		var head = Master (MatroskaIds.SeekHead, Seek2 (MatroskaIds.Info, (ulong)headLength));
+		var cues = Master (MatroskaIds.Cues, Master (0xBB, Concat (Element (0xB3, new byte[] { 0 }),
+			Master (0xB7, Concat (Element (0xF7, new byte[] { 1 }), Element (0xF1, new byte[9]))))));
+		var cluster = Master (MatroskaIds.Cluster, Concat (Element (0xE7, new byte[] { 0 }), Element (0xA3, new byte[] { 0x81, 0, 0, 0x80, 0x98 })));
+		var original = FileWith (head, info, cues, cluster);
+		var parsed = MatroskaFile.Read (original).File!;
+		parsed.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg)];
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/async.mkv", original);
+
+		var saved = await parsed.SaveToFileAsync ("/async.mkv", original, fs);
+
+		Assert.IsFalse (saved.IsSuccess);
+		StringAssert.Contains (saved.Error, "Cues");
+		CollectionAssert.AreEqual (original, fs.ReadAllBytes ("/async.mkv"));
+	}
 }
