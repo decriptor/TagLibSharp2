@@ -18,8 +18,9 @@ static class TagTypeClassification
 	/// Leaf format tags, by full name. A leaf derives directly from Tag and keeps the base Leaves.
 	/// </summary>
 	internal static readonly string[] LeafTagTypeNames = [
-		"TagLibSharp2.Ape.ApeTag", "TagLibSharp2.Asf.AsfTag", "TagLibSharp2.Id3.Id3v1Tag", "TagLibSharp2.Id3.Id3v2.Id3v2Tag",
-		"TagLibSharp2.Matroska.MatroskaTag", "TagLibSharp2.Mp4.Mp4Tag", "TagLibSharp2.Riff.RiffInfoTag", "TagLibSharp2.Xiph.VorbisComment",
+		"TagLibSharp2.Ape.ApeTag", "TagLibSharp2.Asf.AsfTag", "TagLibSharp2.Audible.AudibleTag", "TagLibSharp2.Id3.Id3v1Tag",
+		"TagLibSharp2.Id3.Id3v2.Id3v2Tag", "TagLibSharp2.Matroska.MatroskaTag", "TagLibSharp2.Mp4.Mp4Tag", "TagLibSharp2.Riff.RiffInfoTag",
+		"TagLibSharp2.Xiph.VorbisComment",
 	];
 
 	/// <summary>
