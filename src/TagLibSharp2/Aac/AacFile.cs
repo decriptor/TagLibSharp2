@@ -221,17 +221,6 @@ public sealed class AacFile : IMediaFile
 		return AacFileReadResult.Success (file);
 	}
 
-	/// <summary>
-	/// The end of the audio region, from <see cref="AacTail.Locate"/>: the one tail rule detection and both reads
-	/// share. When <paramref name="file"/> is given, it gets the trailing tags.
-	/// </summary>
-	internal static long ReadTail (Stream stream, long audioStart, AacFile? file)
-	{
-		var tail = AacTail.Locate (new AacTailSource (stream), audioStart, readTags: file is not null);
-		file?.TakeTags (tail);
-		return tail.AudioEnd;
-	}
-
 	void TakeTags (AacTail tail)
 	{
 		ApeTag = tail.ApeTag;
@@ -242,12 +231,14 @@ public sealed class AacFile : IMediaFile
 
 	/// <summary>
 	/// The end of the audio in <paramref name="data"/>, which starts at the first byte after a leading ID3v2 tag and
-	/// runs to the end of the file, by the same rule as <see cref="ReadTail"/>. Nothing is copied.
+	/// runs to the end of the file, by <see cref="AacTail.Locate"/>: the one tail rule detection, both reads and the
+	/// save share. Nothing is copied.
 	/// </summary>
 	internal static long AudioEnd (ReadOnlySpan<byte> data) => AacTail.Locate (new AacTailSource (data), 0, readTags: false).AudioEnd;
 
 	/// <summary>The stream twin of <see cref="AudioEnd(ReadOnlySpan{byte})"/>. The stream position moves.</summary>
-	internal static long AudioEnd (Stream stream, long audioStart) => ReadTail (stream, audioStart, null);
+	internal static long AudioEnd (Stream stream, long audioStart) =>
+		AacTail.Locate (new AacTailSource (stream), audioStart, readTags: false).AudioEnd;
 
 	/// <summary>
 	/// Reads an AAC file from a file path.

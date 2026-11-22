@@ -295,6 +295,30 @@ public class AacFileTests
 	}
 
 	[TestMethod]
+	[DataRow (254)]
+	[DataRow (255)]
+	public void Read_ApeTagWithTheLongestKey_IsATag (int keyLength)
+	{
+		// APEv2 keys run to 255 characters. A tag whose item has one is a tag on every path, not 255 bytes of audio.
+		var key = new string ('K', keyLength);
+		var ape = new TagLibSharp2.Ape.ApeTag ();
+		ape.SetValue (key, "value");
+		var tag = ape.RenderWithOptions (includeHeader: true).ToArray ();
+		var data = Concat (Id3v2Bytes ("Front"), Adts (11, length: 300), tag);
+
+		var file = AacFile.Read (data).File!;
+		Assert.AreEqual (11, file.Properties!.FrameCount);
+		Assert.IsNotNull (file.ApeTag);
+		Assert.AreEqual ("value", file.ApeTag!.GetValue (key));
+		using var stream = new MemoryStream (data);
+		Assert.AreEqual (11, AacFile.Read (stream, null, null).File!.Properties!.FrameCount);
+		Assert.AreEqual (MediaFormat.Aac, MediaFile.DetectFormat (data));
+
+		var saved = file.Render (data).ToArray ();
+		Assert.AreEqual ("value", AacFile.Read (saved).File!.ApeTag!.GetValue (key));
+	}
+
+	[TestMethod]
 	public void Read_HeaderForAnotherStream_IsSkippedNotCounted ()
 	{
 		// The fixed header does not change from frame to frame (ISO/IEC 13818-7 §6.2.1).
