@@ -63,6 +63,37 @@ public class AacDetectionTests
 		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (Concat (Id3v2Bytes ("T"), Adif (64_000))));
 
 	[TestMethod]
+	public async Task Id3v2ThenProgramStream_IsMpegPs () =>
+		Assert.AreEqual (MediaFormat.MpegPs, await DetectEverywhere (Concat (Id3v2Bytes ("T"), TagLibSharp2.Tests.Mpeg.MpegPsTestBuilder.ProgramStream ())));
+
+	[TestMethod]
+	public void Id3v2ThenProgramStreamCarryingAdts_IsMpegPsNotAac ()
+	{
+		// A program stream is checked first: ADTS audio in its PES packets is not a raw AAC file.
+		// ADTS frames right after the first pack and system headers, so the AAC rule alone would claim the file.
+		var ps = TagLibSharp2.Tests.Mpeg.MpegPsTestBuilder.ProgramStream ();
+		var pack = TagLibSharp2.Tests.Mpeg.MpegPsTestBuilder.PackHeader1 (0).Length
+			+ TagLibSharp2.Tests.Mpeg.MpegPsTestBuilder.SystemHeader (true, TagLibSharp2.Tests.Mpeg.MpegPsTestBuilder.Audio.Mp2).Length;
+		Adts (4, length: 64).CopyTo (ps, pack);
+		var data = Concat (Id3v2Bytes ("T"), ps);
+		Assert.IsTrue (AacFile.IsValidFormat (data), "the fixture must look like AAC to the AAC rule");
+		Assert.IsTrue (TagLibSharp2.Mpeg.MpegPsFile.IsValidFormat (data));
+
+		Assert.AreEqual (MediaFormat.MpegPs, MediaFile.DetectFormat (data));
+		Assert.AreNotEqual (MediaFormat.Aac, MediaFile.Read (new MemoryStream (data)).Format);
+		Assert.AreNotEqual (MediaFormat.Aac, MediaFile.ReadFromData (data).Format);
+	}
+
+	[TestMethod]
+	public async Task Id3v2ThenAdts_IsNotMpegPs ()
+	{
+		var data = Concat (Id3v2Bytes ("T"), Adts (20));
+
+		Assert.IsFalse (TagLibSharp2.Mpeg.MpegPsFile.IsValidFormat (data));
+		Assert.AreEqual (MediaFormat.Aac, await DetectEverywhere (data, "song.mpg"));
+	}
+
+	[TestMethod]
 	public async Task Id3v2ThenMpegAudio_StaysMp3 () =>
 		Assert.AreEqual (MediaFormat.Mp3, await DetectEverywhere (Concat (Id3v2Bytes ("T"), Mp3Frames (5))));
 
@@ -230,7 +261,8 @@ public class AacDetectionTests
 		var result = MediaFile.Read (stream, "song.mp3");
 
 		Assert.AreEqual (MediaFormat.Mp3, result.Format);
-		var budget = 32 + tag.Length + 32 * 1024 + 128 + 64;
+		// The MPEG-PS probe after the tag (MpegPsFile.StartsAfterId3v2) adds its 10-byte header and 64-byte reads.
+		var budget = 32 + tag.Length + 32 * 1024 + 128 + 64 + 10 + 64;
 		Assert.IsTrue (stream.BytesRead <= budget, $"read {stream.BytesRead} bytes, budget {budget}");
 	}
 
