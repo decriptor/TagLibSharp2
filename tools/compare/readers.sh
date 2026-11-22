@@ -52,6 +52,8 @@ for file in "$@"; do
 import json, sys
 import mutagen
 f = mutagen.File(sys.argv[1])
+if f is None:
+    sys.exit(0)  # mutagen does not read this format: the column shows n/a, not "-"
 out = {}
 if f is not None and f.tags is not None:
     for key, value in f.tags.items():
@@ -114,11 +116,11 @@ def load(tool):
 FIELDS = {
     "title": ["title", "tit2", "©nam", "track_name"],
     "artist": ["artist", "tpe1", "©art", "author", "performer"],
-    "album": ["album", "talb", "©alb", "wm/albumtitle"],
+    "album": ["album", "talb", "©alb", "wm/albumtitle", "albumtitle"],
     "albumartist": ["album_artist", "albumartist", "tpe2", "aart", "band", "album_performer", "wm/albumartist"],
-    "date": ["date", "year", "tdrc", "tyer", "©day", "recorded_date", "wm/year", "recordingtime", "contentcreatedate"],
+    "date": ["date", "year", "tdrc", "tyer", "©day", "recorded_date", "wm/year", "recordingtime", "contentcreatedate", "datecreated", "date_recorded", "datetimeoriginal"],
     "track": ["track", "tracknumber", "trck", "trkn", "track_position", "wm/tracknumber"],
-    "disc": ["disc", "discnumber", "disknumber", "tpos", "disk", "part_position", "partofset"],
+    "disc": ["disc", "discnumber", "disknumber", "tpos", "disk", "part_position", "partofset", "wm/partofset"],
     "genre": ["genre", "tcon", "©gen", "wm/genre"],
     "comment": ["comment", "©cmt", "description"],
     "composer": ["composer", "tcom", "©wrt", "wm/composer"],

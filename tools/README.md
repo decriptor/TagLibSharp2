@@ -60,12 +60,12 @@ The `span` column is `=` when `MediaFile.ReadFromData` agrees with the path read
 `!value` marker is a lead to follow up, not a verdict. For example, an ID3v1-only file cannot hold a
 5,000-character title.
 
-Example output from the TagLib# sample files, with columns cut for width:
+Example output from the TagLib# sample files with the library at `f1ecb88`, with columns cut for width:
 
 ```text
 file              format  title      artist      album      year  track  duration_ms  span  noop               title         artist        longtitle           clear
 Turning Lime.mpg  MpegPs  -          -           -          -     -      1130         =     no-tag             no-tag        no-tag        no-tag              no-tag
-sample.m4a        Mp4     M4A title  M4A artist  M4A album  1234  6      5253         =     30745F14CA5A       2DA3AE441A55  98C8CE90E147  C659E838A85D        F67E933BC2E1
+sample.m4a        Mp4     M4A title  M4A artist  M4A album  1234  6      5253         =     FF9D01F53011       287EB995EA78  9EE6DB1AEC79  A7016ACB83CF        F67E933BC2E1
 sample.wav        Wav     Title      Artist      Album      2009  1      2000         =     580E3F312678       6FCA1671EF91  4B170CE9B501  A66623BDE9B9        9A91B179E1A3!value
 sample_v1_only.mp3 Mp3    MP3 title  MP3 artist  MP3 album  1234  6      1306         =     001209053E95=same  60FA44AE35BD  1F34858C9188  16DC1B9F572C!value  06F613BCAC49
 a.mp3             FAIL Invalid MP3 file: data too short
@@ -100,7 +100,7 @@ TAGLIBSHARP2_PYTHON=~/venvs/mutagen/bin/python tools/compare/readers.sh saved.mp
 
 exiftool runs with `-G1`, so each tag block's copy of a field is listed with its group, for example
 `MP3 title v2 [id3v2_3] | MP3 title [id3v1]`, and a stale copy cannot hide. Each tool is optional. A tool
-that is not installed shows `n/a`, and a field the tool does not report
+that is not installed, or does not read the format (mutagen and Matroska), shows `n/a`, and a field the tool does not report
 shows `-`. mutagen runs under `$TAGLIBSHARP2_PYTHON` (default `python3`). Python runs isolated (`-I`), which ignores
 the user site, so point that variable at a virtual environment that has mutagen installed. python3 itself is required. These tools only run as black boxes. TagLib# and
 AVFoundation are not included: run them yourself as external readers, and never add TagLib# as a
