@@ -292,7 +292,7 @@ public partial class MatroskaFileTests
 		var bytes = Save (parsed, original);
 
 		Assert.IsTrue (bytes.AsSpan ().IndexOf (chapters) >= 0);
-		Assert.AreEqual (SegmentOffsetOf (original, chapters), SegmentOffsetOf (bytes, chapters));
+		Assert.AreEqual (MarkerOffsetOf (original, chapters), MarkerOffsetOf (bytes, chapters));
 		Assert.AreEqual (1, CountOf (bytes, marker));
 		Assert.AreEqual ("Someone", MatroskaFile.Read (bytes).File!.Tag.Artist);
 	}
@@ -476,7 +476,7 @@ public partial class MatroskaFileTests
 		Assert.AreEqual (MatroskaIds.Chapters, chaptersSeek.Id);
 		Assert.IsTrue (IsElementAt (bytes, chaptersSeek.Position, MatroskaIds.Chapters));
 		Assert.IsTrue (IsElementAt (bytes, seeks.Find (s => s.Id == MatroskaIds.Cluster).Position, MatroskaIds.Cluster));
-		Assert.IsTrue (chaptersSeek.Position < (ulong)SegmentOffsetOf (bytes, cluster));
+		Assert.IsTrue (chaptersSeek.Position < (ulong)MarkerOffsetOf (bytes, cluster));
 		Assert.AreEqual (1, CountOf (bytes, cluster));
 		AssertSeeksPreserved (original, bytes);
 		Assert.AreEqual (5, MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters.Count);
@@ -500,7 +500,7 @@ public partial class MatroskaFileTests
 		var tagged = MatroskaFile.Read (original).File!;
 		tagged.Tag.Artist = "Someone";
 		var tagOnly = Save (tagged, original);
-		Assert.IsTrue (SegmentOffsetOf (tagOnly, chapters) > SegmentOffsetOf (tagOnly, cluster));
+		Assert.IsTrue (MarkerOffsetOf (tagOnly, chapters) > MarkerOffsetOf (tagOnly, cluster));
 
 		var parsed = MatroskaFile.Read (original).File!;
 		parsed.Chapters.Editions[0].Chapters[0].Title = "y";
@@ -508,7 +508,7 @@ public partial class MatroskaFileTests
 
 		var listed = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Chapters);
 		Assert.IsTrue (IsElementAt (bytes, listed.Position, MatroskaIds.Chapters));
-		Assert.IsTrue (listed.Position < (ulong)SegmentOffsetOf (bytes, cluster));
+		Assert.IsTrue (listed.Position < (ulong)MarkerOffsetOf (bytes, cluster));
 		Assert.AreEqual (1, CountOf (bytes, cluster));
 		AssertSeeksPreserved (original, bytes);
 		Assert.AreEqual ("y", MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters[0].Title);
@@ -528,7 +528,7 @@ public partial class MatroskaFileTests
 		var bytes = Save (parsed, original);
 
 		Assert.AreEqual (original.Length, bytes.Length);
-		Assert.AreEqual (SegmentOffsetOf (original, cluster), SegmentOffsetOf (bytes, cluster));
+		Assert.AreEqual (MarkerOffsetOf (original, cluster), MarkerOffsetOf (bytes, cluster));
 		Assert.AreEqual ("x", MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters[0].Title);
 	}
 
@@ -715,7 +715,7 @@ public partial class MatroskaFileTests
 		var chapters = seeks.Find (entry => entry.Id == MatroskaIds.Chapters);
 		Assert.AreEqual (MatroskaIds.Chapters, chapters.Id);
 		Assert.IsTrue (IsElementAt (bytes, chapters.Position, MatroskaIds.Chapters));
-		Assert.IsTrue (chapters.Position < (ulong)SegmentOffsetOf (bytes, marker));
+		Assert.IsTrue (chapters.Position < (ulong)MarkerOffsetOf (bytes, marker));
 		foreach (var entry in seeks)
 			Assert.IsTrue (IsElementAt (bytes, entry.Position, entry.Id), entry.Id.ToString ("X", System.Globalization.CultureInfo.InvariantCulture));
 		Assert.IsTrue (TryReadCueClusterPosition (bytes, out var cuePosition, out var cueCrcOk));
@@ -783,7 +783,7 @@ public partial class MatroskaFileTests
 		Assert.IsTrue (cues.Position > 255);
 		var listed = ReadSeeks (bytes).Find (entry => entry.Id == MatroskaIds.Chapters);
 		Assert.IsTrue (IsElementAt (bytes, listed.Position, MatroskaIds.Chapters));
-		Assert.IsTrue (listed.Position < (ulong)SegmentOffsetOf (bytes, cluster));
+		Assert.IsTrue (listed.Position < (ulong)MarkerOffsetOf (bytes, cluster));
 		Assert.AreEqual (1, CountOf (bytes, cluster));
 		Assert.AreEqual ("Kept out of the way", MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters[0].Title);
 	}
@@ -822,7 +822,7 @@ public partial class MatroskaFileTests
 
 		// RFC 9559 section 25.3.4: without a SeekHead a reader looks before the first Cluster.
 		Assert.AreEqual (1, CountOf (bytes, cluster));
-		Assert.IsTrue (SegmentOffsetOf (bytes, Id (0x1043A770)) < SegmentOffsetOf (bytes, cluster));
+		Assert.IsTrue (MarkerOffsetOf (bytes, Id (0x1043A770)) < MarkerOffsetOf (bytes, cluster));
 		Assert.AreEqual ("End", MatroskaFile.Read (bytes).File!.Chapters.Editions[0].Chapters[0].Title);
 	}
 
@@ -876,7 +876,7 @@ public partial class MatroskaFileTests
 		CollectionAssert.AreEqual (expected, actual.ToArray ());
 
 	/// <summary>The offset from the segment payload. The segment size field can widen when the body grows.</summary>
-	static int SegmentOffsetOf (byte[] file, byte[] pattern)
+	static int MarkerOffsetOf (byte[] file, byte[] pattern)
 	{
 		Assert.IsTrue (TrySegmentBody (file, out _, out var bodyAt));
 		var at = IndexOf (file, pattern);
