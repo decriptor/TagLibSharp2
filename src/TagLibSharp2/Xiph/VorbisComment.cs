@@ -1067,6 +1067,78 @@ public sealed class VorbisComment : Tag
 	}
 
 	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Each value is one <c>NAME=value</c> field. Names compare case-insensitively and are written in upper
+	/// case (https://xiph.org/vorbis/doc/v-comment.html, "Field names").
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name))
+			return CustomFieldValues.None;
+
+		var upperName = name.ToUpperInvariant ();
+		var values = new List<string> ();
+		for (var i = 0; i < _fields.Count; i++) {
+			if (_fields[i].Name == upperName && _fields[i].Value.Length > 0)
+				values.Add (_fields[i].Value);
+		}
+		return values;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// The spec allows a name to repeat, so each value is written as its own field
+	/// (https://xiph.org/vorbis/doc/v-comment.html, "Field names"). The new fields take the place of the
+	/// first old one, so the order of other fields is kept.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
+			return false;
+
+		var upperName = name.ToUpperInvariant ();
+		var at = _fields.FindIndex (f => f.Name == upperName);
+		_fields.RemoveAll (f => f.Name == upperName);
+		if (at < 0)
+			at = _fields.Count;
+		for (var i = 0; i < kept.Count; i++)
+			_fields.Insert (at + i, new VorbisCommentField (upperName, kept[i]));
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsCustomFieldName (name))
+			return false;
+
+		var upperName = name.ToUpperInvariant ();
+		return _fields.RemoveAll (f => f.Name == upperName) > 0;
+	}
+
+	/// <summary>
+	/// A field name is ASCII 0x20 through 0x7D without '=' (https://xiph.org/vorbis/doc/v-comment.html).
+	/// METADATA_BLOCK_PICTURE is excluded because <see cref="Pictures"/> owns it
+	/// (https://wiki.xiph.org/VorbisComment#METADATA_BLOCK_PICTURE).
+	/// </summary>
+	static bool IsCustomFieldName (string name)
+	{
+		if (name.Length == 0)
+			return false;
+		foreach (var c in name) {
+			if (c < 0x20 || c > 0x7D || c == '=')
+				return false;
+		}
+		return !string.Equals (name, MetadataBlockPictureField, StringComparison.OrdinalIgnoreCase);
+	}
+
+	/// <inheritdoc/>
 	public override void Clear ()
 	{
 		_fields.Clear ();

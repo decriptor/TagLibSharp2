@@ -51,72 +51,8 @@ internal static class Id3Text
 	/// Decodes UTF-16 text. Each NUL-separated value may start with its own BOM.
 	/// A value with no BOM uses the frame's first BOM, or little-endian when there is none.
 	/// </summary>
-	internal static string DecodeUtf16BomText (ReadOnlySpan<byte> data)
-	{
-		data = TrimTrailingTerminator (data, TextEncodingType.Utf16WithBom);
-		if (data.IsEmpty)
-			return string.Empty;
-
-		var littleEndian = FrameIsLittleEndian (data);
-		if (IndexOfUtf16Nul (data) < 0)
-			return DecodeOneUtf16Value (data, littleEndian);
-
-		var parts = new List<string> ();
-		var start = 0;
-		for (var i = 0; i + 1 < data.Length; i += 2) {
-			if (data[i] != 0 || data[i + 1] != 0)
-				continue;
-
-			parts.Add (DecodeOneUtf16Value (data.Slice (start, i - start), littleEndian));
-			start = i + 2;
-		}
-
-		parts.Add (DecodeOneUtf16Value (data.Slice (start), littleEndian));
-		return parts.Count == 1 ? parts[0] : string.Join ("\0", parts);
-	}
-
-	static bool FrameIsLittleEndian (ReadOnlySpan<byte> data)
-	{
-		var start = 0;
-		while (start + 1 < data.Length) {
-			if (data[start] == 0xFF && data[start + 1] == 0xFE)
-				return true;
-			if (data[start] == 0xFE && data[start + 1] == 0xFF)
-				return false;
-
-			var rel = IndexOfUtf16Nul (data.Slice (start));
-			if (rel < 0)
-				break;
-			start += rel + 2;
-		}
-
-		return true;
-	}
-
-	static string DecodeOneUtf16Value (ReadOnlySpan<byte> data, bool fallbackLittleEndian)
-	{
-		if (data.IsEmpty)
-			return string.Empty;
-
-		var littleEndian = fallbackLittleEndian;
-		if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
-			littleEndian = true;
-			data = data.Slice (2);
-		} else if (data.Length >= 2 && data[0] == 0xFE && data[1] == 0xFF) {
-			littleEndian = false;
-			data = data.Slice (2);
-		}
-
-		if (data.IsEmpty)
-			return string.Empty;
-
-		var encoding = littleEndian ? Encoding.Unicode : Encoding.BigEndianUnicode;
-#if NETSTANDARD2_0
-		return encoding.GetString (data.ToArray ());
-#else
-		return encoding.GetString (data);
-#endif
-	}
+	/// <remarks>The one UTF-16 decoder, <see cref="Frames.Utf16Text"/>, does the work.</remarks>
+	internal static string DecodeUtf16BomText (ReadOnlySpan<byte> data) => Frames.Utf16Text.Decode (data);
 
 	static int IndexOfUtf16Nul (ReadOnlySpan<byte> data)
 	{

@@ -499,6 +499,43 @@ sealed class AiffTag : Tag
 	/// <inheritdoc/>
 	public override void Clear () => _file.ClearMappedFields ();
 
+	/// <inheritdoc/>
+	/// <remarks>Custom fields live in the file's ID3 tag, as <c>TXXX</c> frames; the native text chunks have fixed names.</remarks>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return Id3?.GetCustomField (name) ?? CustomFieldValues.None;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Writes a <c>TXXX</c> frame in the file's ID3 tag. The tag is created only when the field is stored, so a
+	/// refused name or a write of no values does not add an ID3 chunk.
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (Id3 is { } existing)
+			return existing.SetCustomField (name, values);
+
+		var created = new Id3v2Tag ();
+		if (!created.SetCustomField (name, values))
+			return false;
+		if (!created.IsEmpty)
+			_file.Id3v2Tag = created;
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return Id3?.RemoveCustomField (name) ?? false;
+	}
+
 	Id3v2Tag? Id3 => _file.Id3v2Tag;
 
 	/// <inheritdoc/>

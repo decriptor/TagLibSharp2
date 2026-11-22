@@ -84,6 +84,17 @@ if (result.IsSuccess)
 
 ### Read Custom Fields
 
+Any tag, whatever the format, through the base `Tag`:
+
+```csharp
+var tag = MediaFile.Read ("song.flac").Tag!;
+if (tag.SupportsCustomFields) {
+    IReadOnlyList<string> values = tag.GetCustomField ("MY_APP_DATA");
+}
+```
+
+Or through the format's own API:
+
 ```csharp
 // ID3v2 - User-defined text (TXXX frames)
 var id3v2 = mp3.Id3v2Tag!;
@@ -191,6 +202,20 @@ tag.R128AlbumGain = "256";   // +1 dB
 ```
 
 ### Write Custom Fields
+
+Any tag, whatever the format. The field is stored where the format keeps named fields: a Vorbis comment, an
+APE item, an ID3v2 `TXXX` frame, an MP4 `----:com.apple.iTunes:` atom, an ASF attribute, a Matroska
+`SimpleTag`, or a RIFF INFO chunk (four-character names only). `SetCustomField` returns false and changes
+nothing when the format cannot store the name or the values; ID3v1 stores none.
+
+```csharp
+var tag = file.Tag!;
+tag.SetCustomField ("MY_APP_DATA", "first", "second"); // several values
+tag.SetCustomField ("CATALOG_ID", "ABC-12345");
+tag.RemoveCustomField ("OLD_FIELD");
+```
+
+Or through the format's own API:
 
 ```csharp
 // ID3v2 - User-defined text (TXXX frames)

@@ -620,6 +620,81 @@ public class CombinedTag : Tag
 #pragma warning restore CA1819
 
 	/// <inheritdoc/>
+	/// <remarks>True when any underlying tag supports custom fields.</remarks>
+	public override bool SupportsCustomFields {
+		get {
+			foreach (var tag in _tags) {
+				if (tag is { SupportsCustomFields: true })
+					return true;
+			}
+			return false;
+		}
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>Returns the values of the first tag in priority order that holds any.</remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		foreach (var tag in _tags) {
+			if (tag is null)
+				continue;
+			var values = tag.GetCustomField (name);
+			if (values.Count > 0)
+				return values;
+		}
+		return CustomFieldValues.None;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <para>
+	/// Writes every underlying tag that supports custom fields, as the property setters write every tag, and
+	/// writes the values only where they fit. A tag that cannot store them (a RIFF INFO chunk holds one value
+	/// under a four-character name, for example) does not keep an older value under the name: the name is
+	/// removed from it. So afterwards every tag either holds the new values or does not hold the name, and
+	/// <see cref="GetCustomField"/>, which reads the first tag that holds the name, returns the new values.
+	/// </para>
+	/// <para>
+	/// Returns true when at least one tag stored the values. When none could, it returns false and no tag
+	/// changes. A tag without custom fields, such as ID3v1, is left as it is.
+	/// </para>
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		var stored = false;
+		List<Tag>? refused = null;
+		foreach (var tag in _tags) {
+			if (tag is not { SupportsCustomFields: true })
+				continue;
+			if (tag.SetCustomField (name, values))
+				stored = true;
+			else
+				(refused ??= []).Add (tag);
+		}
+
+		if (stored && refused is not null) {
+			foreach (var tag in refused)
+				tag.RemoveCustomField (name);
+		}
+		return stored;
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>Removes the field from every underlying tag. Returns true when any of them held it.</remarks>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		var removed = false;
+		foreach (var tag in _tags) {
+			if (tag is not null)
+				removed |= tag.RemoveCustomField (name);
+		}
+		return removed;
+	}
+
+	/// <inheritdoc/>
 	/// <exception cref="NotSupportedException">
 	/// <see cref="CombinedTag"/> is a view over multiple tags and does not produce its
 	/// own serialized representation. Render the owning file or a specific underlying

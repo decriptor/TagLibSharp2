@@ -90,6 +90,90 @@ public class AviInfoTextTests
 			Assert.AreEqual (names.IndexOf ("LIST INFO") - 1, names.IndexOf ("CSET"), $"{cell}: the CSET comes right before the list");
 	}
 
+	/// <summary>
+	/// The same matrix with the change made through the custom-field API: SetCustomField adds a field the
+	/// file did not hold, or RemoveCustomField drops one it did. Each cell keeps the unchanged field's bytes, or
+	/// re-encodes it as UTF-8 when the list must become UTF-8, or refuses, exactly as a mapped field change does.
+	/// </summary>
+	[TestMethod]
+	[DynamicData (nameof (Matrix))]
+	public void Save_CustomFieldChange_KeepsUnchangedBytesOrTheSaveRefuses (int codePage, string unchangedKind, string changedKind)
+	{
+		var unchanged = UnchangedBytes (codePage, unchangedKind);
+		var builder = new AviTestBuilder { CharacterSet = codePage < 0 ? null : (ushort?)codePage };
+		builder.Info.Add (("INAM", "Old"));
+		builder.Info.Add (("IOLD", "drop me"));
+		builder.InfoBytes.Add (("IART", unchanged));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		var artist = file.InfoTag.Artist;
+		var changed = changedKind == "ascii" ? ChangedAscii : ChangedNonAscii;
+		Assert.IsTrue (file.InfoTag.SetCustomField ("IXYZ", changed), "an AVI INFO list takes any text");
+		Assert.IsTrue (file.InfoTag.RemoveCustomField ("IOLD"));
+
+		var fs = new MockFileSystem ();
+		var result = file.SaveToFile ("/out.avi", original, fs);
+
+		var becameUtf8 = changedKind == "nonascii" && codePage != 65001;
+		var kind = Kind (codePage, unchanged);
+		var cell = $"CSET {codePage}, unchanged {unchangedKind}, custom field {changedKind}";
+		if (becameUtf8 && kind == "guess") {
+			Assert.IsFalse (result.IsSuccess, cell);
+			StringAssert.Contains (result.Error, "IART", cell);
+			return;
+		}
+
+		Assert.IsTrue (result.IsSuccess, $"{cell}: {result.Error}");
+		var saved = fs.ReadAllBytes ("/out.avi");
+		var again = AviFile.Read (saved).File!.InfoTag;
+		if (becameUtf8 && kind == "exact") {
+			var declared = Oracle (codePage).GetString (unchanged, 0, Array.IndexOf (unchanged, (byte)0));
+			CollectionAssert.AreEqual (Encoding.UTF8.GetBytes (declared + "\0"), AviTestBuilder.InfoField (saved, "IART"), cell);
+		} else {
+			CollectionAssert.AreEqual (unchanged, AviTestBuilder.InfoField (saved, "IART"), cell);
+		}
+
+		Assert.AreEqual (artist, again.Artist, cell);
+		Assert.AreEqual ("Old", again.Title, cell);
+		CollectionAssert.AreEqual (new[] { changed }, again.GetCustomField ("IXYZ").ToArray (), cell);
+		Assert.AreEqual (0, again.GetCustomField ("IOLD").Count, cell);
+		Assert.IsNull (AviTestBuilder.InfoField (saved, "IOLD"), cell);
+		if (becameUtf8)
+			Assert.AreEqual ((ushort)65001, CodePage (saved), cell);
+		else if (codePage >= 0)
+			Assert.AreEqual ((ushort)codePage, CodePage (saved), $"{cell}: the declared code page is kept");
+	}
+
+	[TestMethod]
+	[DataRow ((ushort)1252, "Café", new byte[] { (byte)'C', (byte)'a', (byte)'f', 0xE9, 0 })]
+	[DataRow ((ushort)28591, "Café", new byte[] { (byte)'C', (byte)'a', (byte)'f', 0xE9, 0 })]
+	[DataRow ((ushort)0, "Café", new byte[] { (byte)'C', (byte)'a', (byte)'f', 0xE9, 0 })]
+	public void Save_CustomFieldThatFitsTheDeclaredCodePage_IsWrittenInIt (ushort codePage, string value, byte[] expected)
+	{
+		var builder = new AviTestBuilder { CharacterSet = codePage };
+		builder.Info.Add (("INAM", "Old"));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		Assert.IsTrue (file.InfoTag.SetCustomField ("IXYZ", value));
+
+		var fs = new MockFileSystem ();
+		Assert.IsTrue (file.SaveToFile ("/out.avi", original, fs).IsSuccess);
+		var saved = fs.ReadAllBytes ("/out.avi");
+
+		CollectionAssert.AreEqual (expected, AviTestBuilder.InfoField (saved, "IXYZ"));
+		Assert.AreEqual (codePage, CodePage (saved), "the CSET is kept");
+		CollectionAssert.AreEqual (new[] { value }, AviFile.Read (saved).File!.InfoTag.GetCustomField ("IXYZ").ToArray ());
+	}
+
+	[TestMethod]
+	public void WavInfo_CustomFieldOutsideLatin1_IsRefused ()
+	{
+		// A WAV INFO list is Latin-1 and has no CSET, so text it cannot hold is refused, not mangled.
+		var tag = new RiffInfoTag ();
+		Assert.IsFalse (tag.SetCustomField ("IXYZ", ChangedNonAscii));
+		Assert.IsTrue (tag.SetCustomField ("IXYZ", "Café"));
+	}
+
 	public static IEnumerable<object[]> Matrix ()
 	{
 		foreach (var codePage in new[] { -1, 0, 28591, 932, 1252, 65001 })

@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Tag.GetCustomField`, `Tag.SetCustomField`, `Tag.RemoveCustomField`, and `Tag.SupportsCustomFields` read,
+  write, and remove a named field with one or more values on any tag (#112). The field lives in the format's
+  own storage: a Vorbis comment field, an APE text item, an ID3v2 `TXXX` frame, an MP4 `----:com.apple.iTunes`
+  freeform atom, an ASF attribute, a file-level Matroska `SimpleTag`, or a RIFF INFO chunk (Latin-1 in WAV;
+  any text in AVI, saved under the file's CSET rules). ID3v1 reports no support. `CombinedTag` (MP3, raw AAC,
+  AVI with an ID3v2 chunk, MPEG program streams), `FlacTag`, and the AIFF view (`AiffFile.Tag`) forward the
+  members. A combined view writes the values into every tag that can store them and removes the name from a
+  tag that cannot (RIFF INFO holds one value), so no tag keeps an older value. On ASF the first value goes to
+  the Content Description or Extended Content Description and the others to the Metadata Library Object, as
+  Windows writes them. `GetCustomField`, `Performers`, `AlbumArtists`, `Composers`, and `Genres` read every
+  value; `SetCustomField` and those four properties write them back the same way; a remove, a mapped setter
+  given a new value, and `Clear` drop the Metadata Library values too. ASF follows the write-back rule of
+  ID3v2, APE, and Vorbis Comments (`Tag.IsWriteBack`): writing back the exact value a mapped property read
+  changes nothing, `null` always clears, a stored value the getter cannot read included (the DWORD year
+  mutagen writes, say), and `CopyTo` always replaces. A single-value ASF getter returns the first non-empty
+  value of its attribute (a string, a number, or a BOOL), from the Content Description or Extended Content
+  Description and then the Metadata and Metadata Library Objects, as the ID3v2, APE, and Vorbis Comment
+  getters do, and `IsCompilation = false` clears a true stored in any of them.
 - `MatroskaFile.Tracks` lists the first 4096 known-size `TrackEntry` elements as `MatroskaTrack` objects, and `MatroskaFile.IsTrackListTruncated` tells when a file had more. Each track has `TrackNumber`, `TrackUid`, `TrackType`, `CodecId`, `IsDefault`, and `IsEnabled` (RFC 9559 §5.1.4.1).
 - `MatroskaTrack.IsEnabled` is written back on save. A stored `FlagEnabled` is rewritten in place. A missing one is added to the `TrackEntry`, taking the room from the `Void` right after `Tracks` when it has enough so no element moves; otherwise everything after `Tracks` moves once, with every SeekHead, Cues and Cluster `Position` value and CRC-32 updated, each widened when it no longer fits. Adding a FlagEnabled (minver 2) also makes the EBML header's `DocTypeVersion` at least 2: a stored lower value is raised, and an empty or missing one is written (RFC 9559 section 7); no Segment Position moves. A track the caller did not set keeps its bytes.
 - `AiffFile.Id3v2Tag`, and `AiffFile.Title`, `Artist`, `Comment` and `Copyright`
@@ -94,10 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Matroska: a save keeps one copy of the Segment body at a time; a move no longer holds a second one.
 - **MP4**: A version 1 `mvhd` or `mdhd` whose 64-bit duration is past `TimeSpan.MaxValue` no longer throws
   out of `Mp4File.Read` or `Mp4AudioPropertiesParser.Parse`; the duration saturates.
+- ID3v2 UTF-16 text with a byte order mark on each string (ID3v2.3 §3.3, mutagen's default) reads without a
+  U+FEFF at the start of every value after the first, in text frames, `TXXX`, and `TIPL`/`TMCL`/`IPLS`. One
+  decoder reads all of them on every target framework. A text or `TXXX` frame read from a file renders with the
+  BOMs and the trailing terminators it was read with, so an empty last value survives an unchanged save. A
+  `TXXX` that `SetCustomField` writes in an ID3v2.3 tag has a BOM before each value; a frame built in code keeps
+  one BOM, as before.
+- Writing back the gain `R128TrackGainDb` or `R128AlbumGainDb` read keeps the stored text, so `-0512` is not
+  rewritten as `-512`. `null` still clears it, text the getter cannot parse included.
+- An ASF title, artist, copyright, comment, or rating write replaces the same-named Extended Content Description
+  descriptor that ffmpeg writes beside the Content Description field, so other tools no longer show the old value.
+  An empty Content Description field reads that descriptor.
 
 ### Changed
 
-- An APE artist, album artist, composer, or genre is the first name. It is not a comma-joined string. A Basic copy from APE into MP4, ASF, RIFF INFO, or ID3v1 keeps that first name. A copy into ID3v2 keeps the full list.
+- An APE artist, album artist, composer, or genre is the first name. It is not a comma-joined string. A Basic copy from APE into MP4, ASF, RIFF INFO, or ID3v1 keeps that first name. A copy with the Extended options into ASF keeps every name, the first in the Content Description and the rest in the Metadata Library. A copy into ID3v2 keeps the full list.
 - A single-value ID3v2 or Vorbis Comment property, and an APE artist, album artist, composer, or genre, returns the first non-empty value, and an empty string only when every value is empty. Other APE text items still read every non-empty value joined with ", " (`A\0B` reads "A, B"). So do the public `Id3v2Tag.GetTextFrame`, `Id3v2Tag.GetUserText`, and `VorbisComment.GetValue`, and the ID3v2 comment and lyrics, which read the first non-empty frame without a description, then the first other one. ID3v2.4 §4.2 stores several strings as a NUL-separated list and Vorbis field names may repeat, so `"\0V2"` and `ARTIST=` + `ARTIST=V2` read `V2`. A value is kept as written: only an empty value is skipped, so `" \0B"` reads `" "`, as other readers show it. `Id3v2Tag.GetTextFrameValues` and the ID3v2 list properties no longer trim or drop blank NUL-separated values, so for NUL-separated values the single value and the first list entry agree. A value with `/` and no NUL is still split on `/` and trimmed, in any ID3v2 version, so `AC/DC` reads Artist `AC/DC` and Performers [`AC`, `DC`], as before. This replaces the earlier reading of a leading NUL as an empty first value, and it differs from mutagen and TagLib#, which return the empty first ID3v2 value; for a comment it matches what ffprobe and TagLib# show. Writing back the value read changes nothing, so a multi-value frame, item, or repeated field keeps every value. `= ""` clears: it removes the ID3v2 frame (for a comment or lyrics, every frame without a description) or the APE item, and leaves one empty Vorbis field. The comparison is ordinal, so a case-only edit still writes, and `null` clears like `= ""`. For an ID3v2 comment or lyrics, both remove only the frames without a description; a described comment or lyrics frame (such as `ID3v1 Comment`) is then still read, as before. This covers every ID3v2 string property (every text and TXXX frame, the year, the podcast feed URL, the MusicBrainz recording ID, the comment and the lyrics, and the movement number and total), every APE text property, and every Vorbis text field.
 - `CopyTo` reads every source value before it writes any. It replaces the target's list with the source value, even when that equals the target's first value. A list (performers, album artists, composers, genres, and the sort and role lists) that the target already holds is left as it is, and with `Extended` the artist and genre travel in those lists, so a `Basic` copy alone is what writes a single name over a list. When the source and target read from a common tag (a tag copied into itself, or a file's combined `Tag` copied into one of its own tags or into another view over them, as two reads of `Mp3File.Tag` are), the copy only adds values the target does not show. An empty source value still clears the field, as `= ""` does, so through a view it also clears what the view showed from another tag (an ID3v1 title, an AIFF `NAME` chunk). So `mp3.Id3v2Tag.CopyTo (mp3.Tag)` no longer rewrites the ID3v1 tag with values the combined view already shows from ID3v2. A fallback field of its own beside a value equal to the copied one stays: Vorbis `ORIGINALYEAR`, APE `Date`, and the ID3v2.3 `TDOR` beside `TORY`. Pictures are outside these rules: a non-empty source picture list always replaces the target's, as before.
 - A list copied into a tag that holds one name (MP4, ASF, RIFF INFO, ID3v1, or the base `Tag` list setters) stores its first non-empty entry, not an empty first entry. A copy of `ARTIST=` + `ARTIST=V2` into an MP4, WAV, or WMA file stores `V2`, as a `Basic` copy already did, instead of clearing the artist and genre.

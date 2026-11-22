@@ -1789,6 +1789,36 @@ public class Mp4ChapterTests
 			CollectionAssert.AreEqual (expected, Mp4ChapterCodec.ReadChpl (moov)!.Select (c => c.Title).ToArray (), "chpl is rewritten in udta");
 	}
 
+	/// <summary>
+	/// A custom field and a chapter list set before one save both survive, whether the tag lives in udta/meta
+	/// (the chapter fixture's own tag) or in moov/meta while udta is rebuilt for chpl.
+	/// </summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Save_ChaptersAndACustomField_InOneSave_KeepBoth (bool tagInMovieMeta)
+	{
+		var original = tagInMovieMeta ? MovieMetaChapters () : Mp4ChapterTestBuilder.Build (TaggedChapters ());
+		var file = Mp4ChapterTestBuilder.ReadFile (original);
+
+		Assert.IsTrue (file.Tag!.SetCustomField ("MYFIELD", "one", "two"));
+		file.Chapters = Edit (1);
+		var saved = Save (file, original);
+
+		var reread = Mp4ChapterTestBuilder.ReadFile (saved);
+		CollectionAssert.AreEqual (CustomOneTwo, reread.Tag!.GetCustomField ("MYFIELD").ToArray ());
+		CollectionAssert.AreEqual (Edit (1).Select (c => c.Title).ToArray (), reread.Chapters.Select (c => c.Title).ToArray ());
+		Assert.AreEqual (tagInMovieMeta ? "Movie" : "Tagged", reread.Title, "the tag's other fields stay");
+
+		Assert.IsTrue (reread.Tag.RemoveCustomField ("MYFIELD"));
+		reread.Chapters = Edit (2);
+		var again = Mp4ChapterTestBuilder.ReadFile (Save (reread, saved));
+		Assert.AreEqual (0, again.Tag!.GetCustomField ("MYFIELD").Count, "a remove in a chapter save stays removed");
+		CollectionAssert.AreEqual (Edit (2).Select (c => c.Title).ToArray (), again.Chapters.Select (c => c.Title).ToArray ());
+	}
+
+	static readonly string[] CustomOneTwo = ["one", "two"];
+
 	[TestMethod]
 	public void Save_Chapters_TagInMovieMeta_CopiesUdtaMetaAsItWas ()
 	{

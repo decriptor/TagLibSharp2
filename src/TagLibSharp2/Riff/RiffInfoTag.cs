@@ -268,6 +268,66 @@ public class RiffInfoTag : Tag
 		}
 	}
 
+	/// <inheritdoc/>
+	public override bool SupportsCustomFields => true;
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// The name is the four-character code of an INFO subchunk, such as <c>IENG</c> or a code of your own.
+	/// Codes compare case-insensitively, as <see cref="GetField"/> compares them. An INFO subchunk holds one
+	/// ZSTR (Microsoft RIFF specification, "INFO List Chunk"), so there is at most one value.
+	/// </remarks>
+	public override IReadOnlyList<string> GetCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsFourCC (name))
+			return CustomFieldValues.None;
+		var value = GetField (name);
+		return string.IsNullOrEmpty (value) ? CustomFieldValues.None : [value!];
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// Returns false for a name that is not four ASCII characters from 0x20 to 0x7E (a FOURCC, Microsoft
+	/// RIFF specification, "Chunks") and for more than one value. A WAV INFO list is Latin-1, one byte per
+	/// character, so text outside ISO-8859-1 is refused there. An AVI INFO list takes any text, as the mapped
+	/// fields do: the save encodes it in the file's declared code page when every changed value fits, and
+	/// otherwise makes the list UTF-8 under a CSET of code page 65001 (see <see cref="RiffInfoTag(InfoCharacterSet, int)"/>).
+	/// </remarks>
+	public override bool SetCustomField (string name, params string[] values)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		if (!IsFourCC (name) || !CustomFieldValues.TryNormalize (values, out var kept) || kept.Count > 1)
+			return false;
+		if (_stored is null && kept.Count == 1) {
+			foreach (var c in kept[0]) {
+				if (c > 0xFF)
+					return false;
+			}
+		}
+
+		SetField (name, kept.Count == 0 ? null : kept[0]);
+		return true;
+	}
+
+	/// <inheritdoc/>
+	public override bool RemoveCustomField (string name)
+	{
+		CustomFieldValues.ThrowIfNull (name);
+		return IsFourCC (name) && _fields.Remove (name);
+	}
+
+	static bool IsFourCC (string name)
+	{
+		if (name.Length != 4)
+			return false;
+		foreach (var c in name) {
+			if (c < 0x20 || c > 0x7E)
+				return false;
+		}
+		return true;
+	}
+
 	/// <summary>
 	/// Gets all field identifiers present in this tag.
 	/// </summary>

@@ -48,6 +48,13 @@ public sealed class TextFrame
 	}
 
 	/// <summary>
+	/// Where a UTF-16 text with several strings puts its BOMs. Set on read from the frame's own bytes, so an
+	/// unchanged frame renders the bytes it was read from; ID3v2.3 §3.3 (https://id3.org/id3v2.3.0) asks for a BOM
+	/// before every string.
+	/// </summary>
+	internal Utf16Layout Utf16Layout { get; set; }
+
+	/// <summary>
 	/// Attempts to read a text frame from the provided data.
 	/// </summary>
 	/// <param name="frameId">The frame ID.</param>
@@ -66,9 +73,12 @@ public sealed class TextFrame
 		var encoding = (TextEncodingType)encodingByte;
 		var textData = data.Slice (1);
 
-		var text = DecodeText (textData, encoding);
+		var layout = Utf16Layout.OneBom;
+		var text = encoding == TextEncodingType.Utf16WithBom
+			? Utf16Text.Decode (textData, out layout)
+			: DecodeText (textData, encoding);
 
-		var frame = new TextFrame (frameId, text, encoding);
+		var frame = new TextFrame (frameId, text, encoding) { Utf16Layout = layout };
 		return TextFrameReadResult.Success (frame, data.Length);
 	}
 
@@ -78,7 +88,9 @@ public sealed class TextFrame
 	/// <returns>The frame content including encoding byte.</returns>
 	public BinaryData RenderContent ()
 	{
-		var textBytes = EncodeText (Text, Encoding);
+		var textBytes = Encoding == TextEncodingType.Utf16WithBom
+			? Utf16Text.Encode (Text, Utf16Layout)
+			: EncodeText (Text, Encoding);
 
 		using var builder = new BinaryDataBuilder (1 + textBytes.Length);
 		builder.Add ((byte)Encoding);
@@ -143,7 +155,7 @@ public sealed class TextFrame
 		return encoding switch {
 			TextEncodingType.Latin1 => BinaryData.FromStringLatin1 (text),
 			TextEncodingType.Utf8 => BinaryData.FromStringUtf8 (text),
-			TextEncodingType.Utf16WithBom => BinaryData.FromStringUtf16 (text, includeBom: true),
+			TextEncodingType.Utf16WithBom => Utf16Text.Encode (text, Utf16Layout.OneBom),
 			TextEncodingType.Utf16BE => EncodeTextUtf16BE (text),
 			_ => BinaryData.Empty
 		};
