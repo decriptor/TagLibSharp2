@@ -898,7 +898,7 @@ public partial class MatroskaFileTests
 		Assert.AreEqual ("cover.jpg", AttachedFiles (bytes)[0].Name);
 		Assert.AreEqual ("Movie", again.Tag.Title);
 		Assert.AreEqual (1, CountOf (bytes, Master (MatroskaIds.Cluster, ClusterMarker)));
-		AssertSeeksLand (bytes);
+		AssertSeeksLand (original, bytes);
 		Assert.IsTrue (ReadSeeks (bytes).Any (s => s.Id == MatroskaIds.Attachments));
 	}
 
