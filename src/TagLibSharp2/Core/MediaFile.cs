@@ -2,7 +2,6 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Buffers.Binary;
-using System.Runtime.InteropServices;
 using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
@@ -580,11 +579,7 @@ public static class MediaFile
 
 	static MediaFileResult ReadCore (ReadOnlyMemory<byte> data, string? pathHint)
 	{
-		// Array-backed bytes are wrapped, not copied, so the AAC check can read the trailing tags as a stream.
-		using var view = MemoryMarshal.TryGetArray (data, out var segment) && segment.Array is not null
-			? new MemoryStream (segment.Array, segment.Offset, segment.Count, writable: false)
-			: null;
-		var format = DetectFormat (data.Span, pathHint, view);
+		var format = DetectFormat (data.Span, pathHint);
 
 		var result = format switch {
 			MediaFormat.Flac => OpenFlac (data),
