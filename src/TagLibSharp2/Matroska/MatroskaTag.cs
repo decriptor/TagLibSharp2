@@ -389,9 +389,14 @@ public sealed class MatroskaTag : Tag
 	/// Any other media type fails the save. JPEG and PNG are the formats the guidance recommends;
 	/// another image type is written with its own media type. WebM has no attachments, so a save
 	/// that would add one to a WebM file fails. A new or moved <c>Attachments</c> element goes in a
-	/// Void or after the last Cluster and needs an entry in the first SeekHead; a file whose
-	/// SeekHead has no room for it fails the save. A save that does not set this property leaves
-	/// the <c>Attachments</c> element byte for byte.
+	/// Void or after the last Cluster with an entry in the first SeekHead (RFC 9559 section 6.3).
+	/// When that SeekHead has no room for the entry, the element goes right after the first
+	/// SeekHead, which is written again to list it, and everything after it moves once with every
+	/// Segment Position following. A file with no SeekHead gets the element before its first
+	/// Cluster (section 25.3.4). The save fails when the first SeekHead cannot be read or has an
+	/// unknown size, or when the later elements cannot be moved, for example because their Cues
+	/// are malformed. A save that does not set this property leaves the <c>Attachments</c> element
+	/// byte for byte.
 	/// </para>
 	/// </remarks>
 	public override IPicture[] Pictures {
