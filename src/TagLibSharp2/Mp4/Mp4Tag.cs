@@ -931,26 +931,85 @@ public sealed class Mp4Tag : Tag
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// Removes every field and every item a field was read from, including a malformed atom of a
+	/// mapped field. Items the tag does not map, such as Apple's make, model, location and creation
+	/// date keys or an unknown atom like "orch", are kept with the keys they use.
+	/// </remarks>
 	public override void Clear ()
 	{
+		foreach (var fieldId in new List<string> (_sources.Keys))
+			DropSources (fieldId);
+
 		_atoms.Clear ();
 		_pictures.Clear ();
 		_freeform.Clear ();
 		_freeformByKey.Clear ();
-		_preservedAtoms.Clear ();
-		_preservedByType.Clear ();
+		for (var i = 0; i < _preservedAtoms.Count; i++) {
+			if (_preservedAtoms[i] is { } kept && IsMappedType (kept.Box.Span))
+				_preservedAtoms[i] = null;
+		}
+
 		_preservedFreeformByKey.Clear ();
-		_keys?.Clear ();
-		_keyIndexByField.Clear ();
-		_sources.Clear ();
 		_valueFromSources.Clear ();
 		_valueRank.Clear ();
-		_slotByField.Clear ();
-		_movieItems.Clear ();
 		_movieFields.Clear ();
-		_movieSlotByField.Clear ();
-		_movieKeyIndexByField.Clear ();
-		_movieKeys?.Clear ();
+	}
+
+	static bool IsMappedType (ReadOnlySpan<byte> box)
+	{
+		if (box.Length < 8)
+			return false;
+
+		var type = Polyfills.Latin1.GetString (box.Slice (4, 4).ToArray ());
+		return type == Mp4AtomMapping.FreeformAtom || Mp4AtomMapping.IsTagAtom (type);
+	}
+
+	/// <summary>
+	/// Takes every value of another tag through the setters, so each replaces this tag's items for
+	/// that field. An iTunes tag's own unknown atoms come along into an iTunes tag (replacing
+	/// atoms of the same type); a keyed tag's items mean nothing without its keys and do not.
+	/// </summary>
+	internal void TakeValuesFrom (Mp4Tag other)
+	{
+		foreach (var field in other.ValuedFields ()) {
+			switch (field.Field.Kind) {
+				case Mp4KeyedKind.Atom:
+					SetAtoms (field.Id, new List<Mp4DataAtom> (field.Atoms));
+					break;
+				case Mp4KeyedKind.Freeform:
+					SetFreeformAtoms (field.Field.Mean!, field.Field.Name!, new List<Mp4DataAtom> (field.Atoms));
+					break;
+				default:
+					Pictures = [.. other._pictures];
+					break;
+			}
+		}
+
+		if (_keys is not null || other._keys is not null)
+			return;
+
+		foreach (var box in other.KeptUnknownAtoms ())
+			DropPreserved (TypeKey (box.Span));
+		foreach (var box in other.KeptUnknownAtoms ())
+			PreserveIlstAtom (box);
+	}
+
+	// Kept atoms of an iTunes ilst that are neither a field's item nor of a mapped type.
+	IEnumerable<BinaryData> KeptUnknownAtoms ()
+	{
+		var fieldItems = new HashSet<int> ();
+		foreach (var list in _sources.Values) {
+			foreach (var (movie, index) in list) {
+				if (!movie)
+					fieldItems.Add (index);
+			}
+		}
+
+		for (var i = 0; i < _preservedAtoms.Count; i++) {
+			if (_preservedAtoms[i] is { } kept && !fieldItems.Contains (i) && !IsMappedType (kept.Box.Span))
+				yield return kept.Box;
+		}
 	}
 
 	/// <inheritdoc/>
@@ -1007,29 +1066,6 @@ public sealed class Mp4Tag : Tag
 	internal BinaryData? RenderMovieKeys () => _movieKeys?.Render ();
 
 	/// <summary>
-	/// The second meta's items that name no field, as they were. Used when a different tag
-	/// replaces this one: its values are the only ones written.
-	/// </summary>
-	internal BinaryData RenderMovieItemsWithoutFields ()
-	{
-		var fieldItems = new HashSet<int> ();
-		foreach (var list in _sources.Values) {
-			foreach (var (movie, index) in list) {
-				if (movie)
-					fieldItems.Add (index);
-			}
-		}
-
-		using var builder = new BinaryDataBuilder ();
-		for (var i = 0; i < _movieItems.Count; i++) {
-			if (_movieItems[i] is { } item && !fieldItems.Contains (i))
-				builder.Add (item);
-		}
-
-		return builder.ToBinaryData ();
-	}
-
-	/// <summary>
 	/// A copy holding this tag's values and its kept iTunes atoms, without where they were read
 	/// from (keys, kept items, a second meta). Saved into another file or in place of the tag
 	/// that was read, it is written as a fresh tag.
@@ -1037,37 +1073,7 @@ public sealed class Mp4Tag : Tag
 	internal Mp4Tag Detached ()
 	{
 		var copy = new Mp4Tag ();
-		foreach (var field in ValuedFields ()) {
-			switch (field.Field.Kind) {
-				case Mp4KeyedKind.Atom:
-					copy.SetAtoms (field.Id, new List<Mp4DataAtom> (field.Atoms));
-					break;
-				case Mp4KeyedKind.Freeform:
-					copy.SetFreeformAtoms (field.Field.Mean!, field.Field.Name!, new List<Mp4DataAtom> (field.Atoms));
-					break;
-				default:
-					copy.Pictures = [.. _pictures];
-					break;
-			}
-		}
-
-		// An item typed by a key index means nothing without those keys, so only an iTunes ilst's
-		// kept atoms come along, and not the ones a field was read from.
-		if (_keys is null) {
-			var fieldItems = new HashSet<int> ();
-			foreach (var list in _sources.Values) {
-				foreach (var (movie, index) in list) {
-					if (!movie)
-						fieldItems.Add (index);
-				}
-			}
-
-			for (var i = 0; i < _preservedAtoms.Count; i++) {
-				if (_preservedAtoms[i] is { } kept && !fieldItems.Contains (i))
-					copy.PreserveIlstAtom (kept.Box);
-			}
-		}
-
+		copy.TakeValuesFrom (this);
 		return copy;
 	}
 

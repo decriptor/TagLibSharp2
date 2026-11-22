@@ -1142,14 +1142,36 @@ public sealed class Mp4File : IMediaFile
 	static void ReadMovieMeta (Mp4Tag tag, Mp4Box ilst, Mp4Box meta)
 	{
 		// Only an "mdta" meta is QuickTime metadata with precedence over user data. An iTunes
-		// (mdir) ilst in moov/meta is read by no common reader beside udta/meta, so it is kept as
-		// it is and names no field.
+		// (mdir) ilst in moov/meta is read by no common reader beside udta/meta except ffprobe, so
+		// its atoms give no value; an atom of a mapped field is still that field's item, kept as
+		// it is until the field is set or cleared, so no stale copy survives.
 		var keys = Mp4QuickTimeKeys.Read (meta);
 		tag.UseMovieMeta (keys);
 		foreach (var item in ilst.Children) {
-			if (keys is null || !ReadSourceItem (item, keys, tag, movie: true, inMovieMeta: true))
+			var named = keys is null ? AddItunesTwin (item, tag) : ReadSourceItem (item, keys, tag, movie: true, inMovieMeta: true);
+			if (!named)
 				tag.AddMovieItem (item.Render ());
 		}
+	}
+
+	static bool AddItunesTwin (Mp4Box item, Mp4Tag tag)
+	{
+		if (item.Type == Mp4AtomMapping.CoverArt) {
+			tag.AddSourcePictures (null, item.Render (), 0, Mp4SourceRank.MovieAtom, movie: true);
+			return true;
+		}
+
+		if (item.Type == Mp4AtomMapping.FreeformAtom) {
+			if (!TryReadFreeform (item, out var mean, out var name, out _))
+				return false;
+			tag.AddSourceFreeform (mean, name, null, item.Render (), 0, Mp4SourceRank.MovieAtom, movie: true);
+			return true;
+		}
+
+		if (!Mp4AtomMapping.IsTagAtom (item.Type))
+			return false;
+		tag.AddSourceAtom (item.Type, null, item.Render (), 0, Mp4SourceRank.MovieAtom, movie: true);
+		return true;
 	}
 
 	// Records an item that names a field as a kept source of that field: a keyed item, or an
@@ -2206,14 +2228,32 @@ public sealed class Mp4File : IMediaFile
 	/// <summary>
 	/// Rebuilds the moov box with updated metadata in udta/meta/ilst.
 	/// </summary>
+	// The tag as it is written. A tag assigned in place of the one read (or null) replaces the
+	// mapped fields only: the file's tag is read again, cleared (which keeps the items the tag
+	// does not map, such as Apple's make, model and location), and given the assigned values.
+	Mp4Tag? TagToSave (Mp4Box originalMoov)
+	{
+		if (Tag is not null && ReferenceEquals (Tag, _readTag))
+			return Tag;
+
+		var (fileTag, _) = ExtractMetadata (originalMoov);
+		if (fileTag is null)
+			return Tag?.Detached ();
+
+		fileTag.Clear ();
+		if (Tag is not null)
+			fileTag.TakeValuesFrom (Tag);
+		return fileTag;
+	}
+
 	BinaryData RebuildMoovWithMetadata (Mp4Box originalMoov)
 	{
 		using var moovContent = new BinaryDataBuilder ();
 
 		// A tag read from moov/meta is written back there, and udta is copied as it was.
 		var inMovieMeta = MetaPlacement == Mp4MetaPlacement.Movie;
-		var tag = Tag is null || ReferenceEquals (Tag, _readTag) ? Tag : Tag.Detached ();
-		var movieSource = !inMovieMeta && _readTag?.HasMovieMeta == true ? _readTag : null;
+		var tag = TagToSave (originalMoov);
+		var movieSource = !inMovieMeta && tag?.HasMovieMeta == true ? tag : null;
 		var newUdta = inMovieMeta ? BinaryData.Empty : BuildUdtaBox (originalMoov, tag);
 		var replacedMeta = false;
 		var emittedChild = false;
@@ -2235,9 +2275,7 @@ public sealed class Mp4File : IMediaFile
 
 			if (!replacedMeta && child.Type == "meta" && (inMovieMeta || movieSource is not null)) {
 				replacedMeta = true;
-				var (ilst, keys) = inMovieMeta ? RenderTag (child, tag)
-					: ReferenceEquals (tag, movieSource) ? (movieSource!.RenderMovieIlst (), movieSource.RenderMovieKeys ())
-					: (movieSource!.RenderMovieItemsWithoutFields (), (BinaryData?)null);
+				var (ilst, keys) = inMovieMeta ? RenderTag (child, tag) : (movieSource!.RenderMovieIlst (), movieSource.RenderMovieKeys ());
 				var rebuilt = RebuildMeta (child, ilst, keys);
 				if (!rebuilt.IsEmpty)
 					moovContent.Add (rebuilt);

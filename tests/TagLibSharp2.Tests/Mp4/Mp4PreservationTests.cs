@@ -65,6 +65,69 @@ public class Mp4PreservationTests
 			$"{reps} reads of {small * factor} took {largeCost.TotalMilliseconds:F0} ms (ratio {ratio:F2})");
 	}
 
+	// Replacing the tag reads the file's tag again and walks its kept items, so it must stay
+	// linear too. Same measurement as above, with a read, a replacement and a render per step.
+	[TestMethod]
+	[DoNotParallelize]
+	[DataRow ("unknown-then-title", "assign")]
+	[DataRow ("distinct-unknown-types", "assign")]
+	[DataRow ("distinct-unknown-types", "copy")]
+	[DataRow ("distinct-freeforms", "clear")]
+	[DataRow ("malformed-title-alternating", "null")]
+	[DataRow ("quicktime-distinct-unmapped-keys", "assign")]
+	[DataRow ("quicktime-distinct-unmapped-keys", "copy")]
+	public void ReplacingTheTag_ManyIlstChildren_ScalesLinearly (string shape, string operation)
+	{
+		const int small = 1000;
+		const int factor = 16;
+		const double limit = factor / 2.0;
+		const int reps = 2;
+		var smallFile = ShapeFile (shape, small);
+		var largeFile = ShapeFile (shape, small * factor);
+		var plain = TestBuilders.Mp4.CreateMinimalM4a (Mp4CodecType.Aac);
+		void Replace (byte[] data)
+		{
+			var file = Mp4File.Read (data).File!;
+			var target = file;
+			var bytes = data;
+			switch (operation) {
+				case "assign":
+					file.Tag = new Mp4Tag { Title = "x" };
+					break;
+				case "clear":
+					file.Tag!.Clear ();
+					break;
+				case "null":
+					file.Tag = null;
+					break;
+				default:
+					target = Mp4File.Read (plain).File!;
+					target.Tag = file.Tag;
+					bytes = plain;
+					break;
+			}
+
+			Assert.IsFalse (target.Render (bytes).IsEmpty);
+		}
+
+		CpuTimeOf (smallFile, 2, Replace);
+		var smallCost = TimeSpan.MaxValue;
+		var largeCost = TimeSpan.MaxValue;
+		var ratio = 0.0;
+		for (var round = 0; round < 5; round++) {
+			var smallRound = CpuTimeOf (smallFile, factor * reps, Replace);
+			var largeRound = CpuTimeOf (largeFile, reps, Replace);
+			smallCost = smallRound < smallCost ? smallRound : smallCost;
+			largeCost = largeRound < largeCost ? largeRound : largeCost;
+			ratio = largeCost.TotalMilliseconds / Math.Max (1.0, smallCost.TotalMilliseconds);
+			if (ratio > limit * 1.5)
+				break;
+		}
+
+		Assert.IsLessThan (limit, ratio,
+			$"{shape} {operation}: small {smallCost.TotalMilliseconds:F0} ms, large {largeCost.TotalMilliseconds:F0} ms (ratio {ratio:F2})");
+	}
+
 	[TestMethod]
 	public void Freeform_NameWithColon_RoundTripsOnTitleSave ()
 	{
@@ -370,7 +433,8 @@ public class Mp4PreservationTests
 		file.SetFreeformTag (mean, "EMPTYF", "filled");
 
 		var rendered = file.Render (data);
-		Assert.AreEqual (0, Count (rendered.Span, "orch"u8));
+		// Clear removes the fields and their items; an atom the tag does not map stays.
+		Assert.AreEqual (1, Count (rendered.Span, "orch"u8));
 		Assert.AreEqual (1, Count (rendered.Span, NameType ()));
 		Assert.AreEqual (0, Count (rendered.Span, "Artist"u8));
 		Assert.AreEqual (2, Count (rendered.Span, "----"u8));
@@ -515,17 +579,18 @@ public class Mp4PreservationTests
 		return [.. bytes];
 	}
 
-	static TimeSpan CpuTimeOfReads (byte[] file, int reads)
+	static TimeSpan CpuTimeOfReads (byte[] file, int reads) =>
+		CpuTimeOf (file, reads, data => Assert.IsTrue (Mp4File.Read (data).IsSuccess));
+
+	static TimeSpan CpuTimeOf (byte[] file, int steps, Action<byte[]> step)
 	{
 		GC.Collect ();
 		GC.WaitForPendingFinalizers ();
 		GC.Collect ();
 		using var process = Process.GetCurrentProcess ();
 		var start = process.TotalProcessorTime;
-		for (var i = 0; i < reads; i++) {
-			var result = Mp4File.Read (file);
-			Assert.IsTrue (result.IsSuccess, result.Error);
-		}
+		for (var i = 0; i < steps; i++)
+			step (file);
 
 		process.Refresh ();
 		return process.TotalProcessorTime - start;
