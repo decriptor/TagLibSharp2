@@ -94,7 +94,7 @@ public class MatroskaChapterIntegrationTests : FileFormatTestBase
 			using var kept = new MemoryStream ();
 			var offset = cluster.DataOffset;
 			while (offset < end && EbmlReader.TryRead (file, offset, end, out var child) && !child.UnknownSize) {
-				if (child.Id is not MatroskaIds.ClusterPosition and not MatroskaIds.Crc32)
+				if (child.Id is not MatroskaIds.Position and not MatroskaIds.Crc32)
 					kept.Write (file, child.Position, child.End - child.Position);
 				offset = child.End;
 			}
