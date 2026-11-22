@@ -382,18 +382,24 @@ public sealed class MatroskaFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set and the rendered <c>Tags</c> element
-	/// into a copy of <paramref name="originalData"/>.
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, the <c>Attachments</c> element
+	/// when <see cref="MatroskaTag.Pictures"/> was set, and the rendered <c>Tags</c> element into a copy
+	/// of <paramref name="originalData"/>.
 	/// </summary>
-	/// <returns>The rewritten file, or empty when the container cannot be bounded.</returns>
+	/// <returns>
+	/// The rewritten file, or empty when the save is refused: the container cannot be bounded, a picture
+	/// cannot be written (see <see cref="MatroskaTag.Pictures"/>), or a track flag cannot be written.
+	/// <see cref="SaveToFile(string, ReadOnlySpan{byte}, IFileSystem?)"/> returns the reason.
+	/// </returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData) =>
 		TryRender (originalData, out var rewritten, out _)
 			? new BinaryData (rewritten)
 			: BinaryData.Empty;
 
 	/// <summary>
-	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the tags.
-	/// With no track set, the container goes straight to the tag rewrite.
+	/// Writes each <see cref="MatroskaTrack.IsEnabled"/> the caller set, then the attachments (when the
+	/// pictures were set) and the tags. With no track set, the container goes straight to that rewrite.
+	/// Any refusal leaves <paramref name="rewritten"/> empty and names the reason in <paramref name="error"/>.
 	/// </summary>
 	bool TryRender (ReadOnlySpan<byte> originalData, out byte[] rewritten, out string error)
 	{

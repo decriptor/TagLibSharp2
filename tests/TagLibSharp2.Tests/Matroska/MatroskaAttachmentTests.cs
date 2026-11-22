@@ -530,6 +530,18 @@ public partial class MatroskaFileTests
 		return found;
 	}
 
+	static List<EbmlElement> ChildrenOf (byte[] file, int offset, int end, ulong id)
+	{
+		var found = new List<EbmlElement> ();
+		while (offset < end && EbmlReader.TryRead (file, offset, end, out var element) && !element.UnknownSize) {
+			if (element.Id == id)
+				found.Add (element);
+			offset = element.End;
+		}
+
+		return found;
+	}
+
 	static List<ulong> CueClusterPositions (byte[] file, int bodyAt)
 	{
 		var found = new List<ulong> ();
@@ -542,18 +554,14 @@ public partial class MatroskaFileTests
 			at = cues.End;
 		}
 
-		void Walk (int offset, int end)
-		{
-			while (offset < end && EbmlReader.TryRead (file, offset, end, out var element) && !element.UnknownSize) {
-				if (element.Id == MatroskaIds.CueClusterPosition)
-					found.Add (EbmlReader.ReadUInt (file.AsSpan (element.DataOffset, (int)element.DataLength)));
-				else if (element.Id is 0xBB or 0xB7)
-					Walk (element.DataOffset, element.End);
-				offset = element.End;
+		// Only the spec path: Cues, CuePoint, CueTrackPositions, CueClusterPosition (RFC 9559 section 5.1.5).
+		foreach (var point in ChildrenOf (file, cues.DataOffset, cues.End, 0xBB)) {
+			foreach (var positions in ChildrenOf (file, point.DataOffset, point.End, 0xB7)) {
+				foreach (var position in ChildrenOf (file, positions.DataOffset, positions.End, MatroskaIds.CueClusterPosition))
+					found.Add (EbmlReader.ReadUInt (file.AsSpan (position.DataOffset, (int)position.DataLength)));
 			}
 		}
 
-		Walk (cues.DataOffset, cues.End);
 		return found;
 	}
 
