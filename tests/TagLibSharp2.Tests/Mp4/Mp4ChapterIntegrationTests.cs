@@ -64,11 +64,11 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 		var reread = Mp4File.Read (saved).File!;
 		CollectionAssert.AreEqual (chapters, reread.Chapters.ToArray ());
 		var after = SampleHashes (saved);
-		var chapterTrack = Mp4ChapterCodec.FindChapterTrack (Mp4ChapterTestBuilder.Moov (saved))!.Id;
-		foreach (var (id, hash) in before) {
-			if (id == chapterTrack)
+		var chapterTrak = ChapterTrakPosition (saved);
+		foreach (var (position, hash) in before) {
+			if (position == chapterTrak)
 				continue;
-			Assert.AreEqual (hash, after[id], $"track {id} samples unchanged");
+			Assert.AreEqual (hash, after[position], $"trak {position} samples unchanged");
 		}
 	}
 
@@ -96,10 +96,10 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 		Console.WriteLine ($"sizes: {data.Length} -> {string.Join (", ", sizes)}");
 		Assert.IsTrue (sizes.All (size => size == sizes[0]), string.Join (", ", sizes));
 		var after = SampleHashes (current);
-		var chapterTrack = Mp4ChapterCodec.FindChapterTrack (Mp4ChapterTestBuilder.Moov (current))!.Id;
-		foreach (var (id, hash) in before) {
-			if (id != chapterTrack && after.TryGetValue (id, out var now))
-				Assert.AreEqual (hash, now, $"track {id} samples unchanged");
+		var chapterTrak = ChapterTrakPosition (current);
+		foreach (var (position, hash) in before) {
+			if (position != chapterTrak && after.TryGetValue (position, out var now))
+				Assert.AreEqual (hash, now, $"trak {position} samples unchanged");
 		}
 	}
 
@@ -150,14 +150,25 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 	}
 
 	/// <summary>
-	/// SHA-256 of each track's samples inside the file, gathered through stsc, stsz, and stco/co64 (ISO 14496-12 §8.7).
+	/// The position of the chapter trak among moov's traks. A save replaces it in place or appends it after the
+	/// last trak, so every other trak keeps its position. Positions, not track_IDs, which a file can reuse.
 	/// </summary>
-	static Dictionary<uint, string> SampleHashes (byte[] file)
+	static int ChapterTrakPosition (byte[] file)
 	{
-		var hashes = new Dictionary<uint, string> ();
+		var moov = Mp4ChapterTestBuilder.Moov (file);
+		return moov.Children.Where (c => c.Type == "trak").ToList ().IndexOf (Mp4ChapterCodec.FindChapterTrack (moov)!.Trak);
+	}
+
+	/// <summary>
+	/// SHA-256 of each trak's samples inside the file, by the trak's position among moov's traks, gathered
+	/// through stsc, stsz, and stco/co64 (ISO 14496-12 §8.7).
+	/// </summary>
+	static Dictionary<int, string> SampleHashes (byte[] file)
+	{
+		var hashes = new Dictionary<int, string> ();
+		var position = -1;
 		foreach (var trak in Mp4ChapterTestBuilder.Moov (file).Children.Where (c => c.Type == "trak")) {
-			var tkhd = trak.FindChild ("tkhd")!.Data.Span;
-			var id = BinaryPrimitives.ReadUInt32BigEndian (tkhd.Slice (tkhd[0] == 1 ? 20 : 12));
+			position++;
 			var stbl = trak.FindDescendant ("mdia", "minf", "stbl");
 			if (stbl is null)
 				continue;
@@ -201,7 +212,7 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 				}
 			}
 
-			hashes[id] = Convert.ToHexString (sha.GetHashAndReset ());
+			hashes[position] = Convert.ToHexString (sha.GetHashAndReset ());
 		}
 
 		return hashes;
