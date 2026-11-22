@@ -735,6 +735,64 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
+	[DataRow (true, 0)]
+	[DataRow (false, 120)]
+	public void Save_CoverAndTrackFlag_AreBothWritten (bool flagStored, int voidAfterTracks)
+	{
+		// The track pass writes FlagEnabled first, then the attachments and tags passes run on its output.
+		var tracks = Master (MatroskaIds.Tracks, Concat (
+			AudioEntry (1, 44100, flagStored ? [Enabled (1)] : []),
+			VideoEntry (2, 320)));
+		var original = CoverAndTracksFile (tracks, voidAfterTracks);
+		var file = MatroskaFile.Read (original).File!;
+		Assert.IsTrue (file.Tracks[0].IsEnabled);
+		file.Tracks[0].IsEnabled = false;
+		file.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg)];
+
+		var bytes = Save (file, original);
+
+		var again = MatroskaFile.Read (bytes).File!;
+		Assert.IsFalse (again.Tracks[0].IsEnabled);
+		Assert.IsTrue (again.Tracks[1].IsEnabled);
+		Assert.AreEqual (1, again.Tag.Pictures.Length);
+		Assert.AreEqual ("cover.jpg", AttachedFiles (bytes)[0].Name);
+		Assert.AreEqual ("Movie", again.Tag.Title);
+		Assert.AreEqual (1, CountOf (bytes, Master (MatroskaIds.Cluster, ClusterMarker)));
+		AssertSeeksLand (bytes);
+		Assert.IsTrue (ReadSeeks (bytes).Any (s => s.Id == MatroskaIds.Attachments));
+	}
+
+	[TestMethod]
+	public void Save_UntouchedCoverAndTracks_IsByteIdentical ()
+	{
+		var tracks = Master (MatroskaIds.Tracks, Concat (AudioEntry (1, 44100, Enabled (1)), VideoEntry (2, 320)));
+		var withCover = CoverAndTracksFile (tracks, 0);
+		var first = MatroskaFile.Read (withCover).File!;
+		first.Tag.Pictures = [new TestPicture ("image/jpeg", PictureType.FrontCover, "", Jpeg)];
+		var original = Save (first, withCover);
+
+		var file = MatroskaFile.Read (original).File!;
+		foreach (var track in file.Tracks)
+			track.IsEnabled = track.IsEnabled;
+		file.Tag.Pictures = file.Tag.Pictures;
+
+		CollectionAssert.AreEqual (original, Save (file, original));
+	}
+
+	/// <summary>
+	/// SeekHead, a Void it can grow into, Info, Tracks, an optional Void, Tags, Cues, Cluster.
+	/// </summary>
+	static byte[] CoverAndTracksFile (byte[] tracks, int voidAfterTracks)
+	{
+		var info = Info ();
+		var hole = voidAfterTracks == 0 ? Array.Empty<byte> () : MakeVoid (voidAfterTracks);
+		var tags = Tags (Tag (50, Simple ("TITLE", "Movie")));
+		var cluster = Master (MatroskaIds.Cluster, ClusterMarker);
+		return Layout (new[] { MatroskaIds.Info, MatroskaIds.Tracks, MatroskaIds.Tags, MatroskaIds.Cues, MatroskaIds.Cluster },
+			(seekHead, positions) => Concat (seekHead, MakeVoid (64), info, tracks, hole, tags, CueElement (positions[4]), cluster));
+	}
+
+	[TestMethod]
 	public void Save_CopyWithAnEmptyMediaType_MatchesByTheDetectedType ()
 	{
 		// Picture.DetectMimeType reads image/jpeg from the bytes, which is the stored type.

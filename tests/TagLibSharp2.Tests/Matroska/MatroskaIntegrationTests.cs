@@ -209,6 +209,39 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 		}
 	}
 
+	[TestMethod]
+	public void Save_RealMatroska_CoverAndTrackFlag_AreBothWritten ()
+	{
+		var path = SkipIfNoTestFile (TestFileEnvVar, "Matroska");
+		var original = File.ReadAllBytes (path);
+		var file = Open (original);
+		Assert.IsTrue (file.Tracks.Count > 0);
+		var number = file.Tracks[^1].TrackNumber;
+		file.Tracks[^1].IsEnabled = !file.Tracks[^1].IsEnabled;
+		file.Tag.Pictures = [.. file.Tag.Pictures, new BackPicture ()];
+
+		var copy = Copy (path);
+		try {
+			var saved = file.SaveToFile (copy, original);
+			// Documented refusals: WebM, a SeekHead without room, a FlagEnabled without a Void after Tracks.
+			if (!saved.IsSuccess && (saved.Error!.Contains ("SeekHead", StringComparison.Ordinal)
+				|| saved.Error.Contains ("WebM", StringComparison.Ordinal)
+				|| saved.Error.Contains ("FlagEnabled", StringComparison.Ordinal))) {
+				CollectionAssert.AreEqual (original, File.ReadAllBytes (copy));
+				Assert.Inconclusive ("This file refuses the combined save: " + saved.Error);
+			}
+
+			Assert.IsTrue (saved.IsSuccess, saved.Error);
+			var bytes = File.ReadAllBytes (copy);
+			var again = Open (bytes);
+			Assert.AreEqual (!Open (original).Tracks[^1].IsEnabled, again.Tracks.Single (t => t.TrackNumber == number).IsEnabled);
+			Assert.IsTrue (again.Tag.Pictures.Any (p => p.PictureType == PictureType.BackCover && p.PictureData.Span.SequenceEqual (BackCover)));
+			CollectionAssert.AreEqual (TopLevel (original, MatroskaIds.Cluster), TopLevel (bytes, MatroskaIds.Cluster));
+		} finally {
+			File.Delete (copy);
+		}
+	}
+
 	static string Copy (string path)
 	{
 		var copy = Path.Combine (Path.GetTempPath (), "taglibsharp2-" + Guid.NewGuid ().ToString ("N") + Path.GetExtension (path));
