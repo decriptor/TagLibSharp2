@@ -639,9 +639,31 @@ public class MediaFileTests
 	}
 
 	[TestMethod]
+	[DataRow ("clip.mpg")]
+	[DataRow ("clip.vob")]
+	[DataRow ("clip.avi")]
+	public void Detect_AviAndProgramStream_FollowTheirMagicNotTheirName (string name)
+	{
+		// A RIFF 'AVI ' file is AVI under an MPEG name, and a pack header is MPEG-PS under an AVI name.
+		var avi = new TagLibSharp2.Tests.Riff.AviTestBuilder ().Build ();
+		var ps = TagLibSharp2.Tests.Mpeg.MpegPsTestBuilder.ProgramStream ();
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/a" + name, avi);
+		fs.AddFile ("/p" + name, ps);
+
+		Assert.AreEqual (MediaFormat.Avi, MediaFile.DetectFormat (avi, name));
+		Assert.AreEqual (MediaFormat.Avi, MediaFile.Read ("/a" + name, fs).Format);
+		Assert.AreEqual (MediaFormat.Avi, MediaFile.ReadFromData (avi, name).Format);
+		Assert.AreEqual (MediaFormat.MpegPs, MediaFile.DetectFormat (ps, name));
+		Assert.AreEqual (MediaFormat.MpegPs, MediaFile.Read ("/p" + name, fs).Format);
+		Assert.AreEqual (MediaFormat.MpegPs, MediaFile.ReadFromData (ps, name).Format);
+	}
+
+	[TestMethod]
 	[DataRow ("clip.avi")]
 	[DataRow ("clip.wav")]
 	[DataRow ("clip.mkv")]
+	[DataRow ("clip.mpg")]
 	public void Read_MislabeledMp3_IsFoundByItsContent (string name)
 	{
 		// Two bare MPEG frames: the sync is past the 32-byte peek, so only the longer peek finds it.
