@@ -262,4 +262,29 @@ public partial class MatroskaFileTests
 		Assert.AreEqual ("New", again.Chapters.Editions[0].Chapters[0].Title);
 		Assert.IsTrue (again.Tracks[0].IsEnabled);
 	}
+
+	[TestMethod]
+	public void SaveChapters_OrderedEditionWithTracksBeforeInfo_StaysBeforeTracks ()
+	{
+		// After Info would also be after Tracks here, so "before the first Tracks" wins and the
+		// chapters go right after the SeekHead.
+		var original = Layout (new[] { MatroskaIds.Tracks, MatroskaIds.Info, MatroskaIds.Cluster },
+			(seekHead, positions) => Concat (
+				seekHead,
+				Master (0x1654AE6B, AudioEntry (1, 22050)),
+				Master (0x1549A966, Element (0x7BA9, "Late info"u8)),
+				Master (0x1F43B675, Element (0xA3, ClusterMarker))));
+		var file = MatroskaFile.Read (original).File!;
+		var edition = file.Chapters.AddEdition ();
+		edition.IsOrdered = true;
+		edition.AddChapter (TimeSpan.Zero, TimeSpan.FromSeconds (1), "Ordered");
+
+		var saved = Save (file, original);
+
+		AssertSeeksPreserved (original, saved);
+		var chapters = ReadSeeks (saved).Find (entry => entry.Id == MatroskaIds.Chapters).Position;
+		var tracks = ReadSeeks (saved).Find (entry => entry.Id == MatroskaIds.Tracks).Position;
+		Assert.IsTrue (IsElementAt (saved, chapters, MatroskaIds.Chapters));
+		Assert.IsTrue (chapters < tracks, $"Chapters {chapters}, Tracks {tracks}");
+	}
 }
