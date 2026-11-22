@@ -49,7 +49,7 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 	public void RealFile_ReplaceChapters_RoundTripsAndKeepsOtherTrackSamples ()
 	{
 		var (data, file) = Open ();
-		var before = SampleHashes (data);
+		var before = OtherTrakHashes (data);
 		Mp4Chapter[] chapters = [
 			new (TimeSpan.Zero, "Opening"),
 			new (TimeSpan.FromSeconds (1.25), "Middle ü 日本"),
@@ -63,20 +63,14 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 
 		var reread = Mp4File.Read (saved).File!;
 		CollectionAssert.AreEqual (chapters, reread.Chapters.ToArray ());
-		var after = SampleHashes (saved);
-		var chapterTrak = ChapterTrakPosition (saved);
-		foreach (var (position, hash) in before) {
-			if (position == chapterTrak)
-				continue;
-			Assert.AreEqual (hash, after[position], $"trak {position} samples unchanged");
-		}
+		CollectionAssert.AreEqual (before, OtherTrakHashes (saved), "every other trak keeps its samples");
 	}
 
 	[TestMethod]
 	public void RealFile_FiveChapterEdits_KeepTheSizeOfTheFirst ()
 	{
 		var (data, _) = Open ();
-		var before = SampleHashes (data);
+		var before = OtherTrakHashes (data);
 		var sizes = new List<int> ();
 		var current = data;
 		for (var round = 1; round <= 5; round++) {
@@ -95,12 +89,7 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 
 		Console.WriteLine ($"sizes: {data.Length} -> {string.Join (", ", sizes)}");
 		Assert.IsTrue (sizes.All (size => size == sizes[0]), string.Join (", ", sizes));
-		var after = SampleHashes (current);
-		var chapterTrak = ChapterTrakPosition (current);
-		foreach (var (position, hash) in before) {
-			if (position != chapterTrak && after.TryGetValue (position, out var now))
-				Assert.AreEqual (hash, now, $"trak {position} samples unchanged");
-		}
+		CollectionAssert.AreEqual (before, OtherTrakHashes (current), "every other trak keeps its samples");
 	}
 
 	[TestMethod]
@@ -150,13 +139,17 @@ public class Mp4ChapterIntegrationTests : FileFormatTestBase
 	}
 
 	/// <summary>
-	/// The position of the chapter trak among moov's traks. A save replaces it in place or appends it after the
-	/// last trak, so every other trak keeps its position. Positions, not track_IDs, which a file can reuse.
+	/// The sample hashes of every trak that is not a chapter text track, in moov order. A set rebuilds the first
+	/// chapter text track and may remove the other title tracks; every other trak must keep its samples. Traks
+	/// are matched by order, not track_ID, which a file can reuse.
 	/// </summary>
-	static int ChapterTrakPosition (byte[] file)
+	static List<string> OtherTrakHashes (byte[] file)
 	{
 		var moov = Mp4ChapterTestBuilder.Moov (file);
-		return moov.Children.Where (c => c.Type == "trak").ToList ().IndexOf (Mp4ChapterCodec.FindChapterTrack (moov)!.Trak);
+		var traks = moov.Children.Where (c => c.Type == "trak").ToList ();
+		var chapterText = Mp4ChapterCodec.FindChapterTracks (moov).Select (t => traks.IndexOf (t.Trak)).ToHashSet ();
+		var hashes = SampleHashes (file);
+		return [.. hashes.Where (h => !chapterText.Contains (h.Key)).OrderBy (h => h.Key).Select (h => h.Value)];
 	}
 
 	/// <summary>
