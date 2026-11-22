@@ -69,10 +69,11 @@ Every table must cover:
   FLAC, Ogg Vorbis, Opus and Ogg FLAC. EBML and ISO boxes nest the same way everywhere.
 - **Every write path, each with its expected outcome** (rule 7 below):
   - A setter or `""` changes only that mapped field. Null clears that field.
-  - `Clear()` and assigning null (`file.Id3v2Tag = null`, `file.Tag = null`) remove all metadata, mapped and
-    unmapped, from every tag block the view covers.
+  - `Clear()` and assigning null (`file.Id3v2Tag = null`, `file.Tag = null`) remove all tag metadata,
+    mapped and unmapped, from every tag block the view covers, except the reasoned exceptions in rule 7.
   - `CopyTo` (into itself, through a view, and into every other tag type) and assigning a whole tag
-    (`file.Tag = ...`) replace the mapped fields and keep the target's unmapped items.
+    (`file.Tag = ...`) replace the mapped fields and keep the target's unmapped items. An assigned tag can
+    also bring its own unmapped items, which replace the target's items of the same type.
 - **Views.** `CombinedTag` and the per-format unified views (FLAC, MP3, AIFF and others) that forward tag
   members. A member added to `Tag` must be forwarded by every view.
 - **Render and parse.** Whatever parse accepts, render must write back. Whatever render writes, parse must
@@ -116,14 +117,31 @@ how it was broken before.
    A clear or a null assignment is not "unchanged": rule 7 governs it.
    *Past example:* an AVI INFO save rewrote untouched non-UTF-8 text as UTF-8 of its Latin-1 misreading, and
    dropped the file's `CSET`.
-7. **`Clear()` and assigning null remove all metadata, mapped and unmapped.** That includes unknown atoms
-   and frames, QuickTime keys, store and account IDs, GPS, make and model, and gapless and encoder info.
-   The one exception is data the audio needs to decode or play, such as Audible's DRM keys or Matroska
-   fonts. Assigning a whole tag and `CopyTo` are different: they replace the mapped fields and keep unmapped
-   items.
+7. **`Clear()` and assigning null remove all tag metadata, mapped and unmapped.** That includes unknown
+   atoms and frames, QuickTime keys, store and account IDs, GPS, make and model, and gapless and encoder
+   info. Gapless info goes even though playback then includes the priming and padding. Assigning a whole tag
+   and `CopyTo` are different: they replace the mapped fields and keep the target's unmapped items.
    This is the documented contract: `Tag.Clear` "Clears all tag data, resetting to an empty state"
    (`src/TagLibSharp2/Core/Tag.cs`), `CombinedTag` clears every underlying tag, and
    [NEW-FORMAT-CHECKLIST.md](NEW-FORMAT-CHECKLIST.md) says "Test Clear() removes all metadata".
+   Only these exceptions have a reason, and a new exception needs one too:
+   - **Audible `.aa`:** `AudibleTag.Clear` keeps the identifiers (`product_id`, `title_id`), the licensing
+     and DRM keys, and unknown keys: "Identifiers, licensing and DRM keys, and unknown keys stay, so the
+     audio can still be decrypted" (the `AudibleTag.Clear` remarks).
+   - **Matroska attachments that are not images** (fonts, booklets and any other file) are kept, all of
+     them. They are content that travels with the file, not tag metadata. Image attachments (cover art) are
+     removed.
+   - **Fields the format requires** are kept: the Vorbis comment vendor string, which the header must
+     carry (Xiph Vorbis comment, "vendor_length / vendor_string"), and Matroska's mandatory `MuxingApp`
+     and `WritingApp` (RFC 9559).
+   - **Chapters** are file structure, not tag metadata. A tag `Clear()` keeps them in Matroska and in MP4
+     (checked on main: ffprobe lists the same chapters after a Clear and a save). Use the chapter API to
+     remove them.
+
+   Known gaps on main are follow-up bugs, not precedent. Do not copy them:
+   - Matroska `Clear()` and `Title = null` keep `Info/Title`, so the title still reads back.
+   - Audible `Clear()` keeps `user_alias`, an account name.
+
    *Past example:* an MP4 `Clear()` kept the unmapped `apID` atom, so a "cleaned" file still carried the
    buyer's e-mail address.
 8. **An empty EBML element means its default value** (RFC 8794 §6.1: "If an Empty Element has a default
