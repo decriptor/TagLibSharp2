@@ -75,9 +75,11 @@ public sealed class AviFile : IMediaFile
 	/// On save, a value that was not changed keeps its exact bytes, and the file keeps its CSET (or its
 	/// absence). Changed values are written in the file's code page when they all fit it; with no CSET,
 	/// or one this library does not encode, only ASCII fits. Otherwise the list becomes UTF-8 with a CSET
-	/// of code page 65001 in front of it. That needs every unchanged non-ASCII value to be UTF-8 already;
-	/// when one is not (Shift-JIS or cp1251 text, say), the save is refused with an error naming the
-	/// field rather than changing its text. mediainfo ignores CSET.
+	/// of code page 65001 in front of it: unchanged UTF-8 and ASCII values keep their bytes, and unchanged
+	/// text in a declared code page this library decodes exactly (1252, 28591, 0) is written as UTF-8 of
+	/// the same text. When an unchanged value's code page is a guess (no CSET and not UTF-8) or is not
+	/// decoded here (932 or 1251, say), the save is refused with an error naming the field rather than
+	/// changing its text. mediainfo ignores CSET.
 	/// </para>
 	/// </remarks>
 	public RiffInfoTag InfoTag { get; }

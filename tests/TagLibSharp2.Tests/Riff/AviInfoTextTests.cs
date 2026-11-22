@@ -48,8 +48,10 @@ public class AviInfoTextTests
 		var result = file.SaveToFile ("/out.avi", original, fs);
 
 		var nativeUtf8 = codePage == 65001;
-		var unchangedIsUtf8 = unchangedKind == "ascii" || (unchangedKind == "utf8" && codePage is -1 or 65001);
-		var expectRefusal = changedKind == "nonascii" && !nativeUtf8 && !unchangedIsUtf8;
+		var becameUtf8 = changedKind == "nonascii" && !nativeUtf8;
+		var kind = Kind (codePage, unchanged);
+		var expectRefusal = becameUtf8 && kind == "guess";
+		var reencoded = becameUtf8 && kind == "exact";
 		var cell = $"CSET {codePage}, unchanged {unchangedKind}, changed {changedKind}";
 		if (expectRefusal) {
 			Assert.IsFalse (result.IsSuccess, cell);
@@ -60,13 +62,21 @@ public class AviInfoTextTests
 
 		Assert.IsTrue (result.IsSuccess, $"{cell}: {result.Error}");
 		var saved = fs.ReadAllBytes ("/out.avi");
-		CollectionAssert.AreEqual (unchanged, AviTestBuilder.InfoField (saved, "IART"), cell);
 		var again = AviFile.Read (saved).File!.InfoTag;
+		if (reencoded) {
+			// The round trip: the original decoded with its declared code page by .NET's own decoder
+			// equals the UTF-8 the save wrote, and the value read back.
+			var declared = Oracle (codePage).GetString (unchanged, 0, Array.IndexOf (unchanged, (byte)0));
+			CollectionAssert.AreEqual (Encoding.UTF8.GetBytes (declared + "\0"), AviTestBuilder.InfoField (saved, "IART"), cell);
+			Assert.AreEqual (declared, again.Artist, cell);
+		} else {
+			CollectionAssert.AreEqual (unchanged, AviTestBuilder.InfoField (saved, "IART"), cell);
+		}
+
 		Assert.AreEqual (artist, again.Artist, cell);
 		Assert.AreEqual (changed, again.Title, cell);
 
 		var names = AviSaveTests.Names (saved);
-		var becameUtf8 = changedKind == "nonascii" && !nativeUtf8;
 		if (becameUtf8) {
 			Assert.AreEqual ((ushort)65001, CodePage (saved), cell);
 			Assert.AreEqual (1, names.Count (n => n == "CSET"), cell);
@@ -87,6 +97,42 @@ public class AviInfoTextTests
 				foreach (var changed in new[] { "ascii", "nonascii" })
 					yield return [codePage, unchanged, changed];
 	}
+
+	/// <summary>
+	/// How surely the unchanged value is known: ASCII and UTF-8 keep their bytes in a UTF-8 list; text in a
+	/// declared code page decoded exactly is rewritten as UTF-8; text whose code page is a guess refuses.
+	/// </summary>
+	static string Kind (int codePage, byte[] bytes)
+	{
+		var text = bytes.AsSpan (0, Array.IndexOf (bytes, (byte)0));
+		if (!text.ToArray ().Any (b => b > 0x7F))
+			return "ascii";
+		if (codePage is -1 or 65001 && IsUtf8 (text.ToArray ()))
+			return "utf8";
+		return codePage switch {
+			28591 => "exact",
+			0 => text.ToArray ().Any (b => b is >= 0x80 and <= 0x9F) ? "guess" : "exact",
+			1252 => text.ToArray ().Any (b => b is 0x81 or 0x8D or 0x8F or 0x90 or 0x9D) ? "guess" : "exact",
+			65001 => "native",
+			_ => "guess"
+		};
+	}
+
+	static bool IsUtf8 (byte[] bytes)
+	{
+		try {
+			_ = new UTF8Encoding (false, true).GetString (bytes);
+			return true;
+		} catch (DecoderFallbackException) {
+			return false;
+		}
+	}
+
+	/// <summary>.NET's decoder for a declared code page, independent of the library's tables.</summary>
+	static Encoding Oracle (int codePage) => codePage switch {
+		1252 => CodePagesEncodingProvider.Instance.GetEncoding (1252)!,
+		_ => Encoding.Latin1
+	};
 
 	static byte[] UnchangedBytes (int codePage, string kind) => kind switch {
 		"ascii" => [.. "Artist"u8, 0],
@@ -111,6 +157,48 @@ public class AviInfoTextTests
 		CollectionAssert.AreEqual (Windows1252Halo, AviTestBuilder.InfoField (saved, "IART"));
 		Assert.AreEqual ((ushort)codePage, CodePage (saved));
 		Assert.AreEqual (text, AviFile.Read (saved).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	[DataRow (1252, new byte[] { 0x42, 0x65, 0x79, 0x6F, 0x6E, 0x63, 0xE9, 0x20, 0x96, 0x20, 0x48, 0x61, 0x6C, 0x6F, 0x00 })]
+	[DataRow (28591, new byte[] { 0x43, 0x61, 0x66, 0xE9, 0x20, 0xA9, 0x00 })]
+	[DataRow (0, new byte[] { 0x43, 0x61, 0x66, 0xE9, 0x20, 0xA9, 0x00 })]
+	public void Save_NonAsciiChangeUnderADecodableCset_RewritesUntouchedTextAsTheSameUtf8 (int codePage, byte[] legacy)
+	{
+		var builder = new AviTestBuilder { CharacterSet = (ushort)codePage };
+		builder.InfoBytes.Add (("IART", legacy));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		var artist = file.InfoTag.Artist;
+		file.InfoTag.Title = ChangedNonAscii;
+
+		var saved = file.Render (original).ToArray ();
+
+		var declared = Oracle (codePage).GetString (legacy, 0, legacy.Length - 1);
+		Assert.AreEqual (declared, artist, "The read already matches .NET's decoder.");
+		CollectionAssert.AreEqual (Encoding.UTF8.GetBytes (declared + "\0"), AviTestBuilder.InfoField (saved, "IART"));
+		Assert.AreEqual ((ushort)65001, CodePage (saved));
+		var again = AviFile.Read (saved).File!.InfoTag;
+		Assert.AreEqual (declared, again.Artist);
+		Assert.AreEqual (ChangedNonAscii, again.Title);
+	}
+
+	[TestMethod]
+	[DataRow (1252, new byte[] { 0x41, 0x81, 0x42, 0x00 })]
+	[DataRow (0, new byte[] { 0x41, 0x96, 0x42, 0x00 })]
+	public void Save_UndefinedByteInTheDeclaredCodePage_Refuses (int codePage, byte[] legacy)
+	{
+		// 0x81 is unassigned in Windows-1252, and columns 8 and 9 are undefined in CSET 0's ISO 8859/1.
+		var builder = new AviTestBuilder { CharacterSet = (ushort)codePage };
+		builder.InfoBytes.Add (("IART", legacy));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = ChangedNonAscii;
+
+		var saved = file.SaveToFile ("/x.avi", original, new MockFileSystem ());
+
+		Assert.IsFalse (saved.IsSuccess);
+		StringAssert.Contains (saved.Error, "IART");
 	}
 
 	[TestMethod]
