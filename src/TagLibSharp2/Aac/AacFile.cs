@@ -38,7 +38,6 @@ namespace TagLibSharp2.Aac;
 /// </remarks>
 public sealed class AacFile : IMediaFile
 {
-	const int Id3v1Size = 128;
 	bool _disposed;
 	IFileSystem? _sourceFileSystem;
 
@@ -211,87 +210,29 @@ public sealed class AacFile : IMediaFile
 	}
 
 	/// <summary>
-	/// The end of the audio region: the first of a trailing APEv2 tag that parses, a Lyrics3 v1 or v2 block in
-	/// front of ID3v1 (https://id3.org/Lyrics3, https://id3.org/Lyrics3v2), and an ID3v1 tag; else the end of the
-	/// stream. Detection and <see cref="Read(ReadOnlySpan{byte})"/> both use it, so a start header that runs into
-	/// a trailing tag is not AAC on either path, and a last frame cut by one is not counted.
-	/// When <paramref name="file"/> is given, it gets the tags.
+	/// The end of the audio region, from <see cref="AacTail.Locate"/>: the one tail rule detection and both reads
+	/// share. When <paramref name="file"/> is given, it gets the trailing tags.
 	/// </summary>
-	/// <remarks>
-	/// APEv2 and Lyrics3 placement come from <see cref="ApeTagTail"/> and <see cref="ApeTagLocation"/>, the
-	/// helpers every APE-tagged format uses. <see cref="AudioEnd(ReadOnlySpan{byte})"/> is the span twin.
-	/// </remarks>
 	internal static long ReadTail (Stream stream, long audioStart, AacFile? file)
 	{
-		var length = stream.Length;
-		var audioEnd = length;
-		if (!HasTrailingTagMarker (stream))
-			return audioEnd;
-
-		if (ApeTagTail.TryRead (stream, out var apeBytes, out var apeOffset) && apeOffset >= audioStart) {
-			var ape = ApeTag.Parse (apeBytes);
-			if (ape.IsSuccess && ape.Tag is not null) {
-				if (file is not null) {
-					file.ApeTag = ape.Tag;
-					if (!HasApeHeader (apeBytes))
-						file._footerOnlyApeTag = ape.Tag;
-				}
-				audioEnd = apeOffset;
-			}
+		var tail = AacTail.Locate (new AacTailSource (stream), audioStart);
+		if (file is not null) {
+			file.ApeTag = tail.ApeTag;
+			if (tail.ApeTag is not null && !tail.ApeHasHeader)
+				file._footerOnlyApeTag = tail.ApeTag;
+			file.Id3v1Tag = tail.Id3v1Tag;
 		}
-
-		if (length - Id3v1Size >= audioStart) {
-			stream.Position = length - Id3v1Size;
-			var footer = StreamBytes.ReadAtMost (stream, Id3v1Size);
-			var id3v1 = Id3v1Tag.Read (footer);
-			if (id3v1.IsSuccess && id3v1.Tag is not null) {
-				if (file is not null)
-					file.Id3v1Tag = id3v1.Tag;
-				audioEnd = Math.Min (audioEnd, length - Id3v1Size);
-				if (ApeTagLocation.TryLyricsStart (stream, out var lyricsStart) && lyricsStart >= audioStart)
-					audioEnd = Math.Min (audioEnd, lyricsStart);
-			}
-		}
-
-		return audioEnd;
+		return tail.AudioEnd;
 	}
 
 	/// <summary>
-	/// The span twin of <see cref="ReadTail"/> for detection: the end of the audio in <paramref name="data"/>,
-	/// which starts at the first byte after a leading ID3v2 tag and runs to the end of the file. Nothing is copied.
+	/// The end of the audio in <paramref name="data"/>, which starts at the first byte after a leading ID3v2 tag and
+	/// runs to the end of the file, by the same rule as <see cref="ReadTail"/>. Nothing is copied.
 	/// </summary>
-	internal static long AudioEnd (ReadOnlySpan<byte> data)
-	{
-		var length = data.Length;
-		long audioEnd = length;
-		if (!HasTrailingTagMarker (data))
-			return audioEnd;
-
-		var location = ApeTagLocation.Locate (data);
-		if (location.Found && location.AudioEnd < location.TagEnd
-			&& ApeTag.Parse (data[location.AudioEnd..location.TagEnd]).IsSuccess)
-			audioEnd = location.AudioEnd;
-
-		if (length >= Id3v1Size && Id3v1Tag.Read (data.Slice (length - Id3v1Size, Id3v1Size)).IsSuccess) {
-			audioEnd = Math.Min (audioEnd, length - Id3v1Size);
-			if (ApeTagLocation.TryReadLyrics3 (data, out var lyricsStart, out _))
-				audioEnd = Math.Min (audioEnd, lyricsStart);
-		}
-
-		return audioEnd;
-	}
+	internal static long AudioEnd (ReadOnlySpan<byte> data) => AacTail.Locate (new AacTailSource (data), 0).AudioEnd;
 
 	/// <summary>The stream twin of <see cref="AudioEnd(ReadOnlySpan{byte})"/>. The stream position moves.</summary>
 	internal static long AudioEnd (Stream stream, long audioStart) => ReadTail (stream, audioStart, null);
-
-	// The footer's flags say whether a header precedes the items (APEv2: bit 31 "contains a header").
-	static bool HasApeHeader (byte[] tag)
-	{
-		if (tag.Length < ApeTagFooter.Size)
-			return false;
-		var footer = ApeTagFooter.Parse (tag.AsSpan (tag.Length - ApeTagFooter.Size));
-		return footer.IsSuccess && footer.Footer is { HasHeader: true };
-	}
 
 	/// <summary>
 	/// Reads an AAC file from a file path.
@@ -357,16 +298,19 @@ public sealed class AacFile : IMediaFile
 	/// <param name="data">The data to check.</param>
 	/// <returns>
 	/// <para>
-	/// True when the stream starts at offset 0, or after a leading ID3v2 tag within the next 8 KB. "ADIF" counts
-	/// only at that first byte and only when its header parses. Each 0xFF byte in the window is judged in turn:
+	/// True when the stream starts at offset 0, or after a leading ID3v2 tag within the next 8 KB. The audio ends at
+	/// the first trailing tag (APEv2, a Lyrics3 block in front of ID3v1, or ID3v1) or at the end of the data, and
+	/// every check below is made against that end, so a trailing tag never changes the answer. "ADIF" counts only
+	/// at the first byte and only when its header parses inside the audio. Each 0xFF byte in the window is judged in turn:
 	/// </para>
 	/// <list type="bullet">
-	/// <item>An ADTS header (sync 0xFFF, layer '00') whose next frame header names the same stream, or whose frame
-	/// ends where an ID3v1, APEv2, or Lyrics3 tag begins, makes the data AAC.</item>
-	/// <item>An ADTS header whose next header lies past the data makes it AAC only at the first byte.</item>
+	/// <item>An ADTS header (sync 0xFFF, layer '00') whose next frame header, inside the audio, names the same stream
+	/// makes the data AAC.</item>
+	/// <item>An ADTS header whose frame runs to or past the end of the audio cannot be checked. It makes the data AAC
+	/// only at the first byte.</item>
 	/// <item>An MPEG audio frame header (layer other than '00') ends the search as not AAC when its successor
-	/// confirms it or lies past the data, so an ID3-tagged MP3, even a truncated one, stays MP3.</item>
-	/// <item>A header its successor contradicts is skipped.</item>
+	/// confirms it or its frame runs past the audio, so an ID3-tagged MP3, even a truncated one, stays MP3.</item>
+	/// <item>A header its successor contradicts, or one cut by a trailing tag, is skipped.</item>
 	/// </list>
 	/// <para>
 	/// <see cref="Read(ReadOnlySpan{byte})"/> uses the same rule against the same bytes, so data this accepts opens.
@@ -381,29 +325,6 @@ public sealed class AacFile : IMediaFile
 		// The audio end is found only when a candidate needs it, on the span, without a copy.
 		return AacStream.FindStart (data[start..], SearchBytes (start), -1, out _) >= 0;
 	}
-
-	// Both trailing tags end with a marker: "TAG" opens the last 128 bytes, and an APEv2 tag at the end of the
-	// file, or in front of ID3v1, needs "TAG" or its own footer magic at the end. Neither means no trailing tag.
-	static bool HasTrailingTagMarker (Stream stream)
-	{
-		var length = stream.Length;
-		if (length >= Id3v1Size) {
-			stream.Position = length - Id3v1Size;
-			if (StreamBytes.ReadAtMost (stream, 3).AsSpan ().SequenceEqual ("TAG"u8))
-				return true;
-		}
-
-		if (length >= ApeTagFooter.Size) {
-			stream.Position = length - ApeTagFooter.Size;
-			return StreamBytes.ReadAtMost (stream, 8).AsSpan ().SequenceEqual (ApeTagFooter.Magic);
-		}
-
-		return false;
-	}
-
-	static bool HasTrailingTagMarker (ReadOnlySpan<byte> data) =>
-		(data.Length >= Id3v1Size && data.Slice (data.Length - Id3v1Size, 3).SequenceEqual ("TAG"u8))
-		|| (data.Length >= ApeTagFooter.Size && data.Slice (data.Length - ApeTagFooter.Size, 8).SequenceEqual (ApeTagFooter.Magic));
 
 	/// <summary>
 	/// The stream twin of <see cref="IsValidFormat(ReadOnlySpan{byte})"/>. The stream position moves.

@@ -274,7 +274,7 @@ internal readonly struct ApeTagLocation
 		return parsed.IsSuccess && parsed.Footer is { IsHeader: false };
 	}
 
-	internal static bool TryLyricsStart (Stream stream, out long lyricsStart)
+	static bool TryLyricsStart (Stream stream, out long lyricsStart)
 	{
 		lyricsStart = -1;
 		var endOffset = stream.Length - Id3v1Size - LyricsEndLength;
@@ -410,7 +410,7 @@ internal readonly struct ApeTagLocation
 	/// LYRICSBEGIN within <see cref="LyricsV1SearchLimit"/> through LYRICSEND.
 	/// A size that does not land on LYRICSBEGIN, or LYRICSEND with no begin inside that bound, is not lyrics.
 	/// </summary>
-	internal static bool TryReadLyrics3 (ReadOnlySpan<byte> data, out int lyricsOffset, out int lyricsLength)
+	private static bool TryReadLyrics3 (ReadOnlySpan<byte> data, out int lyricsOffset, out int lyricsLength)
 	{
 		lyricsOffset = -1;
 		lyricsLength = 0;

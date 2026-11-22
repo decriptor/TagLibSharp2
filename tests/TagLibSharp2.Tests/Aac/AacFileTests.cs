@@ -274,6 +274,27 @@ public class AacFileTests
 	}
 
 	[TestMethod]
+	public void Read_ApeTagReachingIntoTheId3v2Tag_IsNotATrailingTag ()
+	{
+		// An APEv2 footer at the end whose size reaches back into the ID3v2 tag, where valid items sit in the
+		// padding. A trailing tag starts after the leading one; this one is not a tag, and the frames all count.
+		var item = new TagLibSharp2.Ape.ApeTag { Title = "Hidden" }.Render ().ToArray ()[..^32]; // the items alone
+		var frames = Adts (3, length: 300);
+		var padding = new byte[200];
+		item.CopyTo (padding, padding.Length - item.Length);
+		var id3 = Concat ("ID3"u8.ToArray (), [4, 0, 0, 0, 0, 1, 0x48], padding); // syncsafe 200
+		var footer = new TagLibSharp2.Ape.ApeTag { Title = "Hidden" }.Render ().ToArray ()[^32..];
+		var tagSize = (uint)(item.Length + frames.Length + 32);
+		BitConverter.GetBytes (tagSize).CopyTo (footer, 12);
+		var data = Concat (id3, frames, footer);
+
+		var file = AacFile.Read (data).File!;
+		Assert.IsNull (file.ApeTag);
+		Assert.AreEqual (3, file.Properties!.FrameCount);
+		Assert.IsTrue (AacFile.IsValidFormat (data));
+	}
+
+	[TestMethod]
 	public void Read_HeaderForAnotherStream_IsSkippedNotCounted ()
 	{
 		// The fixed header does not change from frame to frame (ISO/IEC 13818-7 §6.2.1).

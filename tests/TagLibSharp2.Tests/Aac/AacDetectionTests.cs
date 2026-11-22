@@ -367,8 +367,33 @@ public class AacDetectionTests
 		("footer-only APEv2", ApeBytes ("Ape")),
 		("Lyrics3v1+ID3v1", Concat (Lyrics3V1 (), Id3v1Bytes ("Back"))),
 		("Lyrics3v2+ID3v1", Concat (Lyrics3V2 (), Id3v1Bytes ("Back"))),
-		("APEv2+Lyrics3v2+ID3v1", Concat (new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray (), Lyrics3V2 (), Id3v1Bytes ("Back")))
+		("APEv2+Lyrics3v2+ID3v1", Concat (new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray (), Lyrics3V2 (), Id3v1Bytes ("Back"))),
+		("APEv2 claiming a missing header", ApeClaimingAMissingHeader ()),
+		("APEv2 claiming a missing header+ID3v1", Concat (ApeClaimingAMissingHeader (), Id3v1Bytes ("Back")))
 	];
+
+	// Every tail above, plus one whose 32 "header" bytes are not a header. Those bytes are audio by the tail rule,
+	// so they can change the answer; the entry points must still agree on it.
+	static IEnumerable<(string Name, byte[] Bytes)> AllTails () => TrailingTags ().Concat ([
+		("APEv2 with a damaged header", ApeWithADamagedHeader ()),
+		("APEv2 with a damaged header+ID3v1", Concat (ApeWithADamagedHeader (), Id3v1Bytes ("Back")))
+	]);
+
+	// A footer-only tag whose footer sets bit 31, "contains a header", with no header in front of the items.
+	static byte[] ApeClaimingAMissingHeader ()
+	{
+		var tag = ApeBytes ("Ape");
+		tag[^9] |= 0x80; // footer flags, little-endian, bytes 20-23 of the 32-byte footer
+		return tag;
+	}
+
+	// A tag with a header whose "APETAGEX" is damaged, so the footer's header flag is not backed by a header.
+	static byte[] ApeWithADamagedHeader ()
+	{
+		var tag = new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ();
+		tag[2] ^= 0x20;
+		return tag;
+	}
 
 	// Lyrics3 v1 (https://id3.org/Lyrics3): LYRICSBEGIN, text, LYRICSEND, directly before ID3v1.
 	static byte[] Lyrics3V1 () => Concat ("LYRICSBEGIN"u8.ToArray (), "la la la"u8.ToArray (), "LYRICSEND"u8.ToArray ());
@@ -379,6 +404,77 @@ public class AacDetectionTests
 		var body = Concat ("LYRICSBEGIN"u8.ToArray (), "IND00003110"u8.ToArray (), "LYR00008la la la"u8.ToArray ());
 		var size = System.Text.Encoding.ASCII.GetBytes (body.Length.ToString ("D6", System.Globalization.CultureInfo.InvariantCulture));
 		return Concat (body, size, "LYRICS200"u8.ToArray ());
+	}
+
+	[TestMethod]
+	public void SpanDetectionSpanReadAndStreamRead_AlwaysAgree ()
+	{
+		// One tail rule for every entry point: detection on a span and on a stream, and the read on each, judge
+		// the same bytes. Cuts through the first frames, every trailing tag (malformed footers too), with and
+		// without ID3v2.
+		var audio = Adts (3, length: 300);
+		var cuts = Enumerable.Range (1, 40).Concat (Enumerable.Range (293, 18)).Concat (Enumerable.Range (593, 18)).Append (audio.Length);
+		var cases = 0;
+		foreach (var withId3v2 in new[] { false, true }) {
+			foreach (var cut in cuts) {
+				foreach (var (tagName, tail) in AllTails ()) {
+					var body = Concat (audio[..cut], tail);
+					var data = withId3v2 ? Concat (Id3v2Bytes ("T"), body) : body;
+					AssertEntryPointsAgree (data, $"cut {cut} + {tagName}, ID3v2 {withId3v2}");
+					cases++;
+				}
+			}
+		}
+		Assert.IsTrue (cases > 1000);
+	}
+
+	[TestMethod]
+	public void SpanAndStream_AgreeOnMutatedTrailingTags ()
+	{
+		// Random cuts and random byte changes in an APEv2 tag (header, items, footer), alone, before ID3v1, and
+		// before Lyrics3 v2 + ID3v1.
+		var random = new Random (144);
+		var audio = Adts (3, length: 300);
+		var apeTag = new TagLibSharp2.Ape.ApeTag { Title = "Ape" }.RenderWithOptions (includeHeader: true).ToArray ();
+		for (var round = 0; round < 3000; round++) {
+			var ape = (byte[])apeTag.Clone ();
+			for (var flips = random.Next (1, 3); flips > 0; flips--)
+				ape[random.Next (ape.Length)] = (byte)random.Next (256);
+			if (random.Next (4) == 0)
+				ape = ape[32..]; // drop the header, keep the footer's flags
+			var tail = (round % 3) switch {
+				0 => ape,
+				1 => Concat (ape, Id3v1Bytes ("Back")),
+				_ => Concat (ape, Lyrics3V2 (), Id3v1Bytes ("Back"))
+			};
+			var body = Concat (audio[..random.Next (1, audio.Length + 1)], tail);
+			var data = random.Next (2) == 0 ? body : Concat (Id3v2Bytes ("T"), body);
+			AssertEntryPointsAgree (data, $"round {round}");
+		}
+	}
+
+	static void AssertEntryPointsAgree (byte[] data, string label)
+	{
+		var spanValid = AacFile.IsValidFormat (data);
+		using (var stream = new MemoryStream (data))
+			Assert.AreEqual (spanValid, AacFile.IsValidFormat (stream), $"{label}: span vs stream detection");
+
+		var spanRead = AacFile.Read (data);
+		AacFileReadResult streamRead;
+		using (var stream = new MemoryStream (data))
+			streamRead = AacFile.Read (stream, null, null);
+		Assert.AreEqual (spanRead.IsSuccess, streamRead.IsSuccess, $"{label}: span vs stream read");
+		Assert.AreEqual (spanRead.File?.Properties?.FrameCount, streamRead.File?.Properties?.FrameCount, $"{label}: frames");
+		if (spanValid)
+			Assert.IsTrue (spanRead.IsSuccess, $"{label}: detected as AAC but did not open: {spanRead.Error}");
+
+		var detected = MediaFile.DetectFormat (data);
+		var fromData = MediaFile.ReadFromData (data);
+		MediaFileResult fromStream;
+		using (var stream = new MemoryStream (data))
+			fromStream = MediaFile.Read (stream);
+		Assert.AreEqual (detected == MediaFormat.Aac, fromData.IsSuccess && fromData.Format == MediaFormat.Aac, $"{label}: DetectFormat vs ReadFromData");
+		Assert.AreEqual (detected == MediaFormat.Aac, fromStream.IsSuccess && fromStream.Format == MediaFormat.Aac, $"{label}: DetectFormat vs Read (stream)");
 	}
 
 	[TestMethod]
