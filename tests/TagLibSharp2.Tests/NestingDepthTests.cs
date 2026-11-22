@@ -25,8 +25,6 @@ public class NestingDepthTests
 
 	// Remove an entry when the fix lands; the row then runs and must pass.
 	static readonly Dictionary<string, string> KnownOverflows = new (StringComparer.Ordinal) {
-		["matroska-simpletag"] = "Matroska SimpleTag read and render recurse once per nested SimpleTag (fix in PR #151).",
-		["matroska-cues"] = "Matroska Cues patching recurses once per nested CuePoint on a save that moves clusters (fix in PR #151).",
 		["mp4-udta"] = "MP4 ParseBox/ParseChildren recurse once per nested container box (overflow at ~1,600 levels) and copy each payload (1 GiB by ~500 levels).",
 		["mp4-track-layout"] = "MP4 ParseBox/ParseChildren recurse once per nested mdia box; CollectTrackLayout recurses on the same path.",
 	};

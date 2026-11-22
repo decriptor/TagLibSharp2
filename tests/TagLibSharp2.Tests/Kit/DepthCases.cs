@@ -34,9 +34,11 @@ public static class DepthCases
 	/// <summary>The cases, one per nesting structure.</summary>
 	public static IReadOnlyList<DepthCase> All { get; } = [
 		new ("matroska-simpletag", MediaFormat.Matroska, ".mkv",
-			"Tags/Tag/SimpleTag nested in SimpleTag (RFC 9559 §5.1.8.1.2)", MatroskaSimpleTags),
+			"Tags/Tag/SimpleTag nested in SimpleTag (RFC 9559 Tags)", MatroskaSimpleTags),
 		new ("matroska-cues", MediaFormat.Matroska, ".mkv",
 			"Cues/CuePoint nested in CuePoint, saved so clusters move", MatroskaCues),
+		new ("matroska-chapters", MediaFormat.Matroska, ".mkv",
+			"Chapters/EditionEntry/ChapterAtom nested in ChapterAtom (RFC 9559 Chapters)", MatroskaChapters),
 		new ("mp4-udta", MediaFormat.Mp4, ".m4a",
 			"moov/udta nested in udta, 64-bit sizes (ISO/IEC 14496-12 §4.2)", Mp4UserData),
 		new ("mp4-track-layout", MediaFormat.Mp4, ".m4a",
@@ -71,7 +73,7 @@ public static class DepthCases
 
 	static byte[] MatroskaCues (int depth)
 	{
-		// Each CueClusterPosition holds the Cluster's offset in the Segment body (RFC 9559 §5.1.5.1.2.3).
+		// Each CueClusterPosition holds the Cluster's offset in the Segment body (RFC 9559, Cues: CueClusterPosition).
 		// The new Tags go in before the Cluster, so a save must patch every one of them.
 		var info = Info ();
 		byte[] Cues (ulong position) => Nesting.EbmlElement (MatroskaIds.Cues, Nesting.EbmlChain (MatroskaIds.CuePoint, depth, [],
@@ -88,6 +90,29 @@ public static class DepthCases
 		var bytes = new byte[8];
 		System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian (bytes, value);
 		return bytes;
+	}
+
+	static byte[] MatroskaChapters (int depth)
+	{
+		// Each level is a ChapterAtom with its mandatory ChapterUID and ChapterTimeStart and a display
+		// string, then the next ChapterAtom (RFC 9559, Chapters: ChapterAtom is a recursive element).
+		var fields = Nesting.Concat (
+			Nesting.EbmlElement (MatroskaIds.ChapterUid, [1]),
+			Nesting.EbmlElement (MatroskaIds.ChapterTimeStart, [0]),
+			Nesting.EbmlElement (MatroskaIds.ChapterDisplay, Nesting.EbmlElement (MatroskaIds.ChapString, "N"u8)));
+		var leaf = Nesting.EbmlElement (MatroskaIds.ChapterAtom, Nesting.Concat (
+			Nesting.EbmlElement (MatroskaIds.ChapterUid, [2]),
+			Nesting.EbmlElement (MatroskaIds.ChapterTimeStart, [0]),
+			Nesting.EbmlElement (MatroskaIds.ChapterDisplay, Nesting.EbmlElement (MatroskaIds.ChapString, "Deepest"u8))));
+		var edition = Nesting.EbmlElement (MatroskaIds.EditionEntry, Nesting.Concat (
+			Nesting.EbmlElement (MatroskaIds.EditionUid, [1]),
+			Nesting.EbmlChain (MatroskaIds.ChapterAtom, depth, fields, leaf)));
+		var tags = Nesting.EbmlElement (MatroskaIds.Tags, Nesting.EbmlElement (MatroskaIds.Tag, Nesting.Concat (
+			Nesting.EbmlElement (MatroskaIds.Targets, Nesting.EbmlElement (MatroskaIds.TargetTypeValue, [50])),
+			Nesting.EbmlElement (MatroskaIds.SimpleTag, Nesting.Concat (
+				Nesting.EbmlElement (MatroskaIds.TagName, "TITLE"u8),
+				Nesting.EbmlElement (MatroskaIds.TagString, "Outer"u8))))));
+		return MatroskaFile (Info (), Nesting.EbmlElement (MatroskaIds.Chapters, edition), tags);
 	}
 
 	static byte[] Info () => Nesting.EbmlElement (MatroskaIds.Info, Nesting.EbmlElement (MatroskaIds.SegmentTitle, "Deep"u8));

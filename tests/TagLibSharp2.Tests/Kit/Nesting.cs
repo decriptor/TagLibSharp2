@@ -25,7 +25,7 @@ public static class Nesting
 	/// <summary>
 	/// An EBML element with an 8-octet data size.
 	/// </summary>
-	/// <remarks>RFC 8794 §4.4: a VINT of any width up to EBMLMaxSizeLength (8) encodes the size.</remarks>
+	/// <remarks>RFC 8794 §6.1: the size is a VINT of any width up to EBMLMaxSizeLength (8 here).</remarks>
 	public static byte[] EbmlElement (ulong id, ReadOnlySpan<byte> payload)
 	{
 		var idBytes = EbmlId (id);
