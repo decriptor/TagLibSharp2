@@ -273,8 +273,8 @@ internal static class AacStream
 
 	/// <summary>
 	/// True when the header at the start of <paramref name="rest"/> is confirmed. Its successor names the same
-	/// stream, or is a trailing tag, or cannot be checked: the frame reaches the end of the data
-	/// (<paramref name="room"/>) or of the bytes in hand.
+	/// stream, or cannot be checked: the frame reaches the end of the audio (<paramref name="room"/>) or of the
+	/// bytes in hand.
 	/// </summary>
 	static bool IsConfirmed (AdtsHeader header, ReadOnlySpan<byte> rest, long room)
 	{
