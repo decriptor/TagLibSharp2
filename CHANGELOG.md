@@ -37,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   description in QuickTime files (major brand `qt  `, or no `ftyp`). A chapter sample that is not valid
   UTF-8/UTF-16 text yields to `chpl`. Clearing also removes Apple chapter image and URL tracks.
   A set replaces every chapter title track with the one list: other title tracks (for example one per
-  language) are removed. A chapter URL track (samples with an `href` modifier) and chapter image tracks stay.
+  language) are removed, and a track whose chapter reference named one then names the rebuilt track. A
+  chapter URL track (samples with an `href` modifier, 3GPP TS 26.245 §5.17.1.5) and chapter image tracks stay.
   Chapters and the tag are separate: `ClearAllMetadata()` and `Tag = null` keep the chapters, and
   `Chapters = []` keeps the tag.
 

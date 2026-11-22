@@ -994,7 +994,7 @@ internal static class Mp4ChapterCodec
 	/// rebuilt, and every other one goes the way a clear removes it, so no reader shows old titles: ffprobe can
 	/// take a later one, and AVFoundation picks one per locale. Two kinds of text track stay. A chapter URL
 	/// track (Apple enhanced podcasts) has samples that carry a hypertext modifier box (<c>href</c>, 3GPP
-	/// TS 26.245 §5.17). A text track whose samples cannot all be read cannot be told apart, so it stays too.
+	/// TS 26.245 §5.17.1.5). A text track whose samples cannot all be read cannot be told apart, so it stays too.
 	/// Chapter image tracks are video tracks and are not touched.
 	/// </para>
 	/// <para>
@@ -1054,8 +1054,6 @@ internal static class Mp4ChapterCodec
 
 		if (existing is not null && HasFragments (fragments, [existing.Id, .. notUrl]))
 			return ChapterPlan.Refused (FragmentedChapterTrackError);
-		if (extras.Count > 0)
-			RemoveTraks (children, extras);
 
 		var chpl = RenderChpl (chapters);
 		var lastTrak = children.FindLastIndex (b => b.Type == "trak");
@@ -1092,8 +1090,12 @@ internal static class Mp4ChapterCodec
 		}
 
 		// A replaced track keeps its id, so the references that found it still do, and its trex stays valid.
+		// The extra title tracks go after the rebuilt trak has replaced the old one (which may hold a chap of its
+		// own); each chap entry for them then names the rebuilt track.
 		if (existing is null)
 			ReplaceReferences (children, new HashSet<uint> { trackId }, add: true);
+		else if (extras.Count > 0)
+			RemoveTraks (children, extras, trackId);
 		var ordinal = children.Where (b => b.Type == "trak").ToList ().IndexOf (trak);
 		// Only the rebuilt track's old samples count as replaced: a removed extra title track's samples stay as
 		// dead bytes, so an mdat that holds them is kept, as when they share an mdat with other media.
@@ -1103,18 +1105,20 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// Removes <paramref name="tracks"/> from <paramref name="children"/> by trak object, every <c>chap</c> entry
-	/// for their IDs (the entry meant that trak, even when another trak shares its ID), and the trex (§8.8.3) of
-	/// each ID no remaining trak has. Returns the set lookups made, a step count for the work-bound tests.
+	/// Removes <paramref name="tracks"/> from <paramref name="children"/> by trak object, and the trex (§8.8.3) of
+	/// each ID no remaining trak has. Every <c>chap</c> entry for their IDs (the entry meant that trak, even when
+	/// another trak shares its ID) is dropped by a clear. A set passes <paramref name="retarget"/>, the rebuilt
+	/// title track's ID, and each such entry then names it instead, so a track whose chapter list was a removed
+	/// title track still has one. The set calls this after the rebuilt trak (which has no tref) is in place. Returns the set lookups made, a step count for the work-bound tests.
 	/// </summary>
-	static long RemoveTraks (List<Mp4Box> children, List<ChapterTrack> tracks)
+	static long RemoveTraks (List<Mp4Box> children, List<ChapterTrack> tracks, uint? retarget = null)
 	{
 		var removedTraks = new TrakSet (tracks);
 		children.RemoveAll (removedTraks.Contains);
 
 		var removed = new HashSet<uint> (tracks.Select (t => t.Id));
 		if (removed.Count > 0)
-			ReplaceReferences (children, removed, add: false);
+			ReplaceReferences (children, removed, add: false, retarget);
 		var unused = new HashSet<uint> (removed);
 		foreach (var child in children) {
 			if (child.Type == "trak" && TryReadTrackId (child, out var id))
@@ -1156,7 +1160,7 @@ internal static class Mp4ChapterCodec
 
 	/// <summary>
 	/// Classifies the chapter text trak <paramref name="trak"/> by the samples in its moov sample table. Any
-	/// sample with a hypertext modifier box (<c>href</c>, 3GPP TS 26.245 §5.17) makes it a URL track. When
+	/// sample with a hypertext modifier box (<c>href</c>, 3GPP TS 26.245 §5.17.1.5) makes it a URL track. When
 	/// every sample lies in <paramref name="file"/> and none has one, it is a title track. Otherwise it is
 	/// unknown: a sample outside the file, tables that do not parse, no samples in moov (they may be in
 	/// fragments), or <paramref name="budget"/> spent. Each sample and each modifier box costs one step from
@@ -1203,8 +1207,8 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// True when a text sample (16-bit length, text, then sample modifier boxes; 3GPP TS 26.245 §5.16-5.17)
-	/// carries an <c>href</c> modifier box. The walk stops at the first box that does not fit, and each box
+	/// True when a text sample (16-bit length, text, then sample modifier boxes; 3GPP TS 26.245 §5.17)
+	/// carries an <c>href</c> modifier box (§5.17.1.5). The walk stops at the first box that does not fit, and each box
 	/// costs one step from <paramref name="budget"/>; a spent budget also stops it.
 	/// </summary>
 	internal static bool HasHyperText (ReadOnlySpan<byte> sample, StepBudget budget)
@@ -2056,7 +2060,7 @@ internal static class Mp4ChapterCodec
 	/// already gone from <paramref name="children"/>, and every remaining trak drops its chap entries for
 	/// those IDs, which named them, even a trak that shares one.
 	/// </remarks>
-	static void ReplaceReferences (List<Mp4Box> children, HashSet<uint> trackIds, bool add)
+	static void ReplaceReferences (List<Mp4Box> children, HashSet<uint> trackIds, bool add, uint? retarget = null)
 	{
 		var chapterMedia = add ? new TrakSet (FindChapterTracks (children, textOnly: false)) : null;
 		for (var i = 0; i < children.Count; i++) {
@@ -2070,7 +2074,7 @@ internal static class Mp4ChapterCodec
 			if (!add && tref is null)
 				continue;
 
-			var newTref = RebuildTref (Payload (tref), trackIds, add);
+			var newTref = RebuildTref (Payload (tref), trackIds, add, retarget);
 			if (tref is not null && newTref.Span.SequenceEqual (tref.Data.Span))
 				continue;
 
@@ -2095,7 +2099,7 @@ internal static class Mp4ChapterCodec
 	/// every id in <paramref name="trackIds"/> removed from it. Entries already present keep their order; an id
 	/// already present is not added twice.
 	/// </summary>
-	static BinaryData RebuildTref (ReadOnlySpan<byte> payload, HashSet<uint> trackIds, bool add)
+	internal static BinaryData RebuildTref (ReadOnlySpan<byte> payload, HashSet<uint> trackIds, bool add, uint? retarget = null)
 	{
 		var trackId = add ? trackIds.First () : 0;
 		using var builder = new BinaryDataBuilder ();
@@ -2109,12 +2113,23 @@ internal static class Mp4ChapterCodec
 			}
 
 			// Other chap entries stay: Apple files also reference chapter image and URL tracks here.
+			// Removing with a retarget: an entry for a removed id names the retarget instead, once, in the
+			// position of its first entry.
 			var ids = new List<uint> ();
+			var placedRetarget = false;
 			var body = payload.Slice (start + header, length - header);
 			for (var pos = 0; pos + 4 <= body.Length; pos += 4) {
 				var id = BinaryPrimitives.ReadUInt32BigEndian (body.Slice (pos));
-				if (add || !trackIds.Contains (id))
-					ids.Add (id);
+				var named = !add && trackIds.Contains (id) && retarget is not null ? retarget.Value : id;
+				if (!add && trackIds.Contains (id) && retarget is null)
+					continue;
+				if (retarget is not null && named == retarget.Value) {
+					if (placedRetarget)
+						continue;
+					placedRetarget = true;
+				}
+
+				ids.Add (named);
 			}
 
 			if (add && !placed && !ids.Contains (trackId))
