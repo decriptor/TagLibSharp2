@@ -1218,7 +1218,8 @@ public abstract class Tag
 	/// <para>
 	/// When the source and target read from a common tag (a tag copied into itself, or a file's combined
 	/// <c>Tag</c> copied into one of its own tags or into another view over them), the copy only adds
-	/// values the target does not show. A fallback field of its own beside a value equal to the copied one
+	/// values the target does not show. An empty source value still clears the field, as <c>= ""</c> does,
+	/// so through a view it also clears what the view showed from another tag. A fallback field of its own beside a value equal to the copied one
 	/// stays: Vorbis ORIGINALYEAR, APE Date, and an ID3v2.3 TDOR beside TORY. Pictures are outside both
 	/// rules: a non-empty source picture list always replaces the target's.
 	/// </para>
