@@ -483,3 +483,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Stryker.NET mutation reports (dotnet stryker)
+StrykerOutput/
