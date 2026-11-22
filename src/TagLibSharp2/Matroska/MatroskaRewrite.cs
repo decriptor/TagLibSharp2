@@ -36,27 +36,30 @@ static partial class MatroskaRewrite
 				return false;
 
 			// RFC 9559 section 6.7: an edited Attachments element SHOULD follow the last Cluster.
-			if (attachmentsChanged && !TryStage (data, ref staged, ref layout, MatroskaIds.Attachments, attachments, out error))
+			if (attachmentsChanged && !TryStage (data, ref staged, ref layout, MatroskaIds.Attachments, attachments, false, out error))
 				return false;
 		}
 
-		if (editChapters && !TryStage (data, ref staged, ref layout, MatroskaIds.Chapters, chapters.Render ().ToArray (), out error))
+		if (editChapters && !TryStage (data, ref staged, ref layout, MatroskaIds.Chapters, chapters.Render ().ToArray (), chapters.HasOrderedEdition, out error))
 			return false;
 
 		// Removed attachments also drop the tags that targeted only them.
 		var tags = (attachmentsChanged ? tag.RenderWithout (removed) : tag.Render ()).ToArray ();
-		if (!tag.IsAsRead (tags) && !TryStage (data, ref staged, ref layout, MatroskaIds.Tags, tags, out error))
+		if (!tag.IsAsRead (tags) && !TryStage (data, ref staged, ref layout, MatroskaIds.Tags, tags, false, out error))
 			return false;
 
 		rewritten = staged ?? data.ToArray ();
 		return true;
 	}
 
-	/// <summary>Writes one element into the latest staged copy and parses the result for the next pass.</summary>
-	static bool TryStage (ReadOnlySpan<byte> data, ref byte[]? staged, ref Layout layout, ulong id, byte[] element, out string error)
+	/// <summary>
+	/// Writes one element into the latest staged copy and parses the result for the next pass.
+	/// With <paramref name="afterInfo"/>, a moved element goes after the first Info (see <see cref="TryPlanMove"/>).
+	/// </summary>
+	static bool TryStage (ReadOnlySpan<byte> data, ref byte[]? staged, ref Layout layout, ulong id, byte[] element, bool afterInfo, out string error)
 	{
 		var source = staged is null ? data : staged;
-		if (!TryReplace (source, layout, id, element, out var next, out error))
+		if (!TryReplace (source, layout, id, element, afterInfo, out var next, out error))
 			return false;
 		if (!TryParse (next, out var parsed, out error) || parsed is null)
 			return false;
@@ -111,7 +114,7 @@ static partial class MatroskaRewrite
 	/// Writes <paramref name="element"/> as the only <paramref name="id"/> element of the Segment.
 	/// An empty element voids every existing one.
 	/// </summary>
-	static bool TryReplace (ReadOnlySpan<byte> data, Layout layout, ulong id, byte[] element, out byte[] rewritten, out string error)
+	static bool TryReplace (ReadOnlySpan<byte> data, Layout layout, ulong id, byte[] element, bool afterInfo, out byte[] rewritten, out string error)
 	{
 		rewritten = [];
 		var plan = PlanEdit (layout.Pieces, id, element, IsReferenced (data, layout, id));
@@ -126,7 +129,7 @@ static partial class MatroskaRewrite
 		var moveError = "";
 		if (NeedsMove (layout, plan, seekHeadCount, referenced)) {
 			body = [];
-			if (TryPlanMove (data, layout, id, element, out var moved)
+			if (TryPlanMove (data, layout, id, element, afterInfo, out var moved)
 				&& TryApply (data, layout, moved, out var movedBody, out var movedHeads, out var movedReferenced, out moveError)) {
 				plan = moved;
 				body = movedBody;
@@ -294,8 +297,11 @@ static partial class MatroskaRewrite
 				else {
 					var isHead = index == plan.HeadIndex;
 					if (isHead) {
-						// The element goes right after this SeekHead, at its length so far.
-						plan.ElementOffset = (int)plan.Map ((ulong)layout.Starts[index]) + lengths[index];
+						// The element goes right after this SeekHead, at its length so far, or before a later
+						// piece: where that piece starts once the rendered pieces before it have grown.
+						plan.ElementOffset = plan.InsertPiece == index + 1
+							? (int)plan.Map ((ulong)layout.Starts[index]) + lengths[index]
+							: (int)plan.Map ((ulong)layout.Starts[plan.InsertPiece]) - plan.Delta;
 					}
 
 					rendered = RenderSeekHead (source, plan, isHead || (index == firstHead && plan.Element.Length > 0));
@@ -370,14 +376,20 @@ static partial class MatroskaRewrite
 	/// when there is no SeekHead. The first SeekHead is written again with every position already
 	/// moved, each at the width it needs, plus a Seek for <paramref name="id"/>. Every existing
 	/// <paramref name="id"/> element is voided in place.
+	/// With <paramref name="afterInfo"/> the element goes right after the first Info instead, when that
+	/// Info comes after the SeekHead and before the first Tracks and the first Cluster: RFC 9559 section 6.6
+	/// says ordered chapters SHOULD be placed after the first Info and before the first Tracks.
 	/// </summary>
-	static bool TryPlanMove (ReadOnlySpan<byte> data, Layout layout, ulong id, byte[] element, out Plan plan)
+	static bool TryPlanMove (ReadOnlySpan<byte> data, Layout layout, ulong id, byte[] element, bool afterInfo, out Plan plan)
 	{
 		var pieces = layout.Pieces;
 		plan = new Plan (id, element) { VoidExisting = true, MustRetarget = true };
 		var index = pieces.FindIndex (piece => piece.Id == MatroskaIds.SeekHead);
+		var info = afterInfo ? InfoAnchor (pieces, index) : -1;
 		if (index < 0) {
 			var cluster = pieces.FindIndex (piece => piece.Id == MatroskaIds.Cluster);
+			if (info >= 0)
+				return PlanInsert (plan, layout, info + 1, element);
 			if (cluster < 0)
 				return false;
 			plan.InsertBefore = cluster;
@@ -391,17 +403,41 @@ static partial class MatroskaRewrite
 		if (piece.UnknownSize || !TryReadSeekHead (data.Slice (piece.Offset, piece.Length), out _, out _, out _, out _))
 			return false;
 
-		// The SeekHead is rendered like any other piece; its growth and the element both start at its old end.
+		// The SeekHead is rendered like any other piece; its growth starts at its old end, and the element
+		// goes at its old end too, or after the first Info.
 		plan.HeadIndex = index;
 		plan.RenderIndexes.Add (index);
-		plan.ShiftFrom = layout.Starts[index + 1];
+		return PlanInsert (plan, layout, info >= 0 ? info + 1 : index + 1, element);
+	}
+
+	static bool PlanInsert (Plan plan, Layout layout, int before, byte[] element)
+	{
+		plan.InsertPiece = before;
+		plan.ShiftFrom = layout.Starts[before];
 		plan.Delta = element.Length;
-		plan.ElementOffset = layout.Starts[index + 1];
-		if (index + 1 < pieces.Count)
-			plan.InsertBefore = index + 1;
+		plan.ElementOffset = layout.Starts[before];
+		if (before < layout.Pieces.Count)
+			plan.InsertBefore = before;
 		else
 			plan.Append = true;
 		return true;
+	}
+
+	/// <summary>
+	/// The first Info, when it follows <paramref name="seekHead"/> (or there is none) and comes before the
+	/// first Tracks and the first Cluster; otherwise -1, and the caller keeps its usual place.
+	/// </summary>
+	static int InfoAnchor (List<Piece> pieces, int seekHead)
+	{
+		var info = pieces.FindIndex (piece => piece.Id == MatroskaIds.Info && !piece.UnknownSize);
+		if (info < 0 || info < seekHead)
+			return -1;
+		for (var i = 0; i < info; i++) {
+			if (pieces[i].Id is MatroskaIds.Tracks or MatroskaIds.Cluster)
+				return -1;
+		}
+
+		return info;
 	}
 
 	/// <summary>Splits a SeekHead into its ID bytes, whether it has a CRC-32, other children, and its Seeks.</summary>
@@ -810,6 +846,9 @@ static partial class MatroskaRewrite
 		/// When set, <see cref="ElementOffset"/> is already a new offset: right after that SeekHead.
 		/// </summary>
 		public int HeadIndex { get; set; } = -1;
+
+		/// <summary>Gets or sets the piece a moved element is written in front of (its count when it is appended).</summary>
+		public int InsertPiece { get; set; } = -1;
 
 		/// <summary>Gets or sets a value indicating whether a rendered first SeekHead lists <see cref="Id"/>.</summary>
 		public bool RenderedTarget { get; set; }
