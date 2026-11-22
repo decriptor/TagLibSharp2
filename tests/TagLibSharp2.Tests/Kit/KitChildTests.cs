@@ -42,7 +42,8 @@ public class KitChildTests
 		Assert.AreEqual (0, result.ExitCode, result.Describe ());
 		var line = result.Output.Split ('\n').Single (l => l.StartsWith ("stack-kib=", StringComparison.Ordinal));
 		var kib = int.Parse (line["stack-kib=".Length..].Trim (), System.Globalization.CultureInfo.InvariantCulture);
-		Assert.IsTrue (kib is > 256 and <= KitProgram.StackBytes / 1024, result.Describe ());
+		// Literal bounds: a larger KitProgram.StackBytes would let a recursive parser pass every depth row.
+		Assert.IsTrue (kib is >= 256 and <= 1024, $"stack-kib={kib}\n{result.Describe ()}");
 	}
 
 	[TestMethod]
