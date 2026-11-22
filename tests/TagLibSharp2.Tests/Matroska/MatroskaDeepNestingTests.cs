@@ -236,4 +236,28 @@ public partial class MatroskaFileTests
 			size >>= 8;
 		}
 	}
+
+	[TestMethod]
+	public void SortWrites_ThatCopyAnArtist_KeepItsSimpleTagsPastTheParseDepth ()
+	{
+		// The split and an equal shadow copy a whole ARTIST SimpleTag. Its children nested past the parse depth are
+		// kept as stored (#151), so each copy carries them, and the original keeps its own.
+		var leaf = Master (0x67C8, Element (0x45A3, "LEAF"u8), Element (0x4487, "v"u8));
+		var chain = Nested (0x67C8, MatroskaFile.MaxSimpleTagDepth + 5, Element (0x45A3, "N"u8), leaf);
+		byte[] Artist (string text, string sort) => Master (0x67C8, Concat (
+			Element (0x45A3, "ARTIST"u8), Element (0x4487, System.Text.Encoding.UTF8.GetBytes (text)),
+			Master (0x67C8, Concat (Element (0x45A3, "SORT_WITH"u8), Element (0x4487, System.Text.Encoding.UTF8.GetBytes (sort)))), chain));
+
+		var single = MatroskaFile.Read (FileWith (Tags (Tag (50, Artist ("Band", "band"))))).File!;
+		single.Tag.ArtistSort = "new";
+		var split = single.Tag.Render ().ToArray ();
+		Assert.AreEqual (2, Occurrences (split, KeptSlice (chain)), "the split's track copy carries the kept children");
+		Assert.AreEqual ("band", MatroskaFile.Read (FileWith (split)).File!.Tag.AlbumArtistSort);
+
+		var shadow = MatroskaFile.Read (FileWith (Tags (Tag (70, Artist ("Coll", "coll")), Tag (30, Simple ("TITLE", "Song"))))).File!;
+		shadow.Tag.AlbumArtists = ["Coll"];
+		var copied = shadow.Tag.Render ().ToArray ();
+		Assert.AreEqual (2, Occurrences (copied, KeptSlice (chain)), "the album's repeat carries the kept children");
+		Assert.AreEqual ("coll", MatroskaFile.Read (FileWith (copied)).File!.Tag.ArtistSort);
+	}
 }

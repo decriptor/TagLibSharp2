@@ -2510,6 +2510,7 @@ namespace TagLibSharp2.Matroska
     public sealed class MatroskaTag : TagLibSharp2.Core.Tag
     {
         public override string? Album { get; set; }
+        public override string? AlbumArtistSort { get; set; }
         public override string[] AlbumArtists { get; set; }
         public override string? AlbumSort { get; set; }
         public override string? Artist { get; set; }
@@ -2518,6 +2519,7 @@ namespace TagLibSharp2.Matroska
         public override uint? BeatsPerMinute { get; set; }
         public override string? CatalogNumber { get; set; }
         public override string? Comment { get; set; }
+        public override string? ComposerSort { get; set; }
         public override string[] Composers { get; set; }
         public override string? Conductor { get; set; }
         public override string? Copyright { get; set; }

@@ -7,6 +7,7 @@ using TagLibSharp2.Ape;
 using TagLibSharp2.Asf;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Matroska;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Tests.Asf;
 using TagLibSharp2.Xiph;
@@ -89,12 +90,64 @@ public class TagCopyReplacesListTests
 					var tag = AsfFile.Read ([.. file, .. AsfTestBuilder.CreateDataObject (0)]).File!.Tag;
 					return tag.GetCustomField (name).Contains (Stale) ? tag : null;
 				}
+			case "matroska":
+			case "matroska-segment": {
+					var probe = new MatroskaTag ();
+					property.SetValue (probe, "V1");
+					if (OnlySimpleTag (probe) is not var (level, name) || !Equals (property.GetValue (probe), "V1"))
+						return null;
+					var block = new TagBlock (level);
+					block.Tags.Add (new SimpleTag (name, "V1"));
+					block.Tags.Add (new SimpleTag (name, Stale));
+					var tag = new MatroskaTag ();
+					tag.AddBlock (block);
+					// A segment title equal to the first value: Title reads the track's TITLE first, so the copy
+					// must still see the second one.
+					if (format == "matroska-segment")
+						tag.SetSegmentTitle ("V1");
+					return Equals (property.GetValue (tag), "V1") ? tag : null;
+				}
 			default:
 				throw new ArgumentOutOfRangeException (nameof (format));
 		}
 	}
 
 	static readonly string[] AsfContentDescriptionNames = ["Title", "Author", "Copyright", "Description", "Rating"];
+
+	/// <summary>
+	/// The TargetTypeValue and TagName of the one SimpleTag a Matroska tag renders, or null when it renders
+	/// none or more than one (RFC 9559 section 5.1.8: Tags, Tag, Targets, SimpleTag).
+	/// </summary>
+	static (ulong Level, string Name)? OnlySimpleTag (MatroskaTag tag)
+	{
+		var bytes = tag.Render ().ToArray ();
+		if (bytes.Length == 0 || !EbmlReader.TryRead (bytes, 0, bytes.Length, out var tags))
+			return null;
+		(ulong, string)? found = null;
+		var body = bytes.AsSpan (tags.DataOffset, (int)tags.DataLength);
+		for (var at = 0; at < body.Length && EbmlReader.TryRead (body, at, body.Length, out var element); at = element.End) {
+			var inner = body.Slice (element.DataOffset, (int)element.DataLength);
+			ulong level = 50;
+			for (var i = 0; i < inner.Length && EbmlReader.TryRead (inner, i, inner.Length, out var child); i = child.End) {
+				var payload = inner.Slice (child.DataOffset, (int)child.DataLength);
+				if (child.Id == MatroskaIds.Targets) {
+					for (var t = 0; t < payload.Length && EbmlReader.TryRead (payload, t, payload.Length, out var target); t = target.End) {
+						if (target.Id == MatroskaIds.TargetTypeValue)
+							level = payload[target.DataOffset..target.End].ToArray ().Aggregate (0UL, (v, b) => (v << 8) | b);
+					}
+				} else if (child.Id == MatroskaIds.SimpleTag) {
+					if (found is not null)
+						return null;
+					for (var n = 0; n < payload.Length && EbmlReader.TryRead (payload, n, payload.Length, out var field); n = field.End) {
+						if (field.Id == MatroskaIds.TagName)
+							found = (level, Encoding.UTF8.GetString (payload[field.DataOffset..field.End]));
+					}
+				}
+			}
+		}
+
+		return found;
+	}
 
 	static string ApeKey (ApeTag tag)
 	{
@@ -141,6 +194,8 @@ public class TagCopyReplacesListTests
 	[DataRow ("ape")]
 	[DataRow ("vorbis")]
 	[DataRow ("asf")]
+	[DataRow ("matroska")]
+	[DataRow ("matroska-segment")]
 	public void CopyAll_SourceEqualsTargetFirstValue_ReplacesTheList (string targetFormat)
 	{
 		var covered = new List<string> ();
@@ -174,6 +229,8 @@ public class TagCopyReplacesListTests
 	[DataRow ("ape")]
 	[DataRow ("vorbis")]
 	[DataRow ("asf")]
+	[DataRow ("matroska")]
+	[DataRow ("matroska-segment")]
 	public void CopyBasic_SourceEqualsTargetFirstValue_ReplacesTheList (string targetFormat)
 	{
 		var failures = new List<string> ();

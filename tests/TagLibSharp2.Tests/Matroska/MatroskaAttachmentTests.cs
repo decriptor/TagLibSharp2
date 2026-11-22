@@ -1252,4 +1252,36 @@ public partial class MatroskaFileTests
 
 		public BinaryData PictureData { get; } = new (data);
 	}
+
+	[TestMethod]
+	public void SortWrites_LeaveTheTagsOfOtherItemsAsRead ()
+	{
+		// A Tag that targets an attachment and a track belongs to that item (RFC 9559 section 5.1.8.1.1), even at a
+		// level the file's sorts climb through. A sort clear and the split it makes leave it alone, in memory too:
+		// removing the attachment later renders that Tag from memory, without the attachment's UID.
+		var atTrack = Master (0x7373, Concat (
+			Master (0x63C0, Concat (Element (0x68CA, new byte[] { 30 }), Element (0x63C6, new byte[] { 5 }), Element (0x63C5, new byte[] { 1 }))),
+			Simple ("ARTIST", "Shared"), Simple ("ARTIST_SORT", "shared sort")));
+		var atAlbum = Master (0x7373, Concat (
+			Master (0x63C0, Concat (Element (0x68CA, new byte[] { 50 }), Element (0x63C6, new byte[] { 5 }), Element (0x63C9, new byte[] { 1 }))),
+			Simple ("ARTIST", "Other")));
+		var original = Movie (
+			Tags (Tag (50, SimpleSorted ("ARTIST", "Band", "band")), Tag (30, Simple ("TITLE", "Song"), Simple ("ARTIST_SORT", "solo")), atTrack, atAlbum),
+			Attachments (CoverPng (5)),
+			Master (MatroskaIds.Cluster, new byte[] { 1 }));
+		var file = MatroskaFile.Read (original).File!;
+		Assert.AreEqual ("band", file.Tag.ArtistSort);
+
+		file.Tag.ArtistSort = null;
+		file.Tag.Pictures = [];
+
+		var bytes = Save (file, original);
+		var again = MatroskaFile.Read (bytes).File!.Tag;
+		Assert.IsNull (again.ArtistSort);
+		Assert.AreEqual ("band", again.AlbumArtistSort);
+		Assert.AreEqual ("Band", string.Join ("|", again.Performers));
+		Assert.AreEqual (1, CountOf (bytes, "shared sort"u8.ToArray ()));
+		Assert.AreEqual (1, CountOf (bytes, "Other"u8.ToArray ()));
+		Assert.AreEqual (0, CountOf (bytes, "solo"u8.ToArray ()));
+	}
 }
