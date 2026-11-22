@@ -686,7 +686,7 @@ public class Mp4QuickTimeKeysTests
 	// ffmpeg writes udta/meta; Apple writes moov/meta. QTFF ("Metadata atoms and types"): when user
 	// data and metadata declare the same information, the metadata takes precedence. So the
 	// fields moov/meta declares are read from it, an unedited save keeps both metas, and a set
-	// writes where the winning value lives and drops the other meta's copy.
+	// writes the new value to moov/meta and to udta/meta, so every reader shows it.
 	[TestMethod]
 	public void BothMetas_MovieMetaWinsForItsFieldsAndASetWritesThere ()
 	{
@@ -719,8 +719,8 @@ public class Mp4QuickTimeKeysTests
 		var rendered = file.Render (data).ToArray ();
 		Assert.AreEqual (0, Count (rendered, appleTitle));
 		Assert.AreEqual (0, Count (rendered, userTitle));
-		Assert.AreEqual (0, Count (rendered, NameType ()), "no ©nam is left in udta/meta");
 		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "New")), "the title is written to moov/meta");
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("New"))), "and to udta/meta");
 		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateIlstChild ("©alb", 1, Encoding.UTF8.GetBytes ("NewAl"))), "the album stays in udta/meta");
 		Assert.AreEqual (1, Count (rendered, appleArtist));
 		Assert.AreEqual (1, Count (rendered, encoder));
@@ -732,6 +732,7 @@ public class Mp4QuickTimeKeysTests
 		file.Tag.Artist = null;
 		var cleared = file.Render (data).ToArray ();
 		Assert.AreEqual (0, Count (cleared, appleArtist));
+		Assert.AreEqual (0, Count (cleared, "©ART"u8));
 		Assert.IsNull (Mp4File.Read (cleared).File!.Tag!.Artist);
 	}
 
@@ -751,7 +752,7 @@ public class Mp4QuickTimeKeysTests
 		file.Title = "Again";
 		var rendered = file.Render (data).ToArray ();
 		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (1, "Again")));
-		Assert.AreEqual (0, Count (rendered, NameType ()));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Again"))));
 	}
 
 	// An iTunes atom in moov/meta's keyed ilst has no key. A set gives it one, named the way moov/meta names its keys.
@@ -770,7 +771,8 @@ public class Mp4QuickTimeKeysTests
 		Assert.AreEqual ("MovieT", file.Title);
 		file.Title = "New";
 		var rendered = file.Render (data).ToArray ();
-		Assert.AreEqual (0, Count (rendered, NameType ()));
+		Assert.AreEqual (0, Count (rendered, TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("MovieT"))));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("New"))), "udta/meta gets it too");
 		CollectionAssert.AreEqual (ArtistThenTitle, Keys (rendered));
 		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateMdtaItem (2, "New")));
 		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
@@ -891,6 +893,67 @@ public class Mp4QuickTimeKeysTests
 		0, 0, 0, 0,
 		.. TestBuilders.Mp4.CreateBox ("hdlr", [0, 0, 0, 0, 0, 0, 0, 0, .. "mdirappl"u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 		.. TestBuilders.Mp4.CreateBox ("ilst", [.. items.SelectMany (item => item)])]);
+
+	// A moov/meta whose handler is not "mdta" is not QuickTime metadata: AVFoundation, ExifTool,
+	// TagLib# and mutagen read the udta/meta value. Its items are kept as they are and name no field.
+	[TestMethod]
+	public void BothMetas_ItunesMovieMetaIsKeptAndNotRead ()
+	{
+		var movieTitle = TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("MovieMdir"));
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdir", null, [movieTitle], inMovie: true,
+			udtaExtra: UdtaMeta (TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("UdtaT"))));
+
+		var file = Mp4File.Read (data).File!;
+		Assert.AreEqual ("UdtaT", file.Title);
+
+		file.Title = "New";
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (1, Count (rendered, movieTitle));
+		Assert.AreEqual (1, Count (rendered, TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("New"))));
+		Assert.AreEqual ("New", Mp4File.Read (rendered).File!.Title);
+	}
+
+	// A tag assigned in place of the one read replaces every value readers see: moov/meta's fields
+	// go (its other items stay), and the assigned values are written.
+	[TestMethod]
+	public void BothMetas_AssignedTagReplacesMovieMetaFields ()
+	{
+		var make = TestBuilders.Mp4.CreateMdtaItem (2, "Apple");
+		var data = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title", "com.apple.quicktime.make"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "AppleT"), make], inMovie: true,
+			udtaExtra: UdtaMeta (TestBuilders.Mp4.CreateIlstChild ("©too", 1, Encoding.UTF8.GetBytes ("Lavf"))));
+
+		var file = Mp4File.Read (data).File!;
+		file.Tag = new Mp4Tag { Title = "X" };
+		var rendered = file.Render (data).ToArray ();
+		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("AppleT"u8));
+		Assert.AreEqual (1, Count (rendered, make));
+		var reread = Mp4File.Read (rendered).File!;
+		Assert.AreEqual ("X", reread.Title);
+		Assert.IsNull (reread.Tag!.EncoderSettings);
+	}
+
+	// Copying a tag read from both metas to another file writes every value it reports.
+	[TestMethod]
+	public void BothMetas_CopiedTagCarriesEveryValue ()
+	{
+		var source = TestBuilders.Mp4.CreateWithKeyedMeta ("mdta", TestBuilders.Mp4.KeysPayload ("com.apple.quicktime.title"),
+			[TestBuilders.Mp4.CreateMdtaItem (1, "AppleT")], inMovie: true,
+			udtaExtra: UdtaMeta (
+				TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Shadowed")),
+				TestBuilders.Mp4.CreateIlstChild ("©alb", 1, Encoding.UTF8.GetBytes ("UdtaAl"))));
+		var target = TestBuilders.Mp4.CreateWithIlstAtoms (TestBuilders.Mp4.CreateIlstChild ("©nam", 1, Encoding.UTF8.GetBytes ("Old")));
+
+		var from = Mp4File.Read (source).File!;
+		var to = Mp4File.Read (target).File!;
+		Assert.AreEqual ("AppleT", from.Title);
+		to.Tag = from.Tag;
+		var rendered = to.Render (target).ToArray ();
+		var reread = Mp4File.Read (rendered).File!;
+		Assert.AreEqual ("AppleT", reread.Title);
+		Assert.AreEqual ("UdtaAl", reread.Tag!.Album);
+		Assert.AreEqual (-1, rendered.AsSpan ().IndexOf ("Shadowed"u8));
+	}
 
 	static byte[] NameType () => [0xA9, (byte)'n', (byte)'a', (byte)'m'];
 
