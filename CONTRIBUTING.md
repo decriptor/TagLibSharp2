@@ -29,6 +29,8 @@ dotnet test --filter "ClassName~BinaryData"  # Run specific tests
 
 See [docs/BUILDING.md](docs/BUILDING.md) for detailed build instructions.
 
+Before you open a pull request, follow [docs/IMPLEMENTATION-GUIDE.md](docs/IMPLEMENTATION-GUIDE.md): behaviour survey, twin table, library rules, the test kit and pre-review.
+
 ## Code Style
 
 We use `.editorconfig` to enforce consistent style. Key conventions:

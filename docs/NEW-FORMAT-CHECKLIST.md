@@ -2,6 +2,8 @@
 
 This checklist covers everything needed to implement a new audio format in TagLibSharp2. Follow TDD (Test-Driven Development) - write tests first, then implement.
 
+The process around it (behaviour survey, twin table, library rules, the test kit and pre-review) is in [IMPLEMENTATION-GUIDE.md](IMPLEMENTATION-GUIDE.md).
+
 ## Pre-Implementation Research
 
 - [ ] **Obtain official specification** - Use primary sources (ISO standards, format creator docs, RFC)

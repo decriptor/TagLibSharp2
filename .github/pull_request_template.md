@@ -31,6 +31,13 @@ Fixes #
 - [ ] I have updated documentation as needed
 - [ ] My changes generate no new warnings
 
+### Implementation guide ([docs/IMPLEMENTATION-GUIDE.md](https://github.com/decriptor/TagLibSharp2/blob/main/docs/IMPLEMENTATION-GUIDE.md))
+
+- [ ] Design note with the behaviour table: writers, what each reader shows before and after, the spec citation per cell
+- [ ] Twin table: every entry point, sibling format, write path, view, and render/parse, each with its pinning test
+- [ ] Kit run on the final head: before/after grid, fuzz, depth tests, allocation bounds, reader comparison, mutation testing (results below)
+- [ ] Pre-review: an independent review of the diff at the reviewer checklist level, findings fixed or declined with evidence
+
 ## Testing
 
 <!-- Describe how you tested your changes -->
