@@ -36,11 +36,13 @@ public class KitChildTests
 	[TestMethod]
 	public void Run_ACaseRunsOnTheSmallStack ()
 	{
-		// 100,000 frames fit an 8 MiB main thread; on the 1 MiB stack the cases run on, they overflow.
+		// The Linux and macOS main thread has 8 MiB; the cases must run on the 1 MiB thread.
 		var result = KitChild.Run (Timeout, "kit-selftest", "stack");
 
-		Assert.AreNotEqual (0, result.ExitCode, result.Describe ());
-		Assert.IsTrue (result.Error.Contains ("stack overflow", StringComparison.OrdinalIgnoreCase), result.Describe ());
+		Assert.AreEqual (0, result.ExitCode, result.Describe ());
+		var line = result.Output.Split ('\n').Single (l => l.StartsWith ("stack-kib=", StringComparison.Ordinal));
+		var kib = int.Parse (line["stack-kib=".Length..].Trim (), System.Globalization.CultureInfo.InvariantCulture);
+		Assert.IsTrue (kib is > 256 and <= KitProgram.StackBytes / 1024, result.Describe ());
 	}
 
 	[TestMethod]

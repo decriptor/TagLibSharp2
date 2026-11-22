@@ -34,7 +34,7 @@ public class BoundsTests
 	[TestMethod]
 	public void AssertAllocatesAtMost_UnderTheLimit_Passes ()
 	{
-		var allocated = Bounds.AssertAllocatesAtMost (10_000, () => _ = new byte[1_000]);
+		var allocated = Bounds.AssertAllocatesAtMost (10_000, () => GC.KeepAlive (new byte[1_000]));
 
 		Assert.IsTrue (allocated >= 1_000);
 	}
@@ -43,7 +43,7 @@ public class BoundsTests
 	public void AssertAllocatesAtMost_OverTheLimit_FailsWithTheCount ()
 	{
 		var error = Assert.ThrowsExactly<AssertFailedException> (
-			() => Bounds.AssertAllocatesAtMost (1_000, () => _ = new byte[50_000], "parse"));
+			() => Bounds.AssertAllocatesAtMost (1_000, () => GC.KeepAlive (new byte[50_000]), "parse"));
 
 		Assert.Contains ("parse", error.Message);
 		Assert.Contains ("1000", error.Message);
@@ -77,7 +77,7 @@ public class BoundsTests
 		// A 64 KB fixed cost plus about n squared / 32: a single n-to-4n ratio stays under 6x and passes.
 		static void FixedThenQuadratic (byte[] data)
 		{
-			_ = new byte[64 * 1024];
+			GC.KeepAlive (new byte[64 * 1024]);
 			for (var i = 0; i < data.Length; i += 32)
 				_ = data.AsSpan (i).ToArray ();
 		}
@@ -89,10 +89,24 @@ public class BoundsTests
 	}
 
 	[TestMethod]
+	public void AssertLinearAllocation_OneTimeSetup_IsNotCounted ()
+	{
+		// The first call allocates a 1 MB cache, as JIT or static initialisation would. Without the
+		// warm-up run the n measurement holds it, the n-to-2n increment goes negative, and this fails.
+		byte[]? cache = null;
+		Bounds.AssertLinearAllocation (n => new byte[n], data => {
+			cache ??= new byte[1024 * 1024];
+			GC.KeepAlive ((byte[])data.Clone ());
+		}, 10_000);
+
+		Assert.IsNotNull (cache);
+	}
+
+	[TestMethod]
 	public void AssertLinearAllocation_LinearWorkBehindAFixedCost_Passes ()
 	{
 		Bounds.AssertLinearAllocation (n => new byte[n], data => {
-			_ = new byte[256 * 1024];
+			GC.KeepAlive (new byte[256 * 1024]);
 			_ = (byte[])data.Clone ();
 		}, 10_000);
 	}
