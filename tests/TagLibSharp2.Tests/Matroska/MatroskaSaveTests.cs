@@ -142,8 +142,7 @@ public partial class MatroskaFileTests
 					Simple ("PUBLISHER", "Old Label"))),
 			pictures,
 			cluster);
-		var clusterAt = IndexOf (original, marker);
-		Assert.IsTrue (clusterAt > 0);
+		Assert.IsTrue (IndexOf (original, marker) > 0);
 
 		var parsed = MatroskaFile.Read (original);
 		Assert.IsTrue (parsed.IsSuccess, parsed.Error);
@@ -172,8 +171,10 @@ public partial class MatroskaFileTests
 
 		Assert.IsTrue (saved.IsSuccess, saved.Error);
 		var bytes = fs.ReadAllBytes ("/song.mkv");
-		Assert.AreEqual (clusterAt, IndexOf (bytes, marker));
-		Assert.AreEqual (1, CountOf (bytes, marker));
+		// No SeekHead: the grown Tags go before the Cluster, where a reader looks (RFC 9559 section 25.3.4).
+		// The Cluster moves whole.
+		Assert.AreEqual (1, CountOf (bytes, cluster));
+		Assert.IsTrue (IndexOf (bytes, Id (MatroskaIds.Tags)) < IndexOf (bytes, cluster));
 		var again = MatroskaFile.Read (bytes);
 		Assert.IsTrue (again.IsSuccess, again.Error);
 		var round = again.File!.Tag;
@@ -863,7 +864,7 @@ public partial class MatroskaFileTests
 	}
 
 	[TestMethod]
-	public void Save_CueCodecStatePastOneByte_IsVoidedAndCueClusterPositionStillMoves ()
+	public void Save_CueCodecStatePastOneByte_WidensAndFollowsTheCluster ()
 	{
 		var marker = new byte[] { 0xC1, 0xC2, 0xC3, 0xC4 };
 		var info = Master (0x1549A966, Element (0x7BA9, "Live"u8));
@@ -900,6 +901,10 @@ public partial class MatroskaFileTests
 		Assert.IsTrue (crcOk);
 		Assert.IsTrue (position > 0xFF);
 		Assert.IsTrue (IsElementAt (bytes, position, MatroskaIds.Cluster));
+		// An unsigned integer may use 0 to 8 octets (RFC 8794 section 7.2), so the Cues are written
+		// again with a wider CueCodecState. Voiding it would read as 0, "the codec state is in the
+		// TrackEntry" (RFC 9559 section 5.1.5.1.2.6), which is a different value.
+		CollectionAssert.AreEqual (new[] { position }, CueValues (bytes)[0xEA], "CueCodecState follows the Cluster it named");
 	}
 
 	[TestMethod]
@@ -1677,16 +1682,25 @@ public partial class MatroskaFileTests
 		return stored == computed;
 	}
 
-	static bool TryFindCuePosition (ReadOnlySpan<byte> body, ref ulong position)
+	/// <summary>
+	/// Finds the first CueClusterPosition in a Cues payload, on its RFC 9559 section 5.1.5 path only:
+	/// CuePoint, then CueTrackPositions.
+	/// </summary>
+	static bool TryFindCuePosition (ReadOnlySpan<byte> body, ref ulong position, ulong parent = MatroskaIds.Cues)
 	{
+		var child = parent switch {
+			MatroskaIds.Cues => MatroskaIds.CuePoint,
+			MatroskaIds.CuePoint => MatroskaIds.CueTrackPositions,
+			_ => ulong.MaxValue
+		};
 		var offset = 0;
 		while (offset < body.Length && EbmlReader.TryRead (body, offset, body.Length, out var element) && !element.UnknownSize) {
-			if (element.Id == MatroskaIds.CueClusterPosition && element.DataLength > 0) {
+			if (parent == MatroskaIds.CueTrackPositions && element.Id == MatroskaIds.CueClusterPosition && element.DataLength > 0) {
 				position = EbmlReader.ReadUInt (body.Slice (element.DataOffset, (int)element.DataLength));
 				return true;
 			}
 
-			if (element.Id is 0xBB or 0xB7 && TryFindCuePosition (body.Slice (element.DataOffset, (int)element.DataLength), ref position))
+			if (element.Id == child && TryFindCuePosition (body.Slice (element.DataOffset, (int)element.DataLength), ref position, element.Id))
 				return true;
 			offset = element.End;
 		}

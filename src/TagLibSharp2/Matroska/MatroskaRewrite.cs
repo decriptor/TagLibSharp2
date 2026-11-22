@@ -88,24 +88,541 @@ static partial class MatroskaRewrite
 	{
 		rewritten = [];
 		var plan = PlanEdit (layout.Pieces, id, element, IsReferenced (data, layout, id));
-		if (!TryBuild (data, layout, plan, out var body, out var seekHeads, out var cues, out var clusters, out var elementOffset, out error))
+		if (!TryApply (data, layout, plan, out var body, out var seekHeadCount, out var referenced, out error))
 			return false;
-		if (element.Length > 0 && elementOffset != plan.ElementOffset) {
-			error = plan.PlaceError;
+
+		// RFC 9559 section 6.1: the SeekHead MUST list an added Top-Level Element. When the plan above
+		// cannot, the element goes right after the first SeekHead, which is written again with one more
+		// Seek. Without a SeekHead it goes before the first Cluster (section 25.3.4). Everything after
+		// moves once. Only one body is kept: the first is dropped before the move is built, and built
+		// again only when the move cannot be planned.
+		if (NeedsMove (layout, plan, seekHeadCount, referenced)) {
+			body = [];
+			if (TryPlanMove (data, layout, id, element, out var moved)
+				&& TryApply (data, layout, moved, out var movedBody, out var movedHeads, out var movedReferenced, out _)) {
+				plan = moved;
+				body = movedBody;
+				seekHeadCount = movedHeads;
+				referenced = movedReferenced;
+			} else if (!TryApply (data, layout, plan, out body, out seekHeadCount, out referenced, out error))
+				return false;
+		}
+
+		if (!IsReachable (layout, plan, seekHeadCount, referenced, out error))
+			return false;
+
+		return TryFinish (data, layout, body, out rewritten, out error);
+	}
+
+	/// <summary>
+	/// Replaces the first Top-Level Element with the ID of <paramref name="replacement"/>. A shorter
+	/// replacement is padded with a Void. A longer one grows in place, and everything after it moves
+	/// once: SeekHead and Cues positions, Cluster <c>Position</c>, and their CRC-32 values follow.
+	/// A position that no longer fits its field is written again wider, so no Seek is lost
+	/// (RFC 9559 section 6.3).
+	/// </summary>
+	internal static bool TryGrow (ReadOnlySpan<byte> data, byte[] replacement, out byte[] rewritten, out string error)
+	{
+		rewritten = [];
+		if (!TryParse (data, out var layout, out error) || layout is null)
+			return false;
+		if (!EbmlReader.TryRead (replacement, 0, replacement.Length, out var parsed) || parsed.UnknownSize || parsed.End != replacement.Length) {
+			error = "Matroska replacement is not one element";
 			return false;
 		}
 
-		if (!TryPatch (body, seekHeads, cues, clusters, plan, out var referenced, out error))
+		// A CRC-32 the caller left stale is recomputed, so a shorter replacement is valid too.
+		replacement = replacement.ToArray ();
+		UpdateElementCrc (replacement, 0, replacement.Length);
+		var pieces = layout.Pieces;
+		var index = pieces.FindIndex (piece => piece.Id == parsed.Id && !piece.UnknownSize);
+		if (index < 0) {
+			error = "Matroska element to replace was not found";
 			return false;
-		if (!IsReachable (layout.Pieces, plan, seekHeads.Count, referenced, out error))
-			return false;
+		}
 
+		// The plan writes no element of its own (ID 0), so every Seek, the grown element's included,
+		// follows Map like any other position.
+		var plan = new Plan (0, []);
+		if (replacement.Length <= pieces[index].Length) {
+			if (!TryFit (replacement, pieces[index].Length, out var fitted)) {
+				error = "Matroska element could not be placed";
+				return false;
+			}
+
+			plan.ReplaceStart = index;
+			plan.ReplaceEnd = index;
+			plan.Replacement = fitted;
+		} else {
+			plan.GrowIndex = index;
+			plan.Grown = replacement;
+			plan.ShiftFrom = layout.Starts[index + 1];
+			plan.Delta = replacement.Length - pieces[index].Length;
+			plan.MustRetarget = true;
+		}
+
+		if (!TryApply (data, layout, plan, out var body, out _, out _, out error))
+			return false;
+		return TryFinish (data, layout, body, out rewritten, out error);
+	}
+
+	/// <summary>
+	/// Builds the Segment body for <paramref name="plan"/> and patches every position in it. A SeekHead
+	/// or Cues whose moved values do not fit in place is added to <see cref="Plan.RenderIndexes"/> and
+	/// the body is built again; each round only adds pieces, so it ends.
+	/// </summary>
+	static bool TryApply (
+		ReadOnlySpan<byte> data,
+		Layout layout,
+		Plan plan,
+		out byte[] body,
+		out int seekHeadCount,
+		out bool referenced,
+		out string error)
+	{
+		body = [];
+		seekHeadCount = 0;
+		referenced = false;
+		// The first attempt patches in place. When any value does not fit, every known-size SeekHead and
+		// Cues is rendered, so a widening that pushes another value over a width boundary is settled
+		// in TrySettle and the body is built at most twice (once more if a piece cannot be rendered).
+		for (var attempt = 0; attempt < 3; attempt++) {
+			if (!TrySettle (data, layout, plan, out error))
+				return false;
+			if (!TryBuild (data, layout, plan, out body, out var seekHeads, out var cues, out var elementOffset, out error))
+				return false;
+			if (plan.Element.Length > 0 && elementOffset != plan.NewElementOffset) {
+				error = plan.PlaceError;
+				return false;
+			}
+
+			var widen = new List<int> ();
+			if (!TryPatch (body, seekHeads, cues, plan, widen, out referenced, out error))
+				return false;
+			if (widen.Count == 0) {
+				seekHeadCount = seekHeads.Count;
+				// The grown piece's own CRC-32 covers bytes the patches above may have changed.
+				if (plan.Grown is not null && plan.GrownAt >= 0)
+					UpdateElementCrc (body, plan.GrownAt, plan.GrownAt + plan.Grown.Length);
+				return TryPatchClusterPositions (body, layout, plan, out error);
+			}
+
+			body = [];
+			foreach (var index in widen)
+				plan.RenderIndexes.Add (index);
+			for (var index = 0; index < layout.Pieces.Count; index++) {
+				var piece = layout.Pieces[index];
+				if ((piece.Id == MatroskaIds.SeekHead || piece.Id == MatroskaIds.Cues) && !piece.UnknownSize)
+					plan.RenderIndexes.Add (index);
+			}
+		}
+
+		error = "Matroska positions could not be updated";
+		return false;
+	}
+
+	/// <summary>
+	/// Writes every piece in <see cref="Plan.RenderIndexes"/> until no length changes. A rendered piece
+	/// never shrinks below its last length (a Void takes the slack), and positions only grow, so the
+	/// lengths only grow. A file can make each widening cause the next; after
+	/// <see cref="WideAfterRounds"/> rounds every moved value is written at eight octets, which no shift
+	/// can outgrow. A value that first moves in a later round still grows once, so a crafted file can
+	/// keep the lengths growing: the rounds are capped at <see cref="WideAfterRounds"/> + 3, and a file
+	/// that reaches the cap fails here (a move then falls back to its first placement). Each round
+	/// costs one pass over the rendered pieces, so the work is linear in their size.
+	/// </summary>
+	static bool TrySettle (ReadOnlySpan<byte> data, Layout layout, Plan plan, out string error)
+	{
+		error = "";
+		if (plan.RenderIndexes.Count == 0)
+			return true;
+
+		var pieces = layout.Pieces;
+		var firstHead = pieces.FindIndex (piece => piece.Id == MatroskaIds.SeekHead);
+		var lengths = new Dictionary<int, int> ();
+		foreach (var index in plan.RenderIndexes)
+			lengths[index] = plan.Rendered.TryGetValue (index, out var last) ? last.Length : pieces[index].Length;
+
+		for (var round = 0; round < WideAfterRounds + 3; round++) {
+			if (round == WideAfterRounds)
+				plan.WideValues = true;
+			var growth = new List<(int, int)> (plan.RenderIndexes.Count);
+			foreach (var index in plan.RenderIndexes)
+				growth.Add ((layout.Starts[index + 1], lengths[index] - pieces[index].Length));
+			plan.SetGrowth (growth);
+
+			var grew = false;
+			plan.RenderedTarget = false;
+			foreach (var index in plan.RenderIndexes) {
+				var piece = pieces[index];
+				var source = data.Slice (piece.Offset, piece.Length);
+				byte[]? rendered;
+				if (piece.Id == MatroskaIds.Cues)
+					rendered = RenderCues (source, plan);
+				else {
+					var isHead = index == plan.HeadIndex;
+					if (isHead) {
+						// The element goes right after this SeekHead, at its length so far.
+						plan.ElementOffset = (int)plan.Map ((ulong)layout.Starts[index]) + lengths[index];
+					}
+
+					rendered = RenderSeekHead (source, plan, isHead || (index == firstHead && plan.Element.Length > 0));
+					if (rendered is not null && index == firstHead && plan.Id != 0 && plan.NewElementOffset >= 0)
+						plan.RenderedTarget = true;
+				}
+
+				if (rendered is null) {
+					error = piece.Id == MatroskaIds.Cues ? "Matroska Cues cannot be updated" : "Matroska SeekHead cannot be updated";
+					return false;
+				}
+
+				if (rendered.Length < lengths[index] && !TryFit (rendered, lengths[index], out rendered)) {
+					error = "Matroska positions could not be updated";
+					return false;
+				}
+
+				if (rendered.Length > lengths[index]) {
+					lengths[index] = rendered.Length;
+					grew = true;
+				}
+
+				plan.Rendered[index] = rendered;
+			}
+
+			if (!grew)
+				return true;
+		}
+
+		error = "Matroska positions could not be updated";
+		return false;
+	}
+
+	/// <summary>Rounds of minimal widths before every moved value is written at eight octets.</summary>
+	const int WideAfterRounds = 4;
+
+	static bool TryFinish (ReadOnlySpan<byte> data, Layout layout, byte[] body, out byte[] rewritten, out string error)
+	{
+		rewritten = [];
+		error = "";
 		var originalLength = layout.SegmentEnd - layout.DataOffset;
 		if (originalLength != body.Length || !data.Slice (layout.DataOffset, originalLength).SequenceEqual (body))
 			UpdateLeadingCrc (body);
 
 		rewritten = Assemble (data, layout, body, out error);
 		return rewritten.Length > 0 && error.Length == 0;
+	}
+
+	/// <summary>
+	/// True when the element was placed but a reader could not find it: no Seek lists it, or there is
+	/// no SeekHead and it sits after the first Cluster.
+	/// </summary>
+	static bool NeedsMove (Layout layout, Plan plan, int seekHeadCount, bool referenced)
+	{
+		if (plan.Element.Length == 0 || plan.ElementOffset < 0 || referenced)
+			return false;
+		if (seekHeadCount > 0)
+			return true;
+		var first = layout.Pieces.FindIndex (piece => piece.Id == MatroskaIds.Cluster);
+		return first >= 0 && plan.NewElementOffset > (int)plan.Map ((ulong)layout.Starts[first]);
+	}
+
+	/// <summary>
+	/// Plans <paramref name="element"/> right after the first SeekHead, or before the first Cluster
+	/// when there is no SeekHead. The first SeekHead is written again with every position already
+	/// moved, each at the width it needs, plus a Seek for <paramref name="id"/>. Every existing
+	/// <paramref name="id"/> element is voided in place.
+	/// </summary>
+	static bool TryPlanMove (ReadOnlySpan<byte> data, Layout layout, ulong id, byte[] element, out Plan plan)
+	{
+		var pieces = layout.Pieces;
+		plan = new Plan (id, element) { VoidExisting = true, MustRetarget = true };
+		var index = pieces.FindIndex (piece => piece.Id == MatroskaIds.SeekHead);
+		if (index < 0) {
+			var cluster = pieces.FindIndex (piece => piece.Id == MatroskaIds.Cluster);
+			if (cluster < 0)
+				return false;
+			plan.InsertBefore = cluster;
+			plan.ElementOffset = layout.Starts[cluster];
+			plan.ShiftFrom = plan.ElementOffset;
+			plan.Delta = element.Length;
+			return true;
+		}
+
+		var piece = pieces[index];
+		if (piece.UnknownSize || !TryReadSeekHead (data.Slice (piece.Offset, piece.Length), out _, out _, out _, out _))
+			return false;
+
+		// The SeekHead is rendered like any other piece; its growth and the element both start at its old end.
+		plan.HeadIndex = index;
+		plan.RenderIndexes.Add (index);
+		plan.ShiftFrom = layout.Starts[index + 1];
+		plan.Delta = element.Length;
+		plan.ElementOffset = layout.Starts[index + 1];
+		if (index + 1 < pieces.Count)
+			plan.InsertBefore = index + 1;
+		else
+			plan.Append = true;
+		return true;
+	}
+
+	/// <summary>Splits a SeekHead into its ID bytes, whether it has a CRC-32, other children, and its Seeks.</summary>
+	static bool TryReadSeekHead (ReadOnlySpan<byte> head, out byte[] idBytes, out bool crc, out List<byte[]> kept, out List<(ulong Id, ulong Position)> seeks)
+	{
+		idBytes = [];
+		crc = false;
+		kept = new List<byte[]> ();
+		seeks = new List<(ulong, ulong)> ();
+		var copy = head.ToArray ();
+		if (!EbmlReader.TryRead (copy, 0, copy.Length, out var seekHead) || seekHead.UnknownSize || seekHead.End != copy.Length)
+			return false;
+		if (!EbmlReader.TryReadVint (copy, 0, copy.Length, true, 4, out _, out var idWidth, out _))
+			return false;
+		idBytes = copy.AsSpan (0, idWidth).ToArray ();
+		var offset = seekHead.DataOffset;
+		while (offset < seekHead.End) {
+			if (!EbmlReader.TryRead (copy, offset, seekHead.End, out var child) || child.UnknownSize)
+				return false;
+			if (child.Id == MatroskaIds.Seek) {
+				if (TryReadSeek (copy, child, out var seekId, out var position, out _))
+					seeks.Add ((seekId, position));
+			} else if (child.Id == MatroskaIds.Crc32)
+				crc = true;
+			else if (child.Id != MatroskaIds.Void)
+				kept.Add (copy.AsSpan (child.Position, child.End - child.Position).ToArray ());
+			offset = child.End;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Writes a SeekHead whose Seeks hold their moved positions. A Seek for <see cref="Plan.Id"/> names
+	/// <see cref="Plan.NewElementOffset"/>, or is left out when the element was removed. With
+	/// <paramref name="addTarget"/>, a missing Seek for the element is added.
+	/// </summary>
+	static byte[]? RenderSeekHead (ReadOnlySpan<byte> source, Plan plan, bool addTarget)
+	{
+		if (!TryReadSeekHead (source, out var idBytes, out var crc, out var kept, out var seeks))
+			return null;
+
+		using var body = new BinaryDataBuilder ();
+		// RFC 8794 section 11.3.1: a CRC-32 is the first child. It is filled in last.
+		if (crc)
+			body.Add (EbmlWriter.Master (MatroskaIds.Crc32, new byte[4]));
+		var target = plan.NewElementOffset;
+		var listed = false;
+		foreach (var (seekId, position) in seeks) {
+			if (plan.Id == 0 || seekId != plan.Id) {
+				// A position that would wrap names no element; refuse it as TryPatchSeek does.
+				var moved = plan.Map (position);
+				if (moved < position)
+					return null;
+				body.Add (MakeSeek (seekId, moved, plan.WideValues));
+				continue;
+			}
+
+			if (!listed && target >= 0)
+				body.Add (MakeSeek (seekId, (ulong)target, plan.WideValues));
+			listed = true;
+		}
+
+		if (!listed && addTarget && target >= 0 && plan.Id != 0)
+			body.Add (MakeSeek (plan.Id, (ulong)target, plan.WideValues));
+		foreach (var child in kept)
+			body.Add (child);
+
+		var payload = body.ToArray ();
+		if (crc)
+			WriteCrc (payload, 2, 6, payload.Length);
+		using var head = new BinaryDataBuilder (payload.Length + 12);
+		head.Add (idBytes);
+		head.Add (EncodeFittedSize ((ulong)payload.Length, 1));
+		head.Add (payload);
+		return head.ToArray ();
+	}
+
+	/// <summary>
+	/// Writes a Cues element with its Segment Positions moved: CueClusterPosition, CueCodecState,
+	/// and the historic CueRefCluster and CueRefCodecState (RFC 9559 sections 5.1.5.1.2.2,
+	/// 5.1.5.1.2.6, A.37, A.39). A value keeps its width when it fits and widens when it does not.
+	/// Every master's CRC-32 is recomputed. Other children are copied as they are.
+	/// </summary>
+	static byte[]? RenderCues (ReadOnlySpan<byte> source, Plan plan)
+	{
+		// Every render starts from the source piece, which is exactly one Cues element.
+		if (!EbmlReader.TryRead (source, 0, source.Length, out var cues) || cues.UnknownSize || cues.Id != MatroskaIds.Cues || cues.End != source.Length)
+			return null;
+		return RenderCueMaster (source, cues, plan);
+	}
+
+	/// <summary>
+	/// Writes one Cues-path master. Only the child that <see cref="CueChildMaster"/> names is walked,
+	/// so the recursion is at most four levels deep whatever the file nests.
+	/// </summary>
+	static byte[]? RenderCueMaster (ReadOnlySpan<byte> source, EbmlElement master, Plan plan)
+	{
+		var childMaster = CueChildMaster (master.Id);
+		using var payload = new BinaryDataBuilder ((int)master.DataLength + 16);
+		var crcHeader = -1;
+		var crcEnd = 0;
+		var offset = master.DataOffset;
+		while (offset < master.End) {
+			if (!EbmlReader.TryRead (source, offset, master.End, out var child) || child.UnknownSize)
+				return null;
+			var bytes = source.Slice (child.Position, child.End - child.Position);
+			if (child.Id == MatroskaIds.Crc32 && offset == master.DataOffset && child.DataLength == 4) {
+				crcHeader = child.HeaderLength;
+				crcEnd = child.End - child.Position;
+				payload.Add (bytes);
+			} else if (IsCuePosition (master.Id, child.Id)) {
+				if (!TryMoveCueValue (source, child, plan, out var value, out var keep))
+					return null;
+				if (keep)
+					payload.Add (bytes);
+				else {
+					var width = plan.WideValues ? 8 : Math.Max ((int)child.DataLength, UnsignedBytes (value).Length);
+					var field = new byte[width];
+					TryWriteUnsigned (field, 0, width, value);
+					payload.Add (source.Slice (child.Position, child.HeaderLength - SizeWidth (source, child)));
+					payload.Add (EncodeFittedSize ((ulong)width, SizeWidth (source, child)));
+					payload.Add (field);
+				}
+			} else if (child.Id == childMaster) {
+				var inner = RenderCueMaster (source, child, plan);
+				if (inner is null)
+					return null;
+				payload.Add (inner);
+			} else
+				payload.Add (bytes);
+			offset = child.End;
+		}
+
+		var data = payload.ToArray ();
+		if (crcHeader >= 0)
+			WriteCrc (data, crcHeader, crcEnd, data.Length);
+		var sizeWidth = SizeWidth (source, master);
+		var size = EncodeFittedSize ((ulong)data.Length, sizeWidth);
+		if (size.Length == 0)
+			return null;
+		var idLength = master.HeaderLength - sizeWidth;
+		var element = new byte[idLength + size.Length + data.Length];
+		source.Slice (master.Position, idLength).CopyTo (element);
+		size.CopyTo (element.AsSpan (idLength));
+		data.CopyTo (element.AsSpan (idLength + size.Length));
+		return element;
+	}
+
+	static int SizeWidth (ReadOnlySpan<byte> source, EbmlElement element) =>
+		EbmlReader.TryReadVint (source, element.Position, element.DataOffset, true, 4, out _, out var idWidth, out _)
+			? element.HeaderLength - idWidth
+			: 1;
+
+	/// <summary>
+	/// Gets the one master a Cues-path master holds, or 0. RFC 9559 section 5.1.5 fixes the paths:
+	/// <c>\Segment\Cues\CuePoint</c>, <c>...\CuePoint\CueTrackPositions</c> and
+	/// <c>...\CueTrackPositions\CueReference</c>. Any other nesting is not on a path, so it is copied as it is.
+	/// </summary>
+	static ulong CueChildMaster (ulong parent) => parent switch {
+		MatroskaIds.Cues => MatroskaIds.CuePoint,
+		MatroskaIds.CuePoint => MatroskaIds.CueTrackPositions,
+		MatroskaIds.CueTrackPositions => MatroskaIds.CueReference,
+		_ => 0
+	};
+
+	/// <summary>
+	/// Gets a value indicating whether <paramref name="id"/> is a Segment Position in
+	/// <paramref name="parent"/>: CueClusterPosition and CueCodecState in CueTrackPositions
+	/// (RFC 9559 sections 5.1.5.1.2.2, 5.1.5.1.2.6), CueRefCluster and CueRefCodecState in
+	/// CueReference (Appendix A.37, A.39).
+	/// </summary>
+	static bool IsCuePosition (ulong parent, ulong id) => parent switch {
+		MatroskaIds.CueTrackPositions => id is MatroskaIds.CueClusterPosition or MatroskaIds.CueCodecState,
+		MatroskaIds.CueReference => id is MatroskaIds.CueRefCluster or MatroskaIds.CueRefCodecState,
+		_ => false
+	};
+
+	/// <summary>
+	/// Reads a Cues position and maps it. An empty or zero CueCodecState or CueRefCodecState names the
+	/// TrackEntry, not a position (RFC 9559 section 5.1.5.1.2.6), so <paramref name="keep"/> is set.
+	/// </summary>
+	static bool TryMoveCueValue (ReadOnlySpan<byte> source, EbmlElement element, Plan plan, out ulong value, out bool keep)
+	{
+		value = 0;
+		keep = true;
+		var codecState = element.Id is MatroskaIds.CueCodecState or MatroskaIds.CueRefCodecState;
+		if (element.DataLength == 0)
+			return codecState;
+		if (element.DataLength > 8)
+			return false;
+		var old = EbmlReader.ReadUInt (source.Slice (element.DataOffset, (int)element.DataLength));
+		if (codecState && old == 0)
+			return true;
+		value = plan.Map (old);
+		keep = value == old;
+		return value >= old;
+	}
+
+	/// <summary>
+	/// A Cluster's optional <c>Position</c> (0xA7) is its own Segment offset (RFC 9559 section 5.1.3.2).
+	/// A value that matched the old offset gets <see cref="Plan.Map"/> of it. One that cannot be
+	/// widened in place is voided, since the element is optional.
+	/// </summary>
+	static bool TryPatchClusterPositions (byte[] body, Layout layout, Plan plan, out string error)
+	{
+		error = "";
+		if (!plan.Shifts)
+			return true;
+
+		var pieces = layout.Pieces;
+		for (var index = 0; index < pieces.Count; index++) {
+			var piece = pieces[index];
+			var old = layout.Starts[index];
+			if (piece.Id != MatroskaIds.Cluster || plan.Map ((ulong)old) == (ulong)old)
+				continue;
+
+			var at = (int)plan.Map ((ulong)old);
+			var end = at + piece.Length;
+			if (end > body.Length || !EbmlReader.TryRead (body, at, end, out var cluster) || cluster.Id != MatroskaIds.Cluster) {
+				error = "Matroska Cluster cannot be bounded";
+				return false;
+			}
+
+			var changed = false;
+			var child = cluster.DataOffset;
+			while (child < end && EbmlReader.TryRead (body, child, end, out var element) && !element.UnknownSize) {
+				if (element.Id == MatroskaIds.Position
+					&& element.DataLength is > 0 and <= 8
+					&& EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength)) == (ulong)old) {
+					if (!TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, (ulong)at)) {
+						if (!TryMakeVoid (element.End - element.Position, out var hole)) {
+							error = "Matroska Cluster Position cannot be updated";
+							return false;
+						}
+
+						hole.CopyTo (body.AsSpan (element.Position));
+					}
+
+					changed = true;
+				}
+
+				child = element.End;
+			}
+
+			if (changed)
+				UpdateChildCrc (body, cluster.DataOffset, end);
+		}
+
+		return true;
+	}
+
+	/// <summary>Updates a CRC-32 that is the first child in <paramref name="dataOffset"/>..<paramref name="end"/>.</summary>
+	static void UpdateChildCrc (byte[] body, int dataOffset, int end)
+	{
+		if (!EbmlReader.TryRead (body, dataOffset, end, out var first))
+			return;
+		if (first.Id != MatroskaIds.Crc32 || first.UnknownSize || first.DataLength != 4)
+			return;
+		WriteCrc (body, first.DataOffset, first.End, end);
 	}
 
 	sealed class Layout
@@ -120,7 +637,13 @@ static partial class MatroskaRewrite
 			SegmentEnd = segmentEnd;
 			Pieces = pieces;
 			IsWebM = isWebM;
+			Starts = new int[pieces.Count + 1];
+			for (var i = 0; i < pieces.Count; i++)
+				Starts[i + 1] = Starts[i] + pieces[i].Length;
 		}
+
+		/// <summary>Gets each piece's Segment offset, plus the Segment length at the end.</summary>
+		public int[] Starts { get; }
 
 		public bool IsWebM { get; }
 
@@ -158,6 +681,28 @@ static partial class MatroskaRewrite
 		public bool UnknownSize { get; }
 	}
 
+	[ThreadStatic]
+	static long t_settleCalls;
+
+	[ThreadStatic]
+	static long t_settleSteps;
+
+	/// <summary>Gets or sets how many values the growth search placed on this thread.</summary>
+	internal static long SettleCalls {
+		get => t_settleCalls;
+		set => t_settleCalls = value;
+	}
+
+	/// <summary>
+	/// Gets or sets how many growth entries the search examined on this thread. A save stays linear
+	/// while this is a logarithmic multiple of <see cref="SettleCalls"/>, so tests bound it instead of a
+	/// wall-clock time.
+	/// </summary>
+	internal static long SettleSteps {
+		get => t_settleSteps;
+		set => t_settleSteps = value;
+	}
+
 	sealed class Plan
 	{
 		public Plan (ulong id, byte[] element)
@@ -189,6 +734,7 @@ static partial class MatroskaRewrite
 
 		public int ElementOffset { get; set; } = -1;
 
+		/// <summary>Gets or sets the first old Segment offset that moves by <see cref="Delta"/>.</summary>
 		public int ShiftFrom { get; set; } = int.MaxValue;
 
 		public int Delta { get; set; }
@@ -196,6 +742,97 @@ static partial class MatroskaRewrite
 		public bool MustRetarget { get; set; }
 
 		public bool ShouldAdd { get; set; }
+
+		/// <summary>Gets or sets the index of the piece that <see cref="Grown"/> replaces, or -1.</summary>
+		public int GrowIndex { get; set; } = -1;
+
+		/// <summary>Gets or sets the bytes that replace piece <see cref="GrowIndex"/>. They can be longer.</summary>
+		public byte[]? Grown { get; set; }
+
+		/// <summary>Gets or sets where the build put <see cref="Grown"/>.</summary>
+		public int GrownAt { get; set; } = -1;
+
+		/// <summary>
+		/// Gets the SeekHead and Cues pieces that are written again, each value at the width it needs,
+		/// because a moved position no longer fits where it was (RFC 8794 section 6.1 lets a value use
+		/// any width). Each one's growth moves what follows it.
+		/// </summary>
+		public SortedSet<int> RenderIndexes { get; } = new ();
+
+		/// <summary>Gets the bytes each piece in <see cref="RenderIndexes"/> is written as.</summary>
+		public Dictionary<int, byte[]> Rendered { get; } = new ();
+
+		/// <summary>
+		/// Gets or sets the first SeekHead the move writes again with a Seek for <see cref="Id"/>, or -1.
+		/// When set, <see cref="ElementOffset"/> is already a new offset: right after that SeekHead.
+		/// </summary>
+		public int HeadIndex { get; set; } = -1;
+
+		/// <summary>Gets or sets a value indicating whether a rendered first SeekHead lists <see cref="Id"/>.</summary>
+		public bool RenderedTarget { get; set; }
+
+		int[] _growthFrom = [];
+		long[] _growthSum = [0];
+
+		/// <summary>Gets each rendered piece's old end offset and how many octets it grew, in offset order.</summary>
+		public List<(int From, int Delta)> Growth { get; } = new ();
+
+		/// <summary>
+		/// Gets or sets a value indicating whether every moved value in a rendered piece is written at
+		/// eight octets, so its length no longer depends on the shift.
+		/// </summary>
+		public bool WideValues { get; set; }
+
+		/// <summary>Gets a value indicating whether any old offset has a new value.</summary>
+		public bool Shifts => Delta != 0 || Growth.Exists (step => step.Delta != 0);
+
+		/// <summary>Replaces <see cref="Growth"/> (sorted by offset) and its prefix sums.</summary>
+		public void SetGrowth (List<(int From, int Delta)> growth)
+		{
+			Growth.Clear ();
+			Growth.AddRange (growth);
+			_growthFrom = new int[growth.Count];
+			_growthSum = new long[growth.Count + 1];
+			for (var i = 0; i < growth.Count; i++) {
+				_growthFrom[i] = growth[i].From;
+				_growthSum[i + 1] = _growthSum[i] + growth[i].Delta;
+			}
+		}
+
+		/// <summary>
+		/// Maps an old Segment offset to its new one. This is the only place a shift is applied:
+		/// SeekPosition, the Cues positions, and Cluster <c>Position</c> all go through it.
+		/// </summary>
+		public ulong Map (ulong old) => Settle (Delta != 0 && old >= (ulong)ShiftFrom ? old + (ulong)Delta : old, old);
+
+		/// <summary>
+		/// Adds the growth of every rendered piece that ends at or before <paramref name="old"/>: a binary
+		/// search over the prefix sums.
+		/// </summary>
+		ulong Settle (ulong value, ulong old)
+		{
+			t_settleCalls++;
+			var low = 0;
+			var high = _growthFrom.Length;
+			while (low < high) {
+				t_settleSteps++;
+				var mid = (low + high) >>> 1;
+				if ((ulong)_growthFrom[mid] <= old)
+					low = mid + 1;
+				else
+					high = mid;
+			}
+
+			return value + (ulong)_growthSum[low];
+		}
+
+		/// <summary>
+		/// Gets where the element lands in the new Segment, or -1. The rendered pieces before it
+		/// move it; its own insert does not.
+		/// </summary>
+		public int NewElementOffset => ElementOffset < 0 || HeadIndex >= 0
+			? ElementOffset
+			: (int)Settle ((ulong)ElementOffset, (ulong)ElementOffset);
 	}
 
 	static Plan PlanEdit (List<Piece> pieces, ulong id, byte[] element, bool referenced)
@@ -265,16 +902,14 @@ static partial class MatroskaRewrite
 		Layout layout,
 		Plan plan,
 		out byte[] body,
-		out List<(int Start, int End)> seekHeads,
-		out List<(int Start, int End)> cues,
-		out List<(int Start, int End, int SegmentOffset)> clusters,
+		out List<(int Start, int End, int Index, bool Final)> seekHeads,
+		out List<(int Start, int End, int Index, bool Final)> cues,
 		out int elementOffset,
 		out string error)
 	{
 		body = [];
-		seekHeads = new List<(int, int)> ();
-		cues = new List<(int, int)> ();
-		clusters = new List<(int, int, int)> ();
+		seekHeads = new List<(int, int, int, bool)> ();
+		cues = new List<(int, int, int, bool)> ();
 		elementOffset = -1;
 		error = "";
 		var pieces = layout.Pieces;
@@ -288,88 +923,165 @@ static partial class MatroskaRewrite
 			}
 		}
 
-		using var builder = new BinaryDataBuilder (Math.Max (16, data.Length));
+		// The body is sized first and written once, so a save holds one copy of it.
+		var total = 0L;
+		if (!TryWalk (data, layout, plan, null, ref total, seekHeads, cues, ref elementOffset, out error))
+			return false;
+		if (total > int.MaxValue) {
+			error = "Matroska segment is too large to rewrite";
+			return false;
+		}
+
+		body = new byte[total];
+		var written = 0L;
+		seekHeads.Clear ();
+		cues.Clear ();
+		elementOffset = -1;
+		return TryWalk (data, layout, plan, body, ref written, seekHeads, cues, ref elementOffset, out error);
+	}
+
+	/// <summary>
+	/// Walks the pieces in output order. With no <paramref name="body"/> it only counts the length.
+	/// </summary>
+	static bool TryWalk (
+		ReadOnlySpan<byte> data,
+		Layout layout,
+		Plan plan,
+		byte[]? body,
+		ref long at,
+		List<(int Start, int End, int Index, bool Final)> seekHeads,
+		List<(int Start, int End, int Index, bool Final)> cues,
+		ref int elementOffset,
+		out string error)
+	{
+		error = "";
+		var pieces = layout.Pieces;
 		var i = 0;
 		while (i < pieces.Count) {
 			if (i == plan.ReplaceStart && plan.Replacement is not null) {
-				elementOffset = builder.Length;
-				builder.Add (plan.Replacement);
+				elementOffset = (int)at;
+				Put (body, ref at, plan.Replacement);
 				i = plan.ReplaceEnd + 1;
 				continue;
 			}
 
 			var piece = pieces[i];
+			if (i == plan.GrowIndex && plan.Grown is not null) {
+				plan.GrownAt = (int)at;
+				Put (body, ref at, plan.Grown);
+				Note (piece.Id, plan.GrownAt, (int)at, i, false, seekHeads, cues);
+				i++;
+				continue;
+			}
+
+			// The insert comes before this piece even when the piece is an old copy that is voided.
+			if (i == plan.InsertBefore) {
+				elementOffset = (int)at;
+				Put (body, ref at, plan.Element);
+			}
+
+			if (plan.Rendered.TryGetValue (i, out var rendered)) {
+				var start = (int)at;
+				Put (body, ref at, rendered);
+				Note (piece.Id, start, (int)at, i, true, seekHeads, cues);
+				i++;
+				continue;
+			}
+
 			if (plan.VoidExisting && piece.Id == plan.Id) {
 				if (!TryMakeVoid (piece.Length, out var hole)) {
 					error = plan.PlaceError;
 					return false;
 				}
 
-				builder.Add (hole);
+				Put (body, ref at, hole);
 				i++;
 				continue;
 			}
 
-			if (i == plan.InsertBefore) {
-				elementOffset = builder.Length;
-				builder.Add (plan.Element);
-			}
-
-			var at = builder.Length;
-			builder.Add (data.Slice (piece.Offset, piece.Length));
-			if (piece.Id == MatroskaIds.SeekHead)
-				seekHeads.Add ((at, at + piece.Length));
-			else if (piece.Id == MatroskaIds.Cues)
-				cues.Add ((at, at + piece.Length));
-			else if (piece.Id == MatroskaIds.Cluster) {
-				// Piece.Offset is the file offset. Position is relative to the segment payload.
-				// The difference is O(1). Summing preceding pieces once per cluster is quadratic.
-				clusters.Add ((at, at + piece.Length, piece.Offset - layout.DataOffset));
-			}
+			var from = (int)at;
+			Put (body, ref at, data.Slice (piece.Offset, piece.Length));
+			Note (piece.Id, from, (int)at, i, false, seekHeads, cues);
 			i++;
 		}
 
 		if (plan.Append) {
-			elementOffset = builder.Length;
-			builder.Add (plan.Element);
+			elementOffset = (int)at;
+			Put (body, ref at, plan.Element);
 		}
 
-		body = builder.ToArray ();
 		return true;
 	}
 
+	static void Put (byte[]? body, ref long at, ReadOnlySpan<byte> bytes)
+	{
+		if (body is not null)
+			bytes.CopyTo (body.AsSpan ((int)at));
+		at += bytes.Length;
+	}
+
+	static void Note (
+		ulong id,
+		int start,
+		int end,
+		int index,
+		bool final,
+		List<(int Start, int End, int Index, bool Final)> seekHeads,
+		List<(int Start, int End, int Index, bool Final)> cues)
+	{
+		if (id == MatroskaIds.SeekHead)
+			seekHeads.Add ((start, end, index, final));
+		else if (id == MatroskaIds.Cues)
+			cues.Add ((start, end, index, final));
+	}
+
+	/// <summary>
+	/// Patches every SeekHead and Cues in place. A piece whose moved values do not fit their fields is
+	/// added to <paramref name="widen"/> instead, so it can be written again wider; a Seek is never
+	/// voided for that (RFC 9559 section 6.3).
+	/// </summary>
 	static bool TryPatch (
 		byte[] body,
-		List<(int Start, int End)> seekHeads,
-		List<(int Start, int End)> cues,
-		List<(int Start, int End, int SegmentOffset)> clusters,
+		List<(int Start, int End, int Index, bool Final)> seekHeads,
+		List<(int Start, int End, int Index, bool Final)> cues,
 		Plan plan,
+		List<int> widen,
 		out bool referenced,
 		out string error)
 	{
 		error = "";
 		referenced = false;
-		var strict = plan.MustRetarget || plan.Delta != 0;
+		var strict = plan.MustRetarget || plan.Shifts;
 		if (strict || plan.ShouldAdd) {
 			// A new entry goes in the first SeekHead. A second one holds only Clusters (RFC 9559 section 6.3).
 			for (var i = 0; i < seekHeads.Count; i++) {
-				if (!TryPatchSeekHead (body, seekHeads[i].Start, seekHeads[i].End, plan, strict, i == 0, ref referenced, out error))
+				var (start, end, index, final) = seekHeads[i];
+				if (final) {
+					if (i == 0 && plan.RenderedTarget)
+						referenced = true;
+					continue;
+				}
+
+				var tooNarrow = false;
+				if (!TryPatchSeekHead (body, start, end, plan, strict, i == 0, ref referenced, ref tooNarrow, out error))
 					return false;
+				if (tooNarrow)
+					widen.Add (index);
 			}
 		} else
 			referenced = true;
 
-		if (plan.Delta == 0)
+		if (!plan.Shifts)
 			return true;
 
-		foreach (var cue in cues) {
-			if (!TryPatchCues (body, cue.Start, cue.End, plan, out error))
+		foreach (var (start, end, index, final) in cues) {
+			if (final)
+				continue;
+			var tooNarrow = false;
+			if (!TryPatchCues (body, start, end, plan, ref tooNarrow, out error))
 				return false;
-		}
-
-		foreach (var cluster in clusters) {
-			if (!TryPatchClusterPosition (body, cluster.Start, cluster.End, cluster.SegmentOffset, plan, out error))
-				return false;
+			if (tooNarrow)
+				widen.Add (index);
 		}
 
 		return true;
@@ -382,23 +1094,22 @@ static partial class MatroskaRewrite
 	/// (section 25.3.4). A cover that no player would find fails the save instead.
 	/// Tags keep the older best-effort placement.
 	/// </summary>
-	static bool IsReachable (List<Piece> pieces, Plan plan, int seekHeadCount, bool referenced, out string error)
+	static bool IsReachable (Layout layout, Plan plan, int seekHeadCount, bool referenced, out string error)
 	{
 		error = "";
 		if (plan.Id != MatroskaIds.Attachments || plan.ElementOffset < 0 || referenced)
 			return true;
 		if (seekHeadCount > 0) {
-			error = "Matroska SeekHead has no room to reference the attachments";
+			error = "Matroska SeekHead cannot be written again to reference the attachments";
 			return false;
 		}
 
+		var pieces = layout.Pieces;
 		for (var i = 0; i < pieces.Count; i++) {
 			if (pieces[i].Id != MatroskaIds.Cluster)
 				continue;
-			var clusterAt = OffsetOf (pieces, i);
-			if (clusterAt >= plan.ShiftFrom)
-				clusterAt += plan.Delta;
-			if (plan.ElementOffset < clusterAt)
+			var clusterAt = (int)plan.Map ((ulong)layout.Starts[i]);
+			if (plan.NewElementOffset < clusterAt)
 				return true;
 			error = "Matroska file has no SeekHead, so attachments after a Cluster would not be found";
 			return false;
@@ -407,7 +1118,7 @@ static partial class MatroskaRewrite
 		return true;
 	}
 
-	static bool TryPatchSeekHead (byte[] body, int start, int end, Plan plan, bool strict, bool mayAdd, ref bool referenced, out string error)
+	static bool TryPatchSeekHead (byte[] body, int start, int end, Plan plan, bool strict, bool mayAdd, ref bool referenced, ref bool tooNarrow, out string error)
 	{
 		error = "";
 		if (!EbmlReader.TryRead (body, start, Math.Min (end, body.Length), out var seekHead)
@@ -438,13 +1149,17 @@ static partial class MatroskaRewrite
 		foreach (var child in children) {
 			if (child.Id != MatroskaIds.Seek)
 				continue;
-			if (!TryPatchSeek (body, child, plan, ref changed, ref referenced)) {
+			if (!TryPatchSeek (body, child, plan, ref changed, ref referenced, ref tooNarrow)) {
 				error = "Matroska SeekHead cannot be updated";
 				return false;
 			}
 		}
 
-		if (mayAdd && plan.ElementOffset >= 0 && !referenced && TryAddSeek (body, seekHead, plan.Id, (ulong)plan.ElementOffset)) {
+		if (tooNarrow)
+			return true;
+
+		var target = plan.NewElementOffset;
+		if (mayAdd && target >= 0 && !referenced && TryAddSeek (body, seekHead, plan.Id, (ulong)target)) {
 			changed = true;
 			referenced = true;
 		}
@@ -454,20 +1169,24 @@ static partial class MatroskaRewrite
 		return true;
 	}
 
-	static bool TryPatchSeek (byte[] body, EbmlElement seek, Plan plan, ref bool changed, ref bool referenced)
+	/// <summary>
+	/// Patches one Seek. A moved position for another element that no longer fits sets
+	/// <paramref name="tooNarrow"/>, so the SeekHead is written again wider.
+	/// </summary>
+	static bool TryPatchSeek (byte[] body, EbmlElement seek, Plan plan, ref bool changed, ref bool referenced, ref bool tooNarrow)
 	{
-		var strict = plan.MustRetarget || plan.Delta != 0;
+		var strict = plan.MustRetarget || plan.Shifts;
 		if (!TryReadSeek (body, seek, out var id, out var position, out var positionElement))
 			return strict ? TryVoidElement (body, seek, ref changed) : true;
 
-		var isTarget = id == plan.Id;
+		var isTarget = plan.Id != 0 && id == plan.Id;
 		ulong desired;
 		if (isTarget) {
 			if (plan.ElementOffset < 0)
 				return TryVoidElement (body, seek, ref changed);
-			desired = (ulong)plan.ElementOffset;
-		} else if (plan.Delta != 0 && position >= (ulong)plan.ShiftFrom) {
-			desired = position + (ulong)plan.Delta;
+			desired = (ulong)plan.NewElementOffset;
+		} else if (plan.Map (position) != position) {
+			desired = plan.Map (position);
 			if (desired < position)
 				return false;
 		} else
@@ -498,7 +1217,11 @@ static partial class MatroskaRewrite
 			return true;
 		}
 
-		return TryVoidElement (body, seek, ref changed);
+		// The element's own Seek may go: the move lists it again. Any other Seek must stay.
+		if (isTarget)
+			return TryVoidElement (body, seek, ref changed);
+		tooNarrow = true;
+		return true;
 	}
 
 	static bool TryReadSeek (byte[] body, EbmlElement seek, out ulong id, out ulong position, out EbmlElement positionElement)
@@ -602,7 +1325,7 @@ static partial class MatroskaRewrite
 		return true;
 	}
 
-	static bool TryPatchCues (byte[] body, int start, int end, Plan plan, out string error)
+	static bool TryPatchCues (byte[] body, int start, int end, Plan plan, ref bool tooNarrow, out string error)
 	{
 		error = "";
 		if (!EbmlReader.TryRead (body, start, Math.Min (end, body.Length), out var cues) || cues.UnknownSize || cues.Position != start) {
@@ -611,35 +1334,46 @@ static partial class MatroskaRewrite
 		}
 
 		var changed = false;
-		if (!TryPatchCueValues (body, cues.DataOffset, cues.End, plan, ref changed)) {
+		if (!TryPatchCueValues (body, MatroskaIds.Cues, cues.DataOffset, cues.End, plan, ref changed, ref tooNarrow)) {
 			error = "Matroska Cues cannot be updated";
 			return false;
 		}
 
-		if (changed)
+		if (changed && !tooNarrow)
 			UpdateElementCrc (body, cues.Position, cues.End);
 		return true;
 	}
 
-	static bool TryPatchCueValues (byte[] body, int offset, int end, Plan plan, ref bool changed)
+	/// <summary>
+	/// Moves every Cues position in place in the children of a <paramref name="parent"/> master (see
+	/// <see cref="RenderCues"/> for the list). Only the child that <see cref="CueChildMaster"/> names is
+	/// walked, so the recursion is at most four levels deep. A value that no longer fits its field sets
+	/// <paramref name="tooNarrow"/>. A malformed value fails.
+	/// </summary>
+	static bool TryPatchCueValues (byte[] body, ulong parent, int offset, int end, Plan plan, ref bool changed, ref bool tooNarrow)
 	{
+		var childMaster = CueChildMaster (parent);
 		while (offset < end) {
 			if (!EbmlReader.TryRead (body, offset, end, out var element) || element.UnknownSize)
 				return false;
-			if (element.Id == MatroskaIds.CueClusterPosition) {
-				if (!TryAddDelta (body, element, plan, ref changed, emptyIsZero: false))
+			if (IsCuePosition (parent, element.Id)) {
+				if (element.Id == MatroskaIds.CueClusterPosition && element.DataLength < 1)
 					return false;
-			} else if (element.Id == MatroskaIds.CueCodecState) {
-				if (!TryAddDeltaOrVoid (body, element, plan, ref changed))
+				if (!TryMoveCueValue (body, element, plan, out var updated, out var keep))
 					return false;
-			} else if (element.Id is MatroskaIds.CuePoint or MatroskaIds.CueTrackPositions or MatroskaIds.Cues) {
+				if (!keep) {
+					if (TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, updated))
+						changed = true;
+					else
+						tooNarrow = true;
+				}
+			} else if (element.Id == childMaster) {
 				var nested = false;
-				if (!TryPatchCueValues (body, element.DataOffset, element.End, plan, ref nested))
+				if (!TryPatchCueValues (body, element.Id, element.DataOffset, element.End, plan, ref nested, ref tooNarrow))
 					return false;
 				if (nested) {
 					changed = true;
-					if (element.Id != MatroskaIds.Cues)
-						UpdateElementCrc (body, element.Position, element.End);
+					UpdateElementCrc (body, element.Position, element.End);
 				}
 			}
 
@@ -647,92 +1381,6 @@ static partial class MatroskaRewrite
 		}
 
 		return true;
-	}
-
-	/// <summary>
-	/// A cluster at or after the insertion point moved by <see cref="Plan.Delta"/>.
-	/// <see cref="MatroskaIds.Position"/> is that cluster's segment offset.
-	/// A stored 0 is a live stream and stays 0 when the shift starts later.
-	/// </summary>
-	static bool TryPatchClusterPosition (byte[] body, int start, int end, int segmentOffset, Plan plan, out string error)
-	{
-		error = "";
-		if (segmentOffset < plan.ShiftFrom)
-			return true;
-
-		if (!EbmlReader.TryRead (body, start, end, out var cluster) || cluster.Position != start || cluster.Id != MatroskaIds.Cluster) {
-			error = "Matroska Cluster cannot be bounded";
-			return false;
-		}
-
-		var changed = false;
-		var offset = cluster.DataOffset;
-		while (offset < end) {
-			if (!EbmlReader.TryRead (body, offset, end, out var child) || child.UnknownSize) {
-				error = "Matroska Cluster cannot be bounded";
-				return false;
-			}
-
-			// PrevSize is the previous cluster's length, not a segment offset.
-			// Position is optional, so a value that does not fit is removed instead of failing the save.
-			if (child.Id == MatroskaIds.Position && !TryAddDeltaOrVoid (body, child, plan, ref changed)) {
-				error = "Matroska Cluster Position cannot be updated";
-				return false;
-			}
-
-			offset = child.End;
-		}
-
-		if (offset != end) {
-			error = "Matroska Cluster cannot be bounded";
-			return false;
-		}
-
-		if (changed)
-			UpdatePieceCrc (body, cluster.DataOffset, end);
-		return true;
-	}
-
-	/// <summary>
-	/// Adds <see cref="Plan.Delta"/> when the stored segment offset is at or past the insertion point.
-	/// An empty element is 0 (RFC 8794) and is left unchanged when <paramref name="emptyIsZero"/> is set.
-	/// </summary>
-	static bool TryAddDelta (byte[] body, EbmlElement element, Plan plan, ref bool changed, bool emptyIsZero)
-	{
-		if (element.DataLength == 0)
-			return emptyIsZero;
-		if (element.DataLength is < 1 or > 8)
-			return false;
-		var value = EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength));
-		if (value < (ulong)plan.ShiftFrom)
-			return true;
-
-		var updated = value + (ulong)plan.Delta;
-		if (updated < value || !TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, updated))
-			return false;
-		if (updated != value)
-			changed = true;
-		return true;
-	}
-
-	static bool TryAddDeltaOrVoid (byte[] body, EbmlElement element, Plan plan, ref bool changed)
-	{
-		if (TryAddDelta (body, element, plan, ref changed, emptyIsZero: true))
-			return true;
-		return TryVoidElement (body, element, ref changed);
-	}
-
-	/// <summary>
-	/// Unknown-size parents have no element end, so <see cref="UpdateElementCrc"/> cannot see them.
-	/// The CRC-32 covers the bytes after itself through the piece end.
-	/// </summary>
-	static void UpdatePieceCrc (byte[] body, int dataOffset, int pieceEnd)
-	{
-		if (!EbmlReader.TryRead (body, dataOffset, pieceEnd, out var first))
-			return;
-		if (first.Id != MatroskaIds.Crc32 || first.UnknownSize || first.DataLength != 4)
-			return;
-		WriteCrc (body, first.DataOffset, first.End, pieceEnd);
 	}
 
 	static bool TryParse (ReadOnlySpan<byte> data, out Layout? layout, out string error)
@@ -903,14 +1551,16 @@ static partial class MatroskaRewrite
 			return [];
 		}
 
-		using var output = new BinaryDataBuilder (data.Length + body.Length + 8);
-		output.Add (data.Slice (0, layout.SegmentPosition));
-		output.Add (data.Slice (layout.SegmentPosition, layout.IdWidth));
-		output.Add (size);
-		output.Add (body);
-		if (layout.SegmentEnd < data.Length)
-			output.Add (data.Slice (layout.SegmentEnd));
-		return output.ToArray ();
+		// Written once into an array of the final length.
+		var tail = data.Length - layout.SegmentEnd;
+		var output = new byte[(long)layout.SegmentPosition + layout.IdWidth + size.Length + body.Length + tail];
+		var at = 0L;
+		Put (output, ref at, data.Slice (0, layout.SegmentPosition + layout.IdWidth));
+		Put (output, ref at, size);
+		Put (output, ref at, body);
+		if (tail > 0)
+			Put (output, ref at, data.Slice (layout.SegmentEnd));
+		return output;
 	}
 
 	/// <summary>
@@ -1022,10 +1672,18 @@ static partial class MatroskaRewrite
 		return false;
 	}
 
-	static byte[] MakeSeek (ulong elementId, ulong position)
+	/// <summary>A Seek; with <paramref name="wide"/> its SeekPosition always has eight octets.</summary>
+	static byte[] MakeSeek (ulong elementId, ulong position, bool wide = false)
 	{
 		var seekId = EbmlWriter.Master (MatroskaIds.SeekId, IdBytes (elementId));
-		var seekPosition = EbmlWriter.Master (MatroskaIds.SeekPosition, UnsignedBytes (position));
+		var octets = UnsignedBytes (position);
+		if (wide && octets.Length < 8) {
+			var padded = new byte[8];
+			octets.CopyTo (padded, 8 - octets.Length);
+			octets = padded;
+		}
+
+		var seekPosition = EbmlWriter.Master (MatroskaIds.SeekPosition, octets);
 		using var body = new BinaryDataBuilder (seekId.Length + seekPosition.Length);
 		body.Add (seekId);
 		body.Add (seekPosition);
