@@ -67,8 +67,12 @@ Every table must cover:
 - **Sibling formats.** Every format that stores the same structure or field. ID3v2 lives in MP3, WAV, AIFF,
   DSF, DFF and MPEG-PS. APEv2 lives in MP3, Monkey's Audio, WavPack and Musepack. Vorbis comments live in
   FLAC, Ogg Vorbis, Opus and Ogg FLAC. EBML and ISO boxes nest the same way everywhere.
-- **Every write path.** Each setter, null, `""`, `Clear()`, `CopyTo` (into itself, through a view, and into
-  every other tag type) and assigning a whole tag (`file.Tag = ...`, `file.Id3v2Tag = null`).
+- **Every write path, each with its expected outcome** (rule 7 below):
+  - A setter or `""` changes only that mapped field. Null clears that field.
+  - `Clear()` and assigning null (`file.Id3v2Tag = null`, `file.Tag = null`) remove all metadata, mapped and
+    unmapped, from every tag block the view covers.
+  - `CopyTo` (into itself, through a view, and into every other tag type) and assigning a whole tag
+    (`file.Tag = ...`) replace the mapped fields and keep the target's unmapped items.
 - **Views.** `CombinedTag` and the per-format unified views (FLAC, MP3, AIFF and others) that forward tag
   members. A member added to `Tag` must be forwarded by every view.
 - **Render and parse.** Whatever parse accepts, render must write back. Whatever render writes, parse must
@@ -108,13 +112,26 @@ how it was broken before.
    before the change, it stays byte-identical.
    *Past example:* writing `Artist` back unchanged to an ID3v2 tag dropped every name after the first. An
    unchanged write-back of an ASF property deleted the copy that Windows reads from the Metadata Library.
-6. **A value the caller did not change keeps its bytes and its meaning.**
+6. **On an edit other than a clear, a value the caller did not change keeps its bytes and its meaning.**
+   A clear or a null assignment is not "unchanged": rule 7 governs it.
    *Past example:* an AVI INFO save rewrote untouched non-UTF-8 text as UTF-8 of its Latin-1 misreading, and
    dropped the file's `CSET`.
-7. **An empty EBML or ISO element means its default** (RFC 8794 §7.2). It does not mean the file is
-   malformed.
+7. **`Clear()` and assigning null remove all metadata, mapped and unmapped.** That includes unknown atoms
+   and frames, QuickTime keys, store and account IDs, GPS, make and model, and gapless and encoder info.
+   The one exception is data the audio needs to decode or play, such as Audible's DRM keys or Matroska
+   fonts. Assigning a whole tag and `CopyTo` are different: they replace the mapped fields and keep unmapped
+   items.
+   This is the documented contract: `Tag.Clear` "Clears all tag data, resetting to an empty state"
+   (`src/TagLibSharp2/Core/Tag.cs`), `CombinedTag` clears every underlying tag, and
+   [NEW-FORMAT-CHECKLIST.md](NEW-FORMAT-CHECKLIST.md) says "Test Clear() removes all metadata".
+   *Past example:* an MP4 `Clear()` kept the unmapped `apID` atom, so a "cleaned" file still carried the
+   buyer's e-mail address.
+8. **An empty EBML element means its default value** (RFC 8794 §6.1: "If an Empty Element has a default
+   value declared, then the EBML Reader MUST interpret the value of the Empty Element as the default
+   value"). It does not mean the file is malformed. ISO BMFF has no such rule: a box shorter than its syntax
+   is malformed.
    *Past example:* an empty `CueRefCluster` made every save that moved the Cues fail.
-8. **Every refusal returns its own error message.** A later generic error must not mask it.
+9. **Every refusal returns its own error message.** A later generic error must not mask it.
    *Past example:* a save refused an unknown-size Tracks with the message for a duplicate Tracks, so the
    caller looked for the wrong cause.
 
