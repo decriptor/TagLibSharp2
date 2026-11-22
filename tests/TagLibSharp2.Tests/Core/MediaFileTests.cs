@@ -681,6 +681,7 @@ public class MediaFileTests
 	[DataRow ("clip.wav")]
 	[DataRow ("clip.mkv")]
 	[DataRow ("clip.mpg")]
+	[DataRow ("clip.aac")]
 	public void Read_MislabeledMp3_IsFoundByItsContent (string name)
 	{
 		// Two bare MPEG frames: the sync is past the 32-byte peek, so only the longer peek finds it.
