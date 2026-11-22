@@ -685,6 +685,7 @@ public sealed class Mp4File : IMediaFile
 	/// <summary>
 	/// Clears all metadata from this file.
 	/// </summary>
+	/// <remarks>Chapters are not tag fields and stay; <c>Chapters = []</c> removes them.</remarks>
 	public void ClearAllMetadata () => Tag?.Clear ();
 
 	/// <summary>
@@ -777,7 +778,8 @@ public sealed class Mp4File : IMediaFile
 	/// </para>
 	/// <para>
 	/// An empty list removes <c>chpl</c>, every track a <c>chap</c> reference names (the titles, and Apple chapter
-	/// URL and image tracks), and those references. A save that leaves the list as read keeps the chapter bytes
+	/// URL and image tracks), and those references. The tag is a separate thing: clearing chapters leaves it,
+	/// and <see cref="ClearAllMetadata"/> or <c>Tag = null</c> leaves the chapters. A save that leaves the list as read keeps the chapter bytes
 	/// unchanged, and so does setting the list the file already holds, unless the file has more than one title
 	/// track: then that set leaves one, as above.
 	/// </para>
