@@ -1574,7 +1574,10 @@ public sealed class Id3v2Tag : Tag
 	/// Gets all values from a text frame (multi-value support).
 	/// </summary>
 	/// <param name="frameId">The frame ID (e.g., TPE1 for artists).</param>
-	/// <returns>A list of values, split by null characters (v2.4) or "/" (v2.3).</returns>
+	/// <returns>
+	/// A list of values, split by null characters (v2.4; each value as written, empty values skipped)
+	/// or "/" (v2.3; each value trimmed, blank values skipped).
+	/// </returns>
 	/// <remarks>
 	/// ID3v2.4 uses null characters as value separators. ID3v2.3 has no official
 	/// separator, but "/" is commonly used. This method handles both.
@@ -1592,12 +1595,13 @@ public sealed class Id3v2Tag : Tag
 #else
 		if (text!.Contains ('\0', StringComparison.Ordinal)) {
 #endif
+			// ID3v2.4 §4.2: each NUL-separated string is a value as written. An empty one is skipped,
+			// as the single-value getter skips it; spaces are kept, as every other reader keeps them.
 			var parts = text.Split ('\0');
 			var result = new List<string> (parts.Length);
 			for (var i = 0; i < parts.Length; i++) {
-				var trimmed = parts[i].Trim ();
-				if (!string.IsNullOrEmpty (trimmed))
-					result.Add (trimmed);
+				if (parts[i].Length != 0)
+					result.Add (parts[i]);
 			}
 			return result;
 		}

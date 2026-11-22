@@ -501,5 +501,19 @@ sealed class AiffTag : Tag
 
 	Id3v2Tag? Id3 => _file.Id3v2Tag;
 
+	/// <inheritdoc/>
+	/// <remarks>
+	/// This view reads the file's ID3 tag, so a copy between it and that tag (or another view over the
+	/// same file) only adds values the target does not show.
+	/// </remarks>
+	internal override IEnumerable<Tag> Leaves ()
+	{
+		yield return this;
+		if (Id3 is { } id3) {
+			foreach (var leaf in id3.Leaves ())
+				yield return leaf;
+		}
+	}
+
 	Id3v2Tag Ensure () => _file.EnsureId3 ();
 }
