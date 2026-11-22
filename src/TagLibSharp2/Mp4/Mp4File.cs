@@ -777,8 +777,9 @@ public sealed class Mp4File : IMediaFile
 	/// </para>
 	/// <para>
 	/// An empty list removes <c>chpl</c>, every track a <c>chap</c> reference names (the titles, and Apple chapter
-	/// URL and image tracks), and those references. A save that leaves the list as read, or sets it to the list
-	/// the file already holds, keeps the chapter bytes unchanged.
+	/// URL and image tracks), and those references. A save that leaves the list as read keeps the chapter bytes
+	/// unchanged, and so does setting the list the file already holds, unless the file has more than one title
+	/// track: then that set leaves one, as above.
 	/// </para>
 	/// </remarks>
 	/// <exception cref="ArgumentException">The list contains a null chapter.</exception>
@@ -792,10 +793,8 @@ public sealed class Mp4File : IMediaFile
 				list.Add (chapter);
 			}
 
+			// Every assignment is a request; the save decides whether it is a no-op (see PlanChapters).
 			var sorted = Mp4ChapterCodec.SortByStart (list);
-			if (SameChapters (sorted, _chapters))
-				return;
-
 			_chapters = Mp4ChapterCodec.WithEndTimes (sorted, Duration);
 			_chaptersChanged = true;
 		}
@@ -2448,7 +2447,9 @@ public sealed class Mp4File : IMediaFile
 		}
 
 		var duration = Mp4ChapterCodec.MovieDuration (moov);
-		if (SameChapters (Mp4ChapterCodec.Read (moov, fragments, originalData, duration), _chapters))
+		// The list the file already reads is a no-op, unless another title track would still show old titles.
+		if (SameChapters (Mp4ChapterCodec.Read (moov, fragments, originalData, duration), _chapters)
+			&& !Mp4ChapterCodec.HasExtraTitleTracks (moov, originalData))
 			return null;
 
 		// QuickTime evidence: the "qt  " major brand, or no ftyp at all. ISO 14496-12 §4.3 requires ftyp in
