@@ -76,7 +76,8 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 				Assert.AreEqual (file.Tracks[i].IsEnabled, again.Tracks[i].IsEnabled);
 		}
 
-		// Blocks are byte-identical; only a moved cluster's Position value differs.
+		// Blocks are byte-identical; a moved cluster's Position, its CRC-32, and a Void that took a
+		// Position that could not widen are not compared.
 		CollectionAssert.AreEqual (Children (original, MatroskaIds.Cluster), Children (toggled, MatroskaIds.Cluster));
 		// Every Seek that named an element still names one with its ID (RFC 9559 section 6.3).
 		CollectionAssert.AreEquivalent (LandingSeeks (original), LandingSeeks (toggled));
@@ -175,22 +176,26 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 	}
 
 	/// <summary>
-	/// A cluster payload with its <c>Position</c> value zeroed. Position is the cluster's own segment
-	/// position (RFC 9559 §5.1.3.2), so it changes whenever the cluster moves; the blocks do not.
+	/// A cluster payload without the children that follow a move: <c>Position</c> is the cluster's own
+	/// segment position (RFC 9559 section 5.1.3.2), voided when it cannot widen in place, and its
+	/// CRC-32 covers it (RFC 8794 section 11.3.1). The blocks do not change.
 	/// </summary>
 	static byte[] WithoutPosition (ReadOnlySpan<byte> payload, ulong id)
 	{
-		var copy = payload.ToArray ();
 		if (id != MatroskaIds.Cluster)
-			return copy;
+			return payload.ToArray ();
+		var source = payload.ToArray ();
+		using var kept = new MemoryStream ();
 		var offset = 0;
-		while (offset < copy.Length && EbmlReader.TryRead (copy, offset, copy.Length, out var child) && !child.UnknownSize) {
-			if (child.Id == 0xA7)
-				copy.AsSpan (child.DataOffset, (int)child.DataLength).Clear ();
+		while (offset < source.Length && EbmlReader.TryRead (source, offset, source.Length, out var child) && !child.UnknownSize) {
+			if (child.Id is not MatroskaIds.Position and not MatroskaIds.Crc32 and not MatroskaIds.Void)
+				kept.Write (source, child.Position, child.End - child.Position);
 			offset = child.End;
 		}
 
-		return copy;
+		if (offset < source.Length)
+			kept.Write (source, offset, source.Length - offset);
+		return kept.ToArray ();
 	}
 
 	/// <summary>A SHA-256 of the payload of every first-Segment child with <paramref name="id"/>, in file order.</summary>
@@ -398,22 +403,46 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 				Assert.IsTrue (children.Exists (child => child.Id == id && child.Start - bodyAt == (int)position), id.ToString ("X", System.Globalization.CultureInfo.InvariantCulture));
 			// Every CueClusterPosition that named a Cluster still does. A broken one in the source stays as it was.
 			Assert.AreEqual (LandingCues (original), LandingCues (after));
-			// A Position left in place names its own Cluster; one that could not widen was voided.
-			foreach (var (id, start, end) in children) {
-				if (id != MatroskaIds.Cluster || !EbmlReader.TryRead (after, start, end, out var cluster))
-					continue;
-				var at = cluster.DataOffset;
-				while (at < end && EbmlReader.TryRead (after, at, end, out var child) && !child.UnknownSize) {
-					if (child.Id == MatroskaIds.Position)
-						Assert.AreEqual ((ulong)(start - bodyAt), EbmlReader.ReadUInt (after.AsSpan (child.DataOffset, (int)child.DataLength)), "Cluster Position");
-					at = child.End;
-				}
+			// A Position that named its own Cluster still does, or was voided when it could not widen.
+			// One that was already wrong in the source is left as it was stored.
+			var positionsBefore = ClusterPositionsOf (original);
+			var positionsAfter = ClusterPositionsOf (after);
+			Assert.AreEqual (positionsBefore.Count, positionsAfter.Count, "Clusters");
+			for (var i = 0; i < positionsBefore.Count; i++) {
+				var (atBefore, storedBefore) = positionsBefore[i];
+				var (atAfter, storedAfter) = positionsAfter[i];
+				if (storedBefore == atBefore)
+					Assert.IsTrue (storedAfter is null || storedAfter == atAfter, FormattableString.Invariant ($"Cluster {i} Position {storedAfter} at {atAfter}"));
+				else
+					Assert.AreEqual (storedBefore, storedAfter, FormattableString.Invariant ($"Cluster {i}: a Position that was wrong in the source is kept"));
 			}
 
 			Assert.IsTrue (MatroskaFile.Read (after).File!.Tag.Pictures.Any (p => p.PictureData.Length == cover.Length));
 		} finally {
 			File.Delete (copy);
 		}
+	}
+
+	/// <summary>Each Cluster's Segment Position and the Position value it stores, or null when it has none.</summary>
+	static List<(ulong At, ulong? Stored)> ClusterPositionsOf (byte[] file)
+	{
+		var found = new List<(ulong, ulong?)> ();
+		var bodyAt = SegmentBodyAt (file);
+		foreach (var (id, start, end) in SegmentChildren (file)) {
+			if (id != MatroskaIds.Cluster || !EbmlReader.TryRead (file, start, end, out var cluster))
+				continue;
+			ulong? stored = null;
+			var at = cluster.DataOffset;
+			while (at < end && EbmlReader.TryRead (file, at, end, out var child) && !child.UnknownSize) {
+				if (child.Id == MatroskaIds.Position)
+					stored = child.DataLength == 0 ? 0 : EbmlReader.ReadUInt (file.AsSpan (child.DataOffset, (int)child.DataLength));
+				at = child.End;
+			}
+
+			found.Add (((ulong)(start - bodyAt), stored));
+		}
+
+		return found;
 	}
 
 	static int LandingCues (byte[] file)
