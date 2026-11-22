@@ -45,6 +45,9 @@ internal readonly struct AviTopChunk
 
 	public bool IsJunk => Id == AviChunks.Junk;
 
+	/// <summary>A <c>CSET</c> chunk, which names the code page of the file's text.</summary>
+	public bool IsCharacterSet => Id == AviChunks.Cset;
+
 	/// <summary>An ID3v2 tag stored as a RIFF chunk. <c>ID32</c> is the name used in AVI; <c>id3 </c> is the WAV name.</summary>
 	public bool IsId3 => Id == AviChunks.Id32 || Id == AviChunks.Id3Lower;
 }
@@ -103,6 +106,13 @@ internal static class AviChunks
 	public static readonly uint Hdrl = Code ("hdrl");
 	public static readonly uint Movi = Code ("movi");
 	public static readonly uint Info = Code ("INFO");
+	public static readonly uint Cset = Code ("CSET");
+
+	/// <summary>CSET wCodePage for UTF-8.</summary>
+	public const ushort Utf8CodePage = 65001;
+
+	/// <summary>CSET wCodePage for ISO 8859-1.</summary>
+	const ushort Latin1CodePage = 28591;
 
 	/// <summary>A FourCC as the little-endian value its four bytes read as.</summary>
 	public static uint Code (string fourCC) =>
@@ -162,16 +172,53 @@ internal static class AviChunks
 	}
 
 	/// <summary>
-	/// Every <c>LIST INFO</c> merged in file order. The first list wins; a later list fills only empty fields.
+	/// The character set the first <c>CSET</c> chunk declares (Multimedia Programming Interface and
+	/// Data Specifications 1.0, "CSET (Character Set) Chunk": wCodePage, wCountryCode, wLanguageCode,
+	/// wDialect). Code page 0 is the spec's ISO 8859-1 default. A code page this reader does not
+	/// decode, or no CSET at all, leaves detection on.
+	/// </summary>
+	public static InfoCharacterSet CharacterSet (ReadOnlySpan<byte> data)
+	{
+		var reader = new AviChunkReader (data);
+		while (reader.TryNext (out var chunk)) {
+			if (!chunk.IsCharacterSet)
+				continue;
+			var body = Body (data, chunk);
+			if (body.Length < 2)
+				return InfoCharacterSet.Detect;
+			return BinaryPrimitives.ReadUInt16LittleEndian (body) switch {
+				Utf8CodePage => InfoCharacterSet.Utf8,
+				0 or Latin1CodePage => InfoCharacterSet.Latin1,
+				_ => InfoCharacterSet.Detect
+			};
+		}
+
+		return InfoCharacterSet.Detect;
+	}
+
+	/// <summary>A CSET chunk declaring UTF-8: wCodePage 65001, with no country, language or dialect.</summary>
+	public static byte[] Utf8CharacterSetChunk ()
+	{
+		var chunk = new byte[RiffChunk.HeaderSize + 8];
+		BinaryPrimitives.WriteUInt32LittleEndian (chunk, Cset);
+		BinaryPrimitives.WriteUInt32LittleEndian (chunk.AsSpan (4), 8);
+		BinaryPrimitives.WriteUInt16LittleEndian (chunk.AsSpan (8), Utf8CodePage);
+		return chunk;
+	}
+
+	/// <summary>
+	/// Every <c>LIST INFO</c> merged in file order, decoded in the file's character set.
+	/// The first list wins; a later list fills only empty fields.
 	/// </summary>
 	public static RiffInfoTag? MergeInfo (ReadOnlySpan<byte> data)
 	{
+		var characterSet = CharacterSet (data);
 		RiffInfoTag? info = null;
 		var reader = new AviChunkReader (data);
 		while (reader.TryNext (out var chunk)) {
 			if (!chunk.IsList (Info) || !IsReadable (chunk))
 				continue;
-			var parsed = RiffInfoTag.Parse (new BinaryData (Body (data, chunk)), utf8: true);
+			var parsed = RiffInfoTag.Parse (new BinaryData (Body (data, chunk)), characterSet);
 			if (parsed is null)
 				continue;
 			if (info is null)

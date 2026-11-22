@@ -65,9 +65,14 @@ public sealed class AviFile : IMediaFile
 	/// between <c>hdrl</c> and <c>movi</c> and turns the others into <c>JUNK</c>. Clearing the tag removes the list.
 	/// </para>
 	/// <para>
-	/// RIFF INFO names no encoding for AVI. A value is read as UTF-8 when its bytes are valid UTF-8
-	/// (ffmpeg writes UTF-8), otherwise as Latin-1, and a changed value is written as UTF-8. A value
-	/// that is not changed is written back with its original bytes.
+	/// INFO text is in the code page of the file's <c>CSET</c> chunk, ISO 8859-1 when there is none
+	/// (Multimedia Programming Interface and Data Specifications 1.0, "CSET (Character Set) Chunk").
+	/// ffmpeg and TagLib# write UTF-8 without a CSET, so with no CSET a value whose bytes are valid
+	/// UTF-8 is read as UTF-8 and any other as ISO 8859-1; a CSET of code page 65001 (UTF-8), 0 or
+	/// 28591 (ISO 8859-1) is honoured. On save, an all-ASCII list is written plain with no CSET;
+	/// otherwise the list is UTF-8 and a CSET of code page 65001 is written before it. mediainfo
+	/// ignores CSET and shows such text as Latin-1. An unchanged value keeps its original bytes
+	/// when they are ASCII or UTF-8.
 	/// </para>
 	/// </remarks>
 	public RiffInfoTag InfoTag { get; }
@@ -134,6 +139,7 @@ public sealed class AviFile : IMediaFile
 		var sawHeaders = false;
 		var sawId3 = false;
 		AviHeaders? headers = null;
+		var characterSet = AviChunks.CharacterSet (data);
 		var reader = new AviChunkReader (data);
 		while (reader.TryNext (out var chunk)) {
 			if (!AviChunks.IsReadable (chunk))
@@ -142,7 +148,7 @@ public sealed class AviFile : IMediaFile
 				sawHeaders = true;
 				headers = AviHeaders.Parse (AviChunks.Body (data, chunk).Slice (4));
 			} else if (chunk.IsList (AviChunks.Info)) {
-				var parsed = RiffInfoTag.Parse (new BinaryData (AviChunks.Body (data, chunk)), utf8: true);
+				var parsed = RiffInfoTag.Parse (new BinaryData (AviChunks.Body (data, chunk)), characterSet);
 				if (parsed is null)
 					continue;
 				if (info is null)
@@ -167,7 +173,7 @@ public sealed class AviFile : IMediaFile
 
 		var duration = AviProperties.Duration (headers);
 		return AviFileReadResult.Success (new AviFile (
-			info ?? new RiffInfoTag (utf8: true),
+			info ?? new RiffInfoTag (aviText: true),
 			id3,
 			duration,
 			AviProperties.Audio (headers, duration),
@@ -276,7 +282,7 @@ public sealed class AviFile : IMediaFile
 	static bool IsKept (byte[] probe, int length)
 	{
 		var id = BinaryPrimitives.ReadUInt32LittleEndian (probe);
-		if (id == AviChunks.Id32 || id == AviChunks.Id3Lower)
+		if (id == AviChunks.Id32 || id == AviChunks.Id3Lower || id == AviChunks.Cset)
 			return true;
 		if (id != AviChunks.List || length < 12)
 			return false;
@@ -413,19 +419,25 @@ public sealed class AviFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Saves into bytes this instance just read. A save that moves nothing writes the tags into that
-	/// buffer instead of copying the file.
+	/// Saves into bytes this instance just re-read. A save that moves nothing writes the tags into
+	/// that buffer instead of copying the file, but only when the buffer is known to be a fresh copy.
 	/// </summary>
 	FileWriteResult WriteOwned (string path, ReadOnlyMemory<byte> data, IFileSystem? fileSystem)
 	{
-		if (!AviRewrite.TryRewrite (data.Span, Owned (data), InfoTag, Id3v2Tag, out var rewritten, out var error))
+		if (!AviRewrite.TryRewrite (data.Span, Owned (data, fileSystem), InfoTag, Id3v2Tag, out var rewritten, out var error))
 			return FileWriteResult.Failure (error);
 
 		return AtomicFileWriter.Write (path, rewritten, fileSystem);
 	}
 
-	static byte[]? Owned (ReadOnlyMemory<byte> data) =>
-		System.Runtime.InteropServices.MemoryMarshal.TryGetArray (data, out var segment)
+	/// <summary>
+	/// The array behind <paramref name="data"/>, when this save may write into it. IFileSystem.ReadAllBytes
+	/// does not promise a fresh array (an in-memory file system can return the file itself), so only
+	/// <see cref="DefaultFileSystem"/>, whose File.ReadAllBytes allocates one, qualifies.
+	/// </summary>
+	static byte[]? Owned (ReadOnlyMemory<byte> data, IFileSystem? fileSystem) =>
+		(fileSystem is null || fileSystem is DefaultFileSystem)
+		&& System.Runtime.InteropServices.MemoryMarshal.TryGetArray (data, out var segment)
 			&& segment.Offset == 0 && segment.Array is { } array && segment.Count == array.Length
 			? array
 			: null;
@@ -478,7 +490,7 @@ public sealed class AviFile : IMediaFile
 			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
 
 		var data = readResult.Data!.Value;
-		if (!AviRewrite.TryRewrite (data.Span, Owned (data), InfoTag, Id3v2Tag, out var rewritten, out var error))
+		if (!AviRewrite.TryRewrite (data.Span, Owned (data, fs), InfoTag, Id3v2Tag, out var rewritten, out var error))
 			return FileWriteResult.Failure (error);
 
 		return await AtomicFileWriter.WriteAsync (path, rewritten, fs, cancellationToken).ConfigureAwait (false);
