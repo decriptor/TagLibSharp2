@@ -105,12 +105,8 @@ static partial class MatroskaRewrite
 				body = movedBody;
 				seekHeadCount = movedHeads;
 				referenced = movedReferenced;
-			} else if (!TryApply (data, layout, plan, out body, out seekHeadCount, out referenced, out error)) {
-				// Both plans failed. Why the move failed is what the file needs fixed.
-				if (moveError.Length > 0)
-					error = moveError;
+			} else if (!TryApply (data, layout, plan, out body, out seekHeadCount, out referenced, out error))
 				return false;
-			}
 		}
 
 		if (!IsReachable (layout, plan, seekHeadCount, referenced, out error)) {
@@ -599,9 +595,10 @@ static partial class MatroskaRewrite
 			var changed = false;
 			var child = cluster.DataOffset;
 			while (child < end && EbmlReader.TryRead (body, child, end, out var element) && !element.UnknownSize) {
+				// An empty Position is 0 (RFC 8794 section 7.2), which names a Cluster at offset 0.
 				if (element.Id == MatroskaIds.Position
-					&& element.DataLength is > 0 and <= 8
-					&& EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength)) == (ulong)old) {
+					&& element.DataLength <= 8
+					&& (element.DataLength == 0 ? 0 : EbmlReader.ReadUInt (body.AsSpan (element.DataOffset, (int)element.DataLength))) == (ulong)old) {
 					if (!TryWriteUnsigned (body, element.DataOffset, (int)element.DataLength, (ulong)at)) {
 						if (!TryMakeVoid (element.End - element.Position, out var hole)) {
 							error = "Matroska Cluster Position cannot be updated";
