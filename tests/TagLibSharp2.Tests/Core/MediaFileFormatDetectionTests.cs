@@ -3,6 +3,9 @@
 // Format detection tests for MediaFile
 
 using TagLibSharp2.Core;
+using TagLibSharp2.Id3.Id3v2;
+using TagLibSharp2.Tests.Audible;
+using TagLibSharp2.Tests.Mpeg;
 
 namespace TagLibSharp2.Tests.Core;
 
@@ -356,5 +359,28 @@ public class MediaFileFormatDetectionTests
 		data[34] = (byte)'s';
 
 		return data;
+	}
+
+	// Audible and MPEG program streams are both detected from magic and from the extension.
+	// An .aa file is Audible whatever its name; an MPEG program stream, bare or behind an ID3v2
+	// tag, is MpegPs even when named .aa.
+	[TestMethod]
+	[DataRow (null)]
+	[DataRow ("book.aa")]
+	[DataRow ("book.mpg")]
+	[DataRow ("book.mp3")]
+	[DataRow ("book.aax")]
+	public void AudibleAndMpegPs_AreToldApartByContent (string? pathHint)
+	{
+		var audible = AudibleTestBuilder.Create ();
+		var program = MpegPsTestBuilder.ProgramStream (new MpegPsTestBuilder.Options { VideoFrames = 4, VideoFrameBytes = 20 });
+		var tagged = MpegPsTestBuilder.Concat (new Id3v2Tag { Title = "t" }.Render ().ToArray (), program);
+
+		Assert.AreEqual (MediaFormat.Audible, MediaFile.ReadFromData (audible, pathHint).Format);
+		Assert.AreEqual (MediaFormat.Audible, MediaFile.Read (new MemoryStream (audible), pathHint).Format);
+		foreach (var data in new[] { program, tagged }) {
+			Assert.AreEqual (MediaFormat.MpegPs, MediaFile.ReadFromData (data, pathHint).Format);
+			Assert.AreEqual (MediaFormat.MpegPs, MediaFile.Read (new MemoryStream (data), pathHint).Format);
+		}
 	}
 }
