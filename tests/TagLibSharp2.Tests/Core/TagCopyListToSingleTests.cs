@@ -78,6 +78,31 @@ public class TagCopyListToSingleTests
 	}
 
 	[TestMethod]
+	[DataRow ("", "Rock", "Rock")]
+	[DataRow (" ", "Rock", " ")]
+	[DataRow ("\t", "Rock", "\t")]
+	[DataRow (" X ", "Rock", " X ")]
+	public void BasicAndAll_FromAnId3v24List_StoreTheSameName (string first, string second, string expected)
+	{
+		// ID3v2.4 §4.2 values are kept as written; only an empty one is skipped. The single getter and
+		// the list agree, so a Basic copy (the single name) and the default copy (the list) store the same.
+		var source = new Id3v2Tag (Id3v2Version.V24);
+		source.SetTextFrameValues ("TPE1", ["placeholder"]);
+		source.Frames.First (f => f.Id == "TPE1").Text = first + "\0" + second;
+		source = Id3v2Tag.Read (source.Render ().Span).Tag!;
+		Assert.AreEqual (expected, source.Artist);
+		Assert.AreEqual (expected, Tag.FirstNonEmpty (source.Performers));
+
+		foreach (var name in new[] { "mp4", "asf", "riff", "id3v2+id3v1" }) {
+			var basic = NewTarget (name);
+			var all = NewTarget (name);
+			source.CopyTo (basic, TagCopyOptions.Basic);
+			source.CopyTo (all, TagCopyOptions.All);
+			Assert.AreEqual (basic.Artist, all.Artist, name);
+		}
+	}
+
+	[TestMethod]
 	public void ListSetter_OnASingleValueTag_StoresTheFirstNonEmptyEntry ()
 	{
 		foreach (var tag in new Tag[] { new Mp4Tag (), new AsfTag (), new RiffInfoTag (), new Id3v1Tag () }) {

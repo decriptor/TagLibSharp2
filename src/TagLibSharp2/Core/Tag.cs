@@ -161,7 +161,7 @@ public abstract class Tag
 	/// <remarks>
 	/// <para>
 	/// This is the primary array of artists. The <see cref="Artist"/> property returns
-	/// the first value from this array. A tag that stores one name keeps the first non-empty entry.
+	/// the first non-empty value of this array. A tag that stores one name keeps the first non-empty entry.
 	/// </para>
 	/// <para>
 	/// <b>Design Note:</b> This property uses an array type for compatibility with
@@ -256,7 +256,8 @@ public abstract class Tag
 	/// Gets or sets the genres for this track.
 	/// </summary>
 	/// <remarks>
-	/// The <see cref="Genre"/> property returns the first value from this array.
+	/// The <see cref="Genre"/> property returns the first non-empty value of this array.
+	/// A tag that stores one name keeps the first non-empty entry.
 	/// </remarks>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
 	public virtual string[] Genres {
@@ -300,7 +301,8 @@ public abstract class Tag
 	/// </summary>
 	/// <remarks>
 	/// Used for compilations and various artists albums. The <see cref="AlbumArtist"/>
-	/// property returns the first value from this array.
+	/// property returns the first non-empty value of this array. A tag that stores one name keeps
+	/// the first non-empty entry.
 	/// Not all tag formats support this field.
 	/// </remarks>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility
@@ -338,7 +340,8 @@ public abstract class Tag
 	/// Gets or sets the composers for this track.
 	/// </summary>
 	/// <remarks>
-	/// The <see cref="Composer"/> property returns the first value from this array.
+	/// The <see cref="Composer"/> property returns the first non-empty value of this array.
+	/// A tag that stores one name keeps the first non-empty entry.
 	/// Not all tag formats support this field.
 	/// </remarks>
 #pragma warning disable CA1819 // Properties should not return arrays - TagLib# API compatibility

@@ -413,6 +413,54 @@ public class TagCopyReplacesListTests
 	}
 
 	[TestMethod]
+	public void Copy_BetweenAnAiffViewAndItsId3Tag_KeepsEveryList ()
+	{
+		var aiff = TagLibSharp2.Aiff.AiffFile.Read (TestBuilders.Aiff.CreateMinimal ()).File!;
+		aiff.Id3v2Tag = PicardId3 (Id3v2Version.V24);
+		var before = Frames (aiff.Id3v2Tag!);
+
+		aiff.Tag!.CopyTo (aiff.Id3v2Tag!, TagCopyOptions.All);
+		CollectionAssert.AreEqual (before, Frames (aiff.Id3v2Tag!));
+
+		aiff.Id3v2Tag!.CopyTo (aiff.Tag!, TagCopyOptions.All);
+		CollectionAssert.AreEqual (before, Frames (aiff.Id3v2Tag!));
+
+		var reread = TagLibSharp2.Aiff.AiffFile.Read (aiff.Render ().Span).File!;
+		Assert.AreEqual ("Lab1|Lab2", string.Join ("|", reread.Id3v2Tag!.GetTextFrameValues ("TPUB")));
+	}
+
+	/// <summary>
+	/// Every Tag type in the library that keeps another tag, or a file that holds tags, is a view.
+	/// A view must name the tags it reads (Leaves), or a copy between it and one of them cuts lists.
+	/// This catches the next view added without that override.
+	/// </summary>
+	[TestMethod]
+	public void EveryViewType_NamesTheTagsItReads ()
+	{
+		static bool HoldsTags (Type type) =>
+			typeof (Tag).IsAssignableFrom (type)
+			|| (type.IsArray && typeof (Tag).IsAssignableFrom (type.GetElementType ()!))
+			|| type.GetProperties (BindingFlags.Public | BindingFlags.Instance).Any (p => typeof (Tag).IsAssignableFrom (p.PropertyType));
+
+		var views = new List<string> ();
+		var missing = new List<string> ();
+		foreach (var type in typeof (Tag).Assembly.GetTypes ().Where (t => t.IsClass && !t.IsAbstract && typeof (Tag).IsAssignableFrom (t))) {
+			var wraps = type.GetFields (BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+				.Any (f => HoldsTags (f.FieldType));
+			if (!wraps)
+				continue;
+			views.Add (type.Name);
+			var leaves = type.GetMethod ("Leaves", BindingFlags.Instance | BindingFlags.NonPublic)!;
+			if (leaves.DeclaringType != type)
+				missing.Add (type.Name);
+		}
+
+		Assert.IsEmpty (missing, string.Join (",", missing));
+		foreach (var name in new[] { "CombinedTag", "FlacTag", "AiffTag" })
+			Assert.Contains (name, views);
+	}
+
+	[TestMethod]
 	public void WriteBack_AfterACopy_IsANoOpAgain ()
 	{
 		var target = new Id3v2Tag (Id3v2Version.V24);
