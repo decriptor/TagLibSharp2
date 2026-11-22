@@ -255,6 +255,32 @@ public partial class MatroskaFileTests
 		Assert.IsFalse (MatroskaFile.Read (saved).File!.Tracks[0].IsEnabled);
 	}
 
+	[TestMethod]
+	public void Save_InsertedFlagWhoseLaterElementsCannotMove_FailsAndWritesNothing ()
+	{
+		// No Void after Tracks, so adding FlagEnabled grows Tracks and moves everything after it. The
+		// Cues hold a nine-octet CueClusterPosition, which cannot be moved, so the save must fail
+		// rather than drop the flag, and the file must stay as it was.
+		var info = Master (0x1549A966, Element (0x7BA9, "Flag"u8));
+		var tracks = Master (0x1654AE6B, AudioEntry (1, 22050));
+		var cues = Master (MatroskaIds.Cues, Master (0xBB, Concat (Element (0xB3, new byte[] { 0 }),
+			Master (0xB7, Concat (Element (0xF7, new byte[] { 1 }), Element (0xF1, new byte[9]))))));
+		var cluster = Master (MatroskaIds.Cluster, Concat (Element (0xE7, new byte[] { 0 }), Element (0xA3, new byte[] { 0x81, 0, 0, 0x80, 0x88 })));
+		var original = TrackFile (info, tracks, cues, cluster);
+		var parsed = MatroskaFile.Read (original).File!;
+		Assert.IsTrue (parsed.Tracks[0].IsEnabled);
+		parsed.Tracks[0].IsEnabled = false;
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/flag.mkv", original);
+
+		var saved = parsed.SaveToFile ("/flag.mkv", original, fs);
+
+		Assert.IsFalse (saved.IsSuccess, "the flag cannot be added, so the save fails");
+		StringAssert.Contains (saved.Error, "Cues");
+		CollectionAssert.AreEqual (original, fs.ReadAllBytes ("/flag.mkv"));
+		Assert.AreEqual (0, parsed.Render (original).Length);
+	}
+
 	/// <summary>Each top-level Cluster's Segment Position, its stored Position, and its other children.</summary>
 	static List<(ulong At, ulong Stored, byte[] Blocks)> ClusterStates (byte[] file)
 	{
