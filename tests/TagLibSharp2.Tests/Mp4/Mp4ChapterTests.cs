@@ -1566,6 +1566,63 @@ public class Mp4ChapterTests
 		return file;
 	}
 
+	[TestMethod]
+	[TestCategory ("Security")]
+	public void ClearChapters_ManyChapterTracks_LooksEachTrakUpOnce ()
+	{
+		// A clear removes every chapter-media trak, then walks the other traks' references; both passes ask whether
+		// a trak is one of the removed traks. A file sets how many there are (2,000 here), so a scan of the removed
+		// list on each question costs traks x chapter tracks. One set lookup per moov child keeps it linear.
+		const int ChapterTracks = 2000;
+		var moov = ManyChapterTracksMoov (ChapterTracks);
+
+		var plan = Mp4ChapterCodec.Plan (moov, [], [], TimeSpan.FromSeconds (4), quickTime: false);
+
+		Assert.AreEqual (1, plan.Children.Count (c => c.Type == "trak"), "only the audio trak is left");
+		Assert.IsTrue (plan.TrakLookups > 0 && plan.TrakLookups <= moov.Children.Count, $"{plan.TrakLookups:N0} lookups for {moov.Children.Count:N0} moov children");
+
+		var replaced = new Mp4ChapterCodec.TrakSet (Mp4ChapterCodec.FindChapterTracks (moov, textOnly: false));
+		Assert.IsTrue (Mp4ChapterCodec.TryCollectReferences (moov, [], replaced, new Mp4ChapterCodec.Exclusion (0, 1)));
+		Assert.IsTrue (replaced.Steps > 0 && replaced.Steps <= moov.Children.Count, $"{replaced.Steps:N0} lookups for {moov.Children.Count:N0} moov children");
+	}
+
+	/// <summary>
+	/// The chapter-track fixture's moov with <paramref name="count"/> more copies of the text trak (IDs 3 and up),
+	/// and the audio trak's chap reference naming all of them.
+	/// </summary>
+	static Mp4Box ManyChapterTracksMoov (int count)
+	{
+		var moov = Mp4ChapterTestBuilder.Moov (Mp4ChapterTestBuilder.Build (ThreeChapterTrack ()));
+		var text = Mp4ChapterTestBuilder.Trak (moov, Mp4ChapterTestBuilder.TextTrackId)!;
+		var ids = new byte[(count + 1) * 4];
+		for (var i = 0; i <= count; i++)
+			BinaryPrimitives.WriteUInt32BigEndian (ids.AsSpan (i * 4), (uint)(2 + i));
+		var tref = new Mp4Box ("tref", new BinaryData (Mp4TestBuilder.CreateBox ("chap", ids)));
+		var children = new List<Mp4Box> ();
+		foreach (var child in moov.Children) {
+			if (child.Type == "trak" && child.FindChild ("tref") is not null) {
+				children.Add (new Mp4Box ("trak", child.Data, [.. child.Children.Select (c => c.Type == "tref" ? tref : c)]));
+				continue;
+			}
+
+			children.Add (child);
+			if (ReferenceEquals (child, text)) {
+				for (var i = 0; i < count; i++)
+					children.Add (WithTrackId (text, (uint)(3 + i)));
+			}
+		}
+
+		return new Mp4Box ("moov", moov.Data, children);
+	}
+
+	static Mp4Box WithTrackId (Mp4Box trak, uint id)
+	{
+		var tkhd = trak.FindChild ("tkhd")!;
+		var data = tkhd.Data.ToArray ();
+		BinaryPrimitives.WriteUInt32BigEndian (data.AsSpan (12), id);
+		return new Mp4Box ("trak", trak.Data, [.. trak.Children.Select (c => ReferenceEquals (c, tkhd) ? new Mp4Box ("tkhd", new BinaryData (data)) : c)]);
+	}
+
 	/// <summary>
 	/// iloc version 1 with every field size 0, <paramref name="items"/> items of 65,535 extents each, all with
 	/// <paramref name="method"/> as construction method. The FullBox header is included, as a box payload.

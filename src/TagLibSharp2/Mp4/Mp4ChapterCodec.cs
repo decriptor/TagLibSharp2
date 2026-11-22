@@ -545,6 +545,24 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
+	/// Trak objects, compared by reference (<see cref="Mp4Box"/> keeps reference equality). A pass over every trak
+	/// that asks whether each one is in the set makes one lookup per trak, so it stays linear however many traks
+	/// the file declares. <see cref="Steps"/> counts the lookups.
+	/// </summary>
+	internal sealed class TrakSet (IEnumerable<ChapterTrack> tracks)
+	{
+		readonly HashSet<Mp4Box> _traks = new (tracks.Select (t => t.Trak));
+
+		public long Steps { get; private set; }
+
+		public bool Contains (Mp4Box trak)
+		{
+			Steps++;
+			return _traks.Contains (trak);
+		}
+	}
+
+	/// <summary>
 	/// A file range that references must avoid. Each range is tested as it is found and none is stored, so the
 	/// work is bounded by the bytes that describe the ranges, not by how many ranges they declare.
 	/// </summary>
@@ -975,7 +993,8 @@ internal static class Mp4ChapterCodec
 			if (HasFragments (fragments, removed))
 				return ChapterPlan.Refused (FragmentedChapterTrackError);
 
-			children.RemoveAll (b => media.Exists (t => ReferenceEquals (t.Trak, b)));
+			var removedTraks = new TrakSet (media);
+			children.RemoveAll (removedTraks.Contains);
 
 			// Every chap entry for a removed track goes, even when another trak shares its ID: the reference
 			// meant the chapter track. A trex stays while a remaining trak has its ID.
@@ -990,7 +1009,7 @@ internal static class Mp4ChapterCodec
 			if (unused.Count > 0)
 				WithoutTrex (children, unused);
 
-			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed, null, media);
+			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed, null, media) { TrakLookups = removedTraks.Steps };
 		}
 
 		if (existing is not null && HasFragments (fragments, [existing.Id]))
@@ -1108,7 +1127,7 @@ internal static class Mp4ChapterCodec
 		// Fail closed: a fragment that cannot be read could point into the box. Every reference is tested as it
 		// is found; the first that overlaps, or that cannot be computed, keeps the box.
 		var exclusion = new Exclusion (boxStart, boxEnd);
-		return FragmentsAvoid (fragments, moov, exclusion) && TryCollectReferences (moov, topLevel, replaced, exclusion);
+		return FragmentsAvoid (fragments, moov, exclusion) && TryCollectReferences (moov, topLevel, new TrakSet (replaced), exclusion);
 	}
 
 	/// <summary>
@@ -1147,13 +1166,13 @@ internal static class Mp4ChapterCodec
 	/// tail (it can hold a trak), a trak whose tables cannot be read, an iloc that does not parse, or an unread
 	/// box tail that holds an iloc.
 	/// </summary>
-	static bool TryCollectReferences (Mp4Box moov, IReadOnlyList<Mp4Box> topLevel, List<ChapterTrack> replaced, Exclusion ranges)
+	internal static bool TryCollectReferences (Mp4Box moov, IReadOnlyList<Mp4Box> topLevel, TrakSet replaced, Exclusion ranges)
 	{
 		if (moov.UnparsedTail.Length > 0)
 			return false;
 
 		foreach (var child in moov.Children) {
-			if (child.Type != "trak" || replaced.Exists (t => ReferenceEquals (t.Trak, child)))
+			if (child.Type != "trak" || replaced.Contains (child))
 				continue;
 			if (!TryTrackRanges (child, ranges))
 				return false;
@@ -2413,6 +2432,9 @@ internal static class Mp4ChapterCodec
 
 		/// <summary>Why the chapters cannot be written, or null.</summary>
 		public string? Error { get; } = error;
+
+		/// <summary>Lookups a clear made in the set of removed traks: a step count for the work-bound tests.</summary>
+		public long TrakLookups { get; init; }
 
 		public static ChapterPlan Refused (string error) => new (BinaryData.Empty, [], 0, [], null, error);
 
