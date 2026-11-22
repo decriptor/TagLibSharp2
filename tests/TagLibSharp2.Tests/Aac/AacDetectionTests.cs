@@ -504,6 +504,13 @@ public class AacDetectionTests
 			var body = Concat (audio[..random.Next (1, audio.Length + 1)], tail);
 			var data = random.Next (2) == 0 ? body : Concat (Id3v2Bytes ("T"), body);
 			AssertEntryPointsAgree (data, $"round {round}");
+
+			// Placing a tag (item headers and keys only, no copy) accepts exactly the tags ApeTag.Parse accepts.
+			var start = AudioStartOf (data);
+			var placed = AacTail.Locate (new AacTailSource (data.AsSpan (start)), 0, readTags: false);
+			var parsed = AacTail.Locate (new AacTailSource (data.AsSpan (start)), 0, readTags: true);
+			Assert.AreEqual (placed.ApeStart, parsed.ApeStart, $"round {round}: placement");
+			Assert.AreEqual (placed.ApeStart >= 0, parsed.ApeTag is not null, $"round {round}: placed iff ApeTag.Parse accepts it");
 		}
 	}
 
