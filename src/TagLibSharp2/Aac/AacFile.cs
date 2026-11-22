@@ -200,13 +200,36 @@ public sealed class AacFile : IMediaFile
 			}
 		}
 
+		var audioEnd = ReadTail (stream, audioStart, file);
+		if (!AacStream.TryRead (stream, audioStart, audioEnd, out var properties)) {
+			file.Dispose ();
+			return AacFileReadResult.Failure ("Invalid AAC file: no ADTS frame or ADIF header found");
+		}
+
+		file.Properties = properties;
+		return AacFileReadResult.Success (file);
+	}
+
+	/// <summary>
+	/// The end of the audio region: the start of a trailing APEv2 tag that parses, else of an ID3v1 tag, else the
+	/// end of the stream. Detection and <see cref="Read(ReadOnlySpan{byte})"/> both use it, so a start header that
+	/// runs into a trailing tag is not AAC on either path. When <paramref name="file"/> is given, it gets the tags.
+	/// </summary>
+	static long ReadTail (Stream stream, long audioStart, AacFile? file)
+	{
+		var length = stream.Length;
 		var audioEnd = length;
+		if (!HasTrailingTagMarker (stream))
+			return audioEnd;
+
 		if (ApeTagTail.TryRead (stream, out var apeBytes, out var apeOffset) && apeOffset >= audioStart) {
 			var ape = ApeTag.Parse (apeBytes);
 			if (ape.IsSuccess && ape.Tag is not null) {
-				file.ApeTag = ape.Tag;
-				if (!HasApeHeader (apeBytes))
-					file._footerOnlyApeTag = ape.Tag;
+				if (file is not null) {
+					file.ApeTag = ape.Tag;
+					if (!HasApeHeader (apeBytes))
+						file._footerOnlyApeTag = ape.Tag;
+				}
 				audioEnd = apeOffset;
 			}
 		}
@@ -216,18 +239,13 @@ public sealed class AacFile : IMediaFile
 			var footer = StreamBytes.ReadAtMost (stream, Id3v1Size);
 			var id3v1 = Id3v1Tag.Read (footer);
 			if (id3v1.IsSuccess && id3v1.Tag is not null) {
-				file.Id3v1Tag = id3v1.Tag;
+				if (file is not null)
+					file.Id3v1Tag = id3v1.Tag;
 				audioEnd = Math.Min (audioEnd, length - Id3v1Size);
 			}
 		}
 
-		if (!AacStream.TryRead (stream, audioStart, audioEnd, out var properties)) {
-			file.Dispose ();
-			return AacFileReadResult.Failure ("Invalid AAC file: no ADTS frame or ADIF header found");
-		}
-
-		file.Properties = properties;
-		return AacFileReadResult.Success (file);
+		return audioEnd;
 	}
 
 	// The footer's flags say whether a header precedes the items (APEv2: bit 31 "contains a header").
@@ -323,8 +341,45 @@ public sealed class AacFile : IMediaFile
 		var start = StreamStart (data);
 		if (start >= data.Length)
 			return false;
-		return AacStream.FindStart (data[start..], SearchBytes (start)) >= 0;
+
+		var found = AacStream.FindStart (data[start..], SearchBytes (start), out var headerLength);
+		if (found < 0)
+			return false;
+
+		// Without an ID3v1 or APEv2 marker at the end there is no trailing tag. The audio runs to the end of
+		// the data, and the start header, which FindStart read from the data, lies inside it.
+		if (!HasTrailingTagMarker (data))
+			return true;
+
+		var headerEnd = (long)start + found + headerLength;
+
+		// The rare case: an AAC start and a trailing tag. Judge it with the reader's own tail rule.
+		using var copy = new MemoryStream (data.ToArray (), writable: false);
+		return headerEnd <= ReadTail (copy, start, null);
 	}
+
+	// Both trailing tags end with a marker: "TAG" opens the last 128 bytes, and an APEv2 tag at the end of the
+	// file, or in front of ID3v1, needs "TAG" or its own footer magic at the end. Neither means no trailing tag.
+	static bool HasTrailingTagMarker (Stream stream)
+	{
+		var length = stream.Length;
+		if (length >= Id3v1Size) {
+			stream.Position = length - Id3v1Size;
+			if (StreamBytes.ReadAtMost (stream, 3).AsSpan ().SequenceEqual ("TAG"u8))
+				return true;
+		}
+
+		if (length >= ApeTagFooter.Size) {
+			stream.Position = length - ApeTagFooter.Size;
+			return StreamBytes.ReadAtMost (stream, 8).AsSpan ().SequenceEqual (ApeTagFooter.Magic);
+		}
+
+		return false;
+	}
+
+	static bool HasTrailingTagMarker (ReadOnlySpan<byte> data) =>
+		(data.Length >= Id3v1Size && data.Slice (data.Length - Id3v1Size, 3).SequenceEqual ("TAG"u8))
+		|| (data.Length >= ApeTagFooter.Size && data.Slice (data.Length - ApeTagFooter.Size, 8).SequenceEqual (ApeTagFooter.Magic));
 
 	/// <summary>
 	/// The stream twin of <see cref="IsValidFormat(ReadOnlySpan{byte})"/>. The stream position moves.
@@ -334,7 +389,8 @@ public sealed class AacFile : IMediaFile
 		stream.Position = 0;
 		var prefix = StreamBytes.ReadAtMost (stream, Id3v2Header.HeaderSize);
 		var start = StreamStart (prefix);
-		return AacStream.FindStart (stream, start, stream.Length, SearchBytes (start)) >= 0;
+		var found = AacStream.FindStart (stream, start, stream.Length, SearchBytes (start), out var headerLength);
+		return found >= 0 && found + headerLength <= ReadTail (stream, start, null);
 	}
 
 	// A leading ID3v2 tag says this is an audio file, so the first frame may sit after padding, as

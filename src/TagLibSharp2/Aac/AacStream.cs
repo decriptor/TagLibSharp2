@@ -120,11 +120,18 @@ internal static class AacStream
 	/// </summary>
 	/// <param name="data">The bytes from the earliest possible start.</param>
 	/// <param name="searchBytes">How many start offsets to try.</param>
+	/// <param name="headerLength">The length of the start header: 7 for ADTS, the ADIF header's size.
+	/// A caller that knows where the audio ends rejects a start whose header runs past it.</param>
 	/// <returns>The offset of the stream in <paramref name="data"/>, or -1.</returns>
-	public static int FindStart (ReadOnlySpan<byte> data, int searchBytes)
+	public static int FindStart (ReadOnlySpan<byte> data, int searchBytes, out int headerLength)
 	{
-		if (AdifHeader.HasMagic (data))
-			return AdifHeader.TryParse (data[..Math.Min (AdifHeader.MaxSize, data.Length)], out _) ? 0 : -1;
+		headerLength = AdtsHeader.Size;
+		if (AdifHeader.HasMagic (data)) {
+			if (!AdifHeader.TryParse (data[..Math.Min (AdifHeader.MaxSize, data.Length)], out var adif))
+				return -1;
+			headerLength = adif.Size;
+			return 0;
+		}
 
 		var limit = Math.Min (searchBytes, data.Length);
 		for (var i = 0; i < limit; i++) {
@@ -145,12 +152,13 @@ internal static class AacStream
 	}
 
 	/// <summary>
-	/// The stream twin of <see cref="FindStart(ReadOnlySpan{byte}, int)"/>. It reads 16 bytes, then 4 KB chunks
+	/// The stream twin of <see cref="FindStart(ReadOnlySpan{byte}, int, out int)"/>. It reads 16 bytes, then 4 KB chunks
 	/// only while no sync has decided, and each successor header on its own, so a file decided at its first
 	/// byte costs about 23 bytes. The stream position moves.
 	/// </summary>
-	public static long FindStart (Stream stream, long offset, long end, int searchBytes)
+	public static long FindStart (Stream stream, long offset, long end, int searchBytes, out int headerLength)
 	{
+		headerLength = AdtsHeader.Size;
 		if (offset < 0 || offset >= end)
 			return -1;
 
@@ -162,8 +170,12 @@ internal static class AacStream
 			var length = (int)Math.Min (chunk.Length, end - pos);
 			if (!ReadAt (stream, pos, chunk, length))
 				return -1;
-			if (pos == offset && AdifHeader.HasMagic (chunk.AsSpan (0, length)))
-				return TryReadAdifHeader (stream, offset, end, out _) ? offset : -1;
+			if (pos == offset && AdifHeader.HasMagic (chunk.AsSpan (0, length))) {
+				if (!TryReadAdifHeader (stream, offset, end, out var adif))
+					return -1;
+				headerLength = adif.Size;
+				return offset;
+			}
 
 			var scan = (int)Math.Min (length, limit - pos);
 			for (var i = 0; i < scan; i++) {
@@ -226,12 +238,13 @@ internal static class AacStream
 
 	/// <summary>
 	/// Reads the stream properties from the audio region [<paramref name="start"/>, <paramref name="end"/>).
-	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
+	/// The stream starts where <see cref="FindStart(ReadOnlySpan{byte}, int, out int)"/> says, within <see cref="FirstFrameSearchBytes"/>.
 	/// </summary>
 	/// <remarks>
-	/// The start is judged against the whole stream, as detection judges it, not against the audio region.
-	/// So a frame that ends where a trailing tag begins is confirmed by that tag on both paths, and a file
-	/// that detects as AAC always opens. Frames are counted only inside the audio region.
+	/// The start is judged against the whole stream, as detection judges it, so a frame that ends where a
+	/// trailing tag begins is confirmed by that tag on both paths. The start header itself must lie inside the
+	/// audio region, on both paths too: a header cut by a trailing tag is not AAC. Frames are counted only inside
+	/// the audio region.
 	/// </remarks>
 	public static bool TryRead (Stream stream, long start, long end, out AacAudioProperties? properties)
 	{
@@ -239,8 +252,8 @@ internal static class AacStream
 		if (start < 0 || end > stream.Length || start > end)
 			return false;
 
-		var first = FindStart (stream, start, stream.Length, FirstFrameSearchBytes);
-		if (first < 0)
+		var first = FindStart (stream, start, stream.Length, FirstFrameSearchBytes, out var headerLength);
+		if (first < 0 || first + headerLength > end)
 			return false;
 
 		var magic = new byte[4];
