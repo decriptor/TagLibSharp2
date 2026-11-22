@@ -43,6 +43,9 @@ public sealed class AviTestBuilder
 	/// <summary>The text encoding of INFO values. RIFF INFO has no fixed encoding; ffmpeg writes UTF-8.</summary>
 	public Encoding InfoEncoding { get; set; } = Encoding.Latin1;
 
+	/// <summary>When set, a CSET chunk with this wCodePage is written just before the INFO list.</summary>
+	public ushort? CharacterSet { get; set; }
+
 	/// <summary>A chunk written right after the RIFF header, before <c>hdrl</c>.</summary>
 	public (string FourCC, byte[] Data)? ChunkBeforeHeaders { get; set; }
 
@@ -182,6 +185,11 @@ public sealed class AviTestBuilder
 
 		w.EndList (hdrl);
 
+		if (CharacterSet is { } codePage) {
+			var cset = new byte[8];
+			BinaryPrimitives.WriteUInt16LittleEndian (cset, codePage);
+			w.Chunk ("CSET", cset);
+		}
 		if (Info.Count > 0)
 			InfoList (w, Info);
 		if (Id3 is not null)

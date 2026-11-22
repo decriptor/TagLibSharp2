@@ -32,10 +32,10 @@ public class RiffInfoTag : Tag
 	readonly Dictionary<string, string> _fields = new (StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>
-	/// The stored bytes of each field, kept by a tag in AVI text mode. A field whose value is
-	/// unchanged is written back with these bytes, whatever their encoding.
+	/// The stored bytes of each field, kept by a tag in AVI text mode, and whether they were UTF-8.
+	/// An unchanged field is written back with these bytes when they match the list's encoding.
 	/// </summary>
-	readonly Dictionary<string, (string Value, byte[] Bytes)>? _stored;
+	readonly Dictionary<string, (string Value, byte[] Bytes, bool Utf8)>? _stored;
 
 	static readonly System.Text.UTF8Encoding StrictUtf8 = new (encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -47,19 +47,71 @@ public class RiffInfoTag : Tag
 	}
 
 	/// <summary>
-	/// Creates an empty tag in AVI text mode when <paramref name="utf8"/> is true.
+	/// Creates an empty tag in AVI text mode when <paramref name="aviText"/> is true.
 	/// </summary>
 	/// <remarks>
-	/// RIFF INFO strings (Multimedia Programming Interface and Data Specifications 1.0, "INFO List
-	/// Chunk") are ZSTRs in the character set of a <c>CSET</c> chunk, which AVI writers do not emit.
-	/// ffmpeg, the common AVI writer, stores UTF-8, and readers such as ffprobe decode UTF-8.
-	/// In AVI text mode a value is read as UTF-8 when its bytes are valid UTF-8, else as Latin-1,
-	/// and written as UTF-8. An unchanged value is written back with its original bytes.
+	/// <para>
+	/// RIFF INFO strings are ZSTRs in the code page of the file's <c>CSET</c> chunk; "if the CSET
+	/// chunk is not present, or if this field has a value of zero, assume standard ISO 8859/1 code
+	/// page" (Multimedia Programming Interface and Data Specifications 1.0, "CSET (Character Set)
+	/// Chunk"). The common AVI writers, ffmpeg and TagLib#, ignore that and store UTF-8 without a CSET.
+	/// </para>
+	/// <para>
+	/// Reading in AVI text mode: a CSET of code page 65001 means UTF-8, code page 0 or 28591 means
+	/// ISO 8859-1. Without a usable CSET, a value whose bytes are valid UTF-8 is read as UTF-8 (the
+	/// writers above), and any other value as ISO 8859-1 (the spec default).
+	/// </para>
+	/// <para>
+	/// Writing: when every value is ASCII the list is written plain, with no CSET, which every reader
+	/// agrees on. Otherwise every value is UTF-8 and <see cref="NeedsUtf8CharacterSet"/> tells the
+	/// writer to put a CSET of code page 65001 before the list, so the encoding is declared (ffprobe,
+	/// TagLib# and exiftool read it; mediainfo ignores CSET). An unchanged value keeps its original
+	/// bytes when they are ASCII or UTF-8; an unchanged non-ASCII ISO 8859-1 value is re-encoded,
+	/// because the CSET declares the whole list UTF-8.
+	/// </para>
 	/// </remarks>
-	internal RiffInfoTag (bool utf8)
+	internal RiffInfoTag (bool aviText)
 	{
-		if (utf8)
+		if (aviText)
 			_stored = new (StringComparer.OrdinalIgnoreCase);
+	}
+
+	/// <summary>
+	/// True for a tag in AVI text mode whose list is written as UTF-8 with a non-ASCII value, so the
+	/// file needs a CSET chunk of code page 65001 before the list.
+	/// </summary>
+	internal bool NeedsUtf8CharacterSet => _stored is not null && WritesUtf8;
+
+	/// <summary>The list is UTF-8 when any value is not ASCII.</summary>
+	bool WritesUtf8 {
+		get {
+			foreach (var value in _fields.Values) {
+				if (!IsAscii (value))
+					return true;
+			}
+
+			return false;
+		}
+	}
+
+	static bool IsAscii (string value)
+	{
+		foreach (var c in value) {
+			if (c > '\u007F')
+				return false;
+		}
+
+		return true;
+	}
+
+	static bool IsAscii (byte[] bytes)
+	{
+		foreach (var b in bytes) {
+			if (b > 0x7F)
+				return false;
+		}
+
+		return true;
 	}
 
 	/// <summary>
@@ -301,13 +353,13 @@ public class RiffInfoTag : Tag
 	/// </summary>
 	/// <param name="data">The LIST chunk data (starting after LIST header).</param>
 	/// <returns>The parsed tag, or null if invalid.</returns>
-	public static RiffInfoTag? Parse (BinaryData data) => Parse (data, utf8: false);
+	public static RiffInfoTag? Parse (BinaryData data) => Parse (data, null);
 
 	/// <summary>
-	/// Parses a RIFF INFO tag, in AVI text mode when <paramref name="utf8"/> is true
-	/// (see <see cref="RiffInfoTag(bool)"/>).
+	/// Parses a RIFF INFO tag. A <paramref name="characterSet"/> selects AVI text mode (see
+	/// <see cref="RiffInfoTag(bool)"/>); null reads every value as Latin-1, as WAV does.
 	/// </summary>
-	internal static RiffInfoTag? Parse (BinaryData data, bool utf8)
+	internal static RiffInfoTag? Parse (BinaryData data, InfoCharacterSet? characterSet)
 	{
 		// LIST chunk data starts with type (INFO) then fields
 		if (data.Length < 4)
@@ -317,7 +369,7 @@ public class RiffInfoTag : Tag
 		if (listType != "INFO")
 			return null;
 
-		var tag = new RiffInfoTag (utf8);
+		var tag = new RiffInfoTag (characterSet is not null);
 		var offset = 4;
 
 		while (offset + 8 <= data.Length) {
@@ -336,13 +388,17 @@ public class RiffInfoTag : Tag
 
 			// Read field value (null-terminated string, safe cast after overflow check)
 			var fieldData = data.Slice (offset, (int)fieldSize);
-			var value = utf8 ? DecodeAviText (fieldData) : fieldData.ToStringLatin1NullTerminated ();
+			var isUtf8 = false;
+			var value = characterSet is { } set
+				? DecodeAviText (fieldData, set, out isUtf8)
+				: fieldData.ToStringLatin1NullTerminated ();
 
 			if (!string.IsNullOrEmpty (fieldId) && fieldId.Length == 4) {
 				tag._fields[fieldId] = value;
 				tag._stored?.Remove (fieldId);
-				if (tag._stored is not null && value.Length > 0)
-					tag._stored[fieldId] = (value, fieldData.ToArray ());
+				if (tag._stored is not null && value.Length > 0) {
+					tag._stored[fieldId] = (value, fieldData.ToArray (), isUtf8);
+				}
 			}
 
 			// Field size does not include the pad. Advance in long; a size near int.MaxValue must not throw.
@@ -356,26 +412,37 @@ public class RiffInfoTag : Tag
 		return tag;
 	}
 
-	/// <summary>Valid UTF-8 up to the first NUL is UTF-8; anything else is Latin-1.</summary>
-	static string DecodeAviText (BinaryData field)
+	/// <summary>
+	/// Decodes a value up to its first NUL. A declared UTF-8 set, or an undeclared one whose bytes
+	/// are valid UTF-8, is UTF-8; everything else is ISO 8859-1.
+	/// </summary>
+	static string DecodeAviText (BinaryData field, InfoCharacterSet characterSet, out bool utf8)
 	{
+		utf8 = false;
+		if (characterSet == InfoCharacterSet.Latin1)
+			return field.ToStringLatin1NullTerminated ();
+
 		var bytes = field.ToArray ();
 		var end = Array.IndexOf (bytes, (byte)0);
 		if (end < 0)
 			end = bytes.Length;
 		try {
-			return StrictUtf8.GetString (bytes, 0, end);
+			var text = StrictUtf8.GetString (bytes, 0, end);
+			utf8 = true;
+			return text;
 		} catch (System.Text.DecoderFallbackException) {
 			return field.ToStringLatin1NullTerminated ();
 		}
 	}
 
-	BinaryData Encode (string id, string value)
+	BinaryData Encode (string id, string value, bool utf8)
 	{
 		if (_stored is null)
 			return BinaryData.FromStringLatin1NullTerminated (value);
-		if (_stored.TryGetValue (id, out var stored) && stored.Value == value)
+		if (_stored.TryGetValue (id, out var stored) && stored.Value == value && (IsAscii (stored.Bytes) || (stored.Utf8 && utf8)))
 			return new BinaryData (stored.Bytes);
+		if (!utf8)
+			return BinaryData.FromStringLatin1NullTerminated (value);
 
 		var text = System.Text.Encoding.UTF8.GetBytes (value);
 		var encoded = new byte[text.Length + 1];
@@ -389,13 +456,15 @@ public class RiffInfoTag : Tag
 		if (_fields.Count == 0)
 			return BinaryData.Empty;
 
+		var utf8 = _stored is not null && WritesUtf8;
+
 		// Calculate total size needed for INFO fields
 		var fieldsSize = 4; // "INFO" type
 		foreach (var kvp in _fields) {
 			if (string.IsNullOrEmpty (kvp.Key) || kvp.Key.Length != 4)
 				continue;
 
-			var encoded = Encode (kvp.Key, kvp.Value);
+			var encoded = Encode (kvp.Key, kvp.Value, utf8);
 			fieldsSize += 8 + encoded.Length; // FourCC + size + data
 			if ((encoded.Length & 1) != 0)
 				fieldsSize++; // Padding
@@ -413,7 +482,7 @@ public class RiffInfoTag : Tag
 			if (string.IsNullOrEmpty (kvp.Key) || kvp.Key.Length != 4)
 				continue;
 
-			var encoded = Encode (kvp.Key, kvp.Value);
+			var encoded = Encode (kvp.Key, kvp.Value, utf8);
 
 			builder.AddStringLatin1 (kvp.Key);
 			builder.AddUInt32LE ((uint)encoded.Length);
@@ -426,4 +495,17 @@ public class RiffInfoTag : Tag
 
 		return builder.ToBinaryData ();
 	}
+}
+
+/// <summary>The character set an AVI file declares for its INFO text.</summary>
+internal enum InfoCharacterSet
+{
+	/// <summary>No usable CSET chunk: valid UTF-8 is read as UTF-8, anything else as ISO 8859-1.</summary>
+	Detect,
+
+	/// <summary>CSET wCodePage 65001.</summary>
+	Utf8,
+
+	/// <summary>CSET wCodePage 0 (the spec's default) or 28591: ISO 8859-1.</summary>
+	Latin1
 }

@@ -497,6 +497,50 @@ public class AviFileTests
 	}
 
 	[TestMethod]
+	public void Read_Utf8Cset_DecodesUtf8 ()
+	{
+		var builder = new AviTestBuilder { CharacterSet = 65001, InfoEncoding = System.Text.Encoding.UTF8 };
+		builder.Info.Add (("INAM", "Café ☕"));
+		var bytes = builder.Build ();
+
+		Assert.AreEqual ("Café ☕", AviFile.Read (bytes).File!.InfoTag.Title);
+		Assert.AreEqual ("Café ☕", MediaFile.Read (new MemoryStream (bytes)).Tag!.Title);
+	}
+
+	[TestMethod]
+	[DataRow ((ushort)0)]
+	[DataRow ((ushort)28591)]
+	public void Read_Latin1Cset_ReadsEveryByteAsLatin1 (ushort codePage)
+	{
+		// The CSET says ISO 8859-1, so bytes that happen to be valid UTF-8 are still Latin-1.
+		var builder = new AviTestBuilder { CharacterSet = codePage, InfoEncoding = System.Text.Encoding.UTF8 };
+		builder.Info.Add (("INAM", "Café"));
+
+		var bytes = builder.Build ();
+
+		Assert.AreEqual ("CafÃ©", AviFile.Read (bytes).File!.InfoTag.Title);
+		Assert.AreEqual ("CafÃ©", MediaFile.Read (new MemoryStream (bytes)).Tag!.Title, "A stream read keeps the CSET.");
+	}
+
+	[TestMethod]
+	public void Read_UnknownCodePage_FallsBackToDetection ()
+	{
+		var builder = new AviTestBuilder { CharacterSet = 1252, InfoEncoding = System.Text.Encoding.UTF8 };
+		builder.Info.Add (("INAM", "Café"));
+
+		Assert.AreEqual ("Café", AviFile.Read (builder.Build ()).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public void Read_ShortCset_FallsBackToDetection ()
+	{
+		var builder = new AviTestBuilder { InfoEncoding = System.Text.Encoding.UTF8, ChunkBeforeJunk = ("CSET", [0xE9]) };
+		builder.Info.Add (("INAM", "Café"));
+
+		Assert.AreEqual ("Café", AviFile.Read (builder.Build ()).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
 	public void Read_Latin1InfoText_FallsBackToLatin1 ()
 	{
 		var builder = new AviTestBuilder ();

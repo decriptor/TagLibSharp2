@@ -167,11 +167,11 @@ internal static class AviRewrite
 
 	/// <summary>
 	/// A tag chunk is rewritten only when its tag changed, so an unchanged ID3v2 or INFO chunk keeps
-	/// its bytes and its place. A cut-off chunk counts: its value was read, so it must not outlive a change.
+	/// its bytes and its place. A CSET chunk belongs to the INFO text and is rewritten with it. A cut-off chunk counts: its value was read, so it must not outlive a change.
 	/// </summary>
 	static bool IsChangedTag (AviTopChunk chunk, bool infoChanged, bool id3Changed) =>
 		AviChunks.IsReadable (chunk)
-		&& ((infoChanged && chunk.IsList (AviChunks.Info)) || (id3Changed && chunk.IsId3));
+		&& ((infoChanged && (chunk.IsList (AviChunks.Info) || chunk.IsCharacterSet)) || (id3Changed && chunk.IsId3));
 
 	static bool Id3Changed (bool present, Id3v2Tag? original, Id3v2Tag? current)
 	{
@@ -188,8 +188,12 @@ internal static class AviRewrite
 	static byte[] Blob (RiffInfoTag info, bool infoChanged, Id3v2Tag? id3, bool id3Changed, string id3FourCC)
 	{
 		using var builder = new BinaryDataBuilder ();
-		if (infoChanged && !info.IsEmpty)
+		if (infoChanged && !info.IsEmpty) {
+			// The CSET goes before the list; a reader that walks the file in order meets it first.
+			if (info.NeedsUtf8CharacterSet)
+				builder.Add (AviChunks.Utf8CharacterSetChunk ());
 			builder.Add (info.Render ());
+		}
 		if (id3Changed && id3 is { IsEmpty: false })
 			builder.Add (new RiffChunk (id3FourCC, RenderId3 (id3)).Render ());
 		return builder.ToBinaryData ().ToArray ();

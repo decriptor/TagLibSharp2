@@ -712,21 +712,163 @@ public class AviSaveTests
 	}
 
 	[TestMethod]
-	public void Save_NonLatin1Text_RoundTripsAsUtf8 ()
+	public void Save_NonLatin1Text_WritesUtf8AfterAUtf8Cset ()
 	{
-		var original = new AviTestBuilder ().Build ();
+		// MPIDS 1.0: without a CSET chunk INFO text is ISO 8859-1, so UTF-8 needs CSET wCodePage 65001.
+		var builder = new AviTestBuilder ();
+		builder.Info.Add (("IART", "Björk"));
+		var original = builder.Build ();
 		var file = AviFile.Read (original).File!;
 		file.InfoTag.Title = "Café ☕ 日本";
 
 		var saved = file.Render (original).ToArray ();
 
-		Assert.AreEqual ("Café ☕ 日本", AviFile.Read (saved).File!.InfoTag.Title);
+		var names = Names (saved);
+		Assert.AreEqual (names.IndexOf ("LIST INFO") - 1, names.IndexOf ("CSET"), "The CSET comes right before the list.");
+		var cset = (int)Offset (saved, "CSET");
+		Assert.AreEqual ((ushort)65001, BinaryPrimitives.ReadUInt16LittleEndian (saved.AsSpan (cset + 8)));
 		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes ("Café ☕ 日本\0")));
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes ("Björk\0")), "One list, one encoding.");
+		var again = AviFile.Read (saved).File!.InfoTag;
+		Assert.AreEqual ("Café ☕ 日本", again.Title);
+		Assert.AreEqual ("Björk", again.Artist);
+		Assert.AreEqual ("Björk", MediaFile.Read (new MemoryStream (saved)).Tag!.Artist, "A stream read honours the CSET too.");
 	}
 
 	[TestMethod]
-	public void Save_UnchangedLatin1Field_KeepsItsBytes ()
+	public void Save_AsciiText_WritesNoCset ()
 	{
+		var original = new AviTestBuilder ().Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "Plain";
+
+		var saved = file.Render (original).ToArray ();
+
+		CollectionAssert.DoesNotContain (Names (saved), "CSET");
+		Assert.AreEqual ("Plain", AviFile.Read (saved).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public void Save_Latin1RangeText_IsUtf8WithACset ()
+	{
+		// "é" fits ISO 8859-1, but ffprobe, ffmpeg and TagLib# read INFO as UTF-8, so it is written
+		// as UTF-8 and declared.
+		var original = new AviTestBuilder ().Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "Café";
+
+		var saved = file.Render (original).ToArray ();
+
+		CollectionAssert.Contains (Names (saved), "CSET");
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes ("Café\0")));
+		Assert.AreEqual ("Café", AviFile.Read (saved).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public void Save_Utf8ListWithoutACset_StaysUtf8AndGainsOne ()
+	{
+		// ffmpeg and TagLib# write UTF-8 with no CSET. An unchanged value keeps its bytes, and the
+		// list is declared so the file follows the spec.
+		var builder = new AviTestBuilder { InfoEncoding = System.Text.Encoding.UTF8 };
+		builder.Info.Add (("IART", "Björk"));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "New";
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes ("Björk\0")));
+		CollectionAssert.Contains (Names (saved), "CSET");
+		Assert.AreEqual ("Björk", AviFile.Read (saved).File!.InfoTag.Artist);
+	}
+
+	[TestMethod]
+	public void Save_ClearedTag_DropsTheCset ()
+	{
+		var builder = new AviTestBuilder { CharacterSet = 65001, InfoEncoding = System.Text.Encoding.UTF8 };
+		builder.Info.Add (("INAM", "日本"));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		Assert.IsTrue (file.Render (original).Span.SequenceEqual (original), "An unchanged list keeps its CSET.");
+		file.InfoTag.Clear ();
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.HasCount (original.Length, saved);
+		CollectionAssert.DoesNotContain (Names (saved), "CSET");
+		CollectionAssert.DoesNotContain (Names (saved), "LIST INFO");
+	}
+
+	[TestMethod]
+	public void Save_AsciiTextReplacingAUtf8Cset_DropsTheCset ()
+	{
+		var builder = new AviTestBuilder { CharacterSet = 65001 };
+		builder.Info.Add (("INAM", "ascii"));
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "plain";
+
+		var saved = file.Render (original).ToArray ();
+
+		CollectionAssert.DoesNotContain (Names (saved), "CSET", "ASCII text needs no CSET.");
+		Assert.AreEqual ("plain", AviFile.Read (saved).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public void Save_ToAnotherPath_LeavesTheSourceBytesAlone ()
+	{
+		// MockFileSystem.ReadAllBytes returns the stored array; an in-place save must not write into it.
+		var builder = new AviTestBuilder ();
+		builder.Info.Add (("INAM", "Original"));
+		var original = builder.Build ();
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/a.avi", (byte[])original.Clone ());
+		var file = AviFile.ReadFromFile ("/a.avi", fs).File!;
+		file.InfoTag.Title = "New";
+
+		Assert.IsTrue (file.SaveToFile ("/b.avi", fs).IsSuccess);
+
+		CollectionAssert.AreEqual (original, fs.ReadAllBytes ("/a.avi"));
+		Assert.AreEqual ("New", AviFile.ReadFromFile ("/b.avi", fs).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public async Task SaveAsync_ToAnotherPath_LeavesTheSourceBytesAlone ()
+	{
+		var builder = new AviTestBuilder ();
+		builder.Info.Add (("INAM", "Original"));
+		var original = builder.Build ();
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/a.avi", (byte[])original.Clone ());
+		var file = (await AviFile.ReadFromFileAsync ("/a.avi", fs)).File!;
+		file.InfoTag.Title = "New";
+
+		Assert.IsTrue ((await file.SaveToFileAsync ("/b.avi", fs)).IsSuccess);
+
+		CollectionAssert.AreEqual (original, fs.ReadAllBytes ("/a.avi"));
+		Assert.AreEqual ("New", AviFile.ReadFromFile ("/b.avi", fs).File!.InfoTag.Title);
+	}
+
+	[TestMethod]
+	public void Save_StandardIndexEntryNearTheOffsetLimit_RefusesToMove ()
+	{
+		// With base 0 each dwOffset is absolute; one that would wrap past 4 GiB when shifted is refused.
+		var original = new AviTestBuilder { OpenDml = true, StandardIndexBaseZero = true }.Build ();
+		var ix = AviFileTests.IndexOf (original, "ix00"u8);
+		BinaryPrimitives.WriteUInt32LittleEndian (original.AsSpan (ix + 32), 0xFFFFFFF0);
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Comment = LongText;
+
+		var saved = file.SaveToFile ("/x.avi", original, new MockFileSystem ());
+
+		Assert.IsFalse (saved.IsSuccess);
+		StringAssert.Contains (saved.Error, "overflow");
+	}
+
+	[TestMethod]
+	public void Save_UnchangedLatin1Field_IsReencodedUnderTheCset ()
+	{
+		// One list has one declared encoding: a Latin-1 "ö" cannot stay next to a UTF-8 CSET.
 		var builder = new AviTestBuilder ();
 		builder.Info.AddRange ([("INAM", "Old"), ("IART", "Björk")]);
 		var original = builder.Build ();
@@ -736,7 +878,25 @@ public class AviSaveTests
 
 		var saved = file.Render (original).ToArray ();
 
-		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.Latin1.GetBytes ("Björk\0")));
+		CollectionAssert.Contains (Names (saved), "CSET");
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes ("Björk\0")));
+		Assert.AreEqual ("Björk", AviFile.Read (saved).File!.InfoTag.Artist);
+	}
+
+	[TestMethod]
+	public void Save_UnchangedField_KeepsItsOriginalBytes ()
+	{
+		// A writer's extra NUL padding survives a save that changes another field.
+		var builder = new AviTestBuilder { InfoEncoding = System.Text.Encoding.UTF8 };
+		builder.Info.AddRange ([("INAM", "Old"), ("IART", "Björk\0\0"), ("ICMT", "ascii\0\0")]);
+		var original = builder.Build ();
+		var file = AviFile.Read (original).File!;
+		file.InfoTag.Title = "New";
+
+		var saved = file.Render (original).ToArray ();
+
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf (System.Text.Encoding.UTF8.GetBytes ("Björk\0\0\0")));
+		Assert.IsGreaterThanOrEqualTo (0, saved.AsSpan ().IndexOf ("ascii\0\0\0"u8));
 		Assert.AreEqual ("Björk", AviFile.Read (saved).File!.InfoTag.Artist);
 	}
 
