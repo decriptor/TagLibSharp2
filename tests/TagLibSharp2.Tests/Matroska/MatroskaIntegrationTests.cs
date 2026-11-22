@@ -15,6 +15,8 @@ namespace TagLibSharp2.Tests.Matroska;
 /// These tests are skipped by default. To run them:
 /// 1. Set the TAGLIBSHARP2_TEST_MATROSKA environment variable to a path to a .mkv, .mka, or .webm file
 /// 2. Run with: dotnet test --filter "TestCategory=Integration"
+/// The sort-name tests copy the file to a temporary path; the original is never written.
+/// The same sort-name checks run in CI on built files from <see cref="MatroskaFileTests"/>.
 /// </remarks>
 [TestClass]
 [TestCategory ("Integration")]
@@ -87,6 +89,14 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 		Assert.AreEqual (before, Open (restored).Tracks[index].IsEnabled);
 		Assert.AreEqual (toggled.Length, restored.Length, "a stored flag is rewritten in place");
 	}
+
+	[TestMethod]
+	public void SortNames_RoundTripThroughSave_AndClear () =>
+		MatroskaSortRoundTrip.VerifyOnCopy (SkipIfNoTestFile (TestFileEnvVar, "Matroska"));
+
+	[TestMethod]
+	public Task SortNames_RoundTripThroughSaveAsync_AndClear () =>
+		MatroskaSortRoundTrip.VerifyOnCopyAsync (SkipIfNoTestFile (TestFileEnvVar, "Matroska"));
 
 	/// <summary>The ID of every Seek, in every SeekHead, whose position names an element with that ID.</summary>
 	static List<ulong> LandingSeeks (byte[] file)
@@ -632,5 +642,129 @@ public class MatroskaIntegrationTests : FileFormatTestBase
 		public string Description => "Integration back cover";
 
 		public BinaryData PictureData { get; } = new (BackCover);
+	}
+}
+
+/// <summary>
+/// Sets, saves, re-reads, clears, and re-reads <c>AlbumArtistSort</c> and <c>ComposerSort</c>
+/// on a temporary copy of a Matroska file, checking the parent values never change.
+/// </summary>
+static class MatroskaSortRoundTrip
+{
+	public const string AlbumArtistSort = "Band, The";
+	public const string ComposerSort = "Bach, Johann Sebastian";
+
+	// A later write to an unrelated field must still land where its getter reads it.
+	public const string Genre = "Round Trip Genre";
+
+	/// <param name="source">The file to copy. It is never written.</param>
+	/// <param name="afterSet">Inspects the saved bytes after the sort names are set.</param>
+	public static void VerifyOnCopy (string source, Action<byte[]>? afterSet = null)
+	{
+		var copy = CopyToTemp (source);
+		try {
+			var original = MatroskaFile.ReadFromFile (copy);
+			Assert.IsTrue (original.IsSuccess, original.Error);
+			var before = Snapshot.Of (original.File!.Tag);
+
+			original.File.Tag.AlbumArtistSort = AlbumArtistSort;
+			original.File.Tag.ComposerSort = ComposerSort;
+			original.File.Tag.Genre = Genre;
+			var saved = original.File.SaveToFile ();
+			Assert.IsTrue (saved.IsSuccess, saved.Error);
+
+			var bytes = File.ReadAllBytes (copy);
+			afterSet?.Invoke (bytes);
+			var set = MatroskaFile.Read (bytes);
+			Assert.IsTrue (set.IsSuccess, set.Error);
+			AssertSet (set.File!.Tag, before);
+
+			var reopened = MatroskaFile.ReadFromFile (copy);
+			Assert.IsTrue (reopened.IsSuccess, reopened.Error);
+			reopened.File!.Tag.AlbumArtistSort = null;
+			reopened.File.Tag.ComposerSort = null;
+			reopened.File.Tag.Genre = null;
+			var clearedSave = reopened.File.SaveToFile ();
+			Assert.IsTrue (clearedSave.IsSuccess, clearedSave.Error);
+
+			var cleared = MatroskaFile.ReadFromFile (copy);
+			Assert.IsTrue (cleared.IsSuccess, cleared.Error);
+			AssertCleared (cleared.File!.Tag, before);
+		} finally {
+			File.Delete (copy);
+		}
+	}
+
+	/// <param name="source">The file to copy. It is never written.</param>
+	/// <param name="afterSet">Inspects the saved bytes after the sort names are set.</param>
+	public static async Task VerifyOnCopyAsync (string source, Action<byte[]>? afterSet = null)
+	{
+		var copy = CopyToTemp (source);
+		try {
+			var original = await MatroskaFile.ReadFromFileAsync (copy);
+			Assert.IsTrue (original.IsSuccess, original.Error);
+			var before = Snapshot.Of (original.File!.Tag);
+
+			original.File.Tag.AlbumArtistSort = AlbumArtistSort;
+			original.File.Tag.ComposerSort = ComposerSort;
+			original.File.Tag.Genre = Genre;
+			var saved = await original.File.SaveToFileAsync ();
+			Assert.IsTrue (saved.IsSuccess, saved.Error);
+
+			var set = await MatroskaFile.ReadFromFileAsync (copy);
+			Assert.IsTrue (set.IsSuccess, set.Error);
+			afterSet?.Invoke (File.ReadAllBytes (copy));
+			AssertSet (set.File!.Tag, before);
+
+			set.File.Tag.AlbumArtistSort = null;
+			set.File.Tag.ComposerSort = null;
+			set.File.Tag.Genre = null;
+			var clearedSave = await set.File.SaveToFileAsync ();
+			Assert.IsTrue (clearedSave.IsSuccess, clearedSave.Error);
+
+			var cleared = await MatroskaFile.ReadFromFileAsync (copy);
+			Assert.IsTrue (cleared.IsSuccess, cleared.Error);
+			AssertCleared (cleared.File!.Tag, before);
+		} finally {
+			File.Delete (copy);
+		}
+	}
+
+	static string CopyToTemp (string source)
+	{
+		var copy = Path.Combine (Path.GetTempPath (), $"taglibsharp2-sort-{Guid.NewGuid ():N}{Path.GetExtension (source)}");
+		File.Copy (source, copy);
+		return copy;
+	}
+
+	static void AssertSet (MatroskaTag tag, Snapshot before)
+	{
+		Assert.AreEqual (AlbumArtistSort, tag.AlbumArtistSort);
+		Assert.AreEqual (ComposerSort, tag.ComposerSort);
+		Assert.AreEqual (Genre, tag.Genre);
+		before.AssertParentsUnchanged (tag);
+	}
+
+	static void AssertCleared (MatroskaTag tag, Snapshot before)
+	{
+		Assert.IsNull (tag.AlbumArtistSort);
+		Assert.IsNull (tag.ComposerSort);
+		Assert.IsNull (tag.Genre);
+		before.AssertParentsUnchanged (tag);
+	}
+
+	sealed record Snapshot (string? Title, string? Artist, string? ArtistSort, string[] AlbumArtists, string[] Composers)
+	{
+		public static Snapshot Of (MatroskaTag tag) =>
+			new (tag.Title, tag.Artist, tag.ArtistSort, tag.AlbumArtists, tag.Composers);
+
+		public void AssertParentsUnchanged (MatroskaTag tag)
+		{
+			Assert.AreEqual (Title, tag.Title);
+			Assert.AreEqual (Artist, tag.Artist);
+			Assert.AreEqual (ArtistSort, tag.ArtistSort);
+			CollectionAssert.AreEqual (AlbumArtists, tag.AlbumArtists);
+			CollectionAssert.AreEqual (Composers, tag.Composers);
+		}
 	}
 }

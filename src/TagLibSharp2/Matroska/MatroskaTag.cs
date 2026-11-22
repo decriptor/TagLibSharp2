@@ -31,6 +31,8 @@ public sealed class MatroskaTag : Tag
 	const ulong AlbumLevel = 50;
 	const ulong PartLevel = 40;
 	const ulong TrackLevel = 30;
+	const string AlbumArtistName = "ALBUM_ARTIST";
+	const string AlbumArtistSortName = "ALBUM_ARTIST_SORT";
 
 	readonly List<TagBlock> _blocks = new ();
 	string? _segmentTitle;
@@ -44,25 +46,39 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override string? Title {
-		get {
-			// TITLE at 30 is the track. An empty one blocks every broader title.
-			if (HasFileLevelName (TrackLevel, "TITLE"))
-				return FirstAt (TrackLevel, "TITLE");
-			// The segment title is the file title. Otherwise the most specific
-			// file-level TITLE below a collection still displays, so a part,
-			// edition, or lone album title is not a blank name.
-			if (!string.IsNullOrEmpty (_segmentTitle))
-				return _segmentTitle;
-			var level = MostSpecificFileTitleBelowCollection ();
-			return level is ulong found ? FirstAt (found, "TITLE") : null;
+		get => FirstOf (TitlesRead ());
+		set {
+			if (IsWriteBackAt (value, TitlesRead (), TrackLevel, "TITLE"))
+				return;
+			SetValue (TrackLevel, "TITLE", value, [], ["TITLE_SORT"], shadows: false);
 		}
-		set => SetAt (TrackLevel, "TITLE", value);
 	}
+
+	/// <summary>
+	/// The titles Title reads, the first of which it returns; its setter's write-back check reads the same list.
+	/// TITLE at 30 is the track, and an empty one blocks every broader title. The segment title is the file
+	/// title. Otherwise the most specific file-level TITLE below a collection still displays, so a part,
+	/// edition, or lone album title is not a blank name.
+	/// </summary>
+	string[] TitlesRead ()
+	{
+		if (HasFileLevelName (TrackLevel, "TITLE"))
+			return AllAt (TrackLevel, "TITLE");
+		if (!string.IsNullOrEmpty (_segmentTitle))
+			return [_segmentTitle!];
+		return MostSpecificFileTitleBelowCollection () is ulong level ? AllAt (level, "TITLE") : [];
+	}
+
+	static string? FirstOf (string[] values) => values.Length > 0 ? values[0] : null;
 
 	/// <inheritdoc/>
 	public override string? Artist {
-		get => First ("ARTIST");
-		set => SetAt (TrackLevel, "ARTIST", value);
+		get => FirstOf (All ("ARTIST"));
+		set {
+			if (IsWriteBackAt (value, All ("ARTIST"), TrackLevel, "ARTIST"))
+				return;
+			SetValue (TrackLevel, "ARTIST", value, ["ARTIST_SORT"], ["ARTIST_SORT"], shadows: true);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -71,19 +87,56 @@ public sealed class MatroskaTag : Tag
 			var artists = All ("ARTIST");
 			return artists.Length > 0 ? artists : All ("ACTOR");
 		}
-		set => SetAtValues (TrackLevel, "ARTIST", value);
+		set {
+			if (IsListWriteBack (value, Performers, AnyTextAt (TrackLevel, "ARTIST"), clearsOneLevel: true))
+				return;
+			SetValues (TrackLevel, "ARTIST", value, ["ARTIST_SORT"], ["ARTIST_SORT"], shadows: true);
+		}
 	}
 
 	/// <inheritdoc/>
 	public override string? Album {
-		get => FirstAt (AlbumLevel, "TITLE");
-		set => SetAt (AlbumLevel, "TITLE", value);
+		get => FirstOf (AllAt (AlbumLevel, "TITLE"));
+		set {
+			if (IsWriteBackAt (value, AllAt (AlbumLevel, "TITLE"), AlbumLevel, "TITLE"))
+				return;
+			SetValue (AlbumLevel, "TITLE", value, [], ["ALBUM_SORT"], shadows: false);
+		}
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// The album artist is <c>ARTIST</c> at the album level (<c>TargetTypeValue</c> 50), per
+	/// https://www.matroska.org/technical/tagging.html. A file that carries a flat <c>ALBUM_ARTIST</c>
+	/// (the name ffmpeg writes) names its album artist there instead: it is read and written, and
+	/// clearing it also removes its flat <c>ALBUM_ARTIST_SORT</c>, so the specification's album-level
+	/// <c>ARTIST</c> shows through.
+	/// </remarks>
 	public override string[] AlbumArtists {
-		get => ItemLevel >= AlbumLevel ? All ("ARTIST") : AllAt (AlbumLevel, "ARTIST");
-		set => SetAtValues (AlbumLevel, "ARTIST", value);
+		get {
+			if (UsesAlbumArtistName)
+				return All (AlbumArtistName);
+			return ItemLevel >= AlbumLevel ? All ("ARTIST") : AllAt (AlbumLevel, "ARTIST");
+		}
+		set {
+			// A clear of ALBUM_ARTIST removes every visible level; the spec-level write is one level.
+			var byName = UsesAlbumArtistName;
+			if (IsListWriteBack (value, AlbumArtists, byName ? AnyText (AlbumArtistName) : AnyTextAt (AlbumLevel, "ARTIST"), clearsOneLevel: !byName))
+				return;
+			if (!UsesAlbumArtistName) {
+				// ALBUM_ARTIST_SORT at 50 is the album artist's whatever the track has, so only ARTIST_SORT can be the track's.
+				SetValues (AlbumLevel, "ARTIST", value, ["ARTIST_SORT"], ["ARTIST_SORT", AlbumArtistSortName], shadows: true);
+				return;
+			}
+
+			if (!HasText (value)) {
+				RemoveVisible (AlbumArtistName);
+				RemoveVisible (AlbumArtistSortName);
+				return;
+			}
+
+			SetAtValues (ChosenLevel (AlbumArtistName)!.Value, AlbumArtistName, value);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -167,7 +220,15 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override string[] Composers {
 		get => All ("COMPOSER");
-		set => SetItemValues ("COMPOSER", value);
+		set {
+			// The write-back check runs first, as in every setter. A clear takes the composers' flat sorts with
+			// them; a COMPOSER_SORT with no COMPOSER is left alone.
+			if (IsListWriteBack (value, Composers, AnyText ("COMPOSER"), clearsOneLevel: false))
+				return;
+			if (!HasText (value) && ChosenLevel ("COMPOSER") is not null)
+				RemoveVisible ("COMPOSER_SORT");
+			SetItemValues ("COMPOSER", value);
+		}
 	}
 
 	/// <inheritdoc/>
@@ -197,7 +258,12 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override uint? BeatsPerMinute {
 		get => ParseWholeOrDecimal (First ("BPM"));
-		set => SetItem ("BPM", value?.ToString (CultureInfo.InvariantCulture));
+		set {
+			// "120.0" reads as 120; writing 120 back is not a change, but a copy replaces a list of them.
+			if (value is not null && value == BeatsPerMinute && (!IsCopying || All ("BPM").Length == 1))
+				return;
+			SetItem ("BPM", value?.ToString (CultureInfo.InvariantCulture));
+		}
 	}
 
 	/// <inheritdoc/>
@@ -209,7 +275,7 @@ public sealed class MatroskaTag : Tag
 	/// <inheritdoc/>
 	public override string? Publisher {
 		get => First ("PUBLISHER") ?? First ("LABEL");
-		set => SetItem ("PUBLISHER", value);
+		set => SetItemWithFallback ("PUBLISHER", "LABEL", value, Publisher, replaceFallback: false);
 	}
 
 	/// <inheritdoc/>
@@ -274,32 +340,98 @@ public sealed class MatroskaTag : Tag
 
 	/// <inheritdoc/>
 	public override string? TitleSort {
-		get => NestedSortAt (TrackLevel, "TITLE") ?? FirstAt (TrackLevel, "TITLE_SORT");
-		set => SetSort ("TITLE", "TITLE_SORT", value, TrackLevel);
+		get => ReadSort ("TITLE", "TITLE_SORT", TrackLevel);
+		set {
+			if (IsSortWriteBack (value, "TITLE", "TITLE_SORT", TrackLevel))
+				return;
+			SetSort ("TITLE", "TITLE_SORT", value, TrackLevel);
+		}
 	}
 
 	/// <inheritdoc/>
+	/// <remarks>
+	/// <c>SORT_WITH</c> nested in the <c>ARTIST</c> that <see cref="Artist"/> reads, else the flat
+	/// <c>ARTIST_SORT</c> that belongs to it: in its Tag, in a broader Tag that repeats the same artist, or
+	/// passed down from a broader Tag with no <c>ARTIST</c>. A broader Tag with a different artist keeps its
+	/// <c>ARTIST_SORT</c> for that artist.
+	/// </remarks>
 	public override string? ArtistSort {
-		get => NestedSort ("ARTIST") ?? First ("ARTIST_SORT");
-		set => SetSort ("ARTIST", "ARTIST_SORT", value, null);
+		get => ReadSort ("ARTIST", "ARTIST_SORT", null);
+		set {
+			if (IsSortWriteBack (value, "ARTIST", "ARTIST_SORT", null))
+				return;
+			SplitSharedArtist (NullIfEmpty (value));
+			SetSort ("ARTIST", "ARTIST_SORT", value, null);
+		}
 	}
 
 	/// <inheritdoc/>
 	public override string? AlbumSort {
-		get => NestedSortAt (AlbumLevel, "TITLE") ?? FirstAt (AlbumLevel, "ALBUM_SORT");
-		set => SetSort ("TITLE", "ALBUM_SORT", value, AlbumLevel);
+		get => ReadSort ("TITLE", "ALBUM_SORT", AlbumLevel);
+		set {
+			if (IsSortWriteBack (value, "TITLE", "ALBUM_SORT", AlbumLevel))
+				return;
+			SetSort ("TITLE", "ALBUM_SORT", value, AlbumLevel);
+		}
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <para>
+	/// The sort of the album artist that <see cref="AlbumArtists"/> reads: <c>SORT_WITH</c> nested in
+	/// that SimpleTag, else the flat <c>ALBUM_ARTIST_SORT</c> that belongs to it: in its Tag, in a broader
+	/// Tag that repeats the same artist, or passed down from one with no artist. For a flat <c>ALBUM_ARTIST</c> that is its own
+	/// <c>SORT_WITH</c> or <c>ALBUM_ARTIST_SORT</c>.
+	/// See https://www.matroska.org/technical/tagging.html ("Nested Information", "Target types")
+	/// and RFC 9559 section 5.1.8.
+	/// </para>
+	/// <para>
+	/// When the file has no tag below the album level, the album-level <c>ARTIST</c> is also the
+	/// track's artist, and one <c>SORT_WITH</c> is read as both this and <see cref="ArtistSort"/>.
+	/// Before a write would change one of them, the <c>ARTIST</c> is copied to the track level (30),
+	/// so the track keeps its own sort and the two stay independent.
+	/// </para>
+	/// </remarks>
+	public override string? AlbumArtistSort {
+		get => ReadSort (AlbumArtistValueName, AlbumArtistSortName, AlbumArtistSortLevel);
+		set {
+			if (IsSortWriteBack (value, AlbumArtistValueName, AlbumArtistSortName, AlbumArtistSortLevel))
+				return;
+			if (UsesAlbumArtistName) {
+				SetSort (AlbumArtistName, AlbumArtistSortName, value, null);
+				return;
+			}
+
+			SplitSharedArtist (NullIfEmpty (value));
+			SetSort ("ARTIST", AlbumArtistSortName, value, AlbumArtistSortLevel);
+		}
+	}
+
+	/// <inheritdoc/>
+	/// <remarks>
+	/// <c>SORT_WITH</c> nested in the <c>COMPOSER</c> that <see cref="Composers"/> reads, else the flat
+	/// <c>COMPOSER_SORT</c> that belongs to it: at its level, at a broader level that repeats the same
+	/// composer, or passed down from one with no <c>COMPOSER</c>. See https://www.matroska.org/technical/tagging.html.
+	/// </remarks>
+	public override string? ComposerSort {
+		get => ReadSort ("COMPOSER", "COMPOSER_SORT", null);
+		set {
+			if (IsSortWriteBack (value, "COMPOSER", "COMPOSER_SORT", null))
+				return;
+			SetSort ("COMPOSER", "COMPOSER_SORT", value, null);
+		}
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackGain {
 		get => First ("REPLAYGAIN_TRACK_GAIN") ?? First ("REPLAYGAIN_GAIN");
-		set => SetItem ("REPLAYGAIN_TRACK_GAIN", value);
+		set => SetItemReplacingLegacy ("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_GAIN", value, ReplayGainTrackGain);
 	}
 
 	/// <inheritdoc/>
 	public override string? ReplayGainTrackPeak {
 		get => First ("REPLAYGAIN_TRACK_PEAK") ?? First ("REPLAYGAIN_PEAK");
-		set => SetItem ("REPLAYGAIN_TRACK_PEAK", value);
+		set => SetItemReplacingLegacy ("REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_PEAK", value, ReplayGainTrackPeak);
 	}
 
 	/// <inheritdoc/>
@@ -442,11 +574,50 @@ public sealed class MatroskaTag : Tag
 	/// exactly, the way <see cref="Comment"/> reads <c>COMMENT</c>: the nearest level at or above the item
 	/// level that sets the name wins (RFC 9559 §5.1.8.1.1 and https://www.matroska.org/technical/tagging.html).
 	/// A tag with only <c>TagBinary</c> has no text and is skipped.
+	/// <para>
+	/// A flat sort name (<c>TITLE_SORT</c>, <c>ARTIST_SORT</c>, <c>ALBUM_SORT</c>, <c>ALBUM_ARTIST_SORT</c>,
+	/// <c>COMPOSER_SORT</c>) is read, set and removed through its sort property, so it pairs with its value the
+	/// same way: a sort belongs to the value it sorts, and a nested <c>SORT_WITH</c> wins over the flat name.
+	/// </para>
 	/// </remarks>
 	public override IReadOnlyList<string> GetCustomField (string name)
 	{
 		CustomFieldValues.ThrowIfNull (name);
+		if (IsSortName (name))
+			return SortByName (name) is string sort ? [sort] : CustomFieldValues.None;
 		return CustomFieldValues.IsUsableName (name) ? All (name) : CustomFieldValues.None;
+	}
+
+	static bool IsSortName (string name) =>
+		name is "TITLE_SORT" or "ARTIST_SORT" or "ALBUM_SORT" or AlbumArtistSortName or "COMPOSER_SORT";
+
+	string? SortByName (string name) => name switch {
+		"TITLE_SORT" => TitleSort,
+		"ARTIST_SORT" => ArtistSort,
+		"ALBUM_SORT" => AlbumSort,
+		AlbumArtistSortName => AlbumArtistSort,
+		_ => ComposerSort,
+	};
+
+	void SetSortByName (string name, string? value)
+	{
+		switch (name) {
+			case "TITLE_SORT":
+				TitleSort = value;
+				break;
+			case "ARTIST_SORT":
+				ArtistSort = value;
+				break;
+			case "ALBUM_SORT":
+				AlbumSort = value;
+				break;
+			case AlbumArtistSortName:
+				AlbumArtistSort = value;
+				break;
+			default:
+				ComposerSort = value;
+				break;
+		}
 	}
 
 	/// <inheritdoc/>
@@ -457,12 +628,26 @@ public sealed class MatroskaTag : Tag
 	/// most specific file-level target in the file, or 50 (album) when there is none, so on a file with
 	/// only album tags <c>"TITLE"</c> writes the album title; <see cref="Title"/> still prefers the segment
 	/// title there.
+	/// <para>
+	/// A value name (<c>ARTIST</c>, <c>TITLE</c>, <c>COMPOSER</c>, <c>ALBUM_ARTIST</c>, ...) is written raw: no flat
+	/// sort moves with it, so a sort can be left beside a value it no longer sorts. Use the properties
+	/// (<see cref="Performers"/>, <see cref="Title"/>, <see cref="Composers"/>, <see cref="AlbumArtists"/>) to keep each
+	/// flat sort with its value. A flat sort name goes through its sort property (see <see cref="GetCustomField"/>).
+	/// </para>
 	/// </remarks>
 	public override bool SetCustomField (string name, params string[] values)
 	{
 		CustomFieldValues.ThrowIfNull (name);
 		if (!CustomFieldValues.IsUsableName (name) || !CustomFieldValues.TryNormalize (values, out var kept))
 			return false;
+
+		if (IsSortName (name)) {
+			// A sort is one name for its value.
+			if (kept.Count > 1)
+				return false;
+			SetSortByName (name, kept.Count == 0 ? null : kept[0]);
+			return true;
+		}
 
 		if (kept.Count == 0) {
 			RemoveCustomField (name);
@@ -483,6 +668,11 @@ public sealed class MatroskaTag : Tag
 		CustomFieldValues.ThrowIfNull (name);
 		if (!CustomFieldValues.IsUsableName (name))
 			return false;
+		if (IsSortName (name)) {
+			var had = SortByName (name) is not null;
+			SetSortByName (name, null);
+			return had;
+		}
 
 		var item = ItemLevel;
 		var removed = false;
@@ -514,7 +704,7 @@ public sealed class MatroskaTag : Tag
 		foreach (var block in _blocks) {
 			// A Tag contains at least one SimpleTag (RFC 9559 section 5.1.8.1.2). One that a clear emptied is
 			// dropped. One that was already empty when read is kept, so a save leaves it as it was.
-			if (block.Tags.Count == 0 && !block.WasEmpty)
+			if (IsDropped (block))
 				continue;
 			if (removedAttachments is { Count: > 0 } && block.TargetsAttachment (removedAttachments)) {
 				var kept = block.RenderWithout (removedAttachments);
@@ -529,6 +719,8 @@ public sealed class MatroskaTag : Tag
 		return written == 0 ? BinaryData.Empty : EbmlWriter.Master (MatroskaIds.Tags, tags.ToBinaryData ().Span);
 	}
 
+	static bool IsDropped (TagBlock block) => block.Tags.Count == 0 && !block.WasEmpty;
+
 	internal void SetSegmentTitle (string? title) => _segmentTitle = title;
 
 	internal void AddBlock (TagBlock block) => _blocks.Add (block);
@@ -537,7 +729,9 @@ public sealed class MatroskaTag : Tag
 		get {
 			ulong? level = null;
 			foreach (var block in _blocks) {
-				if (!block.IsFileLevel)
+				t_levelSteps++;
+				// A Tag that a clear emptied is not rendered, so it is not the item either.
+				if (!block.IsFileLevel || IsDropped (block))
 					continue;
 				if (level is null || block.Level < level)
 					level = block.Level;
@@ -563,6 +757,7 @@ public sealed class MatroskaTag : Tag
 	bool HasFileLevelName (ulong level, string name)
 	{
 		foreach (var block in _blocks) {
+			t_levelSteps++;
 			if (block.IsFileLevel && block.Level == level && block.HasName (name))
 				return true;
 		}
@@ -570,16 +765,8 @@ public sealed class MatroskaTag : Tag
 		return false;
 	}
 
-	string? First (string name)
-	{
-		var values = Values (name);
-		for (var i = 0; i < values.Count; i++) {
-			if (values[i].Length > 0)
-				return values[i];
-		}
-
-		return null;
-	}
+	// A getter's value is the first of the list its setter's write-back check reads (All, AllAt).
+	string? First (string name) => FirstOf (All (name));
 
 	string[] All (string name)
 	{
@@ -603,16 +790,7 @@ public sealed class MatroskaTag : Tag
 		return result;
 	}
 
-	string? FirstAt (ulong level, string name)
-	{
-		var values = ValuesAt (level, name);
-		for (var i = 0; i < values.Count; i++) {
-			if (values[i].Length > 0)
-				return values[i];
-		}
-
-		return null;
-	}
+	string? FirstAt (ulong level, string name) => FirstOf (AllAt (level, name));
 
 	string[] AllAt (ulong level, string name)
 	{
@@ -651,6 +829,7 @@ public sealed class MatroskaTag : Tag
 		var item = ItemLevel;
 		ulong? chosen = null;
 		foreach (var block in _blocks) {
+			t_levelSteps++;
 			if (!block.IsFileLevel || block.Level < item)
 				continue;
 			if (!block.HasName (name))
@@ -674,32 +853,283 @@ public sealed class MatroskaTag : Tag
 
 	void SetSort (string name, string flatName, string? value, ulong? level)
 	{
+		// An empty sort is no sort, the way an empty parent value removes the parent.
+		if (string.IsNullOrEmpty (value))
+			value = null;
 		var replaced = level is ulong fixedLevel
 			? ReplaceNestedSortAt (fixedLevel, name, value)
 			: ReplaceNestedSort (name, value);
-		if (value is null) {
-			if (level is ulong clearLevel)
-				RemoveAt (clearLevel, flatName);
-			else
-				RemoveFlatSort (flatName);
-		} else if (!replaced) {
-			if (level is ulong writeLevel)
-				SetAt (writeLevel, flatName, value);
-			else
-				SetItem (flatName, value);
+		// One sort per value: a nested sort that took the value, or a clear, leaves no flat copy of the old one
+		// for another reader to show; a flat set replaces the copy the getter reads and drops the rest of its run.
+		if (level is ulong fixedAt) {
+			// The flat sorts of the level's run: a set keeps one, in the value's Tag, and a clear none.
+			var flats = new HashSet<ulong> ();
+			foreach (var holding in RunFrom (fixedAt, name, flatName)) {
+				if (holding.HasFlat && (value is null || replaced || holding.Level != fixedAt))
+					flats.Add (holding.Level);
+			}
+
+			RemoveAtLevels (flats, flatName);
+			if (value is not null && !replaced)
+				SetAt (fixedAt, flatName, value);
+		} else if (value is null || replaced) {
+			RemovePairedFlat (name, flatName);
+		} else {
+			var target = PairedFlatWriteLevel (name);
+			RemovePairedFlat (name, flatName, target);
+			SetAtValues (target, flatName, [value]);
+		}
+	}
+
+	[ThreadStatic]
+	static long t_levelSteps;
+
+	/// <summary>
+	/// The Tags the sort pairing visits, counted per thread. Pairing a sort is linear in the Tags of the
+	/// file, so tests bound this count instead of a wall-clock time.
+	/// </summary>
+	internal static long LevelSteps {
+		get => t_levelSteps;
+		set => t_levelSteps = value;
+	}
+
+	sealed class LevelHolding (ulong level)
+	{
+		public ulong Level { get; } = level;
+		public bool HasFlat { get; set; }
+		public List<string> Values { get; } = [];
+		public List<string> DefaultValues { get; } = [];
+		public bool HasValue => Values.Count > 0;
+
+		// The values a getter reads at this level: the default-language ones when there are any.
+		public List<string> Read => DefaultValues.Count > 0 ? DefaultValues : Values;
+	}
+
+	/// <summary>
+	/// One pass over the Tags: each level the getters climb (from the item up, skipping a Tag that is not
+	/// rendered), in order, with its values of <paramref name="name"/> and whether it holds <paramref name="flatName"/>.
+	/// </summary>
+	List<LevelHolding> LevelsHolding (string name, string flatName)
+	{
+		var item = ItemLevel;
+		var levels = new SortedDictionary<ulong, LevelHolding> ();
+		foreach (var block in _blocks) {
+			t_levelSteps++;
+			if (!block.IsFileLevel || IsDropped (block) || block.Level < item)
+				continue;
+			if (!levels.TryGetValue (block.Level, out var holding))
+				levels[block.Level] = holding = new LevelHolding (block.Level);
+			foreach (var tag in block.Tags) {
+				if (tag.Name == flatName)
+					holding.HasFlat = true;
+				if (tag.Name != name)
+					continue;
+				holding.Values.Add (tag.Text ?? string.Empty);
+				if (tag.IsDefault)
+					holding.DefaultValues.Add (tag.Text ?? string.Empty);
+			}
+		}
+
+		return [.. levels.Values];
+	}
+
+	/// <summary>
+	/// The levels whose flat sort belongs to the <paramref name="name"/> the getter reads, item first: its run.
+	/// A flat sort sorts the value in its own Tag (the ffmpeg convention), and a Tag with no value of its own
+	/// passes its sort down to the value below it (tagging.html, "Target types": a tag applies to every
+	/// narrower target). A broader Tag that repeats the same value is the same value, which the spec allows
+	/// ("you can also repeat the value for each track"), so the run goes on through it. The run ends below
+	/// the first broader Tag whose value differs: that Tag's sort, and every one above it, is another value's.
+	/// </summary>
+	List<LevelHolding> PairedLevels (string name, string flatName)
+	{
+		var paired = new List<LevelHolding> ();
+		List<string>? value = null;
+		foreach (var holding in LevelsHolding (name, flatName)) {
+			if (holding.HasValue) {
+				if (value is null)
+					value = holding.Read;
+				else if (!SameText (value, holding.Read))
+					break;
+			}
+
+			paired.Add (holding);
+		}
+
+		return paired;
+	}
+
+	static bool SameText (List<string> a, List<string> b)
+	{
+		if (a.Count != b.Count)
+			return false;
+		for (var i = 0; i < a.Count; i++) {
+			if (a[i] != b[i])
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>The level of the flat sort that belongs to the <paramref name="name"/> the getter reads.</summary>
+	ulong? PairedFlatLevel (string name, string flatName)
+	{
+		foreach (var holding in PairedLevels (name, flatName)) {
+			if (holding.HasFlat)
+				return holding.Level;
+		}
+
+		return null;
+	}
+
+	string? PairedFlat (string name, string flatName) =>
+		PairedFlatLevel (name, flatName) is ulong level ? FirstAt (level, flatName) : null;
+
+	/// <summary>
+	/// Removes the flat sort at every level <see cref="PairedFlat"/> can reach, and none that belongs to another value.
+	/// </summary>
+	void RemovePairedFlat (string name, string flatName, ulong? keep = null)
+	{
+		// A copy at the level about to be written is replaced in place there, so its position stays.
+		var levels = new HashSet<ulong> ();
+		foreach (var holding in PairedLevels (name, flatName)) {
+			if (holding.HasFlat && holding.Level != keep)
+				levels.Add (holding.Level);
+		}
+
+		RemoveAtLevels (levels, flatName);
+	}
+
+	// One pass, so a clear over many levels stays linear in the Tags.
+	void RemoveAtLevels (HashSet<ulong> levels, string name)
+	{
+		if (levels.Count == 0)
+			return;
+		foreach (var block in _blocks) {
+			t_levelSteps++;
+			if (block.IsFileLevel && levels.Contains (block.Level))
+				block.Remove (name);
 		}
 	}
 
 	/// <summary>
-	/// A null sort removes the flat name at every file level the getter can still climb to.
+	/// Where a new flat sort goes: in the Tag of the value it sorts, the ffmpeg pairing. A value above the album
+	/// (where ordinary fields are not written), or none, has its sort at the ordinary level, which is still in
+	/// its run. The caller removes the run's other copies first, so one copy is left for every reader.
 	/// </summary>
-	void RemoveFlatSort (string flatName)
+	ulong PairedFlatWriteLevel (string name) =>
+		ChosenLevel (name) is ulong parent && parent <= AlbumLevel ? parent : OrdinaryWriteLevel ();
+
+	/// <summary>
+	/// Removes <paramref name="name"/> at every file level the getters can still climb to.
+	/// </summary>
+	void RemoveVisible (string name)
 	{
 		var item = ItemLevel;
 		foreach (var block in _blocks) {
 			if (block.IsFileLevel && block.Level >= item)
-				block.Remove (flatName);
+				block.Remove (name);
 		}
+	}
+
+	/// <summary>
+	/// The flat <c>ALBUM_ARTIST</c> names the album artist when any level the item can see has one.
+	/// </summary>
+	bool UsesAlbumArtistName => ChosenLevel (AlbumArtistName) is not null;
+
+	/// <summary>
+	/// When the track has no <c>ARTIST</c> of its own, <see cref="ArtistSort"/> inherits the album's,
+	/// and both it and <see cref="AlbumArtistSort"/> read the <c>SORT_WITH</c> of one SimpleTag.
+	/// Before a write that would change that shared sort, copy every <c>ARTIST</c> at the inherited
+	/// level to the track level, and to the album level when it came from above the album, so each
+	/// property keeps its own sort and every parent reads the same names as before.
+	/// </summary>
+	void SplitSharedArtist (string? value)
+	{
+		if (UsesAlbumArtistName || ChosenLevel ("ARTIST") is not ulong level)
+			return;
+		var shared = SortParentAt (level, "ARTIST");
+		if (shared is null || !shared.Children.Exists (child => child.Name == "SORT_WITH"))
+			return;
+		if (ItemLevel < AlbumLevel && level != AlbumLevel)
+			return;
+		if (value is not null && value == NestedSortAt (level, "ARTIST"))
+			return;
+
+		// Each copy repeats the same value, so the runs of ARTIST_SORT and ALBUM_ARTIST_SORT still reach the
+		// original's flat sorts: no flat sort is copied, and none is left as a second copy.
+		var artists = TagsNamedAt (level, "ARTIST");
+
+		CopyTags (artists, TrackLevel);
+		if (level > AlbumLevel)
+			CopyTags (artists, AlbumLevel);
+	}
+
+	List<SimpleTag> TagsNamedAt (ulong level, string name)
+	{
+		var found = new List<SimpleTag> ();
+		foreach (var block in _blocks) {
+			t_levelSteps++;
+			if (!block.IsFileLevel || block.Level != level)
+				continue;
+			foreach (var tag in block.Tags) {
+				if (tag.Name == name)
+					found.Add (tag);
+			}
+		}
+
+		return found;
+	}
+
+	void CopyTags (List<SimpleTag> tags, ulong level)
+	{
+		var block = FileBlock (level);
+		foreach (var tag in tags)
+			block.Tags.Add (CopyTag (tag, tag.Text));
+	}
+
+	static string? NullIfEmpty (string? value) => string.IsNullOrEmpty (value) ? null : value;
+
+	static List<string> NonEmpty (string[]? values)
+	{
+		var kept = new List<string> ();
+		if (values is not null) {
+			foreach (var value in values) {
+				if (!string.IsNullOrEmpty (value))
+					kept.Add (value);
+			}
+		}
+
+		return kept;
+	}
+
+	// The non-empty values, in order, are what the getter already returns: writing them back changes nothing.
+	static bool SameValues (string[]? values, string[] current)
+	{
+		var at = 0;
+		if (values is not null) {
+			foreach (var value in values) {
+				if (string.IsNullOrEmpty (value))
+					continue;
+				if (at >= current.Length || current[at] != value)
+					return false;
+				at++;
+			}
+		}
+
+		return at == current.Length;
+	}
+
+	static bool HasText (string[]? values)
+	{
+		if (values is null)
+			return false;
+		foreach (var value in values) {
+			if (!string.IsNullOrEmpty (value))
+				return true;
+		}
+
+		return false;
 	}
 
 	bool ReplaceNestedSort (string name, string? value)
@@ -713,33 +1143,33 @@ public sealed class MatroskaTag : Tag
 	/// </summary>
 	bool ReplaceNestedSortAt (ulong level, string name, string? value)
 	{
-		var preferDefault = false;
-		foreach (var block in _blocks) {
-			if (!block.IsFileLevel || block.Level != level)
-				continue;
-			if (block.HasDefault (name))
-				preferDefault = true;
-		}
-
-		foreach (var block in _blocks) {
-			if (!block.IsFileLevel || block.Level != level)
-				continue;
-			foreach (var tag in block.Tags) {
-				if (tag.Name != name || (preferDefault && !tag.IsDefault) || string.IsNullOrEmpty (tag.Text))
-					continue;
-				if (!tag.Children.Exists (child => child.Name == "SORT_WITH"))
-					return false;
-				tag.Children.RemoveAll (child => child.Name == "SORT_WITH");
-				if (value is not null)
-					tag.Children.Add (new SimpleTag ("SORT_WITH", value));
-				return true;
-			}
-		}
-
-		return false;
+		var tag = SortParentAt (level, name);
+		if (tag is null || !tag.Children.Exists (child => child.Name == "SORT_WITH"))
+			return false;
+		tag.Children.RemoveAll (child => child.Name == "SORT_WITH");
+		if (value is not null)
+			tag.Children.Add (new SimpleTag ("SORT_WITH", value));
+		return true;
 	}
 
 	string? NestedSortAt (ulong level, string name)
+	{
+		var tag = SortParentAt (level, name);
+		if (tag is null)
+			return null;
+		foreach (var child in tag.Children) {
+			if (child.Name == "SORT_WITH" && !string.IsNullOrEmpty (child.Text))
+				return child.Text;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// The SimpleTag whose <c>SORT_WITH</c> the sort getters read: the first non-empty
+	/// <paramref name="name"/> at <paramref name="level"/>, preferring a default-language one.
+	/// </summary>
+	SimpleTag? SortParentAt (ulong level, string name)
 	{
 		var preferDefault = false;
 		foreach (var block in _blocks) {
@@ -753,14 +1183,8 @@ public sealed class MatroskaTag : Tag
 			if (!block.IsFileLevel || block.Level != level)
 				continue;
 			foreach (var tag in block.Tags) {
-				if (tag.Name != name || (preferDefault && !tag.IsDefault) || string.IsNullOrEmpty (tag.Text))
-					continue;
-				foreach (var child in tag.Children) {
-					if (child.Name == "SORT_WITH" && !string.IsNullOrEmpty (child.Text))
-						return child.Text;
-				}
-
-				return null;
+				if (tag.Name == name && (!preferDefault || tag.IsDefault) && !string.IsNullOrEmpty (tag.Text))
+					return tag;
 			}
 		}
 
@@ -787,16 +1211,209 @@ public sealed class MatroskaTag : Tag
 		return values;
 	}
 
-	// A target broader than the album is not where ordinary fields are written.
+	// A target broader than the album is not where ordinary fields are written. A Tag that holds only ARTIST
+	// and its sort, such as the track copy that keeps ArtistSort apart from AlbumArtistSort or a track artist
+	// whose sort was just set, does not move new fields to its level: a sort write does not change where
+	// later fields land, and they reach the track by inheritance.
 	ulong OrdinaryWriteLevel ()
 	{
-		var level = ItemLevel;
-		return level > AlbumLevel ? AlbumLevel : level;
+		ulong? level = null;
+		foreach (var block in _blocks) {
+			if (!block.IsFileLevel || IsDropped (block) || IsArtistOnly (block))
+				continue;
+			if (level is null || block.Level < level)
+				level = block.Level;
+		}
+
+		var found = level ?? ItemLevel;
+		return found > AlbumLevel ? AlbumLevel : found;
 	}
 
-	void SetItem (string name, string? value) => SetAt (OrdinaryWriteLevel (), name, value);
+	static bool IsArtistOnly (TagBlock block) =>
+		block.Tags.Count > 0 && block.Tags.TrueForAll (tag => tag.Name is "ARTIST" or "ARTIST_SORT");
 
-	void SetItemValues (string name, string[]? values) => SetAtValues (OrdinaryWriteLevel (), name, values);
+	/// <summary>
+	/// Writes an item field where its getter reads it. A value inherited from a broader target
+	/// (tagging.html, "Target types") is replaced in place, so a set is not hidden behind a copy at the
+	/// item level and readers that look only at the broader target see it too. A clear removes the name at
+	/// every level the getter climbs to, so no inherited value shows through.
+	/// </summary>
+	void SetItem (string name, string? value)
+	{
+		// Writing back the value read changes nothing. A clear always runs, so nothing a broader level
+		// holds is left for another reader to show.
+		if (IsWriteBackAt (value, All (name), null, name))
+			return;
+		if (string.IsNullOrEmpty (value)) {
+			RemoveVisible (name);
+			return;
+		}
+
+		SetAtValues (ItemWriteLevel (name), name, [value!]);
+	}
+
+	void SetItemValues (string name, string[]? values)
+	{
+		if (IsListWriteBack (values, All (name), AnyText (name), clearsOneLevel: false))
+			return;
+		if (!HasText (values)) {
+			RemoveVisible (name);
+			return;
+		}
+
+		SetAtValues (ItemWriteLevel (name), name, values);
+	}
+
+	void SetItemReplacingLegacy (string name, string legacy, string? value, string? current) =>
+		SetItemWithFallback (name, legacy, value, current, replaceFallback: true);
+
+	/// <summary>
+	/// A field read from <paramref name="name"/>, else from <paramref name="fallback"/>. Writing back the value
+	/// read changes nothing, in a copy too, as the fallback is its own field; a copy still drops the other
+	/// values of <paramref name="name"/> (Tag.IsWriteBack, the Vorbis rule). A clear removes both names, so the
+	/// getter reads null. A set writes <paramref name="name"/>; an older copy of the same value under
+	/// <paramref name="fallback"/> goes when <paramref name="replaceFallback"/>, so no reader shows the old one.
+	/// "" counts as the value read only when no value of either name holds text (#136), so a clear has nothing to remove.
+	/// </summary>
+	void SetItemWithFallback (string name, string fallback, string? value, string? current, bool replaceFallback)
+	{
+		if (IsValueRead (value, current) || (value is { Length: 0 } && !AnyText (name) && !AnyText (fallback))) {
+			if (IsCopying && !string.IsNullOrEmpty (value) && All (name).Length > 1 && First (name) == value)
+				SetAtValues (ItemWriteLevel (name), name, [value!]);
+			return;
+		}
+
+		if (string.IsNullOrEmpty (value) || replaceFallback)
+			RemoveVisible (fallback);
+		SetItem (name, value);
+	}
+
+	/// <summary>
+	/// The write-back rule of <see cref="Tag.IsWriteBack(string?, string?)"/> (#136): handed exactly the value
+	/// its getter read, a setter changes nothing. A copy replaces the target's list, so while
+	/// <see cref="Tag.CopyTo"/> runs a value is unchanged only when the target already holds exactly that one
+	/// value. <paramref name="held"/> is the list the getter reads, whose first value it returns, so the check
+	/// cannot read anything the getter does not. "" is the value read only when no value of the name holds text
+	/// where the setter clears (<paramref name="level"/>, or every visible level), as #136 has it, so the clear
+	/// would remove nothing. A null over a field that reads null is a no-op for a setter that writes one level,
+	/// whose clear could only uncover a broader value; otherwise null clears every level the getter climbs.
+	/// </summary>
+	bool IsWriteBackAt (string? value, string[] held, ulong? level, string name)
+	{
+		var current = FirstOf (held);
+		if (value is null)
+			return current is null && level is not null;
+		if (value.Length == 0)
+			return current is null && !(level is ulong at ? AnyTextAt (at, name) : AnyText (name));
+		if (!IsValueRead (value, current))
+			return false;
+		return !IsCopying || (held.Length == 1 && held[0] == value);
+	}
+
+	/// <summary>
+	/// A sort handed the value its getter read changes nothing (Tag.IsWriteBack), in a copy too, unless the flat
+	/// sort read sits beside other texts at its level, which a copy replaces so the target holds one sort. A
+	/// nested sort read is the value's own, and a flat sort elsewhere in its run is another field (as a Vorbis
+	/// fallback field is), so a copy of a nested sort leaves the file as it is: a sort the item inherits stays
+	/// where it is and its value is not split.
+	/// </summary>
+	bool IsSortWriteBack (string? value, string name, string flatName, ulong? level)
+	{
+		var (nested, flatLevel) = SortSource (name, flatName, level);
+		var current = nested ?? (flatLevel is ulong read ? FirstAt (read, flatName) : null);
+		// A sort never reads "", so "" is never the value read and always clears.
+		if (!IsValueRead (value, current))
+			return false;
+		if (!IsCopying || nested is not null)
+			return true;
+		foreach (var held in AllAt (flatLevel!.Value, flatName)) {
+			if (held != value)
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Where a sort is read: the <c>SORT_WITH</c> nested in the value the getter reads, and the level of the flat
+	/// sort that belongs to it. A sort of a value the getter reads at one level (<paramref name="level"/>: the track
+	/// title, the album title, the album-level <c>ARTIST</c>) belongs to that level's run, the level and each
+	/// broader one up to a different value (<see cref="RunFrom"/>), so a value-less broader sort passes down to it
+	/// as every other sort does. Any other sort belongs to the run of the value the item reads (<see cref="PairedLevels"/>).
+	/// </summary>
+	(string? Nested, ulong? FlatLevel) SortSource (string name, string flatName, ulong? level)
+	{
+		if (level is not ulong at)
+			return (NestedSort (name), PairedFlatLevel (name, flatName));
+		foreach (var holding in RunFrom (at, name, flatName)) {
+			if (holding.HasFlat)
+				return (NestedSortAt (at, name), holding.Level);
+		}
+
+		return (NestedSortAt (at, name), null);
+	}
+
+	string? ReadSort (string name, string flatName, ulong? level)
+	{
+		var (nested, flatLevel) = SortSource (name, flatName, level);
+		return nested ?? (flatLevel is ulong read ? FirstAt (read, flatName) : null);
+	}
+
+	string AlbumArtistValueName => UsesAlbumArtistName ? AlbumArtistName : "ARTIST";
+
+	// The album artist is the album-level ARTIST once the file has a track level (AlbumArtists reads level 50
+	// then), so its sort belongs to that level's run; otherwise it is the value the item reads.
+	ulong? AlbumArtistSortLevel => UsesAlbumArtistName || ItemLevel >= AlbumLevel ? null : AlbumLevel;
+
+	/// <summary>
+	/// The list form: the values read, in order, are a no-op, in a copy too, as the target then holds exactly
+	/// that list. An empty list is the value read only when no value holds text where the setter clears; null
+	/// over an empty list is a no-op only for a one-level setter (<paramref name="clearsOneLevel"/>).
+	/// </summary>
+	static bool IsListWriteBack (string[]? values, string[] current, bool anyText, bool clearsOneLevel)
+	{
+		if (values is null)
+			return clearsOneLevel && current.Length == 0;
+		if (!HasText (values))
+			return current.Length == 0 && !anyText;
+		return SameValues (values, current);
+	}
+
+	// Whether any visible file-level value of the name holds text.
+	bool AnyText (string name)
+	{
+		var item = ItemLevel;
+		foreach (var block in _blocks) {
+			t_levelSteps++;
+			if (!block.IsFileLevel || block.Level < item)
+				continue;
+			foreach (var tag in block.Tags) {
+				if (tag.Name == name && !string.IsNullOrEmpty (tag.Text))
+					return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool AnyTextAt (ulong level, string name)
+	{
+		foreach (var block in _blocks) {
+			t_levelSteps++;
+			if (!block.IsFileLevel || block.Level != level)
+				continue;
+			foreach (var tag in block.Tags) {
+				if (tag.Name == name && !string.IsNullOrEmpty (tag.Text))
+					return true;
+			}
+		}
+
+		return false;
+	}
+
+	// The level the getter reads, unless that is broader than the album, where ordinary fields are not written.
+	ulong ItemWriteLevel (string name) =>
+		ChosenLevel (name) is ulong level && level <= AlbumLevel ? level : OrdinaryWriteLevel ();
 
 	string? TrackPartNumber ()
 	{
@@ -1072,6 +1689,128 @@ public sealed class MatroskaTag : Tag
 		return null;
 	}
 
+	void SetValue (ulong level, string name, string? value, string[] inherited, string[] owned, bool shadows) =>
+		SetValues (level, name, string.IsNullOrEmpty (value) ? null : [value!], inherited, owned, shadows);
+
+	/// <summary>
+	/// Writes a value at one level and keeps each flat sort with the value it sorts (tagging.html, "Target
+	/// types"; the ffmpeg convention keeps a value and its flat sort in one Tag). A new value in a Tag whose
+	/// <paramref name="inherited"/> flat sort a narrower value reads moves that sort to the narrower value. A
+	/// value removed from a Tag takes that Tag's <paramref name="owned"/> flat sorts with it. When the getters
+	/// climb through this level (<paramref name="shadows"/>), a value equal to the broader one it now shadows is
+	/// a repeat of it and copies its SimpleTags, nested <c>SORT_WITH</c> included, so the narrower levels that
+	/// read the broader value keep reading the same sort.
+	/// </summary>
+	void SetValues (ulong level, string name, string[]? values, string[] inherited, string[] owned, bool shadows)
+	{
+		var had = HasFileLevelName (level, name);
+		// The narrower value and the sorts of its run that sit in this Tag or above: the write must not take them.
+		var narrower = ChosenLevel (name) is ulong n && n < level ? n : (ulong?)null;
+		var kept = new List<(string Flat, ulong At)> ();
+		if (narrower is not null) {
+			foreach (var flat in inherited) {
+				if (PairedFlatLevel (name, flat) is ulong at && at >= level)
+					kept.Add ((flat, at));
+			}
+		}
+
+		// A value that leaves this Tag takes the flat sorts of its run with it: its own Tag's, and a broader
+		// value-less Tag's that passed down to it, which would otherwise pass on to another value.
+		var run = new List<(string Flat, ulong At)> ();
+		if (had && !HasText (values)) {
+			foreach (var flat in owned) {
+				foreach (var at in OwnSortLevels (level, name, flat))
+					run.Add ((flat, at));
+			}
+		}
+
+		if (!HasText (values))
+			RemoveAt (level, name);
+		else if (shadows && !had && ShadowedLevel (level, name, values!) is ulong shadowed)
+			CopyTags (TagsNamedAt (shadowed, name), level);
+		else
+			SetAtValues (level, name, values);
+		if (had && !HasFileLevelName (level, name)) {
+			foreach (var flat in owned) {
+				var levels = new HashSet<ulong> ();
+				foreach (var (runFlat, at) in run) {
+					if (runFlat == flat && !kept.Contains ((flat, at)))
+						levels.Add (at);
+				}
+
+				RemoveAtLevels (levels, flat);
+			}
+		}
+
+		// A value placed between the narrower value and its sort, or a repeat of it renamed here, would leave
+		// the sort with another value; it moves down to the value it sorts.
+		foreach (var (flat, at) in kept) {
+			if (PairedFlatLevel (name, flat) != at)
+				MoveTags (at, narrower!.Value, flat);
+		}
+	}
+
+	/// <summary>
+	/// The levels whose flat sorts belong to the value at <paramref name="level"/> alone: its own Tag, and each
+	/// value-less broader Tag up to the next one that holds a value. A broader Tag that repeats the same value
+	/// keeps its own sort, which the narrower levels read once this value goes (tagging.html, "Target types": a
+	/// tag applies to every narrower target).
+	/// </summary>
+	List<ulong> OwnSortLevels (ulong level, string name, string flatName)
+	{
+		var own = new List<ulong> ();
+		foreach (var holding in LevelsHolding (name, flatName)) {
+			if (holding.Level < level)
+				continue;
+			if (holding.Level > level && holding.HasValue)
+				break;
+			own.Add (holding.Level);
+		}
+
+		return own;
+	}
+
+	// The nearest broader level with a value of the name, when that value is the same list of texts as values.
+	ulong? ShadowedLevel (ulong level, string name, string[] values)
+	{
+		var written = NonEmpty (values);
+		foreach (var holding in LevelsHolding (name, name)) {
+			if (holding.Level <= level || !holding.HasValue)
+				continue;
+			return SameText (NonEmpty ([.. holding.Read]), written) ? holding.Level : null;
+		}
+
+		return null;
+	}
+
+	/// <summary>The levels of the run that starts at <paramref name="level"/>: it, and each broader level up to a different value.</summary>
+	List<LevelHolding> RunFrom (ulong level, string name, string flatName)
+	{
+		var run = new List<LevelHolding> ();
+		List<string>? value = null;
+		foreach (var holding in LevelsHolding (name, flatName)) {
+			if (holding.Level < level)
+				continue;
+			if (holding.Level == level)
+				value = holding.Read;
+			else if (holding.HasValue && (value is null || !SameText (value, holding.Read)))
+				break;
+			run.Add (holding);
+		}
+
+		return run;
+	}
+
+	void MoveTags (ulong from, ulong to, string name)
+	{
+		// Only the sort the narrower value read moves, so the narrower level holds none of its own.
+		var moving = TagsNamedAt (from, name);
+		RemoveAt (from, name);
+		var home = FileBlock (to);
+		foreach (var tag in moving)
+			home.Tags.Add (tag);
+	}
+
 	void SetAt (ulong level, string name, string? value)
 	{
 		if (string.IsNullOrEmpty (value)) {
@@ -1136,7 +1875,7 @@ public sealed class MatroskaTag : Tag
 		}
 	}
 
-	static SimpleTag CopyTag (SimpleTag previous, string text)
+	static SimpleTag CopyTag (SimpleTag previous, string? text)
 	{
 		var tag = new SimpleTag (previous.Name, text, previous.IsDefault) {
 			Language = previous.Language,
@@ -1178,6 +1917,7 @@ public sealed class MatroskaTag : Tag
 	void RemoveAt (ulong level, string name)
 	{
 		foreach (var block in _blocks) {
+			t_levelSteps++;
 			if (block.IsFileLevel && block.Level == level)
 				block.Remove (name);
 		}
