@@ -73,8 +73,10 @@ public static class KitProgram
 			case "overflow":
 				return Recurse (0, int.MaxValue);
 			case "stack":
-				// About 3 MiB of frames: fits the 8 MiB main thread of Linux and macOS, not the 1 MiB stack.
-				return Recurse (0, 100_000) > 0 ? 0 : 1;
+				// Each frame holds at least 1 KiB, so the depth reached before the runtime reports the stack
+				// nearly full is a lower bound on the stack size in KiB, whatever the JIT tier.
+				Console.WriteLine ($"stack-kib={MeasureStack (0)}");
+				return 0;
 			case "throw":
 				throw new InvalidOperationException ("selftest throw");
 			case "allocate":
@@ -88,6 +90,17 @@ public static class KitProgram
 				Console.Error.WriteLine ($"unknown selftest '{mode}' (kit-depth for cases)");
 				return UsageExitCode;
 		}
+	}
+
+	[System.Runtime.CompilerServices.MethodImpl (System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+	static int MeasureStack (int depth)
+	{
+		Span<byte> pad = stackalloc byte[1024];
+		pad[^1] = (byte)depth;
+		if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack ())
+			return depth;
+		var deepest = MeasureStack (depth + 1);
+		return pad[^1] == (byte)depth ? deepest : -1;
 	}
 
 	// Each frame keeps a value live after the call, so the JIT cannot turn this into a loop.
