@@ -875,7 +875,7 @@ public sealed class MatroskaFile : IMediaFile
 			if (element.Id == MatroskaIds.Targets)
 				ReadTargets (payload, block);
 			else if (element.Id == MatroskaIds.SimpleTag)
-				block.Tags.Add (ReadSimpleTag (payload));
+				block.Tags.Add (ReadSimpleTag (payload, 1));
 			offset = element.End;
 		}
 
@@ -937,7 +937,14 @@ public sealed class MatroskaFile : IMediaFile
 			specific = true;
 	}
 
-	static SimpleTag ReadSimpleTag (ReadOnlySpan<byte> body)
+	/// <summary>
+	/// The deepest <c>SimpleTag</c> nesting parsed into <see cref="SimpleTag.Children"/>. RFC 9559 §5.1.8.1.2
+	/// lets a SimpleTag nest without a limit, so the reader stops descending here and keeps each deeper
+	/// SimpleTag as its stored bytes, which a save writes back unchanged. No tag mapping reads that deep.
+	/// </summary>
+	internal const int MaxSimpleTagDepth = 64;
+
+	static SimpleTag ReadSimpleTag (ReadOnlySpan<byte> body, int depth)
 	{
 		var name = string.Empty;
 		string? text = null;
@@ -946,6 +953,7 @@ public sealed class MatroskaFile : IMediaFile
 		byte[]? binary = null;
 		var isDefault = true;
 		var children = new List<SimpleTag> ();
+		List<byte[]>? kept = null;
 		var offset = 0;
 		while (offset < body.Length) {
 			if (!EbmlReader.TryRead (body, offset, body.Length, out var element) || element.UnknownSize)
@@ -963,8 +971,12 @@ public sealed class MatroskaFile : IMediaFile
 				binary = payload.ToArray ();
 			else if (element.Id == MatroskaIds.TagDefault || element.Id == MatroskaIds.TagDefaultBogus)
 				isDefault = IsFlagSet (payload);
-			else if (element.Id == MatroskaIds.SimpleTag)
-				children.Add (ReadSimpleTag (payload));
+			else if (element.Id == MatroskaIds.SimpleTag) {
+				if (depth < MaxSimpleTagDepth)
+					children.Add (ReadSimpleTag (payload, depth + 1));
+				else
+					(kept ??= new List<byte[]> ()).Add (body.Slice (element.Position, element.End - element.Position).ToArray ());
+			}
 			offset = element.End;
 		}
 
@@ -975,6 +987,8 @@ public sealed class MatroskaFile : IMediaFile
 		};
 		foreach (var child in children)
 			tag.Children.Add (child);
+		if (kept is not null)
+			tag.KeptChildren.AddRange (kept);
 		return tag;
 	}
 
