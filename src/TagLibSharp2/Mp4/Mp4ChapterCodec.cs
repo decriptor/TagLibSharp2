@@ -144,15 +144,24 @@ internal static class Mp4ChapterCodec
 	/// Every text track a <c>tref</c>/<c>chap</c> reference names, in reference order. A track_ID names the first
 	/// trak that has it. Apple files can name a second text track (chapter URLs) next to the titles.
 	/// </summary>
+	/// <remarks>
+	/// track_IDs are unique (§8.3.2.3), but files that reuse one exist. A chap entry is a track_ID because the
+	/// spec says so (§8.3.3), and it resolves here, once, to a trak object. Every other decision in this class
+	/// (chapter media, presentation track, replaced or removed trak) is made on trak objects, never on IDs. The
+	/// exceptions are structures the spec ties to an ID: tref targets, tfhd (§8.8.7) and trex (§8.8.3).
+	/// </remarks>
 	/// <param name="moov">The movie box.</param>
 	/// <param name="textOnly">False to also return non-text chapter media (Apple chapter image tracks). A track
 	/// that holds a chap reference of its own, or a sound track, is a presentation track and is never returned
 	/// in that case.</param>
-	public static List<ChapterTrack> FindChapterTracks (Mp4Box moov, bool textOnly = true)
+	public static List<ChapterTrack> FindChapterTracks (Mp4Box moov, bool textOnly = true) =>
+		FindChapterTracks (moov.Children, textOnly);
+
+	static List<ChapterTrack> FindChapterTracks (IReadOnlyList<Mp4Box> children, bool textOnly)
 	{
 		var traks = new List<(Mp4Box Trak, uint Id)> ();
 		var byId = new Dictionary<uint, Mp4Box> ();
-		foreach (var child in moov.Children) {
+		foreach (var child in children) {
 			if (child.Type != "trak" || !TryReadTrackId (child, out var id))
 				continue;
 
@@ -171,7 +180,7 @@ internal static class Mp4ChapterCodec
 		}
 
 		var found = new List<ChapterTrack> ();
-		var seen = new HashSet<uint> ();
+		var seen = new HashSet<Mp4Box> ();
 		foreach (var (trak, _) in traks) {
 			var tref = trak.FindChild ("tref");
 			if (tref is null)
@@ -185,7 +194,7 @@ internal static class Mp4ChapterCodec
 				var media = textOnly
 					? IsTextHandler (target)
 					: !holders.Contains (target) && HandlerType (target) != "soun";
-				if (media && seen.Add (reference))
+				if (media && seen.Add (target))
 					found.Add (new ChapterTrack (target, reference));
 			}
 		}
@@ -1009,7 +1018,7 @@ internal static class Mp4ChapterCodec
 			if (unused.Count > 0)
 				WithoutTrex (children, unused);
 
-			return new ChapterPlan (BinaryData.Empty, children, 0, [], removed, null, media) { TrakLookups = removedTraks.Steps };
+			return new ChapterPlan (BinaryData.Empty, children, -1, [], null, media) { TrakLookups = removedTraks.Steps };
 		}
 
 		if (existing is not null && HasFragments (fragments, [existing.Id]))
@@ -1018,7 +1027,7 @@ internal static class Mp4ChapterCodec
 		var chpl = RenderChpl (chapters);
 		var lastTrak = children.FindLastIndex (b => b.Type == "trak");
 		if (existing is null && (lastTrak < 0 || moov.FindChild ("mvex") is not null))
-			return new ChapterPlan (chpl, children, 0, []);
+			return new ChapterPlan (chpl, children, -1, []);
 
 		var movieTimescale = ReadMovieTimescale (moov);
 		uint trackId;
@@ -1028,7 +1037,7 @@ internal static class Mp4ChapterCodec
 			timescale = ReadMediaTimescale (existing.Trak.FindChild ("mdia"));
 		} else {
 			if (!TryNewTrackId (moov, out trackId))
-				return new ChapterPlan (chpl, children, 0, []);
+				return new ChapterPlan (chpl, children, -1, []);
 			timescale = movieTimescale;
 		}
 
@@ -1052,7 +1061,8 @@ internal static class Mp4ChapterCodec
 		// A replaced track keeps its id, so the references that found it still do, and its trex stays valid.
 		if (existing is null)
 			ReplaceReferences (children, new HashSet<uint> { trackId }, add: true);
-		return new ChapterPlan (chpl, children, trackId, samples, existing is null ? null : [existing.Id], null, existing is null ? [] : [existing]);
+		var ordinal = children.Where (b => b.Type == "trak").ToList ().IndexOf (trak);
+		return new ChapterPlan (chpl, children, ordinal, samples, null, existing is null ? [] : [existing]);
 	}
 
 	/// <summary>
@@ -1115,9 +1125,7 @@ internal static class Mp4ChapterCodec
 		long boxEnd,
 		IReadOnlyList<Mp4Box> topLevel)
 	{
-		var replaced = plan.ReplacedTraks ?? FindChapterTracks (moov, textOnly: false)
-			.Where (t => plan.ReplacedTrackIds.Contains (t.Id))
-			.ToList ();
+		var replaced = plan.ReplacedTraks;
 		if (replaced.Count == 0)
 			return false;
 
@@ -1467,23 +1475,23 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// Writes the chapter track's single chunk offset into a rendered moov.
-	/// Finds the trak whose tkhd has <paramref name="trackId"/>, then its stco.
+	/// Writes the chapter track's single chunk offset into a rendered moov. Finds the trak at
+	/// <paramref name="trakOrdinal"/> among moov's traks (by position, not track_ID, which a file can reuse),
+	/// then its stco.
 	/// </summary>
-	public static bool WriteChunkOffset (Span<byte> moov, uint trackId, uint offset)
+	public static bool WriteChunkOffset (Span<byte> moov, int trakOrdinal, uint offset)
 	{
 		var boxes = Children (moov);
-		if (boxes.Count == 0 || boxes[0].Type != "moov")
+		if (boxes.Count == 0 || boxes[0].Type != "moov" || trakOrdinal < 0)
 			return false;
 
 		var body = moov.Slice (boxes[0].Header, boxes[0].Length - boxes[0].Header);
+		var ordinal = -1;
 		foreach (var (start, length, header, type) in Children (body)) {
-			if (type != "trak")
+			if (type != "trak" || ++ordinal != trakOrdinal)
 				continue;
 
 			var trak = body.Slice (start + header, length - header);
-			if (!TryTrackIdFromBytes (trak, out var id) || id != trackId)
-				continue;
 
 			var stco = FindPath (trak, "mdia", "minf", "stbl", "stco");
 			if (stco.Length < 12 || BinaryPrimitives.ReadUInt32BigEndian (stco.Slice (4)) != 1)
@@ -1874,34 +1882,30 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// Adds the id in <paramref name="trackIds"/> to the <c>chap</c> reference of every sound and video track
+	/// Adds the id in <paramref name="trackIds"/> to the <c>chap</c> reference of every sound and video trak
 	/// that is not itself chapter media, or removes every id in <paramref name="trackIds"/> from every
-	/// <c>chap</c> reference. An emptied <c>chap</c> and an emptied <c>tref</c> are dropped. Other reference
-	/// types are kept byte for byte.
+	/// <c>chap</c> reference. An emptied
+	/// <c>chap</c> and an emptied <c>tref</c> are dropped. Other reference types are kept byte for byte.
 	/// </summary>
+	/// <remarks>
+	/// Chapter media is the set of trak objects <see cref="FindChapterTracks(Mp4Box, bool)"/> returns for any
+	/// chapter media: what a chap reference resolves to, unless that trak holds a chap of its own or is a sound
+	/// trak. Apple files keep chapter images in such a video trak, and it gets no reference. A trak that only
+	/// shares an ID with chapter media is not chapter media and gets one. The new chapter trak is a text trak,
+	/// so it never references itself. Removing: the removed traks are
+	/// already gone from <paramref name="children"/>, and every remaining trak drops its chap entries for
+	/// those IDs, which named them, even a trak that shares one.
+	/// </remarks>
 	static void ReplaceReferences (List<Mp4Box> children, HashSet<uint> trackIds, bool add)
 	{
-		// A track that a chap reference names is chapter media (Apple files hold chapter images in a video
-		// track). It is not a presentation track and does not get a chap reference of its own.
-		var chapterMedia = new HashSet<uint> ();
-		foreach (var child in children) {
-			var tref = child.Type == "trak" ? child.FindChild ("tref") : null;
-			if (tref is not null)
-				chapterMedia.UnionWith (ReadChapterReferences (tref.Data.Span));
-		}
-
+		var chapterMedia = add ? new TrakSet (FindChapterTracks (children, textOnly: false)) : null;
 		for (var i = 0; i < children.Count; i++) {
 			var trak = children[i];
 			if (trak.Type != "trak")
 				continue;
-			// Adding: the new chapter track does not reference itself. Removing: the removed traks are already gone
-			// from children, so every remaining trak drops its chap entries for those IDs, even one that shares an ID.
-			var hasId = TryReadTrackId (trak, out var id);
-			if (add && hasId && trackIds.Contains (id))
-				continue;
 
 			var tref = trak.FindChild ("tref");
-			if (add && (!IsAudioOrVideo (trak) || chapterMedia.Contains (id)))
+			if (add && (!IsAudioOrVideo (trak) || chapterMedia!.Contains (trak)))
 				continue;
 			if (!add && tref is null)
 				continue;
@@ -2054,17 +2058,6 @@ internal static class Mp4ChapterCodec
 
 		id = BinaryPrimitives.ReadUInt32BigEndian (tkhd.Slice (at));
 		return true;
-	}
-
-	static bool TryTrackIdFromBytes (ReadOnlySpan<byte> trakBody, out uint id)
-	{
-		id = 0;
-		foreach (var (start, length, header, type) in Children (trakBody)) {
-			if (type == "tkhd")
-				return TryTrackIdFromTkhd (trakBody.Slice (start + header, length - header), out id);
-		}
-
-		return false;
 	}
 
 	/// <summary>
@@ -2413,22 +2406,21 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// The result of <see cref="Plan"/>. <see cref="TrackId"/> is 0 when no chapter track is written.
+	/// The result of <see cref="Plan"/>. <see cref="TrakOrdinal"/> is -1 when no chapter track is written.
 	/// <see cref="Chpl"/> is empty when chpl is removed.
 	/// </summary>
 	internal sealed class ChapterPlan (
 		BinaryData chpl,
 		List<Mp4Box> children,
-		uint trackId,
+		int trakOrdinal,
 		byte[] sampleData,
-		HashSet<uint>? replaced = null,
 		string? error = null,
 		List<ChapterTrack>? replacedTraks = null)
 	{
 		/// <summary>
-		/// The trak objects this plan rebuilds or removes, or null to find them by <see cref="ReplacedTrackIds"/>.
+		/// The trak objects this plan rebuilds or removes. Their old samples are no longer referenced.
 		/// </summary>
-		public List<ChapterTrack>? ReplacedTraks { get; } = replacedTraks;
+		public List<ChapterTrack> ReplacedTraks { get; } = replacedTraks ?? [];
 
 		/// <summary>Why the chapters cannot be written, or null.</summary>
 		public string? Error { get; } = error;
@@ -2436,16 +2428,17 @@ internal static class Mp4ChapterCodec
 		/// <summary>Lookups a clear made in the set of removed traks: a step count for the work-bound tests.</summary>
 		public long TrakLookups { get; init; }
 
-		public static ChapterPlan Refused (string error) => new (BinaryData.Empty, [], 0, [], null, error);
-
-		/// <summary>The chapter tracks this plan rebuilds or removes. Their old samples are no longer referenced.</summary>
-		public HashSet<uint> ReplacedTrackIds { get; } = replaced ?? [];
+		public static ChapterPlan Refused (string error) => new (BinaryData.Empty, [], -1, [], error);
 
 		public BinaryData Chpl { get; } = chpl;
 
 		public List<Mp4Box> Children { get; } = children;
 
-		public uint TrackId { get; } = trackId;
+		/// <summary>
+		/// The position of the new or rebuilt chapter trak among the traks in <see cref="Children"/>, or -1 when
+		/// there are no chapter samples to write. The rendered moov keeps that order.
+		/// </summary>
+		public int TrakOrdinal { get; } = trakOrdinal;
 
 		public byte[] SampleData { get; } = sampleData;
 	}
