@@ -430,8 +430,12 @@ public sealed class AacFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Saves the file to the specified path, re-reading the original bytes from <see cref="SourcePath"/>.
+	/// Saves the file to the specified path, copying the audio from <see cref="SourcePath"/>.
 	/// </summary>
+	/// <remarks>
+	/// Writes the same bytes as <see cref="Render"/>: the current ID3v2 tag, the original audio, the current
+	/// APEv2 tag, any Lyrics3 block in front of ID3v1, and the current ID3v1 tag. The audio is copied in chunks.
+	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <returns>A result indicating success or failure.</returns>
@@ -440,12 +444,7 @@ public sealed class AacFile : IMediaFile
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
-
-		return SaveToFile (path, readResult.Data!.Value.Span, fs);
+		return SaveFromSource (path, fileSystem ?? _sourceFileSystem);
 	}
 
 	/// <summary>
@@ -462,28 +461,88 @@ public sealed class AacFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Asynchronously saves the file to the specified path, re-reading the original bytes from <see cref="SourcePath"/>.
+	/// Asynchronously saves the file to the specified path, copying the audio from <see cref="SourcePath"/>.
 	/// </summary>
+	/// <remarks>
+	/// A source that cannot be opened or rendered is reported before cancellation. A token that is already cancelled returns before the destination is replaced. The copy itself runs to completion.
+	/// The bytes match <see cref="Render"/>.
+	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken)
-			.ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+		return Task.FromResult (SaveFromSource (path, fileSystem ?? _sourceFileSystem, cancellationToken));
+	}
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken)
-			.ConfigureAwait (false);
+	// Same bytes as Render. The audio and any Lyrics3 block are copied; the tags are rendered.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			var opened = source!;
+			var fileLength = opened.Length;
+			var audioStart = Math.Min ((long)Id3v2Size, fileLength);
+			var tail = AacTail.Locate (
+				new AacTailSource (opened.Stream, fileLength),
+				Math.Min (_audioStart, fileLength),
+				readTags: false);
+			var audioEnd = Math.Max (tail.AudioEnd, audioStart);
+			var id3v2 = Id3v2Tag?.Render () ?? BinaryData.Empty;
+			var ape = ApeTag?.RenderWithOptions (includeHeader: !ReferenceEquals (ApeTag, _footerOnlyApeTag)) ?? BinaryData.Empty;
+			var id3v1 = Id3v1Tag?.Render () ?? BinaryData.Empty;
+			long lyricsStart = 0;
+			long lyricsLength = 0;
+			if (Id3v1Tag is not null && tail.LyricsStart >= audioEnd && tail.Id3v1Start > tail.LyricsStart) {
+				lyricsStart = tail.LyricsStart;
+				lyricsLength = tail.Id3v1Start - tail.LyricsStart;
+			}
+
+			var audioLength = audioEnd - audioStart;
+			if (id3v2.IsEmpty && audioLength <= 0 && ape.IsEmpty && lyricsLength <= 0 && id3v1.IsEmpty)
+				return FileWriteResult.Failure ("Failed to render AAC file");
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var stream = opened.Stream;
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				StreamCopy.Write (output, id3v2.Span, copyBuffer);
+				CopyRange (stream, output, audioStart, audioLength, copyBuffer);
+				StreamCopy.Write (output, ape.Span, copyBuffer);
+				CopyRange (stream, output, lyricsStart, lyricsLength, copyBuffer);
+				StreamCopy.Write (output, id3v1.Span, copyBuffer);
+			});
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	static void CopyRange (Stream source, Stream destination, long start, long count, byte[] chunk)
+	{
+		if (count <= 0)
+			return;
+
+		if (source.Position != start)
+			source.Position = start;
+		StreamCopy.Copy (source, destination, count, chunk);
 	}
 
 	/// <summary>

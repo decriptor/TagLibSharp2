@@ -708,15 +708,16 @@ public sealed class MpegPsFile : IMediaFile
 	/// <returns>The new file bytes, or empty when <paramref name="originalData"/> is not that file.</returns>
 	public BinaryData Render (ReadOnlySpan<byte> originalData)
 	{
-		if (originalData.Length != _fileLength || _footerStart > originalData.Length || _appendedEnd > _footerStart
-			|| _appendedStart > _appendedEnd || _streamEnd > _appendedStart || Id3v2Size > _streamEnd)
+		if (!SameFile (originalData.Length))
 			return BinaryData.Empty;
 		if (MpegPsScanner.StreamStart (originalData.Slice (Id3v2Size, (int)Math.Min (64, _streamEnd - Id3v2Size))) < 0)
 			return BinaryData.Empty;
 
-		var appended = RenderAppendedId3v2 (originalData, out var appendedUnchanged);
-		var head = RenderPrependedId3v2 (originalData, appendedUnchanged);
-		var foot = RenderId3v1 (originalData);
+		var appended = RenderAppendedId3v2 (
+			originalData.Slice ((int)_appendedStart, (int)(_appendedEnd - _appendedStart)),
+			out var appendedUnchanged);
+		var head = RenderPrependedId3v2 (originalData.Slice (0, Id3v2Size), appendedUnchanged);
+		var foot = RenderId3v1 (Id3v1Original (originalData));
 		var stream = originalData.Slice (Id3v2Size, (int)(_appendedStart - Id3v2Size));
 		var between = originalData.Slice ((int)_appendedEnd, (int)(_footerStart - _appendedEnd));
 		using var builder = new BinaryDataBuilder (head.Length + stream.Length + appended.Length + between.Length + foot.Length);
@@ -728,6 +729,19 @@ public sealed class MpegPsFile : IMediaFile
 		return builder.ToBinaryData ();
 	}
 
+	bool SameFile (long length) =>
+		length == _fileLength
+		&& _footerStart <= length
+		&& _appendedEnd <= _footerStart
+		&& _appendedStart <= _appendedEnd
+		&& _streamEnd <= _appendedStart
+		&& Id3v2Size <= _streamEnd;
+
+	ReadOnlySpan<byte> Id3v1Original (ReadOnlySpan<byte> originalData) =>
+		Id3v1Tag is not null && ReferenceEquals (Id3v1Tag, _readId3v1)
+			? originalData.Slice (originalData.Length - Id3v1Size)
+			: [];
+
 	/// <summary>
 	/// A tag read from the end of the file is written back there while it is a v2.4 tag:
 	/// only v2.4 has the footer an appended tag needs (ID3v2.4 structure 3.4). It has no padding,
@@ -737,9 +751,8 @@ public sealed class MpegPsFile : IMediaFile
 
 	// The tag that was read and still renders as it did keeps its original bytes, padding included.
 	// A prepended tag whose bytes did not parse stays until a tag is written in front in its place.
-	ReadOnlySpan<byte> RenderPrependedId3v2 (ReadOnlySpan<byte> originalData, bool appendedUnchanged)
+	ReadOnlySpan<byte> RenderPrependedId3v2 (ReadOnlySpan<byte> original, bool appendedUnchanged)
 	{
-		var original = originalData.Slice (0, Id3v2Size);
 		var unparsed = Id3v2Size > 0 && _readId3v2 is null;
 		if (WritesAppended) {
 			if (unparsed)
@@ -756,9 +769,8 @@ public sealed class MpegPsFile : IMediaFile
 		return KeepIfUnchanged (Id3v2Tag, _readId3v2, original, Id3v2Tag.Render (), static tag => tag.Render ());
 	}
 
-	ReadOnlySpan<byte> RenderAppendedId3v2 (ReadOnlySpan<byte> originalData, out bool unchanged)
+	ReadOnlySpan<byte> RenderAppendedId3v2 (ReadOnlySpan<byte> original, out bool unchanged)
 	{
-		var original = originalData.Slice ((int)_appendedStart, (int)(_appendedEnd - _appendedStart));
 		unchanged = true;
 		if (original.IsEmpty || _readAppended is null)
 			return original;
@@ -822,14 +834,13 @@ public sealed class MpegPsFile : IMediaFile
 		return builder.ToBinaryData ();
 	}
 
-	ReadOnlySpan<byte> RenderId3v1 (ReadOnlySpan<byte> originalData)
+	ReadOnlySpan<byte> RenderId3v1 (ReadOnlySpan<byte> original)
 	{
 		if (Id3v1Tag is null)
 			return [];
 
 		var rendered = Id3v1Tag.Render ();
 		if (ReferenceEquals (Id3v1Tag, _readId3v1)) {
-			var original = originalData.Slice (originalData.Length - Id3v1Size);
 			var reread = Id3v1Tag.Read (original);
 			if (reread.IsSuccess && reread.Tag!.Render ().Span.SequenceEqual (rendered.Span))
 				return original;
@@ -855,8 +866,9 @@ public sealed class MpegPsFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Saves the file to <paramref name="path"/>, re-reading the stream from <see cref="SourcePath"/>.
+	/// Saves the file to <paramref name="path"/>, copying the stream from <see cref="SourcePath"/>.
 	/// </summary>
+	/// <remarks>Writes the same bytes as <see cref="Render"/>. The stream is copied in chunks.</remarks>
 	/// <param name="path">The target path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <returns>Whether the write succeeded.</returns>
@@ -865,12 +877,7 @@ public sealed class MpegPsFile : IMediaFile
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var read = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-
-		return SaveToFile (path, read.Data!.Value.Span, fs);
+		return SaveFromSource (path, fileSystem ?? _sourceFileSystem);
 	}
 
 	/// <summary>
@@ -908,26 +915,106 @@ public sealed class MpegPsFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Asynchronously saves the file to <paramref name="path"/>, re-reading the stream from <see cref="SourcePath"/>.
+	/// Asynchronously saves the file to <paramref name="path"/>, copying the stream from <see cref="SourcePath"/>.
 	/// </summary>
+	/// <remarks>
+	/// A source that cannot be opened or rendered is reported before cancellation. A token that is already cancelled returns before the destination is replaced. The copy itself runs to completion.
+	/// The bytes match <see cref="Render"/>.
+	/// </remarks>
 	/// <param name="path">The target path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the write.</param>
 	/// <returns>Whether the write succeeded.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken).ConfigureAwait (false);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
+		return Task.FromResult (SaveFromSource (path, fileSystem ?? _sourceFileSystem, cancellationToken));
+	}
 
-		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+	const string NotTheReadStream = "The original data is not the MPEG stream that was read";
+
+	// Same bytes as Render. Tags are read; the stream and the bytes between the tags are copied.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			var opened = source!;
+			var fileLength = opened.Length;
+			if (!SameFile (fileLength))
+				return FileWriteResult.Failure (NotTheReadStream);
+
+			var appendedCount = _appendedEnd - _appendedStart;
+			if (appendedCount > int.MaxValue)
+				return FileWriteResult.Failure (NotTheReadStream);
+
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var stream = opened.Stream;
+			var probeCount = (int)Math.Min (64, _streamEnd - Id3v2Size);
+			if (probeCount < 0 || MpegPsScanner.StreamStart (ReadRange (stream, Id3v2Size, probeCount, copyBuffer)) < 0)
+				return FileWriteResult.Failure (NotTheReadStream);
+
+			var prepended = ReadRange (stream, 0, Id3v2Size, copyBuffer);
+			var appendedOriginal = ReadRange (stream, _appendedStart, (int)appendedCount, copyBuffer);
+			var id3Original = Id3v1Tag is not null && ReferenceEquals (Id3v1Tag, _readId3v1)
+				? ReadRange (stream, fileLength - Id3v1Size, Id3v1Size, copyBuffer)
+				: [];
+			var appended = RenderAppendedId3v2 (appendedOriginal, out var appendedUnchanged).ToArray ();
+			var head = RenderPrependedId3v2 (prepended, appendedUnchanged).ToArray ();
+			var foot = RenderId3v1 (id3Original).ToArray ();
+			var streamCount = _appendedStart - Id3v2Size;
+			var betweenCount = _footerStart - _appendedEnd;
+			if (head.Length == 0 && streamCount <= 0 && appended.Length == 0 && betweenCount <= 0 && foot.Length == 0)
+				return FileWriteResult.Failure (NotTheReadStream);
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				StreamCopy.Write (output, head, copyBuffer);
+				CopyRange (stream, output, Id3v2Size, streamCount, copyBuffer);
+				StreamCopy.Write (output, appended, copyBuffer);
+				CopyRange (stream, output, _appendedEnd, betweenCount, copyBuffer);
+				StreamCopy.Write (output, foot, copyBuffer);
+			});
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	static byte[] ReadRange (Stream source, long offset, int count, byte[] chunk)
+	{
+		if (count <= 0)
+			return [];
+
+		var bytes = new byte[count];
+		if (source.Position != offset)
+			source.Position = offset;
+		StreamCopy.Read (source, bytes, 0, count, chunk);
+		return bytes;
+	}
+
+	static void CopyRange (Stream source, Stream destination, long start, long count, byte[] chunk)
+	{
+		if (count <= 0)
+			return;
+
+		if (source.Position != start)
+			source.Position = start;
+		StreamCopy.Copy (source, destination, count, chunk);
 	}
 
 	/// <summary>

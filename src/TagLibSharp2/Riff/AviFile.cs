@@ -400,8 +400,8 @@ public sealed class AviFile : IMediaFile
 	/// </returns>
 	/// <remarks>
 	/// The rewritten file is built in memory: one copy of the file when nothing moves, a second when
-	/// the data has to move. The save overloads that re-read <see cref="SourcePath"/> load the whole
-	/// file first, so a file of 2 GiB or more cannot be saved.
+	/// the data has to move. A path save copies the sample data in chunks instead. The RIFF size is
+	/// 32-bit, so a file that would grow past that limit is refused.
 	/// </remarks>
 	public FileWriteResult SaveToFile (string path, ReadOnlySpan<byte> originalData, IFileSystem? fileSystem = null)
 	{
@@ -411,46 +411,18 @@ public sealed class AviFile : IMediaFile
 		return AtomicFileWriter.Write (path, rewritten, fileSystem ?? _sourceFileSystem);
 	}
 
-	/// <summary>Saves the tags into <paramref name="path"/>, re-reading the container from <see cref="SourcePath"/>.</summary>
+	/// <summary>Saves the tags into <paramref name="path"/>, copying the container from <see cref="SourcePath"/>.</summary>
 	/// <param name="path">The destination path.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <returns>The write result.</returns>
+	/// <remarks>Sample bytes are copied in chunks. <see cref="Render"/> and the span overloads still build one buffer.</remarks>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
-
-		return WriteOwned (path, readResult.Data!.Value, fs);
+		return SaveStreaming (path, fileSystem ?? _sourceFileSystem, CancellationToken.None);
 	}
-
-	/// <summary>
-	/// Saves into bytes this instance just re-read. A save that moves nothing writes the tags into
-	/// that buffer instead of copying the file, but only when the buffer is known to be a fresh copy.
-	/// </summary>
-	FileWriteResult WriteOwned (string path, ReadOnlyMemory<byte> data, IFileSystem? fileSystem)
-	{
-		if (!AviRewrite.TryRewrite (data.Span, Owned (data, fileSystem), InfoTag, Id3v2Tag, out var rewritten, out var error))
-			return FileWriteResult.Failure (error);
-
-		return AtomicFileWriter.Write (path, rewritten, fileSystem);
-	}
-
-	/// <summary>
-	/// The array behind <paramref name="data"/>, when this save may write into it. IFileSystem.ReadAllBytes
-	/// does not promise a fresh array (an in-memory file system can return the file itself), so only
-	/// <see cref="DefaultFileSystem"/>, whose File.ReadAllBytes allocates one, qualifies.
-	/// </summary>
-	static byte[]? Owned (ReadOnlyMemory<byte> data, IFileSystem? fileSystem) =>
-		(fileSystem is null || fileSystem is DefaultFileSystem)
-		&& System.Runtime.InteropServices.MemoryMarshal.TryGetArray (data, out var segment)
-			&& segment.Offset == 0 && segment.Array is { } array && segment.Count == array.Length
-			? array
-			: null;
 
 	/// <summary>Saves the tags back to <see cref="SourcePath"/>.</summary>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
@@ -481,29 +453,58 @@ public sealed class AviFile : IMediaFile
 		return AtomicFileWriter.WriteAsync (path, rewritten, fileSystem ?? _sourceFileSystem, cancellationToken);
 	}
 
-	/// <summary>Saves the tags into <paramref name="path"/>, re-reading the container from <see cref="SourcePath"/>.</summary>
+	/// <summary>Saves the tags into <paramref name="path"/>, copying the container from <see cref="SourcePath"/>.</summary>
 	/// <param name="path">The destination path.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The write result.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	/// <remarks>Sample bytes are copied in chunks. The span overload still builds one buffer.</remarks>
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken).ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
+		return Task.FromResult (SaveStreaming (path, fileSystem ?? _sourceFileSystem, cancellationToken));
+	}
 
-		var data = readResult.Data!.Value;
-		if (!AviRewrite.TryRewrite (data.Span, Owned (data, fs), InfoTag, Id3v2Tag, out var rewritten, out var error))
-			return FileWriteResult.Failure (error);
+	// Copies the file in chunks. movi payload is not read into one buffer. Indexes are patched
+	// from values taken off the source, because the destination stream is not readable.
+	FileWriteResult SaveStreaming (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var openError))
+				return openError;
 
-		return await AtomicFileWriter.WriteAsync (path, rewritten, fs, cancellationToken).ConfigureAwait (false);
+			var opened = source!;
+			chunk = StreamCopy.Rent ();
+			AviRewrite.StreamPlan? plan;
+			try {
+				if (!AviRewrite.TryPlanStream (opened.Stream, opened.Length, InfoTag, Id3v2Tag, chunk, out plan, out var error))
+					return FileWriteResult.Failure (error);
+			} catch (UnauthorizedAccessException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Access denied: {ex.Message}");
+			} catch (IOException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Failed to read file: {ex.Message}");
+			}
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var copy = chunk;
+			var rewrite = plan!;
+			var written = PathSave.Replace (path, opened, output => AviRewrite.WritePlan (opened.Stream, output, rewrite, copy));
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
 	}
 
 	/// <summary>Saves the tags back to <see cref="SourcePath"/> asynchronously.</summary>

@@ -662,27 +662,35 @@ public sealed class OggOpusFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Saves the file to the specified path, re-reading from the source file.
+	/// Saves the file to the specified path, copying audio from the source file one page at a time.
 	/// </summary>
 	/// <remarks>
-	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
-	/// and saves to the specified path. Requires that the file was read using
-	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// Header pages are rebuilt from <see cref="SourcePath"/>. Each audio page is rewritten in a
+	/// reused buffer. Requires that the file was read using <see cref="ReadFromFile"/>,
+	/// <see cref="ReadFromFileAsync"/>, or <see cref="MediaFile.Read(string, IFileSystem?)"/>.
 	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <returns>A result indicating success or failure.</returns>
-	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
+	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null) =>
+		SaveStreaming (path, fileSystem, default);
+
+	FileWriteResult SaveStreaming (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
-
-		return SaveToFile (path, readResult.Data!.Value.Span, fs);
+		return OggStreamSave.Save (
+			SourcePath!,
+			path,
+			fileSystem ?? _sourceFileSystem,
+			OggHeaderKind.Opus,
+			headers => {
+				var rendered = Render (headers);
+				return rendered.IsEmpty ? null : rendered.ToArray ();
+			},
+			"Failed to render Ogg Opus file",
+			cancellationToken);
 	}
 
 	/// <summary>
@@ -710,23 +718,11 @@ public sealed class OggOpusFile : IMediaFile
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
-		CancellationToken cancellationToken = default)
-	{
-		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
-
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken)
-			.ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
-
-		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken)
-			.ConfigureAwait (false);
-	}
+		CancellationToken cancellationToken = default) =>
+		Task.FromResult (SaveStreaming (path, fileSystem, cancellationToken));
 
 	/// <summary>
 	/// Asynchronously saves the file back to its source path.

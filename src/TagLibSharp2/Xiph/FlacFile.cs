@@ -49,6 +49,17 @@ public sealed class FlacFile : IMediaFile
 	IFileSystem? _sourceFileSystem;
 
 	/// <summary>
+	/// Remembers the file a stream read came from so a later path save can copy the audio.
+	/// </summary>
+	/// <param name="path">Path that was opened.</param>
+	/// <param name="fileSystem">File system that opened <paramref name="path"/>.</param>
+	internal void RememberSource (string path, IFileSystem? fileSystem)
+	{
+		SourcePath = path;
+		_sourceFileSystem = fileSystem;
+	}
+
+	/// <summary>
 	/// Gets the size of the metadata section in bytes (magic + all metadata blocks).
 	/// </summary>
 	public int MetadataSize { get; private set; }
@@ -665,30 +676,24 @@ public sealed class FlacFile : IMediaFile
 	/// Saves the file to the specified path asynchronously, re-reading from the source file.
 	/// </summary>
 	/// <remarks>
-	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
-	/// and saves to the specified path. Requires that the file was read using
-	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// Copies the audio from <see cref="SourcePath"/> and writes the current metadata.
+	/// Requires that the file was read from a path.
+	/// A source that cannot be opened or rendered is reported before cancellation. A token that is already cancelled returns before the destination is replaced.
+	/// The copy itself runs to completion.
 	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken)
-			.ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
-
-		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
-			.ConfigureAwait (false);
+		return Task.FromResult (SaveFromSource (path, fileSystem ?? _sourceFileSystem, cancellationToken));
 	}
 
 	/// <summary>
@@ -716,9 +721,8 @@ public sealed class FlacFile : IMediaFile
 	/// Saves the file to the specified path, re-reading from the source file.
 	/// </summary>
 	/// <remarks>
-	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
-	/// and saves to the specified path. Requires that the file was read using
-	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// Copies the audio from <see cref="SourcePath"/> and writes the current metadata.
+	/// Requires that the file was read from a path.
 	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
@@ -728,12 +732,49 @@ public sealed class FlacFile : IMediaFile
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+		return SaveFromSource (path, fileSystem ?? _sourceFileSystem);
+	}
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+	// Same bytes as Render: rebuilt metadata, then the audio that follows MetadataSize.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			if (source!.Length < MetadataSize)
+				return FileWriteResult.Failure ("Failed to render FLAC file");
+
+			var metadata = RenderWithAudio (ReadOnlySpan<byte>.Empty);
+			if (metadata.IsEmpty)
+				return FileWriteResult.Failure ("Failed to render FLAC file");
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var audioLength = source.Length - MetadataSize;
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var opened = source;
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				StreamCopy.Write (output, metadata.Span, copyBuffer);
+				if (audioLength <= 0)
+					return;
+
+				var audioStart = (long)MetadataSize;
+				if (opened.Stream.Position != audioStart)
+					opened.Stream.Position = audioStart;
+				StreamCopy.Copy (opened.Stream, output, audioLength, copyBuffer);
+			});
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
 	}
 
 	/// <summary>
@@ -765,8 +806,12 @@ public sealed class FlacFile : IMediaFile
 		if (originalData.Length < MetadataSize)
 			return BinaryData.Empty;
 
-		var audioData = originalData.Slice (MetadataSize);
+		return RenderWithAudio (originalData.Slice (MetadataSize));
+	}
 
+	// Metadata is rebuilt from the blocks already in memory. The audio span is appended unchanged.
+	BinaryData RenderWithAudio (ReadOnlySpan<byte> audioData)
+	{
 		// Render metadata blocks
 		var vorbisCommentData = VorbisComment?.Render () ?? BinaryData.Empty;
 		var cueSheetData = CueSheet?.Render () ?? BinaryData.Empty;

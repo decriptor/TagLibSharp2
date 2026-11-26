@@ -448,18 +448,14 @@ public sealed class MatroskaFile : IMediaFile
 		return AtomicFileWriter.Write (path, rewritten, fileSystem);
 	}
 
-	/// <summary>Saves tags into <paramref name="path"/>, re-reading the container from <see cref="SourcePath"/>.</summary>
+	/// <summary>Saves tags into <paramref name="path"/>, copying the container from <see cref="SourcePath"/>.</summary>
+	/// <remarks>Cluster bytes are copied in chunks. <see cref="Render"/> and the span overloads still build one buffer.</remarks>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
-
-		return SaveToFile (path, readResult.Data!.Value.Span, fs);
+		return SaveStreaming (path, fileSystem ?? _sourceFileSystem, CancellationToken.None);
 	}
 
 	/// <summary>Saves tags back to <see cref="SourcePath"/>.</summary>
@@ -485,21 +481,60 @@ public sealed class MatroskaFile : IMediaFile
 		return AtomicFileWriter.WriteAsync (path, rewritten, fileSystem, cancellationToken);
 	}
 
-	/// <summary>Saves tags into <paramref name="path"/>, re-reading the container from <see cref="SourcePath"/>.</summary>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	/// <summary>Saves tags into <paramref name="path"/>, copying the container from <see cref="SourcePath"/>.</summary>
+	/// <remarks>Cluster bytes are copied in chunks. The span overload still builds one buffer.</remarks>
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken).ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ("Failed to re-read source file: " + readResult.Error);
+		return Task.FromResult (SaveStreaming (path, fileSystem ?? _sourceFileSystem, cancellationToken));
+	}
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+	// Cluster payloads stay on the source. The destination is not readable, so a CRC is hashed
+	// before it is written.
+	FileWriteResult SaveStreaming (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var openError))
+				return openError;
+
+			var opened = source!;
+			chunk = StreamCopy.Rent ();
+			List<TrackFlagEdit>? edits = null;
+			foreach (var track in Tracks) {
+				if (track.IsEnabledAssigned)
+					(edits ??= new List<TrackFlagEdit> ()).Add (new TrackFlagEdit (track.Ordinal, track.TrackNumber, track.TrackUid, track.IsEnabled));
+			}
+
+			MatroskaRewrite.StreamPlan? plan;
+			try {
+				if (!MatroskaRewrite.TryPlanStream (opened.Stream, opened.Length, chunk, Tag, Chapters, edits, out plan, out var error))
+					return FileWriteResult.Failure (error);
+			} catch (UnauthorizedAccessException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Access denied: {ex.Message}");
+			} catch (IOException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Failed to read file: {ex.Message}");
+			}
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var copy = chunk;
+			var rewrite = plan!;
+			var written = PathSave.Replace (path, opened, output => MatroskaRewrite.WritePlan (opened.Stream, output, rewrite, copy));
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
 	}
 
 	/// <summary>Saves tags back to <see cref="SourcePath"/>.</summary>

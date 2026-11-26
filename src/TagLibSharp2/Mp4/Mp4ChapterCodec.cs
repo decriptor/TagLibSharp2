@@ -927,6 +927,13 @@ internal static class Mp4ChapterCodec
 		Mp4Box moov,
 		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
 		ReadOnlySpan<byte> file,
+		TimeSpan duration) =>
+		Read (moov, fragments, new FileBytes (file), duration);
+
+	internal static List<Mp4Chapter> Read (
+		Mp4Box moov,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		FileBytes file,
 		TimeSpan duration)
 	{
 		var chpl = ReadChpl (moov);
@@ -936,8 +943,8 @@ internal static class Mp4ChapterCodec
 		if (layout is not null) {
 			titles = new List<SampleText?> (layout.Samples.Count);
 			foreach (var sample in layout.Samples) {
-				var inFile = sample.Offset >= 0 && sample.Offset <= file.Length - sample.ReadLength;
-				titles.Add (inFile ? Decode (file.Slice ((int)sample.Offset, sample.ReadLength)) : null);
+				var inFile = sample.Offset >= 0 && sample.ReadLength <= file.Length - sample.Offset;
+				titles.Add (inFile ? Decode (file.Slice (sample.Offset, sample.ReadLength)) : null);
 			}
 		}
 
@@ -1021,7 +1028,16 @@ internal static class Mp4ChapterCodec
 		IReadOnlyList<Mp4Chapter> chapters,
 		TimeSpan duration,
 		bool quickTime,
-		ReadOnlySpan<byte> file = default)
+		ReadOnlySpan<byte> file = default) =>
+		Plan (moov, fragments, chapters, duration, quickTime, new FileBytes (file));
+
+	internal static ChapterPlan Plan (
+		Mp4Box moov,
+		IReadOnlyList<(Mp4Box Moof, long Start)> fragments,
+		IReadOnlyList<Mp4Chapter> chapters,
+		TimeSpan duration,
+		bool quickTime,
+		FileBytes file)
 	{
 		var chapterTracks = FindChapterTracks (moov);
 		var existing = chapterTracks.Count > 0 ? chapterTracks[0] : null;
@@ -1134,7 +1150,10 @@ internal static class Mp4ChapterCodec
 	/// True when a chap reference names a title track after the first one (see <see cref="ClassifyTextTrack"/>):
 	/// a set would remove it, so setting the list the file already reads is not a no-op there.
 	/// </summary>
-	public static bool HasExtraTitleTracks (Mp4Box moov, ReadOnlySpan<byte> file)
+	public static bool HasExtraTitleTracks (Mp4Box moov, ReadOnlySpan<byte> file) =>
+		HasExtraTitleTracks (moov, new FileBytes (file));
+
+	internal static bool HasExtraTitleTracks (Mp4Box moov, FileBytes file)
 	{
 		var tracks = FindChapterTracks (moov);
 		var budget = new StepBudget (file.Length);
@@ -1167,7 +1186,7 @@ internal static class Mp4ChapterCodec
 	/// <paramref name="budget"/>, and no sample table is copied, so the work across every extra track is
 	/// bounded by the file's length.
 	/// </summary>
-	static TextTrackKind ClassifyTextTrack (Mp4Box trak, ReadOnlySpan<byte> file, StepBudget budget)
+	static TextTrackKind ClassifyTextTrack (Mp4Box trak, FileBytes file, StepBudget budget)
 	{
 		var stbl = trak.FindChild ("mdia")?.FindChild ("minf")?.FindChild ("stbl");
 		var co64 = stbl?.FindChild ("co64");
@@ -1195,9 +1214,9 @@ internal static class Mp4ChapterCodec
 				if (!budget.Take () || !sizes.TrySum (sample, 1, out var size))
 					return TextTrackKind.Unknown;
 				var readLength = (int)Math.Min (size, SampleReadLimit);
-				if (offset < 0 || offset > file.Length - readLength)
+				if (offset < 0 || readLength > file.Length - offset)
 					return TextTrackKind.Unknown;
-				if (HasHyperText (file.Slice ((int)offset, readLength), budget))
+				if (HasHyperText (file.Slice (offset, readLength), budget))
 					return TextTrackKind.Url;
 				offset += size;
 			}
@@ -2581,7 +2600,7 @@ internal static class Mp4ChapterCodec
 	}
 
 	/// <summary>
-	/// The result of <see cref="Plan"/>. <see cref="TrakOrdinal"/> is -1 when no chapter track is written.
+	/// The result of planning a chapter save. <see cref="TrakOrdinal"/> is -1 when no chapter track is written.
 	/// <see cref="Chpl"/> is empty when chpl is removed.
 	/// </summary>
 	internal sealed class ChapterPlan (
@@ -2622,5 +2641,52 @@ internal static class Mp4ChapterCodec
 		public int TrakOrdinal { get; } = trakOrdinal;
 
 		public byte[] SampleData { get; } = sampleData;
+	}
+
+	/// <summary>
+	/// A file as a span, or as a stream plus a length. <see cref="Slice"/> of a stream reads that window
+	/// and no more; each read is at most <see cref="StreamCopy.ChunkSize"/>. The returned span is valid
+	/// until the next <see cref="Slice"/>.
+	/// </summary>
+	internal readonly ref struct FileBytes
+	{
+		readonly ReadOnlySpan<byte> _span;
+		readonly Stream? _stream;
+		readonly byte[]? _chunk;
+
+		public FileBytes (ReadOnlySpan<byte> span)
+		{
+			_span = span;
+			Length = span.Length;
+		}
+
+		// chunk is a StreamCopy.Rent buffer. Only its first ChunkSize bytes are used.
+		public FileBytes (Stream stream, long length, byte[] chunk)
+		{
+			_stream = stream;
+			_chunk = chunk;
+			Length = length;
+		}
+
+		public long Length { get; }
+
+		public ReadOnlySpan<byte> Slice (long offset, int count)
+		{
+			if (_stream is null)
+				return _span.Slice ((int)offset, count);
+
+			var dest = count <= StreamCopy.ChunkSize ? _chunk! : new byte[count];
+			if (_stream.Position != offset)
+				_stream.Position = offset;
+			var read = 0;
+			while (read < count) {
+				var n = _stream.Read (dest, read, Math.Min (StreamCopy.ChunkSize, count - read));
+				if (n <= 0)
+					throw new EndOfStreamException ("The source ended before the requested bytes were copied");
+				read += n;
+			}
+
+			return dest.AsSpan (0, count);
+		}
 	}
 }

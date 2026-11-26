@@ -617,18 +617,20 @@ public sealed class MusepackFile : IMediaFile
 	/// <summary>
 	/// Save the file to a new path using internally stored data.
 	/// </summary>
+	/// <remarks>
+	/// When the audio was left on disk, copies it from <see cref="SourcePath"/> and writes the current APE tag.
+	/// A file read from a byte array still renders from memory.
+	/// </remarks>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
 			return SaveToFile (path, _originalData, fs);
-		if (SourcePath is not { Length: > 0 } source)
+		if (SourcePath is not { Length: > 0 })
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = FileHelper.SafeReadAllBytes (source, fs);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-		return SaveToFile (path, read.Data!.Value.Span, fs);
+		var tag = ApeTag is null ? [] : ApeTag.Render ().ToArray ();
+		return ApeTagLocation.WriteFromSource (SourcePath, path, fs, tag);
 	}
 
 	/// <summary>
@@ -664,21 +666,24 @@ public sealed class MusepackFile : IMediaFile
 	/// <summary>
 	/// Save the file asynchronously using internally stored data.
 	/// </summary>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	/// <remarks>
+	/// When the audio was left on disk, copies it from <see cref="SourcePath"/> and writes the current APE tag.
+	/// A source that cannot be opened is reported before cancellation. A token that is already cancelled returns before the destination is replaced.
+	/// The copy itself runs to completion.
+	/// </remarks>
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
-			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
-		if (SourcePath is not { Length: > 0 } source)
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return SaveToFileAsync (path, _originalData, fs, cancellationToken);
+		if (SourcePath is not { Length: > 0 })
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+		var tag = ApeTag is null ? [] : ApeTag.Render ().ToArray ();
+		return Task.FromResult (ApeTagLocation.WriteFromSource (SourcePath, path, fs, tag, cancellationToken));
 	}
 
 	/// <summary>

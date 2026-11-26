@@ -1,6 +1,9 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Diagnostics.CodeAnalysis;
+using TagLibSharp2.Core;
+
 namespace TagLibSharp2.Ogg;
 
 /// <summary>
@@ -524,6 +527,159 @@ internal static class OggPageHelper
 	}
 
 	/// <summary>
+	/// Copies complete pages from <paramref name="source"/> to <paramref name="destination"/>,
+	/// applying the same serial, sequence, end-of-stream, and CRC update as
+	/// <see cref="RenumberAudioPages"/>.
+	/// </summary>
+	/// <param name="source">Seekable stream positioned at the first audio page.</param>
+	/// <param name="destination">Stream that receives the patched pages.</param>
+	/// <param name="serialNumber">Serial number written onto every page.</param>
+	/// <param name="startSequence">Sequence number of the first audio page.</param>
+	/// <remarks>
+	/// A short read or a header that is not <c>OggS</c> ends the copy. The incomplete tail is
+	/// not written, and only the last complete page gets the end-of-stream bit. The next page
+	/// header is consumed instead of rewound, and reads are filled one maximum page at a time.
+	/// The stream length is read once: on Unix, <see cref="FileStream.Length"/> is an fstat.
+	/// The page buffer is reused.
+	/// </remarks>
+	public static void CopyRenumberedPages (Stream source, Stream destination, uint serialNumber, uint startSequence)
+	{
+		var page = new byte[OggWindow.MaxPageBytes];
+		var peekHeader = new byte[27];
+		var peekSegments = new byte[255];
+		var sequence = startSequence;
+		// Snapshot before wrapping. Later length checks would fstat a FileStream once per page.
+		var left = source.Length - source.Position;
+		using var buffered = new BufferedStream (new NonClosingStream (source), OggWindow.MaxPageBytes);
+
+		if (!TryReadCompletePage (buffered, page, ref left, out var length))
+			return;
+
+		while (true) {
+			var last = !TryReadNextHeader (buffered, peekHeader, peekSegments, ref left, out var segmentCount, out var body);
+			PatchCopiedPage (page.AsSpan (0, length), serialNumber, sequence, last);
+			destination.Write (page, 0, length);
+			if (last)
+				return;
+
+			sequence++;
+			if (!TakePageBody (buffered, page, peekHeader, peekSegments, segmentCount, body, ref left, out length))
+				return;
+		}
+	}
+
+	static bool TryReadCompletePage (Stream source, byte[] page, ref long left, out int length)
+	{
+		length = 0;
+		// RenumberAudioPages enters only while offset < length - 27, so a 27-byte tail is not a page.
+		if (left < 28)
+			return false;
+		if (!ReadExact (source, page, 0, 27) || !IsOggS (page, 0))
+			return false;
+
+		left -= 27;
+		var segmentCount = page[26];
+		if (left < segmentCount)
+			return false;
+		if (segmentCount > 0 && !ReadExact (source, page, 27, segmentCount))
+			return false;
+
+		left -= segmentCount;
+		var body = SegmentSum (page, 27, segmentCount);
+		if (left < body)
+			return false;
+		if (body > 0 && !ReadExact (source, page, 27 + segmentCount, body))
+			return false;
+
+		left -= body;
+		length = 27 + segmentCount + body;
+		return true;
+	}
+
+	/// <summary>
+	/// Reads the next page header and segment table without rewinding.
+	/// A false result has consumed whatever prefix was present; that tail is not a page.
+	/// </summary>
+	static bool TryReadNextHeader (Stream source, byte[] header, byte[] segments, ref long left, out int segmentCount, out int body)
+	{
+		segmentCount = 0;
+		body = 0;
+		if (left < 28)
+			return false;
+
+		var remaining = left;
+		if (!ReadExact (source, header, 0, 27) || !IsOggS (header, 0))
+			return false;
+
+		left -= 27;
+		segmentCount = header[26];
+		if (remaining < 27 + segmentCount)
+			return false;
+		if (segmentCount > 0 && !ReadExact (source, segments, 0, segmentCount))
+			return false;
+
+		left -= segmentCount;
+		body = SegmentSum (segments, 0, segmentCount);
+		return remaining >= 27 + segmentCount + body;
+	}
+
+	static bool TakePageBody (Stream source, byte[] page, byte[] header, byte[] segments, int segmentCount, int body, ref long left, out int length)
+	{
+		Buffer.BlockCopy (header, 0, page, 0, 27);
+		if (segmentCount > 0)
+			Buffer.BlockCopy (segments, 0, page, 27, segmentCount);
+		if (body > 0 && !ReadExact (source, page, 27 + segmentCount, body)) {
+			length = 0;
+			return false;
+		}
+
+		left -= body;
+		length = 27 + segmentCount + body;
+		return true;
+	}
+
+	static void PatchCopiedPage (Span<byte> page, uint serialNumber, uint sequence, bool endOfStream)
+	{
+		page[14] = (byte)serialNumber;
+		page[15] = (byte)(serialNumber >> 8);
+		page[16] = (byte)(serialNumber >> 16);
+		page[17] = (byte)(serialNumber >> 24);
+		page[18] = (byte)sequence;
+		page[19] = (byte)(sequence >> 8);
+		page[20] = (byte)(sequence >> 16);
+		page[21] = (byte)(sequence >> 24);
+		if (endOfStream)
+			page[5] |= 0x04;
+
+		page[22] = 0;
+		page[23] = 0;
+		page[24] = 0;
+		page[25] = 0;
+		var crc = OggCrc.Calculate (page);
+		page[22] = (byte)crc;
+		page[23] = (byte)(crc >> 8);
+		page[24] = (byte)(crc >> 16);
+		page[25] = (byte)(crc >> 24);
+	}
+
+	static bool ReadExact (Stream source, byte[] buffer, int offset, int count) =>
+		count == 0 || StreamBytes.Read (source, buffer, offset, count) == count;
+
+	static bool IsOggS (byte[] data, int offset) =>
+		data[offset] == (byte)'O'
+		&& data[offset + 1] == (byte)'g'
+		&& data[offset + 2] == (byte)'g'
+		&& data[offset + 3] == (byte)'S';
+
+	static int SegmentSum (byte[] data, int offset, int count)
+	{
+		var sum = 0;
+		for (var i = 0; i < count; i++)
+			sum += data[offset + i];
+		return sum;
+	}
+
+	/// <summary>
 	/// Extracts header packets from an Ogg stream.
 	/// </summary>
 	/// <param name="data">The binary data to parse.</param>
@@ -758,6 +914,44 @@ internal static class OggPageHelper
 		foreach (var b in span)
 			list.Add (b);
 #endif
+	}
+
+	/// <summary>
+	/// Forwards reads and keeps <see cref="BufferedStream"/> from disposing the caller's stream.
+	/// </summary>
+	[SuppressMessage ("Reliability", "CA2213:Disposable fields should be disposed", Justification = "The caller's stream stays open after the page copy")]
+	sealed class NonClosingStream : Stream
+	{
+		readonly Stream _inner;
+
+		public NonClosingStream (Stream inner) => _inner = inner;
+
+		public override bool CanRead => _inner.CanRead;
+		public override bool CanSeek => _inner.CanSeek;
+		public override bool CanWrite => _inner.CanWrite;
+		public override long Length => _inner.Length;
+		public override long Position {
+			get => _inner.Position;
+			set => _inner.Position = value;
+		}
+
+		public override void Flush () => _inner.Flush ();
+
+		public override int Read (byte[] buffer, int offset, int count) =>
+			_inner.Read (buffer, offset, count);
+
+#if !NETSTANDARD2_0
+		public override int Read (Span<byte> buffer) => _inner.Read (buffer);
+
+		public override void Write (ReadOnlySpan<byte> buffer) => _inner.Write (buffer);
+#endif
+
+		public override long Seek (long offset, SeekOrigin origin) => _inner.Seek (offset, origin);
+
+		public override void SetLength (long value) => _inner.SetLength (value);
+
+		public override void Write (byte[] buffer, int offset, int count) =>
+			_inner.Write (buffer, offset, count);
 	}
 }
 

@@ -30,6 +30,18 @@ internal readonly ref struct AacTailSource
 		Length = stream.Length;
 	}
 
+	/// <summary>
+	/// A stream whose length is already known. <see cref="Stream.Length"/> is not read.
+	/// </summary>
+	/// <param name="stream">Seekable stream positioned anywhere. Reads seek to the bytes they need.</param>
+	/// <param name="length">Length recorded once by the caller.</param>
+	public AacTailSource (Stream stream, long length)
+	{
+		_span = default;
+		_stream = stream;
+		Length = length;
+	}
+
 	/// <summary>Gets the length of the data.</summary>
 	public long Length { get; }
 

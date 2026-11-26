@@ -410,8 +410,8 @@ public static class MediaFile
 		var format = DetectOpenFormat (stream, peek, pathHint);
 		stream.Position = 0;
 		var result = format switch {
-			MediaFormat.Mp3 => FromMp3 (await Mp3File.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
-			MediaFormat.Flac => FromFlac (await FlacFile.ReadAsync (stream, cancellationToken).ConfigureAwait (false)),
+			MediaFormat.Mp3 => FromMp3 (await Mp3File.ReadAsync (stream, cancellationToken).ConfigureAwait (false), sourcePath, fileSystem),
+			MediaFormat.Flac => FromFlac (await FlacFile.ReadAsync (stream, cancellationToken).ConfigureAwait (false), sourcePath, fileSystem),
 			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.MpegPs => FromMpegPs (await MpegPsFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Audible => FromAudible (await AudibleFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
@@ -423,8 +423,8 @@ public static class MediaFile
 
 	static MediaFileResult OpenDetected (MediaFormat format, Stream stream, string? sourcePath, IFileSystem? fileSystem, string? pathHint) =>
 		format switch {
-			MediaFormat.Mp3 => FromMp3 (Mp3File.Read (stream)),
-			MediaFormat.Flac => FromFlac (FlacFile.Read (stream)),
+			MediaFormat.Mp3 => FromMp3 (Mp3File.Read (stream), sourcePath, fileSystem),
+			MediaFormat.Flac => FromFlac (FlacFile.Read (stream), sourcePath, fileSystem),
 			MediaFormat.Wav => FromWav (WavFile.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Mp4 => FromMp4 (Mp4File.Read (stream, sourcePath, fileSystem)),
 			MediaFormat.Matroska => FromMatroska (MatroskaFile.Read (stream, sourcePath, fileSystem)),
@@ -453,17 +453,21 @@ public static class MediaFile
 		return result;
 	}
 
-	static MediaFileResult FromMp3 (Mp3FileReadResult result)
+	static MediaFileResult FromMp3 (Mp3FileReadResult result, string? sourcePath = null, IFileSystem? fileSystem = null)
 	{
 		if (!result.IsSuccess || result.File is null)
 			return MediaFileResult.Failure (result.Error ?? "Failed to parse MP3 file");
+		if (sourcePath is { Length: > 0 })
+			result.File.RememberSource (sourcePath, fileSystem);
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Mp3);
 	}
 
-	static MediaFileResult FromFlac (FlacFileReadResult result)
+	static MediaFileResult FromFlac (FlacFileReadResult result, string? sourcePath = null, IFileSystem? fileSystem = null)
 	{
 		if (!result.IsSuccess || result.File is null)
 			return MediaFileResult.Failure (result.Error ?? "Failed to parse FLAC file");
+		if (sourcePath is { Length: > 0 })
+			result.File.RememberSource (sourcePath, fileSystem);
 		return MediaFileResult.Success (result.File, result.File.Tag, MediaFormat.Flac);
 	}
 

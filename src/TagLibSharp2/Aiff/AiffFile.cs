@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
@@ -368,6 +369,7 @@ public sealed class AiffFile : IMediaFile
 
 	/// <summary>
 	/// Reads an AIFF file from a stream. SSND sample bytes stay in the file.
+	/// A path save copies those bytes from the source path when it is set.
 	/// </summary>
 	internal static AiffFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
 	{
@@ -853,6 +855,14 @@ public sealed class AiffFile : IMediaFile
 	/// <returns>The write result.</returns>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
+		if (!IsValid || _skipped.Count == 0)
+			return SaveLoaded (path, fileSystem);
+
+		return SaveFromSource (path, fileSystem, default);
+	}
+
+	FileWriteResult SaveLoaded (string path, IFileSystem? fileSystem)
+	{
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (!TryLoadSkipped (fs, out var skipped))
 			return FileWriteResult.Failure (skipped!);
@@ -911,12 +921,209 @@ public sealed class AiffFile : IMediaFile
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
+		if (!IsValid || _skipped.Count == 0)
+			return SaveLoadedAsync (path, fileSystem, cancellationToken);
+
+		// "Was not loaded" and a short source are decided before the token, matching the sync save.
+		return Task.FromResult (SaveFromSource (path, fileSystem, cancellationToken));
+	}
+
+	Task<FileWriteResult> SaveLoadedAsync (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (!TryLoadSkipped (fs, out var skipped))
 			return Task.FromResult (FileWriteResult.Failure (skipped!));
 
 		var data = Render ();
 		return AtomicFileWriter.WriteAsync (path, data.Memory, fs, cancellationToken);
+	}
+
+	/// <summary>
+	/// Writes the same bytes as <see cref="Render"/> without loading skipped sound data.
+	/// The file system argument is both the read source and the write target, as <see cref="TryLoadSkipped"/> used it.
+	/// </summary>
+	FileWriteResult SaveFromSource (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
+		foreach (var chunk in _skipped) {
+			if (chunk.PresentBytes > int.MaxValue)
+				return FileWriteResult.Failure ("Cannot save an AIFF file whose sound data does not fit in memory.");
+		}
+
+		if (SourcePath is not { Length: > 0 } sourcePath)
+			return FileWriteResult.Failure ("Cannot save an AIFF file whose sound data was not loaded.");
+
+		var fs = fileSystem ?? _sourceFileSystem;
+		var readFs = fs ?? DefaultFileSystem.Instance;
+		OpenedFile? source = null;
+		byte[]? buffer = null;
+		try {
+			if (!TryOpenForSave (readFs, sourcePath, out source, out var openError))
+				return openError;
+
+			var open = source!;
+			if (!SoundStillPresent (open))
+				return FileWriteResult.Failure ("Cannot save an AIFF file whose sound data is no longer in the source file.");
+
+			var output = PlanChunks ();
+			long chunksSize = 0;
+			foreach (var chunk in output)
+				chunksSize += chunk.TotalSize;
+
+			if (chunksSize > int.MaxValue - HeaderSize)
+				throw new InvalidOperationException ("Cannot render an AIFF file larger than supported memory.");
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Operation was cancelled");
+
+			var rented = StreamCopy.Rent ();
+			buffer = rented;
+			var result = AtomicFileWriter.WriteStream (path, fs, outputStream => {
+				try {
+					WritePlanned (outputStream, open.Stream, output, chunksSize, rented);
+				} finally {
+					open.Dispose ();
+				}
+			});
+			return result;
+		} finally {
+			if (buffer is not null)
+				StreamCopy.Return (buffer);
+			source?.Dispose ();
+		}
+	}
+
+	/// <summary>
+	/// Opens <paramref name="path"/> for a streaming save. A missing, unreadable,
+	/// or non-seekable source is a failure result, with no re-read prefix.
+	/// </summary>
+	static bool TryOpenForSave (IFileSystem fileSystem, string path, out OpenedFile? source, out FileWriteResult error)
+	{
+		source = null;
+		if (!fileSystem.FileExists (path)) {
+			error = FileWriteResult.Failure ($"File not found: {path}");
+			return false;
+		}
+
+		Stream? stream = null;
+		try {
+			stream = fileSystem.OpenRead (path);
+			if (!stream.CanSeek) {
+				error = FileWriteResult.Failure ("source is not seekable");
+				return false;
+			}
+
+			var length = stream.Length;
+			source = new OpenedFile (stream, length, fileSystem);
+			stream = null;
+			error = default;
+			return true;
+		} catch (FileNotFoundException) {
+			error = FileWriteResult.Failure ($"File not found: {path}");
+			return false;
+		} catch (IOException ex) {
+			error = FileWriteResult.Failure ($"Failed to read file: {ex.Message}");
+			return false;
+		} catch (UnauthorizedAccessException ex) {
+			error = FileWriteResult.Failure ($"Access denied: {ex.Message}");
+			return false;
+		} finally {
+			stream?.Dispose ();
+		}
+	}
+
+	bool SoundStillPresent (OpenedFile source)
+	{
+		var length = source.Length;
+		foreach (var chunk in _skipped) {
+			if (chunk.Offset < 0 || chunk.Offset > length || length - chunk.Offset < chunk.PresentBytes)
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Same chunk list <see cref="Render"/> builds after skipped sound would have been loaded.
+	/// </summary>
+	List<AiffChunk> PlanChunks ()
+	{
+		var output = new List<AiffChunk> (_chunks.Count + 4);
+		foreach (var chunk in _chunks) {
+			if (IsId3Chunk (chunk.FourCC) || OmitNativeChunk (chunk.FourCC))
+				continue;
+			output.Add (chunk);
+		}
+
+		AppendMarkerNotes (output);
+		if (Id3v2Tag is not null && !Id3v2Tag.IsEmpty) {
+			var id3Data = Id3v2Tag.Render ();
+			if (id3Data.Length > 0)
+				output.Add (new AiffChunk ("ID3 ", id3Data));
+		}
+
+		return output;
+	}
+
+	int FindSkipped (AiffChunk chunk)
+	{
+		for (var index = 0; index < _chunks.Count; index++) {
+			if (!ReferenceEquals (_chunks[index], chunk))
+				continue;
+
+			for (var skipped = 0; skipped < _skipped.Count; skipped++) {
+				if (_skipped[skipped].Index == index)
+					return skipped;
+			}
+
+			return -1;
+		}
+
+		return -1;
+	}
+
+	/// <summary>
+	/// The size field is the declared ckSize. An odd declared size gets a 0 pad that is not copied from the source.
+	/// A short payload is not padded out to that declared size.
+	/// </summary>
+	void WritePlanned (Stream output, Stream source, List<AiffChunk> chunks, long chunksSize, byte[] scratch)
+	{
+		var header = new byte[HeaderSize];
+		header[0] = (byte)'F';
+		header[1] = (byte)'O';
+		header[2] = (byte)'R';
+		header[3] = (byte)'M';
+		BinaryPrimitives.WriteUInt32BigEndian (header.AsSpan (4), (uint)(4 + chunksSize));
+		header[8] = (byte)FormType[0];
+		header[9] = (byte)FormType[1];
+		header[10] = (byte)FormType[2];
+		header[11] = (byte)FormType[3];
+		output.Write (header, 0, header.Length);
+
+		var chunkHeader = new byte[AiffChunk.HeaderSize];
+		foreach (var chunk in chunks) {
+			var skippedIndex = FindSkipped (chunk);
+			if (skippedIndex < 0) {
+				StreamCopy.Write (output, chunk.Render ().Span, scratch);
+				continue;
+			}
+
+			var fourCC = chunk.FourCC;
+			chunkHeader[0] = (byte)fourCC[0];
+			chunkHeader[1] = (byte)fourCC[1];
+			chunkHeader[2] = (byte)fourCC[2];
+			chunkHeader[3] = (byte)fourCC[3];
+			BinaryPrimitives.WriteUInt32BigEndian (chunkHeader.AsSpan (4), chunk.Size);
+			output.Write (chunkHeader, 0, chunkHeader.Length);
+
+			var skipped = _skipped[skippedIndex];
+			source.Position = skipped.Offset;
+			StreamCopy.Copy (source, output, skipped.PresentBytes, scratch);
+			if ((chunk.Size & 1) == 0)
+				continue;
+
+			scratch[0] = 0;
+			output.Write (scratch, 0, 1);
+		}
 	}
 
 	/// <summary>

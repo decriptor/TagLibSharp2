@@ -251,6 +251,211 @@ internal readonly struct ApeTagLocation
 		return result;
 	}
 
+	/// <summary>
+	/// Writes the same bytes as <see cref="Rewrite"/> without reading the audio into one buffer.
+	/// </summary>
+	/// <param name="sourcePath">File whose tail is located and whose front is copied.</param>
+	/// <param name="destinationPath">File replaced by the atomic write.</param>
+	/// <param name="fileSystem">File system for both paths.</param>
+	/// <param name="tag">Replacement APE tag, or empty when the tag is removed.</param>
+	/// <param name="cancellationToken">Checked after the source has been opened and the tail located, before the destination is replaced.</param>
+	/// <returns>The result of the atomic write.</returns>
+	internal static FileWriteResult WriteFromSource (
+		string sourcePath,
+		string destinationPath,
+		IFileSystem? fileSystem,
+		byte[] tag,
+		CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (sourcePath, fileSystem, out source, out var error))
+				return error;
+
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var opened = source!;
+			var fileLength = opened.Length;
+			// A suffix past one buffer throws. That is this file's size, so it beats cancellation.
+			var suffix = ReadSuffix (opened.Stream, fileLength, copyBuffer, out var suffixStart);
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var written = PathSave.Replace (destinationPath, opened, output =>
+				CopyRewrite (opened.Stream, output, suffix, suffixStart, tag, copyBuffer));
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	// Locate only inspects the tail. Offsets from that tail are shifted by where the tail started.
+	static void CopyRewrite (Stream source, Stream destination, byte[] suffix, long suffixStart, ReadOnlySpan<byte> tag, byte[] chunk)
+	{
+		var location = Locate (suffix);
+		var audioEnd = suffixStart + location.AudioEnd;
+		if (audioEnd > 0) {
+			if (source.Position != 0)
+				source.Position = 0;
+			StreamCopy.Copy (source, destination, audioEnd, chunk);
+		}
+
+		if (tag.Length > 0)
+			StreamCopy.Write (destination, tag, chunk);
+
+		if (location.LyricsOffset >= 0 && location.LyricsLength > 0)
+			StreamCopy.Write (destination, suffix.AsSpan (location.LyricsOffset, location.LyricsLength), chunk);
+
+		if (location.Id3v1Offset >= 0)
+			StreamCopy.Write (destination, suffix.AsSpan (location.Id3v1Offset, Id3v1Size), chunk);
+	}
+
+	// The probe is large enough to see a footer, ID3v1, and a Lyrics3 size field.
+	// A tag or lyrics block that starts further forward is read on a later pass.
+	const int ProbeTail = Id3v1Size + LyricsEndLength + LyricsSizeLength + (ApeTagFooter.Size * 2);
+
+	static byte[] ReadSuffix (Stream source, long fileLength, byte[] chunk, out long suffixStart)
+	{
+		if (fileLength <= 0) {
+			suffixStart = 0;
+			return [];
+		}
+
+		var count = (int)Math.Min (fileLength, ProbeTail);
+		suffixStart = fileLength - count;
+		var suffix = ReadAt (source, suffixStart, count, chunk);
+		for (var pass = 0; pass < 4 && suffixStart > 0; pass++) {
+			var earliest = EarliestNeeded (suffix, suffixStart, fileLength);
+			if (earliest < 0)
+				earliest = 0;
+			if (earliest >= suffixStart)
+				break;
+
+			var next = fileLength - earliest;
+			if (next > int.MaxValue)
+				throw new InvalidOperationException ("The APE tag does not fit in one buffer");
+
+			suffixStart = earliest;
+			suffix = ReadAt (source, suffixStart, (int)next, chunk);
+		}
+
+		return suffix;
+	}
+
+	static byte[] ReadAt (Stream source, long position, int count, byte[] chunk)
+	{
+		if (count <= 0)
+			return [];
+
+		if (source.Position != position)
+			source.Position = position;
+
+		var bytes = new byte[count];
+		StreamCopy.Read (source, bytes, 0, count, chunk);
+		return bytes;
+	}
+
+	static long EarliestNeeded (ReadOnlySpan<byte> tail, long tailStart, long fileLength)
+	{
+		if (fileLength < ApeTagFooter.Size || tail.Length < ApeTagFooter.Size)
+			return tailStart;
+
+		var eofFooterPos = fileLength - ApeTagFooter.Size;
+		if (eofFooterPos >= tailStart) {
+			var rel = (int)(eofFooterPos - tailStart);
+			var eofFooter = ApeTagFooter.Parse (tail.Slice (rel, ApeTagFooter.Size));
+			if (IsFooter (eofFooter))
+				return TagBytesStart (eofFooter.Footer!, eofFooterPos + ApeTagFooter.Size);
+		}
+
+		if (!HasTrailingId3v1 (tail))
+			return tailStart;
+
+		if (TryReadLyrics3 (tail, out var lyricsOffset, out _)) {
+			if (lyricsOffset >= ApeTagFooter.Size) {
+				var footerRel = lyricsOffset - ApeTagFooter.Size;
+				var lyricsFooter = ApeTagFooter.Parse (tail.Slice (footerRel, ApeTagFooter.Size));
+				if (IsFooter (lyricsFooter))
+					return TagBytesStart (lyricsFooter.Footer!, tailStart + lyricsOffset);
+			}
+
+			return tailStart;
+		}
+
+		var lyricsStart = LyricsExtent (tail, tailStart, fileLength);
+		if (lyricsStart < tailStart)
+			return lyricsStart;
+
+		if (tail.Length >= Id3v1Size + ApeTagFooter.Size) {
+			var before = tail.Length - Id3v1Size - ApeTagFooter.Size;
+			var id3Footer = ApeTagFooter.Parse (tail.Slice (before, ApeTagFooter.Size));
+			if (IsFooter (id3Footer))
+				return TagBytesStart (id3Footer.Footer!, tailStart + before + ApeTagFooter.Size);
+		}
+
+		return tailStart;
+	}
+
+	static long LyricsExtent (ReadOnlySpan<byte> tail, long tailStart, long fileLength)
+	{
+		var endFile = fileLength - Id3v1Size - LyricsEndLength;
+		if (endFile < 0 || endFile < tailStart)
+			return tailStart;
+
+		var endRel = (int)(endFile - tailStart);
+		if (endRel + LyricsEndLength > tail.Length)
+			return tailStart;
+
+		if (tail.Slice (endRel, LyricsEndLength).SequenceEqual ("LYRICS200"u8)) {
+			var sizeRel = endRel - LyricsSizeLength;
+			if (sizeRel < 0 || !TryDecimal (tail.Slice (sizeRel, LyricsSizeLength), out var bodySize))
+				return tailStart;
+
+			var begin = tailStart + sizeRel - bodySize - ApeTagFooter.Size;
+			return begin < 0 ? 0 : begin;
+		}
+
+		if (tail.Slice (endRel, LyricsEndLength).SequenceEqual ("LYRICSEND"u8)) {
+			var search = endFile - LyricsV1SearchLimit - ApeTagFooter.Size;
+			return search < 0 ? 0 : search;
+		}
+
+		return tailStart;
+	}
+
+	static bool TryDecimal (ReadOnlySpan<byte> digits, out int value)
+	{
+		value = 0;
+		foreach (var digit in digits) {
+			if (digit is < (byte)'0' or > (byte)'9')
+				return false;
+
+			value = (value * 10) + (digit - (byte)'0');
+		}
+
+		return true;
+	}
+
+	static long TagBytesStart (ApeTagFooter footer, long tagEnd)
+	{
+		if (footer.TagSize < (uint)ApeTagFooter.Size || footer.TagSize > (ulong)tagEnd)
+			return tagEnd - ApeTagFooter.Size;
+
+		var start = tagEnd - (long)footer.TagSize;
+		if (footer.HasHeader) {
+			var headerStart = start - ApeTagFooter.Size;
+			if (headerStart >= 0)
+				start = headerStart;
+		}
+
+		return start;
+	}
+
 	private static bool HasTrailingId3v1 (ReadOnlySpan<byte> data) =>
 		data.Length >= Id3v1Size &&
 		data.Slice (data.Length - Id3v1Size, 3).SequenceEqual ("TAG"u8);

@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Buffers.Binary;
 using TagLibSharp2.Core;
 using TagLibSharp2.Id3.Id3v2;
 using TagLibSharp2.Id3.Id3v2.Frames;
@@ -262,7 +263,7 @@ public sealed class WavFile : IMediaFile
 
 	/// <summary>
 	/// Reads a WAV file from a stream. Sample bytes in the data chunk are skipped.
-	/// A later save reloads them from <paramref name="sourcePath"/> when that path is set.
+	/// A path save copies those bytes from <paramref name="sourcePath"/> when that path is set.
 	/// </summary>
 	internal static WavFileReadResult Read (Stream stream, string? sourcePath, IFileSystem? fileSystem)
 	{
@@ -637,12 +638,10 @@ public sealed class WavFile : IMediaFile
 		if (MissingDataChunkFailure () is { } failure)
 			return failure;
 
-		if (!TryLoadSkippedSamples (out var skipped))
-			return FileWriteResult.Failure (skipped!);
+		if (!IsValid || _skippedChunks.Count == 0)
+			return SaveLoaded (path, fileSystem);
 
-		var data = Render ();
-		fileSystem ??= _sourceFileSystem;
-		return AtomicFileWriter.Write (path, data.Span, fileSystem);
+		return SaveFromSource (path, fileSystem, default);
 	}
 
 	/// <summary>
@@ -662,12 +661,329 @@ public sealed class WavFile : IMediaFile
 		if (MissingDataChunkFailure () is { } failure)
 			return Task.FromResult (failure);
 
+		if (!IsValid || _skippedChunks.Count == 0)
+			return SaveLoadedAsync (path, fileSystem, cancellationToken);
+
+		// Length and "was not loaded" are decided before the token, matching the sync save.
+		return Task.FromResult (SaveFromSource (path, fileSystem, cancellationToken));
+	}
+
+	FileWriteResult SaveLoaded (string path, IFileSystem? fileSystem)
+	{
+		if (!TryLoadSkippedSamples (out var skipped))
+			return FileWriteResult.Failure (skipped!);
+
+		var data = Render ();
+		fileSystem ??= _sourceFileSystem;
+		return AtomicFileWriter.Write (path, data.Span, fileSystem);
+	}
+
+	Task<FileWriteResult> SaveLoadedAsync (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
 		if (!TryLoadSkippedSamples (out var skipped))
 			return Task.FromResult (FileWriteResult.Failure (skipped!));
 
 		var data = Render ();
 		fileSystem ??= _sourceFileSystem;
 		return AtomicFileWriter.WriteAsync (path, data.Memory, fileSystem, cancellationToken);
+	}
+
+	/// <summary>
+	/// Writes the same bytes as <see cref="Render"/> without loading skipped samples.
+	/// The read file system is the one from the stream read. <paramref name="fileSystem"/> is only the write target.
+	/// </summary>
+	FileWriteResult SaveFromSource (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
+		foreach (var chunk in _skippedChunks) {
+			if (chunk.PresentBytes > MaxSampleBytes)
+				return FileWriteResult.Failure ("Cannot save a WAV file whose sample data does not fit in memory.");
+		}
+
+		if (SourcePath is not { Length: > 0 } sourcePath)
+			return FileWriteResult.Failure ("Cannot save a WAV file whose sample data was not loaded.");
+
+		var readFs = _sourceFileSystem ?? DefaultFileSystem.Instance;
+		var writeFs = fileSystem ?? _sourceFileSystem;
+		OpenedFile? source = null;
+		byte[]? buffer = null;
+		try {
+			if (!TryOpenForSave (readFs, sourcePath, out source, out var openError))
+				return openError;
+
+			var open = source!;
+			if (!SamplesStillPresent (open))
+				return FileWriteResult.Failure ("Cannot save a WAV file whose sample data is no longer in the source file.");
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Operation was cancelled");
+
+			if (!TryPlanPieces (open.Stream, out var pieces, out var planError))
+				return planError;
+
+			var rented = StreamCopy.Rent ();
+			buffer = rented;
+			var result = AtomicFileWriter.WriteStream (path, writeFs, output => {
+				try {
+					WritePlanned (output, open.Stream, pieces, rented);
+				} finally {
+					open.Dispose ();
+				}
+			});
+			return result;
+		} finally {
+			if (buffer is not null)
+				StreamCopy.Return (buffer);
+			source?.Dispose ();
+		}
+	}
+
+	/// <summary>
+	/// Opens <paramref name="path"/> for a streaming save. A missing, unreadable,
+	/// or non-seekable source is a failure result, with no re-read prefix.
+	/// </summary>
+	static bool TryOpenForSave (IFileSystem fileSystem, string path, out OpenedFile? source, out FileWriteResult error)
+	{
+		source = null;
+		if (!fileSystem.FileExists (path)) {
+			error = FileWriteResult.Failure ($"File not found: {path}");
+			return false;
+		}
+
+		Stream? stream = null;
+		try {
+			stream = fileSystem.OpenRead (path);
+			if (!stream.CanSeek) {
+				error = FileWriteResult.Failure ("source is not seekable");
+				return false;
+			}
+
+			var length = stream.Length;
+			source = new OpenedFile (stream, length, fileSystem);
+			stream = null;
+			error = default;
+			return true;
+		} catch (FileNotFoundException) {
+			error = FileWriteResult.Failure ($"File not found: {path}");
+			return false;
+		} catch (IOException ex) {
+			error = FileWriteResult.Failure ($"Failed to read file: {ex.Message}");
+			return false;
+		} catch (UnauthorizedAccessException ex) {
+			error = FileWriteResult.Failure ($"Access denied: {ex.Message}");
+			return false;
+		} finally {
+			stream?.Dispose ();
+		}
+	}
+
+	bool SamplesStillPresent (OpenedFile source)
+	{
+		var length = source.Length;
+		foreach (var chunk in _skippedChunks) {
+			if (chunk.Offset < 0 || chunk.Offset > length || length - chunk.Offset < chunk.PresentBytes)
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Same chunk selection as <see cref="Render"/> after the skipped samples would have been loaded.
+	/// A skipped LIST is an INFO list when its payload starts with INFO, which the empty placeholder cannot show.
+	/// </summary>
+	bool TryPlanPieces (Stream stream, out List<WavSavePiece> pieces, out FileWriteResult error)
+	{
+		pieces = new List<WavSavePiece> (_riff.AllChunks.Count + 3);
+		var copyBext = ShouldCopyBextChunk ();
+		for (var index = 0; index < _riff.AllChunks.Count; index++) {
+			var chunk = _riff.AllChunks[index];
+			if (IsInfoList (chunk))
+				continue;
+
+			if (chunk.FourCC == Id3ChunkId) {
+				if (_keepUnparsedId3 && Id3v2Tag is null && !TryAddChunk (pieces, stream, index, chunk, out error))
+					return false;
+				continue;
+			}
+
+			if (chunk.FourCC == BextChunkId) {
+				if (copyBext && !TryAddChunk (pieces, stream, index, chunk, out error))
+					return false;
+				continue;
+			}
+
+			if (!TryAddChunk (pieces, stream, index, chunk, out error))
+				return false;
+		}
+
+		if (!copyBext && BextTag is not null && !BextTag.IsEmpty) {
+			var bextData = BextTag.Render ();
+			if (bextData.Length > 0)
+				AddInline (pieces, new RiffChunk (BextChunkId, bextData), replace: true);
+		}
+
+		if (InfoTag is not null && !InfoTag.IsEmpty) {
+			var infoData = InfoTag.Render ();
+			if (infoData.Length > 8)
+				AddInline (pieces, new RiffChunk (ListChunkId, infoData.Slice (8)), replace: false);
+		}
+
+		if (Id3v2Tag is not null && !Id3v2Tag.IsEmpty) {
+			var id3Data = Id3v2Tag.Render ();
+			if (id3Data.Length > 0)
+				AddInline (pieces, new RiffChunk (Id3ChunkId, id3Data), replace: true);
+		}
+
+		error = default;
+		return true;
+	}
+
+	bool TryAddChunk (List<WavSavePiece> pieces, Stream stream, int index, RiffChunk chunk, out FileWriteResult error)
+	{
+		var skippedIndex = FindSkipped (index);
+		if (skippedIndex >= 0) {
+			if (chunk.FourCC == ListChunkId) {
+				if (IsInfoPayload (stream, _skippedChunks[skippedIndex], out var probeError)) {
+					error = default;
+					return true;
+				}
+
+				if (probeError is not null) {
+					error = FileWriteResult.Failure (probeError);
+					return false;
+				}
+			}
+
+			var present = _skippedChunks[skippedIndex].PresentBytes;
+			var size = RiffChunk.HeaderSize + (long)present + (present & 1);
+			pieces.Add (new WavSavePiece (chunk.FourCC, null, skippedIndex, size));
+			error = default;
+			return true;
+		}
+
+		var rendered = chunk.Render ().ToArray ();
+		pieces.Add (new WavSavePiece (chunk.FourCC, rendered, -1, rendered.Length));
+		error = default;
+		return true;
+	}
+
+	int FindSkipped (int chunkIndex)
+	{
+		for (var i = 0; i < _skippedChunks.Count; i++) {
+			if (_skippedChunks[i].Index == chunkIndex)
+				return i;
+		}
+
+		return -1;
+	}
+
+	static bool IsInfoPayload (Stream stream, RiffFile.SkippedChunk chunk, out string? error)
+	{
+		error = null;
+		if (chunk.PresentBytes < 4)
+			return false;
+
+		stream.Position = chunk.Offset;
+		var probe = new byte[4];
+		var read = 0;
+		while (read < 4) {
+			var count = stream.Read (probe, read, 4 - read);
+			if (count <= 0)
+				break;
+			read += count;
+		}
+
+		if (read != 4) {
+			error = "Cannot save a WAV file whose sample data is no longer in the source file.";
+			return false;
+		}
+
+		return probe[0] == (byte)'I'
+			&& probe[1] == (byte)'N'
+			&& probe[2] == (byte)'F'
+			&& probe[3] == (byte)'O';
+	}
+
+	static void AddInline (List<WavSavePiece> pieces, RiffChunk chunk, bool replace)
+	{
+		var rendered = chunk.Render ().ToArray ();
+		var piece = new WavSavePiece (chunk.FourCC, rendered, -1, rendered.Length);
+		if (replace) {
+			for (var i = 0; i < pieces.Count; i++) {
+				if (pieces[i].FourCC != chunk.FourCC)
+					continue;
+				pieces[i] = piece;
+				return;
+			}
+		}
+
+		pieces.Add (piece);
+	}
+
+	/// <summary>
+	/// ckSize is the bytes present, and an odd length gets a 0 pad that is not copied from the source.
+	/// </summary>
+	void WritePlanned (Stream output, Stream source, List<WavSavePiece> pieces, byte[] chunk)
+	{
+		long chunksSize = 0;
+		foreach (var piece in pieces)
+			chunksSize += piece.Size;
+
+		var totalSize = RiffFile.HeaderSize + chunksSize;
+		var header = new byte[RiffFile.HeaderSize];
+		header[0] = (byte)'R';
+		header[1] = (byte)'I';
+		header[2] = (byte)'F';
+		header[3] = (byte)'F';
+		BinaryPrimitives.WriteUInt32LittleEndian (header.AsSpan (4), (uint)(totalSize - 8));
+		header[8] = (byte)'W';
+		header[9] = (byte)'A';
+		header[10] = (byte)'V';
+		header[11] = (byte)'E';
+		output.Write (header, 0, header.Length);
+
+		var chunkHeader = new byte[RiffChunk.HeaderSize];
+		foreach (var piece in pieces) {
+			if (piece.Inline is not null) {
+				StreamCopy.Write (output, piece.Inline, chunk);
+				continue;
+			}
+
+			var skipped = _skippedChunks[piece.SkippedIndex];
+			var fourCC = piece.FourCC;
+			chunkHeader[0] = (byte)fourCC[0];
+			chunkHeader[1] = (byte)fourCC[1];
+			chunkHeader[2] = (byte)fourCC[2];
+			chunkHeader[3] = (byte)fourCC[3];
+			BinaryPrimitives.WriteUInt32LittleEndian (chunkHeader.AsSpan (4), skipped.PresentBytes);
+			output.Write (chunkHeader, 0, chunkHeader.Length);
+			source.Position = skipped.Offset;
+			StreamCopy.Copy (source, output, skipped.PresentBytes, chunk);
+			if ((skipped.PresentBytes & 1) == 0)
+				continue;
+
+			chunk[0] = 0;
+			output.Write (chunk, 0, 1);
+		}
+	}
+
+	readonly struct WavSavePiece
+	{
+		public WavSavePiece (string fourCC, byte[]? inline, int skippedIndex, long size)
+		{
+			FourCC = fourCC;
+			Inline = inline;
+			SkippedIndex = skippedIndex;
+			Size = size;
+		}
+
+		public string FourCC { get; }
+
+		public byte[]? Inline { get; }
+
+		public int SkippedIndex { get; }
+
+		public long Size { get; }
 	}
 
 	/// <summary>

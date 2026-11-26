@@ -47,9 +47,32 @@ public sealed class MockFileSystem : IFileSystem
 	{
 		if (_inaccessibleFiles.Contains (path))
 			throw new UnauthorizedAccessException ("Access denied");
-		var stream = new MemoryStream ();
+		var stream = new Stored (this, path);
 		_files[path] = [];
 		return stream;
+	}
+
+	sealed class Stored : MemoryStream
+	{
+		readonly MockFileSystem _owner;
+		readonly string _path;
+		bool _committed;
+
+		public Stored (MockFileSystem owner, string path)
+		{
+			_owner = owner;
+			_path = path;
+		}
+
+		protected override void Dispose (bool disposing)
+		{
+			if (disposing && !_committed) {
+				_committed = true;
+				_owner._files[_path] = ToArray ();
+			}
+
+			base.Dispose (disposing);
+		}
 	}
 
 	public byte[] ReadAllBytes (string path)
