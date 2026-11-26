@@ -114,8 +114,12 @@ static class AppleHeadroom
 		var note = tiff.Data.Slice ((int)noteAt, (int)noteSize);
 		if (!note.StartsWith (MakerNoteHeader))
 			return default;
-		budget -= Endian.U16 (note, MakerNoteHeader.Length, le: false);
-		var (headroom, gain) = HeadroomEntries (note);
+		// The entry count IsUsable already required to fit. It is the same count the maker-note walk reads.
+		var noteReader = new TiffReader (note, littleEndian: false);
+		if (!noteReader.TryTable (MakerNoteHeader.Length, out var entries))
+			return default;
+		budget -= entries;
+		var (headroom, gain) = HeadroomEntries (noteReader);
 		return (headroom with { At = noteAt + headroom.At }, gain with { At = noteAt + gain.At });
 	}
 
@@ -158,27 +162,32 @@ static class AppleHeadroom
 	}
 
 	// Another maker note is usable as it is; an Apple one only with its exact header and an entry table that fits.
-	static bool IsUsable (ReadOnlySpan<byte> bytes) =>
-		!bytes.StartsWith (MakerNoteHeader.Slice (0, 10))
-		|| (bytes.StartsWith (MakerNoteHeader) && bytes.Length >= MakerNoteHeader.Length + 2
-			&& MakerNoteHeader.Length + 2 + (12L * Endian.U16 (bytes, MakerNoteHeader.Length, le: false)) <= bytes.Length);
+	// The maker note is a big-endian IFD at offset 14 of its own bytes (14 is past the classic header).
+	static bool IsUsable (ReadOnlySpan<byte> bytes)
+	{
+		if (!bytes.StartsWith (MakerNoteHeader.Slice (0, 10)))
+			return true;
+		if (!bytes.StartsWith (MakerNoteHeader))
+			return false;
+		return new TiffReader (bytes, littleEndian: false).TryTable (MakerNoteHeader.Length, out _);
+	}
 
 	// The last usable 0x0021 and 0x0030 entries of an Apple maker note: SRATIONAL, count at least 1, every value
-	// inside the maker note (any offset). Offsets count from the maker note.
-	static (Winner Headroom, Winner Gain) HeadroomEntries (ReadOnlySpan<byte> note)
+	// inside the maker note (any offset). Offsets count from the maker note. The IFD is the one TiffReader reads.
+	static (Winner Headroom, Winner Gain) HeadroomEntries (TiffReader tiff)
 	{
-		var count = Endian.U16 (note, MakerNoteHeader.Length, le: false);
-		var table = MakerNoteHeader.Length + 2;
+		if (!tiff.TryTable (MakerNoteHeader.Length, out var count))
+			return default;
 		var (headroom, gain) = (default (Winner), default (Winner));
 		for (var n = 0; n < count; n++) {
 			IfdSteps.Count++;
-			var entry = table + (n * 12);
-			var tag = Endian.U16 (note, entry, le: false);
-			if ((tag != HeadroomTag && tag != GainTag) || Endian.U16 (note, entry + 2, le: false) != SRationalType)
+			var entry = tiff.Entry (MakerNoteHeader.Length, n);
+			var tag = tiff.Tag (entry);
+			if ((tag != HeadroomTag && tag != GainTag) || tiff.Type (entry) != SRationalType)
 				continue;
-			var values = Endian.U32 (note, entry + 4, le: false);
-			var offset = Endian.U32 (note, entry + 8, le: false);
-			if (values == 0 || values > (note.Length - offset) / 8)
+			var values = tiff.Count (entry);
+			var offset = tiff.Value (entry);
+			if (values == 0 || values > (tiff.Length - offset) / 8)
 				continue;
 			if (tag == HeadroomTag)
 				headroom = new Winner (offset, values);
