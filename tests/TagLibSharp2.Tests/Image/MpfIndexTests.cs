@@ -3,6 +3,7 @@
 
 using System.Buffers.Binary;
 using TagLibSharp2.Image.Jpeg;
+using TagLibSharp2.Tests.Core;
 using static TagLibSharp2.Tests.Image.ImageTestBuilder;
 
 namespace TagLibSharp2.Tests.Image;
@@ -215,6 +216,36 @@ public class MpfIndexTests
 		CollectionAssert.AreEqual (before, file[(limit - 16)..limit]);
 		Assert.AreEqual (9u, BinaryPrimitives.ReadUInt32BigEndian (file.AsSpan (limit - 16 - 16 + 4)));
 	}
+	// An MP index IFD of 0 entries whose 2-byte count is the last bytes of the segment. A table is read when the
+	// count fits; the next-IFD offset may be absent. Clear saves. A check that required the next offset would refuse.
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Read_EmptyIndexThatEndsItsSegment_IsReadable_AndClearSaves (bool littleEndian)
+	{
+		var tiff = new byte[10];
+		if (littleEndian) {
+			"II*\0"u8.CopyTo (tiff);
+			tiff[4] = 8;
+		} else {
+			"MM\0*"u8.CopyTo (tiff);
+			tiff[7] = 8;
+		}
+
+		var file = Jpeg (JpegSegment (0xE2, Concat ("MPF\0"u8.ToArray (), tiff)), JpegSegment (0xFE, "c"u8.ToArray ()));
+		var index = MpfIndex.Read (file);
+		var order = littleEndian ? "little-endian" : "big-endian";
+		Assert.IsFalse (index.Unreadable, order);
+		Assert.AreEqual (0, index.Images.Count, order);
+
+		var image = Open (file, "a.jpg");
+		Assert.AreEqual ("c", image.Tag!.Comment, order);
+		image.Tag.Clear ();
+		var save = image.SaveToFile ("/a.jpg", new MockFileSystem ());
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.IsNull (Open (image.Render ().ToArray (), "a.jpg").Tag!.Comment, order);
+	}
+
 	// "IM" is no byte order, even with little-endian values after it.
 	[TestMethod]
 	public void Read_OfAnIndexMarkedIm_IsUnreadable_ThoughItsValuesReadAsLittleEndian () =>
