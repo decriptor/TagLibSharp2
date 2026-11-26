@@ -41,6 +41,17 @@ public sealed class Mp3File : IMediaFile
 	IFileSystem? _sourceFileSystem;
 
 	/// <summary>
+	/// Remembers the file a stream read came from so a later path save can copy the audio.
+	/// </summary>
+	/// <param name="path">Path that was opened.</param>
+	/// <param name="fileSystem">File system that opened <paramref name="path"/>.</param>
+	internal void RememberSource (string path, IFileSystem? fileSystem)
+	{
+		SourcePath = path;
+		_sourceFileSystem = fileSystem;
+	}
+
+	/// <summary>
 	/// Gets or sets the ID3v2 tag.
 	/// </summary>
 	/// <remarks>
@@ -744,30 +755,24 @@ public sealed class Mp3File : IMediaFile
 	/// Saves the file to the specified path asynchronously, re-reading from the source file.
 	/// </summary>
 	/// <remarks>
-	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
-	/// and saves to the specified path. Requires that the file was read using
-	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// Copies the audio from <see cref="SourcePath"/> and writes the current tags.
+	/// Requires that the file was read from a path.
+	/// A source that cannot be opened or rendered is reported before cancellation. A token that is already cancelled returns before the destination is replaced.
+	/// The copy itself runs to completion.
 	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken)
-			.ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
-
-		return await SaveToFileAsync (path, readResult.Data!.Value, fileSystem, cancellationToken)
-			.ConfigureAwait (false);
+		return Task.FromResult (SaveFromSource (path, fileSystem ?? _sourceFileSystem, cancellationToken));
 	}
 
 	/// <summary>
@@ -795,9 +800,8 @@ public sealed class Mp3File : IMediaFile
 	/// Saves the file to the specified path, re-reading from the source file.
 	/// </summary>
 	/// <remarks>
-	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
-	/// and saves to the specified path. Requires that the file was read using
-	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
+	/// Copies the audio from <see cref="SourcePath"/> and writes the current tags.
+	/// Requires that the file was read from a path.
 	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
@@ -807,12 +811,57 @@ public sealed class Mp3File : IMediaFile
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+		return SaveFromSource (path, fileSystem ?? _sourceFileSystem);
+	}
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fileSystem);
+	// Same bytes as Render: new ID3v2, the original audio, new ID3v1.
+	// The audio stays in the source file.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			var id3v2 = Id3v2Tag?.Render () ?? BinaryData.Empty;
+			var id3v1 = Id3v1Tag?.Render () ?? BinaryData.Empty;
+			var audioLength = AudioByteCount (source!.Length);
+			if (id3v2.IsEmpty && audioLength == 0 && id3v1.IsEmpty)
+				return FileWriteResult.Failure ("Failed to render MP3 file");
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var opened = source;
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				StreamCopy.Write (output, id3v2.Span, copyBuffer);
+				if (audioLength > 0) {
+					var audioStart = (long)Id3v2Size;
+					if (opened.Stream.Position != audioStart)
+						opened.Stream.Position = audioStart;
+					StreamCopy.Copy (opened.Stream, output, audioLength, copyBuffer);
+				}
+
+				StreamCopy.Write (output, id3v1.Span, copyBuffer);
+			});
+			// Replace closes the source before the destination is replaced.
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	long AudioByteCount (long fileLength)
+	{
+		var audioEnd = HasId3v1Tag ? fileLength - Id3v1Size : fileLength;
+		var audioLength = audioEnd - Id3v2Size;
+		return audioLength < 0 ? 0 : audioLength;
 	}
 
 	/// <summary>

@@ -166,12 +166,42 @@ public class OggCrcTests
 
 		var crc = OggCrc.Calculate (data);
 
-		// The CRC should be deterministic
-		var crc2 = OggCrc.Calculate (data);
-		Assert.AreEqual (crc, crc2);
+		// Pinned so a faster folding of the same polynomial cannot drift.
+		Assert.AreEqual (0x9EA1A511u, crc);
+		Assert.AreEqual (SpecCrc (data), crc);
+	}
 
-		// Verify it's a non-zero value for this non-zero input
-		Assert.AreNotEqual (0u, crc);
+	[TestMethod]
+	[DataRow (0)]
+	[DataRow (1)]
+	[DataRow (7)]
+	[DataRow (8)]
+	[DataRow (9)]
+	[DataRow (27)]
+	[DataRow (64)]
+	[DataRow (1000)]
+	public void Calculate_AnyLength_MatchesBitDefinition (int length)
+	{
+		var data = new byte[length];
+		var rng = new Random (length + 1);
+		rng.NextBytes (data);
+		Assert.AreEqual (SpecCrc (data), OggCrc.Calculate (data));
+	}
+
+	/// <summary>
+	/// The Ogg definition: non-reflected polynomial 0x04C11DB7, init 0, no final XOR.
+	/// </summary>
+	static uint SpecCrc (ReadOnlySpan<byte> data)
+	{
+		const uint polynomial = 0x04C11DB7;
+		uint crc = 0;
+		foreach (var b in data) {
+			crc ^= (uint)b << 24;
+			for (var i = 0; i < 8; i++)
+				crc = (crc & 0x80000000) != 0 ? (crc << 1) ^ polynomial : crc << 1;
+		}
+
+		return crc;
 	}
 
 	[TestMethod]

@@ -155,6 +155,82 @@ public static class AtomicFileWriter
 	}
 
 	/// <summary>
+	/// Writes a file atomically from a callback. The callback must finish before the temp file
+	/// replaces the destination. A <see cref="FileStream"/> is flushed to disk first.
+	/// </summary>
+	/// <param name="path">The target file path.</param>
+	/// <param name="fileSystem">The file system to use. Uses the default when null.</param>
+	/// <param name="write">Writes the temp file. The stream is disposed after it returns.</param>
+	/// <returns>A result indicating success or failure.</returns>
+	internal static FileWriteResult WriteStream (string path, IFileSystem? fileSystem, Action<Stream> write)
+	{
+		fileSystem ??= DefaultFileSystem.Instance;
+
+		string? tempPath = null;
+		var destinationExisted = false;
+		long bytesWritten = 0;
+
+		try {
+			tempPath = GetTempPath (path, fileSystem);
+			var sweepError = SweepOrFailure (path, tempPath, fileSystem);
+			if (sweepError is not null)
+				return FileWriteResult.Failure (sweepError);
+
+			using (var stream = fileSystem.Create (tempPath)) {
+				write (stream);
+				FlushWritten (stream);
+				if (stream.CanSeek)
+					bytesWritten = stream.Length;
+			}
+
+			destinationExisted = fileSystem.FileExists (path);
+			fileSystem.Move (tempPath, path);
+			return FileWriteResult.Success (ReportedBytes (bytesWritten));
+		} catch (EndOfStreamException ex) {
+			return FailWrite (
+				tempPath,
+				path,
+				fileSystem,
+				ReportedBytes (bytesWritten),
+				ex.Message,
+				destinationExisted);
+		} catch (IOException ex) {
+			return FailWrite (
+				tempPath,
+				path,
+				fileSystem,
+				ReportedBytes (bytesWritten),
+				$"I/O error writing file: {ex.Message}",
+				destinationExisted);
+		} catch (UnauthorizedAccessException ex) {
+			return FailWrite (
+				tempPath,
+				path,
+				fileSystem,
+				ReportedBytes (bytesWritten),
+				$"Access denied: {ex.Message}",
+				destinationExisted);
+		}
+	}
+
+	static void FlushWritten (Stream stream)
+	{
+		if (stream is FileStream file)
+			file.Flush (flushToDisk: true);
+		else
+			stream.Flush ();
+	}
+
+	static int ReportedBytes (long bytes)
+	{
+		if (bytes <= 0)
+			return 0;
+		if (bytes > int.MaxValue)
+			return int.MaxValue;
+		return (int)bytes;
+	}
+
+	/// <summary>
 	/// After a failed replace, deletes the temp file only when the destination still exists.
 	/// When the destination is missing, moves the temp file onto it.
 	/// </summary>

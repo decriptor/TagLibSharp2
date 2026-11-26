@@ -1,12 +1,12 @@
 # TagLibSharp2 Roadmap
 
 > Generated: January 2026
-> Last Updated: January 2026 (v0.5.0 release)
+> Last Updated: November 2026
 > Status: Production ready - 18 formats read and write tags, polish phase
 
 ## Executive Summary
 
-TagLibSharp2 currently supports **18 formats** with read and write. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). Matroska/WebM saves tag values; it does not rewrite attachments or chapters. AVI saves INFO and ID3v2 tags; saving loads the whole file, so files of 2 GiB or more cannot be saved yet.
+TagLibSharp2 currently supports **18 formats** with read and write. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). A path save copies the audio in 64 KB pieces instead of loading the file. `Render` and a save from a span still build one buffer.
 
 ---
 
@@ -30,7 +30,7 @@ TagLibSharp2 currently supports **18 formats** with read and write. The library 
 | Musepack | P1 | ✅ | ✅ | ✅ | - | SV7 and SV8 support |
 | Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values, chapters, picture attachments, and track enabled flags are saved. Other attachments are preserved, not rewritten |
 | MPEG PS / video ES | P2 | ✅ | ✅ | ✅ | - | ID3v2 and ID3v1 around the stream; duration from PTS or GOP time codes |
-| AVI (incl. OpenDML) | P2 | ✅ | ✅ | ✅ | - | RIFF INFO and ID32 tags; movi and every index kept valid. Saves load the whole file (under 2 GiB) |
+| AVI (incl. OpenDML) | P2 | ✅ | ✅ | ✅ | - | RIFF INFO and ID32 tags; movi and every index kept valid. A path save copies movi in 64 KB pieces |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | AAC (ADTS/ADIF) | P1 | ✅ | ✅ | ✅ | - | ID3v2, APEv2, ID3v1 tags |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |

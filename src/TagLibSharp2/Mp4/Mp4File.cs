@@ -2448,16 +2448,32 @@ public sealed class Mp4File : IMediaFile
 				ftyp ??= box;
 		}
 
+		return PlanChapterEdit (moov, fragments, ftyp, new Mp4ChapterCodec.FileBytes (originalData));
+	}
+
+	/// <summary>
+	/// The chapter rewrite, or null when the list was not set or matches the file. Sample bytes come from
+	/// <paramref name="file"/>, a span or a stream window, so a path save does not load the media.
+	/// </summary>
+	Mp4ChapterCodec.ChapterPlan? PlanChapterEdit (
+		Mp4Box moov,
+		List<(Mp4Box Moof, long Start)> fragments,
+		Mp4Box? ftyp,
+		Mp4ChapterCodec.FileBytes file)
+	{
+		if (!_chaptersChanged)
+			return null;
+
 		var duration = Mp4ChapterCodec.MovieDuration (moov);
 		// The list the file already reads is a no-op, unless another title track would still show old titles.
-		if (SameChapters (Mp4ChapterCodec.Read (moov, fragments, originalData, duration), _chapters)
-			&& !Mp4ChapterCodec.HasExtraTitleTracks (moov, originalData))
+		if (SameChapters (Mp4ChapterCodec.Read (moov, fragments, file, duration), _chapters)
+			&& !Mp4ChapterCodec.HasExtraTitleTracks (moov, file))
 			return null;
 
 		// QuickTime evidence: the "qt  " major brand, or no ftyp at all. ISO 14496-12 §4.3 requires ftyp in
 		// an ISO file; QuickTime movies may omit it (QTFF, "File type compatibility atom").
 		var quickTime = ftyp is null || ExtractFileType (ftyp) == "qt";
-		return Mp4ChapterCodec.Plan (moov, fragments, _chapters, duration, quickTime, originalData);
+		return Mp4ChapterCodec.Plan (moov, fragments, _chapters, duration, quickTime, file);
 	}
 
 	/// <summary>
@@ -2835,8 +2851,8 @@ public sealed class Mp4File : IMediaFile
 	/// Saves the file to the specified path, re-reading from the source file.
 	/// </summary>
 	/// <remarks>
-	/// This convenience method re-reads the original file data from <see cref="SourcePath"/>
-	/// and saves to the specified path. Requires that the file was read using
+	/// Copies the source. The movie is rebuilt, and a chapter edit reads its samples from the source.
+	/// The media payload is copied in chunks. Requires that the file was read using
 	/// <see cref="ReadFromFile"/> or <see cref="ReadFromFileAsync"/>.
 	/// </remarks>
 	/// <param name="path">The target file path.</param>
@@ -2848,11 +2864,7 @@ public sealed class Mp4File : IMediaFile
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
 		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
-
-		return SaveToFile (path, readResult.Data!.Value.Span, fs);
+		return SaveFromSource (path, fs);
 	}
 
 	/// <summary>
@@ -2880,22 +2892,321 @@ public sealed class Mp4File : IMediaFile
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
 		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken)
-			.ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+		return Task.FromResult (SaveFromSource (path, fs, cancellationToken));
+	}
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken)
-			.ConfigureAwait (false);
+	// Copies each top-level box. moov is rebuilt. A chapter edit reads sample windows and may insert or
+	// drop a chapter mdat. Media payloads stay on disk and are copied in chunks.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			var opened = source!;
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var stream = opened.Stream;
+			var fileLength = opened.Length;
+			var boxes = new List<SavedBox> ();
+			long tailStart = -1;
+			byte[] moovBytes = [];
+			byte[] chapterBytes = [];
+			byte[]?[] patched = [];
+			var moovIndex = -1;
+			var droppedIndex = -1;
+			try {
+				ListTopLevel (stream, fileLength, copyBuffer, boxes, out tailStart);
+				for (var i = 0; i < boxes.Count; i++) {
+					if (boxes[i].Type != "moov")
+						continue;
+					moovIndex = i;
+					break;
+				}
+
+				if (moovIndex < 0 || boxes[moovIndex].Length > int.MaxValue || boxes[moovIndex].Start > int.MaxValue)
+					return FileWriteResult.Failure ("Failed to render MP4 file");
+
+				var moov = boxes[moovIndex];
+				moovBytes = ReadRange (stream, moov.Start, (int)moov.Length, copyBuffer);
+				var parsed = Mp4Box.Parse (moovBytes);
+				if (!parsed.IsSuccess || parsed.Box is null || parsed.BytesConsumed != moov.Length)
+					return FileWriteResult.Failure ("Failed to render MP4 file");
+
+				Mp4ChapterCodec.ChapterPlan? chapterPlan = null;
+				if (_chaptersChanged) {
+					var parsedBoxes = new Mp4Box?[boxes.Count];
+					parsedBoxes[moovIndex] = parsed.Box;
+					if (!TryReadListedBoxes (stream, boxes, parsedBoxes, copyBuffer))
+						return FileWriteResult.Failure ("Failed to render MP4 file");
+
+					var fragments = new List<(Mp4Box Moof, long Start)> ();
+					Mp4Box? ftyp = null;
+					for (var i = 0; i < boxes.Count; i++) {
+						if (boxes[i].Type == "moof")
+							fragments.Add ((parsedBoxes[i]!, boxes[i].Start));
+						else if (boxes[i].Type == "ftyp" && ftyp is null)
+							ftyp = parsedBoxes[i];
+					}
+
+					chapterPlan = PlanChapterEdit (parsed.Box, fragments, ftyp, new Mp4ChapterCodec.FileBytes (stream, fileLength, copyBuffer));
+					if (chapterPlan?.Error is not null)
+						return FileWriteResult.Failure (chapterPlan.Error);
+
+					droppedIndex = FindDroppedChapterMdat (boxes, parsedBoxes, moovIndex, chapterPlan, stream, fileLength, tailStart, copyBuffer);
+				}
+
+				var newMoov = RebuildMoovWithMetadata (parsed.Box, chapterPlan);
+				var chapterData = chapterPlan is null || chapterPlan.TrakOrdinal < 0
+					? BinaryData.Empty
+					: WrapBox ("mdat", new BinaryData (chapterPlan.SampleData));
+				var droppedLength = droppedIndex < 0 ? 0L : boxes[droppedIndex].Length;
+				var oldLength = (int)moov.Length;
+				if (droppedLength > int.MaxValue - oldLength)
+					return FileWriteResult.Failure ("Failed to render MP4 file");
+
+				var replacedLength = oldLength + (int)droppedLength;
+				var delta = newMoov.Length + chapterData.Length - replacedLength;
+				if (moov.Start > int.MaxValue - replacedLength)
+					return FileWriteResult.Failure ("Failed to render MP4 file");
+
+				var oldEnd = (int)moov.Start + replacedLength;
+				if (delta != 0)
+					newMoov = AdjustChunkOffsets (newMoov, oldEnd, delta);
+				if (!chapterData.IsEmpty) {
+					var drafted = newMoov.ToArray ();
+					var samplesAt = moov.Start + drafted.Length + Mp4Box.HeaderSize;
+					if (samplesAt > uint.MaxValue)
+						return FileWriteResult.Failure ("Failed to render MP4 file");
+
+					Mp4ChapterCodec.WriteChunkOffset (drafted, chapterPlan!.TrakOrdinal, (uint)samplesAt);
+					newMoov = new BinaryData (drafted);
+				}
+
+				moovBytes = newMoov.Span.ToArray ();
+				chapterBytes = chapterData.IsEmpty ? [] : chapterData.Span.ToArray ();
+				patched = new byte[]?[boxes.Count];
+				if (delta != 0) {
+					for (var i = 0; i < boxes.Count; i++) {
+						if (i == moovIndex || i == droppedIndex || !HoldsShiftedFileOffset (boxes[i].Type))
+							continue;
+						if (boxes[i].Length > int.MaxValue)
+							return FileWriteResult.Failure ("Failed to render MP4 file");
+
+						var copy = ReadRange (stream, boxes[i].Start, (int)boxes[i].Length, copyBuffer);
+						PatchChunkOffsets (copy, oldEnd, delta);
+						patched[i] = copy;
+					}
+				}
+			} catch (UnauthorizedAccessException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Access denied: {ex.Message}");
+			} catch (IOException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Failed to read file: {ex.Message}");
+			}
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				for (var i = 0; i < boxes.Count; i++) {
+					if (i == droppedIndex)
+						continue;
+					if (i == moovIndex) {
+						StreamCopy.Write (output, moovBytes, copyBuffer);
+						if (chapterBytes.Length > 0)
+							StreamCopy.Write (output, chapterBytes, copyBuffer);
+					} else if (patched[i] is { } block) {
+						StreamCopy.Write (output, block, copyBuffer);
+					} else {
+						CopyFileRange (stream, output, boxes[i].Start, boxes[i].Length, copyBuffer);
+					}
+				}
+
+				if (tailStart >= 0)
+					CopyFileRange (stream, output, tailStart, fileLength - tailStart, copyBuffer);
+			});
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	// mdat is not read: the drop decision uses sample offsets, not the payload.
+	static bool TryReadListedBoxes (Stream stream, List<SavedBox> boxes, Mp4Box?[] parsed, byte[] chunk)
+	{
+		for (var i = 0; i < boxes.Count; i++) {
+			if (parsed[i] is not null)
+				continue;
+
+			var saved = boxes[i];
+			if (saved.Type == "mdat") {
+				parsed[i] = new Mp4Box ("mdat", BinaryData.Empty, usesExtendedSize: saved.Header == Mp4Box.ExtendedHeaderSize);
+				continue;
+			}
+
+			if (saved.Length > int.MaxValue)
+				return false;
+
+			var bytes = ReadRange (stream, saved.Start, (int)saved.Length, chunk);
+			var result = Mp4Box.Parse (bytes);
+			if (!result.IsSuccess || result.Box is null || result.BytesConsumed != saved.Length)
+				return false;
+
+			parsed[i] = result.Box;
+		}
+
+		return true;
+	}
+
+	static int FindDroppedChapterMdat (
+		List<SavedBox> boxes,
+		Mp4Box?[] parsed,
+		int moovIndex,
+		Mp4ChapterCodec.ChapterPlan? plan,
+		Stream stream,
+		long fileLength,
+		long tailStart,
+		byte[] chunk)
+	{
+		var next = moovIndex + 1;
+		if (plan is null || next >= boxes.Count || boxes[next].Type != "mdat")
+			return -1;
+
+		if (tailStart >= 0 && fileLength > tailStart
+			&& (parsed[moovIndex]!.FindChild ("mvex") is not null
+				|| TailContainsIloc (stream, tailStart, fileLength - tailStart, chunk)))
+			return -1;
+
+		var top = new Mp4Box[boxes.Count];
+		var fragments = new List<(Mp4Box Moof, long Start)> ();
+		for (var i = 0; i < boxes.Count; i++) {
+			top[i] = parsed[i]!;
+			if (boxes[i].Type == "moof")
+				fragments.Add ((top[i], boxes[i].Start));
+		}
+
+		var box = boxes[next];
+		var payload = box.Start + box.Header;
+		return Mp4ChapterCodec.HoldsOnlyReplacedSamples (
+			top[moovIndex], fragments, plan, box.Start, payload, box.Start + box.Length, top)
+			? next : -1;
+	}
+
+	static bool TailContainsIloc (Stream stream, long start, long length, byte[] chunk)
+	{
+		if (length < 4)
+			return false;
+		if (stream.Position != start)
+			stream.Position = start;
+
+		var previous = new byte[3];
+		var previousCount = 0;
+		var left = length;
+		while (left > 0) {
+			var want = (int)Math.Min (StreamCopy.ChunkSize, left);
+			var got = 0;
+			while (got < want) {
+				var n = stream.Read (chunk, got, Math.Min (StreamCopy.ChunkSize, want - got));
+				if (n <= 0)
+					throw new EndOfStreamException ("The source ended before the requested bytes were copied");
+				got += n;
+			}
+
+			if (chunk.AsSpan (0, got).IndexOf ("iloc"u8) >= 0)
+				return true;
+			if (previousCount > 0 && SpansIloc (previous.AsSpan (0, previousCount), chunk.AsSpan (0, got)))
+				return true;
+
+			var keep = Math.Min (3, got);
+			chunk.AsSpan (got - keep, keep).CopyTo (previous);
+			previousCount = keep;
+			left -= got;
+		}
+
+		return false;
+	}
+
+	static bool SpansIloc (ReadOnlySpan<byte> previous, ReadOnlySpan<byte> next)
+	{
+		Span<byte> edge = stackalloc byte[previous.Length + Math.Min (3, next.Length)];
+		previous.CopyTo (edge);
+		next.Slice (0, edge.Length - previous.Length).CopyTo (edge.Slice (previous.Length));
+		return edge.IndexOf ("iloc"u8) >= 0;
+	}
+
+	readonly record struct SavedBox (string Type, long Start, long Length, int Header);
+
+	static void ListTopLevel (Stream stream, long fileLength, byte[] chunk, List<SavedBox> boxes, out long tailStart)
+	{
+		tailStart = -1;
+		var probe = new byte[Mp4Box.ExtendedHeaderSize];
+		var offset = 0L;
+		while (offset < fileLength) {
+			var remaining = fileLength - offset;
+			if (remaining < Mp4Box.HeaderSize) {
+				tailStart = offset;
+				return;
+			}
+
+			var probeCount = (int)Math.Min (Mp4Box.ExtendedHeaderSize, remaining);
+			if (stream.Position != offset)
+				stream.Position = offset;
+			StreamCopy.Read (stream, probe, 0, probeCount, chunk);
+			if (!TryMeasureStream (probe.AsSpan (0, probeCount), offset, fileLength, out var type, out var boxEnd)
+				|| boxEnd < offset
+				|| boxEnd - offset > remaining) {
+				tailStart = offset;
+				return;
+			}
+
+			var length = boxEnd - offset;
+			if (length < Mp4Box.HeaderSize) {
+				tailStart = offset;
+				return;
+			}
+
+			var header = probe[0] == 0 && probe[1] == 0 && probe[2] == 0 && probe[3] == 1
+				? Mp4Box.ExtendedHeaderSize
+				: Mp4Box.HeaderSize;
+			boxes.Add (new SavedBox (type, offset, length, header));
+			offset = boxEnd;
+		}
+	}
+
+	static byte[] ReadRange (Stream source, long offset, int count, byte[] chunk)
+	{
+		if (count <= 0)
+			return [];
+
+		var bytes = new byte[count];
+		if (source.Position != offset)
+			source.Position = offset;
+		StreamCopy.Read (source, bytes, 0, count, chunk);
+		return bytes;
+	}
+
+	static void CopyFileRange (Stream source, Stream destination, long start, long count, byte[] chunk)
+	{
+		if (count <= 0)
+			return;
+
+		if (source.Position != start)
+			source.Position = start;
+		StreamCopy.Copy (source, destination, count, chunk);
 	}
 
 	/// <summary>

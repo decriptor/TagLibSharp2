@@ -136,26 +136,54 @@ internal static class AviRewrite
 		Range? run = null;
 		var runHasTag = false;
 		var reader = new AviChunkReader (original);
-		while (reader.TryNext (out var chunk)) {
-			var isTag = IsChangedTag (chunk, changes);
-			var isFree = beforeMovi && afterHeaders && !chunk.Truncated && (isTag || chunk.IsJunk);
-			if (isFree) {
-				run = run is { } open ? new Range (open.Start, chunk.End) : new Range (chunk.Offset, chunk.End);
-				runHasTag |= isTag;
-			} else {
-				Close (plan, ref run, ref runHasTag, blobLength);
-				if (isTag)
-					plan.Rewritten.Add (new Range (chunk.Offset, chunk.End));
-			}
-
-			if (chunk.Offset == movi.Offset)
-				beforeMovi = false;
-			if (chunk.Offset == hdrlOffset)
-				afterHeaders = true;
-		}
-
+		while (reader.TryNext (out var chunk))
+			Consider (plan, chunk, movi.Offset, hdrlOffset, changes, blobLength, ref afterHeaders, ref beforeMovi, ref run, ref runHasTag);
 		Close (plan, ref run, ref runHasTag, blobLength);
 		return plan;
+	}
+
+	static SavePlan Plan (ref TopWalk walk, long moviOffset, long hdrlOffset, Changes changes, int blobLength)
+	{
+		var plan = new SavePlan ();
+		var afterHeaders = hdrlOffset < 0;
+		var beforeMovi = true;
+		Range? run = null;
+		var runHasTag = false;
+		walk.Reset ();
+		while (walk.MoveNext ())
+			Consider (plan, walk.Current, moviOffset, hdrlOffset, changes, blobLength, ref afterHeaders, ref beforeMovi, ref run, ref runHasTag);
+		Close (plan, ref run, ref runHasTag, blobLength);
+		return plan;
+	}
+
+	/// <summary>Folds one top-level chunk into the slot run. The chunk itself is not kept.</summary>
+	static void Consider (
+		SavePlan plan,
+		AviTopChunk chunk,
+		long moviOffset,
+		long hdrlOffset,
+		Changes changes,
+		int blobLength,
+		ref bool afterHeaders,
+		ref bool beforeMovi,
+		ref Range? run,
+		ref bool runHasTag)
+	{
+		var isTag = IsChangedTag (chunk, changes);
+		var isFree = beforeMovi && afterHeaders && !chunk.Truncated && (isTag || chunk.IsJunk);
+		if (isFree) {
+			run = run is { } open ? new Range (open.Start, chunk.End) : new Range (chunk.Offset, chunk.End);
+			runHasTag |= isTag;
+		} else {
+			Close (plan, ref run, ref runHasTag, blobLength);
+			if (isTag)
+				plan.Rewritten.Add (new Range (chunk.Offset, chunk.End));
+		}
+
+		if (chunk.Offset == moviOffset)
+			beforeMovi = false;
+		if (chunk.Offset == hdrlOffset)
+			afterHeaders = true;
 	}
 
 	static void Close (SavePlan plan, ref Range? run, ref bool runHasTag, int blobLength)
@@ -472,7 +500,7 @@ internal static class AviRewrite
 		Array.Clear (buffer, at + RiffChunk.HeaderSize, (int)(total - RiffChunk.HeaderSize));
 	}
 
-	readonly struct Range
+	internal readonly struct Range
 	{
 		public Range (long start, long end)
 		{
@@ -505,10 +533,10 @@ internal static class AviRewrite
 	/// <see cref="Threshold"/>; a dwOffset moves when its base plus itself does. Each added value
 	/// gains the delta when applied.
 	/// </summary>
-	sealed class Patches (long threshold, long delta)
+	internal sealed class Patches (long threshold, long delta)
 	{
 		readonly HashSet<long> _visited = [];
-		readonly List<(long Position, bool Wide)> _positions = [];
+		readonly List<(long Position, ulong Value, bool Wide)> _writes = [];
 		bool _overflows;
 
 		/// <summary>The first original offset that moves.</summary>
@@ -519,32 +547,38 @@ internal static class AviRewrite
 		/// <summary>True the first time a standard index chunk is seen.</summary>
 		public bool FirstVisit (long chunk) => _visited.Add (chunk);
 
-		public void AddAbsolute32 (ReadOnlySpan<byte> original, long position)
+		public void AddAbsolute32 (ReadOnlySpan<byte> original, long position) =>
+			AddAbsolute32 (BinaryPrimitives.ReadUInt32LittleEndian (original.Slice ((int)position)), position);
+
+		public void AddAbsolute32 (uint value, long position)
 		{
-			var value = BinaryPrimitives.ReadUInt32LittleEndian (original.Slice ((int)position));
 			if (value < threshold)
 				return;
 			_overflows |= value + delta > uint.MaxValue;
-			_positions.Add ((position, false));
+			_writes.Add ((position, (ulong)value + (ulong)delta, false));
 		}
 
-		public void AddAbsolute64 (ReadOnlySpan<byte> original, long position)
+		public void AddAbsolute64 (ReadOnlySpan<byte> original, long position) =>
+			AddAbsolute64 (BinaryPrimitives.ReadUInt64LittleEndian (original.Slice ((int)position)), position);
+
+		public void AddAbsolute64 (ulong value, long position)
 		{
-			var value = BinaryPrimitives.ReadUInt64LittleEndian (original.Slice ((int)position));
 			if (value < (ulong)threshold)
 				return;
 			_overflows |= value > (ulong)(long.MaxValue - delta);
-			_positions.Add ((position, true));
+			_writes.Add ((position, value + (ulong)delta, true));
 		}
 
 		/// <summary>Adds a dwOffset relative to <paramref name="baseOffset"/> when its target moves, and says whether it did.</summary>
-		public bool AddRelative32 (ReadOnlySpan<byte> original, long position, ulong baseOffset)
+		public bool AddRelative32 (ReadOnlySpan<byte> original, long position, ulong baseOffset) =>
+			AddRelative32 (BinaryPrimitives.ReadUInt32LittleEndian (original.Slice ((int)position)), position, baseOffset);
+
+		public bool AddRelative32 (uint value, long position, ulong baseOffset)
 		{
-			var value = BinaryPrimitives.ReadUInt32LittleEndian (original.Slice ((int)position));
 			if (baseOffset + value < (ulong)threshold)
 				return false;
 			_overflows |= value + delta > uint.MaxValue;
-			_positions.Add ((position, false));
+			_writes.Add ((position, (ulong)value + (ulong)delta, false));
 			return true;
 		}
 
@@ -556,13 +590,693 @@ internal static class AviRewrite
 
 		public void Apply (byte[] output)
 		{
-			foreach (var (position, wide) in _positions) {
+			foreach (var (position, value, wide) in _writes) {
 				var at = output.AsSpan ((int)Map (position));
 				if (wide)
-					BinaryPrimitives.WriteUInt64LittleEndian (at, BinaryPrimitives.ReadUInt64LittleEndian (at) + (ulong)delta);
+					BinaryPrimitives.WriteUInt64LittleEndian (at, value);
 				else
-					BinaryPrimitives.WriteUInt32LittleEndian (at, (uint)(BinaryPrimitives.ReadUInt32LittleEndian (at) + delta));
+					BinaryPrimitives.WriteUInt32LittleEndian (at, (uint)value);
 			}
+		}
+
+		/// <summary>Writes the shifted values. The destination does not have to be readable.</summary>
+		public void Apply (Stream output, byte[] chunk)
+		{
+			foreach (var (position, value, wide) in _writes) {
+				var count = wide ? 8 : 4;
+				if (wide)
+					BinaryPrimitives.WriteUInt64LittleEndian (chunk, value);
+				else
+					BinaryPrimitives.WriteUInt32LittleEndian (chunk, (uint)value);
+				output.Position = Map (position);
+				output.Write (chunk, 0, count);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Plans a path save. Sample bytes stay on the source. Index values are taken from the source
+	/// because the destination stream does not have to be readable.
+	/// </summary>
+	internal static bool TryPlanStream (
+		Stream source,
+		long length,
+		RiffInfoTag info,
+		Id3v2Tag? id3,
+		byte[] chunk,
+		out StreamPlan? plan,
+		out string error)
+	{
+		plan = null;
+		error = "";
+		if (length < RiffFile.HeaderSize) {
+			error = "Cannot save: the data is not an AVI file.";
+			return false;
+		}
+
+		var header = ReadBytes (source, 0, RiffFile.HeaderSize, chunk);
+		if (!AviChunks.IsAvi (header)) {
+			error = "Cannot save: the data is not an AVI file.";
+			return false;
+		}
+
+		var riffSize = BinaryPrimitives.ReadUInt32LittleEndian (header.AsSpan (4));
+		var walk = new TopWalk (source, length, chunk, riffSize);
+		AviTopChunk? movi = null;
+		AviTopChunk? hdrl = null;
+		while (walk.MoveNext ()) {
+			var item = walk.Current;
+			if (movi is null && item.IsList (AviChunks.Movi))
+				movi = item;
+			if (hdrl is null && item.IsList (AviChunks.Hdrl) && AviChunks.IsReadable (item))
+				hdrl = item;
+		}
+
+		if (movi is null) {
+			error = "Cannot save an AVI file that has no movi list.";
+			return false;
+		}
+
+		var character = ReadCharacterSet (source, ref walk, length, chunk);
+		var codePage = ReadCodePage (source, ref walk, length, chunk);
+		var merged = MergeInfo (source, ref walk, length, character, codePage, chunk);
+		var infoChanged = !info.SameFieldsAs (merged);
+		var id3Present = false;
+		AviTopChunk id3Chunk = default;
+		Id3v2Tag? originalId3 = null;
+		walk.Reset ();
+		while (walk.MoveNext ()) {
+			var item = walk.Current;
+			if (!item.IsId3 || !AviChunks.IsReadable (item))
+				continue;
+			id3Present = true;
+			id3Chunk = item;
+			var result = Id3v2Tag.Read (ReadBody (source, item, length, chunk));
+			if (result.IsSuccess)
+				originalId3 = result.Tag;
+			break;
+		}
+
+		var id3Changed = Id3Changed (id3Present, originalId3, id3);
+		if (!infoChanged && !id3Changed) {
+			plan = new StreamPlan { CopyOnly = true, Length = length };
+			return true;
+		}
+
+		var list = BinaryData.Empty;
+		byte[]? characterSet = null;
+		if (infoChanged && !info.IsEmpty) {
+			if (!info.TryRenderAvi (out list, out var declareUtf8, out var refused)) {
+				error = refused!;
+				return false;
+			}
+
+			characterSet = declareUtf8
+				? Utf8CharacterSet (FirstChunk (source, ref walk, static item => item.IsCharacterSet, length, chunk))
+				: ReadWholeChunk (source, ref walk, static item => item.IsCharacterSet, chunk);
+		}
+
+		var blob = Blob (list, characterSet, id3, id3Changed, id3Present ? AviChunks.Name (id3Chunk.Id) : "ID32");
+		var save = Plan (ref walk, movi.Value.Offset, hdrl is { } headers ? headers.Offset : -1, new Changes (infoChanged, characterSet is not null, id3Changed), blob.Length);
+		if (blob.Length == 0 || save.Target is not null) {
+			plan = new StreamPlan {
+				InPlace = true,
+				Blob = blob,
+				Target = save.Target,
+				Rewritten = save.Rewritten,
+				Length = length,
+			};
+			return true;
+		}
+
+		var slot = save.First ?? new Range (movi.Value.Offset, movi.Value.Offset);
+		var granularity = StreamGranularity (source, hdrl, length, chunk);
+		var delta = (long)blob.Length + RiffChunk.HeaderSize + ReservedJunkBytes - slot.Length;
+		delta = (delta + granularity - 1) / granularity * granularity;
+		if ((long)riffSize + 8 > length) {
+			error = "Cannot save: the tags need more room than the AVI file reserves, and its RIFF size does not match the file.";
+			return false;
+		}
+
+		if ((long)riffSize + delta > uint.MaxValue || length + delta > MaxOutputBytes) {
+			error = "Cannot save: the tags need more room than the AVI file reserves, and the file would grow past its size limit.";
+			return false;
+		}
+
+		var reclaimed = new List<Range> (save.Rewritten) { slot };
+		var patches = new Patches (slot.End, delta);
+		if (!CollectOldIndex (source, length, ref walk, movi.Value, patches, chunk, out error)
+			|| (hdrl is { } headerList && !CollectOpenDml (source, length, headerList, reclaimed, patches, chunk, out error))
+			|| !patches.Fits (out error))
+			return false;
+
+		plan = new StreamPlan {
+			Blob = blob,
+			Rewritten = save.Rewritten,
+			Slot = slot,
+			Delta = delta,
+			RiffSize = riffSize,
+			Length = length,
+			IndexPatches = patches,
+		};
+		return true;
+	}
+
+	internal static void WritePlan (Stream source, Stream destination, StreamPlan plan, byte[] chunk)
+	{
+		if (plan.CopyOnly || plan.InPlace) {
+			source.Position = 0;
+			StreamCopy.Copy (source, destination, plan.Length, chunk);
+			if (!plan.InPlace)
+				return;
+
+			if (plan.Target is { } target) {
+				destination.Position = target.Start;
+				StreamCopy.Write (destination, plan.Blob, chunk);
+				if (target.Length > plan.Blob.Length)
+					WriteJunk (destination, target.Length - plan.Blob.Length, chunk);
+			}
+
+			foreach (var range in plan.Rewritten)
+				WriteJunkAt (destination, range.Start, range.Length, chunk);
+			return;
+		}
+
+		var slot = plan.Slot;
+		source.Position = 0;
+		StreamCopy.Copy (source, destination, slot.Start, chunk);
+		StreamCopy.Write (destination, plan.Blob, chunk);
+		WriteJunk (destination, slot.Length + plan.Delta - plan.Blob.Length, chunk);
+		source.Position = slot.End;
+		StreamCopy.Copy (source, destination, plan.Length - slot.End, chunk);
+		WriteU32 (destination, 4, (uint)(plan.RiffSize + plan.Delta), chunk);
+		foreach (var range in plan.Rewritten) {
+			if (range.Start != slot.Start)
+				WriteJunkAt (destination, plan.IndexPatches!.Map (range.Start), range.Length, chunk);
+		}
+
+		plan.IndexPatches!.Apply (destination, chunk);
+	}
+
+	internal sealed class StreamPlan
+	{
+		public bool CopyOnly { get; init; }
+
+		public bool InPlace { get; init; }
+
+		public byte[] Blob { get; init; } = [];
+
+		public long Length { get; init; }
+
+		internal Range? Target { get; init; }
+
+		internal List<Range> Rewritten { get; init; } = [];
+
+		internal Range Slot { get; init; }
+
+		internal long Delta { get; init; }
+
+		internal uint RiffSize { get; init; }
+
+		internal Patches? IndexPatches { get; init; }
+	}
+
+	/// <summary>
+	/// Top-level chunks of the first RIFF form, one at a time. A chunk is not stored, so a run of
+	/// empty <c>JUNK</c> does not grow the plan.
+	/// </summary>
+	ref struct TopWalk
+	{
+		readonly Stream _source;
+		readonly byte[] _chunk;
+		readonly byte[] _probe;
+		readonly long _limit;
+		long _position;
+
+		public TopWalk (Stream source, long length, byte[] chunk, uint riffSize)
+		{
+			_source = source;
+			_chunk = chunk;
+			_probe = new byte[RiffChunk.HeaderSize];
+			_limit = AviChunks.FormEnd (riffSize, length);
+			_position = RiffFile.HeaderSize;
+		}
+
+		public AviTopChunk Current { get; private set; }
+
+		public void Reset () => _position = RiffFile.HeaderSize;
+
+		public bool MoveNext ()
+		{
+			if (_position + RiffChunk.HeaderSize > _limit)
+				return false;
+
+			var position = _position;
+			ReadExact (_source, position, _probe, RiffChunk.HeaderSize, _chunk);
+			var id = BinaryPrimitives.ReadUInt32LittleEndian (_probe);
+			var size = BinaryPrimitives.ReadUInt32LittleEndian (_probe.AsSpan (4));
+			uint listType = 0;
+			if (id == AviChunks.List && size >= 4 && position + 12 <= _limit) {
+				ReadExact (_source, position + 8, _probe, 4, _chunk);
+				listType = BinaryPrimitives.ReadUInt32LittleEndian (_probe);
+			}
+
+			var dataEnd = position + RiffChunk.HeaderSize + size;
+			var next = dataEnd + (size & 1);
+			Current = new AviTopChunk (position, id, listType, size, Math.Min (next, _limit), dataEnd > _limit);
+			_position = next >= _limit ? long.MaxValue - RiffChunk.HeaderSize : next;
+			return true;
+		}
+	}
+
+	static InfoCharacterSet ReadCharacterSet (Stream source, ref TopWalk walk, long length, byte[] chunk)
+	{
+		walk.Reset ();
+		while (walk.MoveNext ()) {
+			var item = walk.Current;
+			if (!item.IsCharacterSet)
+				continue;
+			var body = ReadBody (source, item, length, chunk);
+			if (body.Length < 2)
+				return InfoCharacterSet.None;
+			return BinaryPrimitives.ReadUInt16LittleEndian (body) switch {
+				AviChunks.Utf8CodePage => InfoCharacterSet.Utf8,
+				0 => InfoCharacterSet.Latin1Default,
+				28591 => InfoCharacterSet.Latin1,
+				1252 => InfoCharacterSet.Windows1252,
+				_ => InfoCharacterSet.Other
+			};
+		}
+
+		return InfoCharacterSet.None;
+	}
+
+	static int ReadCodePage (Stream source, ref TopWalk walk, long length, byte[] chunk)
+	{
+		walk.Reset ();
+		while (walk.MoveNext ()) {
+			var item = walk.Current;
+			if (!item.IsCharacterSet)
+				continue;
+			var body = ReadBody (source, item, length, chunk);
+			return body.Length < 2 ? -1 : BinaryPrimitives.ReadUInt16LittleEndian (body);
+		}
+
+		return -1;
+	}
+
+	static RiffInfoTag? MergeInfo (
+		Stream source,
+		ref TopWalk walk,
+		long length,
+		InfoCharacterSet characterSet,
+		int codePage,
+		byte[] chunk)
+	{
+		RiffInfoTag? info = null;
+		walk.Reset ();
+		while (walk.MoveNext ()) {
+			var item = walk.Current;
+			if (!item.IsList (AviChunks.Info) || !AviChunks.IsReadable (item))
+				continue;
+			var parsed = RiffInfoTag.Parse (new BinaryData (ReadBody (source, item, length, chunk)), characterSet, codePage);
+			if (parsed is null)
+				continue;
+			if (info is null)
+				info = parsed;
+			else
+				info.FillMissingFrom (parsed);
+		}
+
+		return info;
+	}
+
+	static byte[]? FirstChunk (Stream source, ref TopWalk walk, Func<AviTopChunk, bool> match, long length, byte[] chunk)
+	{
+		walk.Reset ();
+		while (walk.MoveNext ()) {
+			var item = walk.Current;
+			if (!match (item))
+				continue;
+			return ReadBody (source, item, length, chunk);
+		}
+
+		return null;
+	}
+
+	static byte[]? ReadWholeChunk (Stream source, ref TopWalk walk, Func<AviTopChunk, bool> match, byte[] chunk)
+	{
+		walk.Reset ();
+		while (walk.MoveNext ()) {
+			var item = walk.Current;
+			if (!match (item))
+				continue;
+			if (item.Truncated)
+				return null;
+			var count = item.End - item.Offset;
+			if (count < 0 || count > int.MaxValue)
+				return null;
+			return ReadBytes (source, item.Offset, (int)count, chunk);
+		}
+
+		return null;
+	}
+
+	/// <summary>A CSET of code page 65001. Country, language and dialect come from the file's first CSET.</summary>
+	static byte[] Utf8CharacterSet (byte[]? body)
+	{
+		var chunk = new byte[RiffChunk.HeaderSize + 8];
+		BinaryPrimitives.WriteUInt32LittleEndian (chunk, AviChunks.Cset);
+		BinaryPrimitives.WriteUInt32LittleEndian (chunk.AsSpan (4), 8);
+		if (body is { Length: >= 8 })
+			body.AsSpan (2, 6).CopyTo (chunk.AsSpan (RiffChunk.HeaderSize + 2));
+		BinaryPrimitives.WriteUInt16LittleEndian (chunk.AsSpan (RiffChunk.HeaderSize), AviChunks.Utf8CodePage);
+		return chunk;
+	}
+
+	static long StreamGranularity (Stream source, AviTopChunk? hdrl, long length, byte[] chunk)
+	{
+		if (hdrl is not { } headers)
+			return 2;
+
+		var available = DataLength (headers, length);
+		if (available < 4)
+			return 2;
+
+		var bodyStart = headers.DataOffset + 4;
+		foreach (var child in ReadChildren (source, bodyStart, available - 4, chunk)) {
+			if (child.FourCC != "avih" || child.DataLength < 12)
+				continue;
+			var value = ReadU32 (source, bodyStart + child.DataOffset + 8, chunk);
+			return value >= 2 && value <= 1024 * 1024 && (value & 1) == 0 ? value : 2;
+		}
+
+		return 2;
+	}
+
+	static bool CollectOldIndex (
+		Stream source,
+		long length,
+		ref TopWalk walk,
+		AviTopChunk movi,
+		Patches patches,
+		byte[] chunk,
+		out string error)
+	{
+		error = "";
+		var relativeBase = movi.DataOffset;
+		var entry = new byte[OldIndexEntryBytes];
+		walk.Reset ();
+		while (walk.MoveNext ()) {
+			var top = walk.Current;
+			if (top.Id != AviChunks.Idx1)
+				continue;
+
+			var entries = DataLength (top, length) / OldIndexEntryBytes;
+			bool? absolute = null;
+			for (var j = 0; j < entries && absolute is null; j++) {
+				ReadExact (source, top.DataOffset + (long)j * OldIndexEntryBytes, entry, OldIndexEntryBytes, chunk);
+				var id = entry.AsSpan (0, 4);
+				var offset = BinaryPrimitives.ReadUInt32LittleEndian (entry.AsSpan (8));
+				if (NamesChunk (source, length, relativeBase + offset, id, chunk))
+					absolute = false;
+				else if (NamesChunk (source, length, offset, id, chunk))
+					absolute = true;
+			}
+
+			if (entries > 0 && absolute is null) {
+				error = "Cannot save: the tags need more room than the AVI file reserves, and its idx1 offsets do not point at its chunks.";
+				return false;
+			}
+
+			if (absolute == true) {
+				for (var j = 0; j < entries; j++) {
+					var at = top.DataOffset + (long)j * OldIndexEntryBytes + 8;
+					patches.AddAbsolute32 (ReadU32 (source, at, chunk), at);
+				}
+			}
+		}
+
+		return true;
+	}
+
+	static bool NamesChunk (Stream source, long length, long position, ReadOnlySpan<byte> id, byte[] chunk)
+	{
+		if (position < 0 || position + RiffChunk.HeaderSize > length)
+			return false;
+
+		var at = new byte[12];
+		var list = position + 12 <= length;
+		ReadExact (source, position, at, list ? 12 : RiffChunk.HeaderSize, chunk);
+		if (at.AsSpan (0, 4).SequenceEqual (id))
+			return true;
+		return list
+			&& at.AsSpan (0, 4).SequenceEqual ("LIST"u8)
+			&& at.AsSpan (8, 4).SequenceEqual (id);
+	}
+
+	static bool CollectOpenDml (
+		Stream source,
+		long length,
+		AviTopChunk hdrl,
+		List<Range> reclaimed,
+		Patches patches,
+		byte[] chunk,
+		out string error)
+	{
+		error = "";
+		var available = DataLength (hdrl, length);
+		if (available < 4)
+			return true;
+
+		var bodyStart = hdrl.DataOffset + 4;
+		foreach (var strl in ReadChildren (source, bodyStart, available - 4, chunk)) {
+			if (strl.ListType != "strl")
+				continue;
+			if (strl.DataLength < 4) {
+				error = "Cannot save: the tags need more room than the AVI file reserves, and an OpenDML index could not be verified.";
+				return false;
+			}
+
+			var strlBody = bodyStart + strl.DataOffset + 4;
+			foreach (var child in ReadChildren (source, strlBody, strl.DataLength - 4, chunk)) {
+				if (child.FourCC != "indx")
+					continue;
+				if (!CollectIndex (source, length, strlBody + child.DataOffset, child.DataLength, reclaimed, patches, chunk, out error))
+					return false;
+			}
+		}
+
+		return true;
+	}
+
+	static bool CollectIndex (
+		Stream source,
+		long length,
+		long data,
+		int indexLength,
+		List<Range> reclaimed,
+		Patches patches,
+		byte[] chunk,
+		out string error)
+	{
+		error = "Cannot save: the tags need more room than the AVI file reserves, and an OpenDML index could not be verified.";
+		if (indexLength < IndexHeaderBytes)
+			return false;
+
+		var header = ReadBytes (source, data, IndexHeaderBytes, chunk);
+		var type = header[3];
+		if (type is IndexOfChunks or IndexOfTimedChunks or IndexOfSubTwoField) {
+			if (!CollectStandardIndex (source, length, data - RiffChunk.HeaderSize, reclaimed, patches, chunk))
+				return false;
+			error = "";
+			return true;
+		}
+
+		if (type != IndexOfIndexes || BinaryPrimitives.ReadUInt16LittleEndian (header) != 4)
+			return false;
+
+		var count = BinaryPrimitives.ReadUInt32LittleEndian (header.AsSpan (4));
+		if (IndexHeaderBytes + (long)count * SuperIndexEntryBytes > indexLength)
+			return false;
+
+		for (var e = 0; e < count; e++) {
+			var entry = data + IndexHeaderBytes + (long)e * SuperIndexEntryBytes;
+			var offset = ReadU64 (source, entry, chunk);
+			if (offset == 0)
+				continue;
+			if (offset > (ulong)length || !CollectStandardIndex (source, length, (long)offset, reclaimed, patches, chunk))
+				return false;
+			patches.AddAbsolute64 (offset, entry);
+		}
+
+		error = "";
+		return true;
+	}
+
+	static bool CollectStandardIndex (
+		Stream source,
+		long length,
+		long chunkAt,
+		List<Range> reclaimed,
+		Patches patches,
+		byte[] chunk)
+	{
+		if (!patches.FirstVisit (chunkAt))
+			return true;
+		if (chunkAt < 0 || chunkAt + RiffChunk.HeaderSize + IndexHeaderBytes > length)
+			return false;
+
+		var size = ReadU32 (source, chunkAt + 4, chunk);
+		var data = chunkAt + RiffChunk.HeaderSize;
+		var header = ReadBytes (source, data, IndexHeaderBytes, chunk);
+		var longsPerEntry = BinaryPrimitives.ReadUInt16LittleEndian (header);
+		var subType = header[2];
+		var type = header[3];
+		var count = BinaryPrimitives.ReadUInt32LittleEndian (header.AsSpan (4));
+		if (type is not (IndexOfChunks or IndexOfTimedChunks or IndexOfSubTwoField) || longsPerEntry < 2)
+			return false;
+
+		var stride = longsPerEntry * 4L;
+		var end = data + IndexHeaderBytes + count * stride;
+		if (end > data + size || end > length)
+			return false;
+		foreach (var range in reclaimed) {
+			if (end > range.Start && chunkAt < range.End)
+				return false;
+		}
+
+		var baseOffset = BinaryPrimitives.ReadUInt64LittleEndian (header.AsSpan (12));
+		if (baseOffset >= (ulong)patches.Threshold) {
+			patches.AddAbsolute64 (baseOffset, data + 12);
+			return true;
+		}
+
+		var twoField = subType == IndexSubTwoField || type == IndexOfSubTwoField;
+		for (var k = 0; k < count; k++) {
+			var entry = data + IndexHeaderBytes + k * stride;
+			var value = ReadU32 (source, entry, chunk);
+			if (!patches.AddRelative32 (value, entry, baseOffset))
+				continue;
+			if (twoField)
+				return false;
+		}
+
+		return true;
+	}
+
+	readonly struct StreamChild
+	{
+		public StreamChild (string fourCC, string? listType, int dataOffset, int dataLength)
+		{
+			FourCC = fourCC;
+			ListType = listType;
+			DataOffset = dataOffset;
+			DataLength = dataLength;
+		}
+
+		public string FourCC { get; }
+
+		public string? ListType { get; }
+
+		public int DataOffset { get; }
+
+		public int DataLength { get; }
+	}
+
+	static List<StreamChild> ReadChildren (Stream source, long bodyStart, int bodyLength, byte[] chunk)
+	{
+		var children = new List<StreamChild> ();
+		var offset = 0;
+		var probe = new byte[12];
+		while (offset + RiffChunk.HeaderSize <= bodyLength) {
+			var withType = offset + 12 <= bodyLength;
+			ReadExact (source, bodyStart + offset, probe, withType ? 12 : RiffChunk.HeaderSize, chunk);
+			var size = BinaryPrimitives.ReadUInt32LittleEndian (probe.AsSpan (4));
+			var dataOffset = offset + RiffChunk.HeaderSize;
+			var available = bodyLength - dataOffset;
+			var childLength = size > (uint)available ? available : (int)size;
+			string? listType = null;
+			if (childLength >= 4 && probe[0] == 'L' && probe[1] == 'I' && probe[2] == 'S' && probe[3] == 'T')
+				listType = AviHeaders.FourCC (probe.AsSpan (8, 4));
+			children.Add (new StreamChild (AviHeaders.FourCC (probe), listType, dataOffset, childLength));
+			var next = (long)dataOffset + size + (size & 1);
+			if (next > bodyLength)
+				break;
+			offset = (int)next;
+		}
+
+		return children;
+	}
+
+	static int DataLength (AviTopChunk chunk, long length)
+	{
+		var available = length - chunk.DataOffset;
+		if (available <= 0)
+			return 0;
+		var count = Math.Min ((long)chunk.Size, available);
+		return count > int.MaxValue ? int.MaxValue : (int)count;
+	}
+
+	static byte[] ReadBody (Stream source, AviTopChunk chunk, long length, byte[] copy) =>
+		ReadBytes (source, chunk.DataOffset, DataLength (chunk, length), copy);
+
+	static byte[] ReadBytes (Stream source, long offset, int count, byte[] chunk)
+	{
+		var bytes = new byte[count];
+		ReadExact (source, offset, bytes, count, chunk);
+		return bytes;
+	}
+
+	static void ReadExact (Stream source, long offset, byte[] destination, int count, byte[] chunk)
+	{
+		if (count <= 0)
+			return;
+		if (source.Position != offset)
+			source.Position = offset;
+		StreamCopy.Read (source, destination, 0, count, chunk);
+	}
+
+	static uint ReadU32 (Stream source, long offset, byte[] chunk)
+	{
+		var bytes = new byte[4];
+		ReadExact (source, offset, bytes, 4, chunk);
+		return BinaryPrimitives.ReadUInt32LittleEndian (bytes);
+	}
+
+	static ulong ReadU64 (Stream source, long offset, byte[] chunk)
+	{
+		var bytes = new byte[8];
+		ReadExact (source, offset, bytes, 8, chunk);
+		return BinaryPrimitives.ReadUInt64LittleEndian (bytes);
+	}
+
+	static void WriteU32 (Stream destination, long position, uint value, byte[] chunk)
+	{
+		BinaryPrimitives.WriteUInt32LittleEndian (chunk, value);
+		destination.Position = position;
+		destination.Write (chunk, 0, 4);
+	}
+
+	static void WriteJunkAt (Stream destination, long position, long total, byte[] chunk)
+	{
+		destination.Position = position;
+		WriteJunk (destination, total, chunk);
+	}
+
+	/// <summary>Writes a JUNK chunk of <paramref name="total"/> bytes, header included, with zero data.</summary>
+	static void WriteJunk (Stream destination, long total, byte[] chunk)
+	{
+		var header = new byte[RiffChunk.HeaderSize];
+		"JUNK"u8.CopyTo (header);
+		BinaryPrimitives.WriteUInt32LittleEndian (header.AsSpan (4), (uint)(total - RiffChunk.HeaderSize));
+		destination.Write (header, 0, header.Length);
+		var left = total - RiffChunk.HeaderSize;
+		Array.Clear (chunk, 0, Math.Min (chunk.Length, StreamCopy.ChunkSize));
+		while (left > 0) {
+			var count = (int)Math.Min (StreamCopy.ChunkSize, left);
+			destination.Write (chunk, 0, count);
+			left -= count;
 		}
 	}
 }

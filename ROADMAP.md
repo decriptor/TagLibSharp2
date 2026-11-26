@@ -358,6 +358,7 @@ From spec document "Critical Implementation Notes":
 - [x] Corrupted file handling (153 test cases)
 - [ ] Performance benchmarks (<10ms tag reading) - Not formally documented
 - [x] Memory efficiency tests (streaming read, no full-file buffering)
+- [x] Path saves copy audio in 64 KB pieces and match a full-file render (#20). `Render` and a span save still build one buffer
 
 ---
 

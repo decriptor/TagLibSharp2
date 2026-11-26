@@ -120,6 +120,13 @@ internal static class OggWindow
 
 	static bool ShouldStop (Stream stream, PageHeader header, OggHeaderKind kind, int complete, bool open)
 	{
+		// complete counts packets already kept. The page that finishes the last header
+		// packet is still ahead of that count, so it stays. A later continuation, or a
+		// fresh page that starts with a header type, is audio.
+		if (kind == OggHeaderKind.Opus && complete >= 2)
+			return true;
+		if (kind == OggHeaderKind.Vorbis && complete >= 3)
+			return true;
 		if (header.Continued || open)
 			return false;
 		if (kind == OggHeaderKind.Opus)

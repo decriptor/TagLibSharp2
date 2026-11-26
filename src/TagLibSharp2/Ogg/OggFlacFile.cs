@@ -744,7 +744,8 @@ public sealed class OggFlacFile : IMediaFile
 	}
 
 	/// <summary>
-	/// Save the file to a new path using internally stored data.
+	/// Save the file to a new path. A byte-array read still renders <see cref="_originalData"/>.
+	/// A stream read copies audio from the source path one page at a time.
 	/// </summary>
 	public FileWriteResult SaveToFile (string path, IFileSystem? fileSystem = null)
 	{
@@ -752,14 +753,25 @@ public sealed class OggFlacFile : IMediaFile
 		if (_originalData.Length > 0)
 			return SaveToFile (path, _originalData, fs);
 
+		return SaveStreaming (path, fs, default);
+	}
+
+	FileWriteResult SaveStreaming (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
+	{
 		if (_sourcePath is not { Length: > 0 } source)
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = FileHelper.SafeReadAllBytes (source, fs);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-
-		return SaveToFile (path, read.Data!.Value.Span, fs);
+		return OggStreamSave.Save (
+			source,
+			path,
+			fileSystem,
+			OggHeaderKind.Flac,
+			headers => {
+				var rendered = Render (headers);
+				return rendered.Length == 0 ? null : rendered;
+			},
+			"Failed to render Ogg FLAC file",
+			cancellationToken);
 	}
 
 	/// <summary>
@@ -798,23 +810,16 @@ public sealed class OggFlacFile : IMediaFile
 	/// <summary>
 	/// Save the file asynchronously using internally stored data.
 	/// </summary>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
-			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
+			return SaveToFileAsync (path, _originalData, fs, cancellationToken);
 
-		if (_sourcePath is not { Length: > 0 } source)
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
-
-		var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-
-		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+		return Task.FromResult (SaveStreaming (path, fs, cancellationToken));
 	}
 
 	/// <summary>

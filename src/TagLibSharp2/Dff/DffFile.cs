@@ -696,12 +696,22 @@ public sealed class DffFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DffFile));
 
-		return SaveToFileAsyncCore (path, fileSystem, cancellationToken);
+		var fs = fileSystem ?? _sourceFileSystem;
+		try {
+			var rendered = _originalData is null ? RenderFrom (originalData.ToArray ()) : Render ();
+			return AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken);
+		} catch (Exception ex) {
+			return Task.FromResult (FileWriteResult.Failure ($"Failed to save file: {ex.Message}"));
+		}
 	}
 
 	/// <summary>
 	/// Saves the file to a new path.
 	/// </summary>
+	/// <remarks>
+	/// Copies the sound chunks from the source. A file that still holds its original bytes
+	/// writes those bytes and does not open the source. <see cref="Render"/> and the span save stay one buffer.
+	/// </remarks>
 	/// <param name="path">The path to save to.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <returns>A result indicating success or failure.</returns>
@@ -710,23 +720,7 @@ public sealed class DffFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DffFile));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		if (_originalData is not null) {
-			try {
-				var rendered = Render ();
-				return AtomicFileWriter.Write (path, rendered.Span, fs);
-			} catch (Exception ex) {
-				return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
-			}
-		}
-
-		if (SourcePath is not { Length: > 0 } source)
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
-
-		var read = FileHelper.SafeReadAllBytes (source, fs);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-		return SaveToFile (path, read.Data!.Value.Span, fs);
+		return SaveStreaming (path, fileSystem ?? _sourceFileSystem, default);
 	}
 
 	/// <summary>
@@ -749,7 +743,7 @@ public sealed class DffFile : IMediaFile
 	/// <summary>
 	/// Saves the file asynchronously to a new path.
 	/// </summary>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -757,7 +751,7 @@ public sealed class DffFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DffFile));
 
-		return await SaveToFileAsyncCore (path, fileSystem, cancellationToken).ConfigureAwait (false);
+		return Task.FromResult (SaveStreaming (path, fileSystem ?? _sourceFileSystem, cancellationToken));
 	}
 
 	/// <summary>
@@ -766,7 +760,7 @@ public sealed class DffFile : IMediaFile
 	/// <param name="fileSystem">Optional file system abstraction. If null, uses the file system from ReadFromFile.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>A result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
@@ -774,35 +768,331 @@ public sealed class DffFile : IMediaFile
 			throw new ObjectDisposedException (nameof (DffFile));
 
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
 		fileSystem ??= _sourceFileSystem;
-		return await SaveToFileAsyncCore (SourcePath!, fileSystem, cancellationToken).ConfigureAwait (false);
+		return SaveToFileAsync (SourcePath!, fileSystem, cancellationToken);
 	}
 
-	private async Task<FileWriteResult> SaveToFileAsyncCore (
-		string path,
-		IFileSystem? fileSystem,
-		CancellationToken cancellationToken)
+	// Same bytes as Render. Sound is copied in chunks. The destination is seekable, so the form
+	// size and DSTI offsets are patched after the copy. DSTI values are taken from the source
+	// because the destination stream does not have to be readable.
+	FileWriteResult SaveStreaming (string path, IFileSystem? fileSystem, CancellationToken cancellationToken)
 	{
-		var fs = fileSystem ?? _sourceFileSystem;
+		if (_originalData is not null) {
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var held = _originalData;
+			var stream = new MemoryStream (held, writable: false);
+			try {
+				return WriteFrom (path, stream, held.Length, fileSystem, opened: null);
+			} finally {
+				stream.Dispose ();
+			}
+		}
+
+		if (SourcePath is not { Length: > 0 } sourcePath)
+			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+
+		if (!PathSave.TryOpen (sourcePath, fileSystem, out var opened, out var error))
+			return error;
+
+		if (cancellationToken.IsCancellationRequested) {
+			opened!.Dispose ();
+			return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+		}
+
+		return WriteFrom (path, opened!.Stream, opened.Length, fileSystem, opened);
+	}
+
+	FileWriteResult WriteFrom (string path, Stream source, long length, IFileSystem? fileSystem, OpenedFile? opened)
+	{
+		var chunk = StreamCopy.Rent ();
 		try {
-			BinaryData rendered;
-			if (_originalData is not null) {
-				rendered = Render ();
-			} else {
-				if (SourcePath is not { Length: > 0 } source)
-					return FileWriteResult.Failure ("No source path available. File was not read from disk.");
-				var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
-				if (!read.IsSuccess)
-					return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-				rendered = RenderFrom (read.Data!.Value.ToArray ());
+			if (opened is not null)
+				return PathSave.Replace (path, opened, output => WriteBody (source, length, output, chunk));
+
+			return AtomicFileWriter.WriteStream (path, fileSystem, output => WriteBody (source, length, output, chunk));
+		} finally {
+			// Held bytes pass a null open. The caller disposes that stream. A windowed open is closed
+			// here as well, including when the destination is never created.
+			opened?.Dispose ();
+			StreamCopy.Return (chunk);
+		}
+	}
+
+	void WriteBody (Stream source, long length, Stream output, byte[] chunk)
+	{
+		var trailer = FindTrailerStart (source, length, chunk);
+		var limit = trailer >= 0 ? trailer : length;
+		if (Id3v2Tag is null && !ContainsId3 (source, limit, chunk)) {
+			if (length > 0) {
+				source.Position = 0;
+				StreamCopy.Copy (source, output, length, chunk);
 			}
 
-			return await AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken).ConfigureAwait (false);
-		} catch (Exception ex) {
-			return FileWriteResult.Failure ($"Failed to save file: {ex.Message}");
+			return;
 		}
+
+		var removed = new List<(long Offset, long Length)> ();
+		var dsti = new List<(long At, ulong Value)> ();
+		long outPos = 0;
+		var headerBytes = limit < 16 ? limit : 16;
+		if (headerBytes > 0) {
+			source.Position = 0;
+			StreamCopy.Copy (source, output, headerBytes, chunk);
+			outPos = headerBytes;
+		}
+
+		var header = new byte[12];
+		var offset = 16L;
+		while (offset + 12 <= limit) {
+			ReadExact (source, offset, header, 12);
+			var declared = BinaryPrimitives.ReadUInt64BigEndian (header.AsSpan (4));
+			var fits = TryChunkEnd (offset, declared, limit, out var chunkEnd);
+			var available = (ulong)(limit - offset - 12);
+			var dataLength = fits ? declared : available;
+			var id3 = IsId (header, (byte)'I', (byte)'D', (byte)'3', (byte)' ');
+			var dstiChunk = IsId (header, (byte)'D', (byte)'S', (byte)'T', (byte)'I');
+
+			if (id3) {
+				var skipEnd = fits ? chunkEnd : limit;
+				if (skipEnd > offset)
+					removed.Add ((offset, skipEnd - offset));
+				offset = skipEnd;
+				if (!fits)
+					break;
+				continue;
+			}
+
+			if (!fits) {
+				output.Write (header, 0, 4);
+				outPos += 4;
+				WriteBe (output, chunk, dataLength);
+				outPos += 8;
+			} else if (!dstiChunk || dataLength < 12) {
+				source.Position = offset;
+				var count = chunkEnd - offset;
+				StreamCopy.Copy (source, output, count, chunk);
+				outPos += count;
+				offset = chunkEnd;
+				continue;
+			} else {
+				output.Write (header, 0, 12);
+				outPos += 12;
+			}
+
+			if (dstiChunk && dataLength >= 12) {
+				var region = dataLength - (dataLength % 12);
+				var entryAt = offset + 12;
+				var entries = region / 12;
+				for (var i = 0UL; i < entries; i++) {
+					ReadExact (source, entryAt, header, 12);
+					dsti.Add ((outPos, BinaryPrimitives.ReadUInt64BigEndian (header.AsSpan (0, 8))));
+					output.Write (header, 0, 12);
+					outPos += 12;
+					entryAt += 12;
+				}
+
+				var rest = (long)dataLength - (long)region;
+				if (rest > 0) {
+					source.Position = offset + 12 + (long)region;
+					StreamCopy.Copy (source, output, rest, chunk);
+					outPos += rest;
+				}
+			} else if (dataLength > 0) {
+				source.Position = offset + 12;
+				StreamCopy.Copy (source, output, (long)dataLength, chunk);
+				outPos += (long)dataLength;
+			}
+
+			if (!fits) {
+				if ((dataLength & 1) != 0) {
+					chunk[0] = 0;
+					output.Write (chunk, 0, 1);
+					outPos++;
+				}
+
+				break;
+			}
+
+			var pad = chunkEnd - (offset + 12 + (long)dataLength);
+			if (pad > 0) {
+				source.Position = offset + 12 + (long)dataLength;
+				StreamCopy.Copy (source, output, pad, chunk);
+				outPos += pad;
+			}
+
+			offset = chunkEnd;
+		}
+
+		if (Id3v2Tag is not null) {
+			if ((outPos & 1) != 0) {
+				chunk[0] = 0;
+				output.Write (chunk, 0, 1);
+				outPos++;
+			}
+
+			var id3Bytes = Id3v2Tag.Render ().ToArray ();
+			chunk[0] = (byte)'I';
+			chunk[1] = (byte)'D';
+			chunk[2] = (byte)'3';
+			chunk[3] = (byte)' ';
+			output.Write (chunk, 0, 4);
+			outPos += 4;
+			WriteBe (output, chunk, (ulong)id3Bytes.Length);
+			outPos += 8;
+			StreamCopy.Write (output, id3Bytes, chunk);
+			outPos += id3Bytes.Length;
+			if ((id3Bytes.Length & 1) != 0) {
+				chunk[0] = 0;
+				output.Write (chunk, 0, 1);
+				outPos++;
+			}
+		}
+
+		var formEnd = outPos;
+		if (trailer >= 0 && trailer < length) {
+			source.Position = trailer;
+			StreamCopy.Copy (source, output, length - trailer, chunk);
+		}
+
+		if (formEnd >= 12) {
+			output.Position = 4;
+			WriteBe (output, chunk, (ulong)(formEnd - 12));
+		}
+
+		foreach (var entry in dsti) {
+			var rebased = RebaseOffset (entry.Value, removed);
+			if (rebased == entry.Value)
+				continue;
+
+			output.Position = entry.At;
+			WriteBe (output, chunk, rebased);
+		}
+	}
+
+	static bool ContainsId3 (Stream source, long limit, byte[] chunk)
+	{
+		var header = new byte[12];
+		var offset = 16L;
+		while (offset + 12 <= limit) {
+			ReadExact (source, offset, header, 12);
+			if (IsId (header, (byte)'I', (byte)'D', (byte)'3', (byte)' '))
+				return true;
+
+			var declared = BinaryPrimitives.ReadUInt64BigEndian (header.AsSpan (4));
+			if (!TryChunkEnd (offset, declared, limit, out var next))
+				return false;
+
+			offset = next;
+		}
+
+		return false;
+	}
+
+	// ID3v1 is the last 128 bytes. An APE tag ends at EOF, or just before that ID3v1.
+	static long FindTrailerStart (Stream source, long length, byte[] chunk)
+	{
+		const int localChunkStart = 16;
+		if (length < localChunkStart)
+			return -1;
+
+		long? id3Start = null;
+		if (length >= localChunkStart + Id3v1Tag.TagSize) {
+			ReadExact (source, length - Id3v1Tag.TagSize, chunk, Id3v1Tag.TagSize);
+			if (Id3v1Tag.Read (chunk.AsSpan (0, Id3v1Tag.TagSize)).IsSuccess)
+				id3Start = length - Id3v1Tag.TagSize;
+		}
+
+		var footerEnd = id3Start ?? length;
+		if (footerEnd < localChunkStart + ApeTagFooter.Size)
+			return id3Start ?? -1;
+
+		var footerOffset = footerEnd - ApeTagFooter.Size;
+		ReadExact (source, footerOffset, chunk, ApeTagFooter.Size);
+		var parsed = ApeTagFooter.Parse (chunk.AsSpan (0, ApeTagFooter.Size));
+		if (!parsed.IsSuccess || parsed.Footer is null)
+			return id3Start ?? -1;
+
+		var apeStart = ApeStart (source, footerEnd, parsed.Footer, chunk);
+		if (apeStart < localChunkStart)
+			apeStart = footerOffset;
+
+		return apeStart;
+	}
+
+	static long ApeStart (Stream source, long footerEnd, ApeTagFooter footer, byte[] chunk)
+	{
+		var tagSize = (long)footer.TagSize;
+		if (tagSize < ApeTagFooter.Size)
+			return -1;
+
+		var start = footerEnd - tagSize;
+		if (start < 0)
+			return -1;
+
+		if (footer.HasHeader) {
+			var headerStart = start - ApeTagFooter.Size;
+			if (headerStart >= 0) {
+				ReadExact (source, headerStart, chunk, 8);
+				if (chunk.AsSpan (0, 8).SequenceEqual (ApeTagFooter.Magic))
+					start = headerStart;
+			}
+		}
+
+		return start;
+	}
+
+	static void ReadExact (Stream source, long offset, byte[] buffer, int count)
+	{
+		source.Position = offset;
+		var got = 0;
+		while (got < count) {
+			var read = source.Read (buffer, got, count - got);
+			if (read <= 0)
+				throw new EndOfStreamException ("The source ended before the requested bytes were copied");
+
+			got += read;
+		}
+	}
+
+	static bool TryChunkEnd (long offset, ulong declared, long limit, out long chunkEnd)
+	{
+		var available = (ulong)(limit - offset - 12);
+		if (declared > available) {
+			chunkEnd = limit;
+			return false;
+		}
+
+		var end = offset + 12 + (long)declared;
+		if ((declared & 1) != 0 && end < limit)
+			end++;
+
+		chunkEnd = end;
+		return true;
+	}
+
+	static bool IsId (byte[] header, byte b0, byte b1, byte b2, byte b3) =>
+		header[0] == b0 && header[1] == b1 && header[2] == b2 && header[3] == b3;
+
+	static void WriteBe (Stream output, byte[] chunk, ulong value)
+	{
+		BinaryPrimitives.WriteUInt64BigEndian (chunk.AsSpan (0, 8), value);
+		output.Write (chunk, 0, 8);
+	}
+
+	static ulong RebaseOffset (ulong offset, List<(long Offset, long Length)> removed)
+	{
+		ulong shift = 0;
+		foreach (var range in removed) {
+			var rangeEnd = (ulong)range.Offset + (ulong)range.Length;
+			if (offset >= rangeEnd)
+				shift += (ulong)range.Length;
+		}
+
+		return offset - shift;
 	}
 
 	private static bool HasId3Chunk (byte[] data)

@@ -602,19 +602,23 @@ public sealed class DsfFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (DsfFile));
 
-		cancellationToken.ThrowIfCancellationRequested ();
-
 		var fs = fileSystem ?? _sourceFileSystem;
 		var rendered = RenderWith (originalData.Span);
 		if (rendered.IsEmpty)
 			return Task.FromResult (FileWriteResult.Failure ("Failed to render DSF file"));
 
+		cancellationToken.ThrowIfCancellationRequested ();
 		return AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken);
 	}
 
 	/// <summary>
 	/// Saves the file to the specified path, re-reading from the source file.
 	/// </summary>
+	/// <remarks>
+	/// When the sample bytes were left on disk, copies that range from <see cref="SourcePath"/>
+	/// and writes the current chunks and ID3 tag. A file that still holds its original bytes
+	/// writes those bytes and does not open the source.
+	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <returns>A result indicating success or failure.</returns>
@@ -627,11 +631,112 @@ public sealed class DsfFile : IMediaFile
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
 		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+		if (_originalData is not null)
+			return WriteHeld (path, fs);
 
-		return SaveToFile (path, readResult.Data!.Value.Span, fs);
+		return SaveFromSource (path, fs);
+	}
+
+	// Same bytes as Render. The audio slice is the held sample bytes, written in chunks.
+	// The source file is not opened: a later edit of the file on disk does not change this save.
+	FileWriteResult WriteHeld (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		var audioDataEnd = _dsdChunk.HasMetadata
+			? (int)_dsdChunk.MetadataOffset
+			: _originalData!.Length;
+		var audioDataSize = audioDataEnd - _audioDataOffset;
+		if (audioDataSize < 0)
+			return FileWriteResult.Failure ("Failed to render DSF file");
+
+		var id3 = Id3v2Tag is not null ? Id3v2Tag.Render () : BinaryData.Empty;
+		var preamble = (long)DsfDsdChunk.Size + DsfFmtChunk.Size + DsfDataChunk.HeaderSize;
+		var newFileSize = preamble + audioDataSize + id3.Length;
+		var metadataOffset = id3.Length > 0 ? preamble + audioDataSize : 0L;
+		var dsd = DsfDsdChunk.Create ((ulong)newFileSize, (ulong)metadataOffset).Render ();
+		var fmt = _fmtChunk.Render ();
+		var dataHeader = DsfDataChunk.Create ((ulong)(DsfDataChunk.HeaderSize + audioDataSize)).RenderHeader ();
+
+		if (cancellationToken.IsCancellationRequested)
+			return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+		var chunk = StreamCopy.Rent ();
+		try {
+			var audioStart = _audioDataOffset;
+			var audioCount = audioDataSize;
+			return AtomicFileWriter.WriteStream (destinationPath, fileSystem, output => {
+				StreamCopy.Write (output, dsd, chunk);
+				StreamCopy.Write (output, fmt, chunk);
+				StreamCopy.Write (output, dataHeader, chunk);
+				if (audioCount > 0)
+					StreamCopy.Write (output, _originalData.AsSpan (audioStart, audioCount), chunk);
+				if (id3.Length > 0)
+					StreamCopy.Write (output, id3.Span, chunk);
+			});
+		} finally {
+			StreamCopy.Return (chunk);
+		}
+	}
+
+	// Same bytes as Render: DSD, fmt, and data headers, then the audio range, then the ID3 tag.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			var fileLength = source!.Length;
+			var audioDataEnd = _dsdChunk.HasMetadata ? MetadataEnd () : fileLength;
+			var audioDataSize = audioDataEnd - _audioDataOffset;
+			if (audioDataSize < 0)
+				return FileWriteResult.Failure ("Failed to render DSF file");
+
+			var id3 = Id3v2Tag is not null ? Id3v2Tag.Render () : BinaryData.Empty;
+			var preamble = (long)DsfDsdChunk.Size + DsfFmtChunk.Size + DsfDataChunk.HeaderSize;
+			var newFileSize = preamble + audioDataSize + id3.Length;
+			var metadataOffset = id3.Length > 0 ? preamble + audioDataSize : 0L;
+			var dsd = DsfDsdChunk.Create ((ulong)newFileSize, (ulong)metadataOffset).Render ();
+			var fmt = _fmtChunk.Render ();
+			var dataHeader = DsfDataChunk.Create ((ulong)(DsfDataChunk.HeaderSize + audioDataSize)).RenderHeader ();
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var opened = source;
+			var audioStart = (long)_audioDataOffset;
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				StreamCopy.Write (output, dsd, copyBuffer);
+				StreamCopy.Write (output, fmt, copyBuffer);
+				StreamCopy.Write (output, dataHeader, copyBuffer);
+				if (audioDataSize > 0) {
+					if (opened.Stream.Position != audioStart)
+						opened.Stream.Position = audioStart;
+					StreamCopy.Copy (opened.Stream, output, audioDataSize, copyBuffer);
+				}
+
+				if (id3.Length > 0)
+					StreamCopy.Write (output, id3.Span, copyBuffer);
+			});
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	// Render casts a metadata offset to int. Values that fit use that same cast.
+	long MetadataEnd ()
+	{
+		var offset = _dsdChunk.MetadataOffset;
+		if (offset > int.MaxValue)
+			return (long)offset;
+
+		return (int)offset;
 	}
 
 	/// <summary>
@@ -653,11 +758,18 @@ public sealed class DsfFile : IMediaFile
 	/// <summary>
 	/// Asynchronously saves the file to the specified path, re-reading from the source file.
 	/// </summary>
+	/// <remarks>
+	/// When the sample bytes were left on disk, copies that range from <see cref="SourcePath"/>
+	/// and writes the current chunks and ID3 tag. A file that still holds its original bytes
+	/// writes those bytes and does not open the source.
+	/// A source that cannot be opened or rendered is reported before cancellation.
+	/// A token that is already cancelled returns before the destination is replaced. The copy itself runs to completion.
+	/// </remarks>
 	/// <param name="path">The target file path.</param>
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -666,14 +778,12 @@ public sealed class DsfFile : IMediaFile
 			throw new ObjectDisposedException (nameof (DsfFile));
 
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var fs = fileSystem ?? _sourceFileSystem;
-		var readResult = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken).ConfigureAwait (false);
-		if (!readResult.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {readResult.Error}");
+		if (_originalData is not null)
+			return Task.FromResult (WriteHeld (path, fileSystem ?? _sourceFileSystem, cancellationToken));
 
-		return await SaveToFileAsync (path, readResult.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+		return Task.FromResult (SaveFromSource (path, fileSystem ?? _sourceFileSystem, cancellationToken));
 	}
 
 	/// <summary>

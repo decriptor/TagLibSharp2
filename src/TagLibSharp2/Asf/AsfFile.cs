@@ -458,7 +458,19 @@ public sealed class AsfFile : IMediaFile
 		if (!headerInfo.IsValid)
 			return originalData.ToArray (); // Can't parse, return unchanged
 
-		// Build new header child objects
+		var newHeader = RenderRebuiltHeader (headerInfo);
+
+		// Combine header with data object and remainder
+		using var ms = new MemoryStream ();
+		ms.Write (newHeader, 0, newHeader.Length);
+		ms.Write (originalData[headerInfo.HeaderEndOffset..].ToArray (), 0,
+			originalData.Length - headerInfo.HeaderEndOffset);
+		return ms.ToArray ();
+	}
+
+	// Same child objects Render writes. The bytes after HeaderEndOffset stay in the source file.
+	byte[] RenderRebuiltHeader (HeaderParseInfo headerInfo)
+	{
 		var childObjects = new List<byte[]> ();
 
 		// Copy preserved objects (File Properties, Stream Properties, etc.). The Header Extension Object is
@@ -488,19 +500,10 @@ public sealed class AsfFile : IMediaFile
 
 		// Add Extended Content Description if tag has extended content
 		var extendedDesc = Tag.ExtendedContentDescription;
-		if (extendedDesc.Descriptors.Count > 0) {
+		if (extendedDesc.Descriptors.Count > 0)
 			childObjects.Add (RenderExtendedContentDescriptionObject (extendedDesc));
-		}
 
-		// Build new header
-		var newHeader = RenderHeaderObject ([.. childObjects]);
-
-		// Combine header with data object and remainder
-		using var ms = new MemoryStream ();
-		ms.Write (newHeader, 0, newHeader.Length);
-		ms.Write (originalData[headerInfo.HeaderEndOffset..].ToArray (), 0,
-			originalData.Length - headerInfo.HeaderEndOffset);
-		return ms.ToArray ();
+		return RenderHeaderObject ([.. childObjects]);
 	}
 
 	static byte[] RenderHeaderObject (byte[][] childObjects)
@@ -656,6 +659,10 @@ public sealed class AsfFile : IMediaFile
 	/// <summary>
 	/// Saves the file to the specified path using internally stored data.
 	/// </summary>
+	/// <remarks>
+	/// When the data object was left on disk, copies that range from <see cref="SourcePath"/>
+	/// and writes a rebuilt header. A file read from a byte array still renders from memory.
+	/// </remarks>
 	/// <param name="path">The file path to save to.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <returns>The result of the write operation.</returns>
@@ -664,13 +671,88 @@ public sealed class AsfFile : IMediaFile
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
 			return SaveToFile (path, _originalData, fs);
-		if (SourcePath is not { Length: > 0 } source)
+		if (SourcePath is not { Length: > 0 })
 			return FileWriteResult.Failure ("No source path available. Use SaveToFile(path) instead.");
 
-		var read = FileHelper.SafeReadAllBytes (source, fs);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-		return SaveToFile (path, read.Data!.Value.Span, fs);
+		return SaveFromSource (path, fs);
+	}
+
+	// Same bytes as Render: rebuilt header, then every byte after the declared header size.
+	// A header that does not parse is copied through unchanged.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var opened = source!;
+			var fileLength = opened.Length;
+			byte[]? headerBytes = null;
+			long copyStart = 0;
+			var copyWhole = true;
+			if (fileLength >= 30) {
+				var probe = new byte[30];
+				StreamCopy.Read (opened.Stream, probe, 0, 30, copyBuffer);
+				if (TryDeclaredHeaderSize (probe, fileLength, out var headerSize)) {
+					var header = new byte[headerSize];
+					probe.AsSpan (0, 30).CopyTo (header);
+					if (headerSize > 30)
+						StreamCopy.Read (opened.Stream, header, 30, headerSize - 30, copyBuffer);
+
+					var info = ParseHeaderStructure (header);
+					if (info.IsValid) {
+						headerBytes = RenderRebuiltHeader (info);
+						copyStart = info.HeaderEndOffset;
+						copyWhole = false;
+					}
+				}
+			}
+
+			if (copyWhole)
+				copyStart = 0;
+
+			if (opened.Stream.Position != copyStart)
+				opened.Stream.Position = copyStart;
+
+			var tail = fileLength - copyStart;
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				if (headerBytes is not null)
+					StreamCopy.Write (output, headerBytes, copyBuffer);
+				if (tail > 0)
+					StreamCopy.Copy (opened.Stream, output, tail, copyBuffer);
+			});
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	static bool TryDeclaredHeaderSize (ReadOnlySpan<byte> head, long fileLength, out int headerSize)
+	{
+		headerSize = 0;
+		if (head.Length < 30 || fileLength < 30)
+			return false;
+
+		var headerGuid = AsfGuid.Parse (head);
+		if (!headerGuid.IsSuccess || headerGuid.Value != AsfGuids.HeaderObject)
+			return false;
+
+		var size = BinaryPrimitives.ReadUInt64LittleEndian (head[16..]);
+		if (size < 30 || size > (ulong)fileLength || size > int.MaxValue)
+			return false;
+
+		headerSize = (int)size;
+		return true;
 	}
 
 	/// <summary>
@@ -708,25 +790,28 @@ public sealed class AsfFile : IMediaFile
 	/// <summary>
 	/// Saves the file to the specified path asynchronously using internally stored data.
 	/// </summary>
+	/// <remarks>
+	/// When the data object was left on disk, copies that range from <see cref="SourcePath"/>
+	/// and writes a rebuilt header. A source that cannot be opened is reported before cancellation.
+	/// A token that is already cancelled returns before the destination is replaced.
+	/// The copy itself runs to completion.
+	/// </remarks>
 	/// <param name="path">The file path to save to.</param>
 	/// <param name="fileSystem">Optional file system abstraction.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The result of the write operation.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
 	{
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData.Length > 0)
-			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
-		if (SourcePath is not { Length: > 0 } source)
-			return FileWriteResult.Failure ("No source path available. Use SaveToFileAsync(path) instead.");
+			return SaveToFileAsync (path, _originalData, fs, cancellationToken);
+		if (SourcePath is not { Length: > 0 })
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. Use SaveToFileAsync(path) instead."));
 
-		var read = await FileHelper.SafeReadAllBytesAsync (source, fs, cancellationToken).ConfigureAwait (false);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+		return Task.FromResult (SaveFromSource (path, fs, cancellationToken));
 	}
 
 	/// <summary>

@@ -29,6 +29,9 @@ internal static class Mp4ChapterTestBuilder
 		/// <summary>moov before mdat (fast start) instead of after it.</summary>
 		public bool MoovFirst { get; set; }
 
+		/// <summary>Bytes in each of the <see cref="AudioSampleCount"/> audio samples.</summary>
+		public int AudioSampleSize { get; set; } = Mp4ChapterTestBuilder.AudioSampleSize;
+
 		/// <summary>chpl entries (start, title), or null for no chpl.</summary>
 		public (TimeSpan Start, string Title)[]? Chpl { get; set; }
 
@@ -122,9 +125,9 @@ internal static class Mp4ChapterTestBuilder
 		TfhdDefaults,
 	}
 
-	internal static byte[] AudioPayload ()
+	internal static byte[] AudioPayload (int sampleSize = AudioSampleSize)
 	{
-		var payload = new byte[AudioSampleCount * AudioSampleSize];
+		var payload = new byte[AudioSampleCount * sampleSize];
 		for (var i = 0; i < payload.Length; i++)
 			payload[i] = (byte)((i * 31) + 7);
 		return payload;
@@ -135,7 +138,7 @@ internal static class Mp4ChapterTestBuilder
 		if (options.Fragment is not null)
 			return BuildFragmented (options);
 
-		var audio = AudioPayload ();
+		var audio = AudioPayload (options.AudioSampleSize);
 		var text = TextPayload (options, out var textSizes);
 		var ftyp = Mp4TestBuilder.CreateFtypBox (options.MajorBrand, 0, options.MajorBrand, "isom");
 
@@ -164,7 +167,7 @@ internal static class Mp4ChapterTestBuilder
 	/// </summary>
 	static byte[] BuildFragmented (Options options)
 	{
-		var audio = AudioPayload ();
+		var audio = AudioPayload (options.AudioSampleSize);
 		var text = TextPayload (options, out var textSizes);
 		var durations = options.Track?.Select (t => t.Duration).ToArray () ?? [.. textSizes.Select (_ => 600u)];
 		var ftyp = Mp4TestBuilder.CreateFtypBox (options.MajorBrand, 0, options.MajorBrand, "iso6");
@@ -269,7 +272,7 @@ internal static class Mp4ChapterTestBuilder
 			.. options.ChapSoundTrack ? [SoundTrackId] : Array.Empty<uint> (),
 		];
 		uint[] chap = hasTrack ? [TextTrackId, .. extra] : extra;
-		children.Add (AudioTrak (audioAt, chap));
+		children.Add (AudioTrak (audioAt, chap, options.AudioSampleSize));
 		if (hasTrack) {
 			var durations = options.Track?.Select (t => t.Duration).ToArray ()
 				?? [.. textSizes.Select (_ => 600u)];
@@ -390,7 +393,7 @@ internal static class Mp4ChapterTestBuilder
 		return Mp4TestBuilder.CreateFullBox (type, 0, 0, body.ToArray ());
 	}
 
-	static byte[] AudioTrak (uint chunkOffset, uint[] chap)
+	static byte[] AudioTrak (uint chunkOffset, uint[] chap, int sampleSize)
 	{
 		var entry = new BinaryDataBuilder ();
 		entry.AddZeros (6);
@@ -401,7 +404,7 @@ internal static class Mp4ChapterTestBuilder
 		entry.AddZeros (4);
 		entry.AddUInt32BE (44100u << 16);
 		var stsd = Mp4TestBuilder.CreateFullBox ("stsd", 0, 0, [0, 0, 0, 1, .. Mp4TestBuilder.CreateBox ("mp4a", entry.ToArray ())]);
-		var stsz = Table ("stsz", [0, AudioSampleCount, .. Enumerable.Repeat ((uint)AudioSampleSize, AudioSampleCount)]);
+		var stsz = Table ("stsz", [0, AudioSampleCount, .. Enumerable.Repeat ((uint)sampleSize, AudioSampleCount)]);
 		var stbl = Mp4TestBuilder.CreateBox ("stbl", [
 			.. stsd,
 			.. Table ("stts", 1, AudioSampleCount, 1250),

@@ -141,6 +141,8 @@ public sealed class AudibleFile : IMediaFile
 	internal const int MaxDictionarySize = 16 * 1024 * 1024;
 	internal const int MaxCoverSize = 16 * 1024 * 1024;
 
+	const string NotTheReadFile = "Failed to render Audible file: the original data does not match the file that was read";
+
 	byte[]? _originalData;
 	bool _disposed;
 	IFileSystem? _sourceFileSystem;
@@ -569,32 +571,49 @@ public sealed class AudibleFile : IMediaFile
 		BinaryPrimitives.WriteUInt32BigEndian (output, (uint)newDeclared);
 		for (var i = 0; i < layout.Toc.Length; i++) {
 			var entry = layout.Toc[i];
-			long offset = entry.Offset;
-			long size = entry.Size;
-			if (i == layout.DictionaryIndex) {
-				size = newDictionary.Length;
-			} else if ((ulong)entry.Offset >= dictionaryEnd) {
-				offset += delta;
-				if (entry.Type == CoverChunk && !MoveCoverPosition (output, entry, delta))
-					return BinaryData.Empty;
-			} else if (entry.Offset <= dictionary.Offset && entry.End >= dictionaryEnd) {
-				size += delta;
-			} else if (entry.End > dictionary.Offset) {
-				// Starts before the dictionary and ends inside it: the shift would split it.
+			if (!TryShift (entry, i == layout.DictionaryIndex, dictionary, delta, newDictionary.Length, out var offset, out var size))
 				return BinaryData.Empty;
-			}
-
-			// Neither goes below zero: a moved offset was at least the old dictionary end, and a grown or shrunk
-			// size belongs to an entry that contains the dictionary. Both are 32-bit fields in the file.
-			if (offset + size > uint.MaxValue)
+			if ((ulong)entry.Offset >= dictionaryEnd && entry.Type == CoverChunk && !MoveCoverPosition (output, entry, delta))
 				return BinaryData.Empty;
 
 			var at = HeaderSize + (i * TocEntrySize);
-			BinaryPrimitives.WriteUInt32BigEndian (output.AsSpan (at + 4), (uint)offset);
-			BinaryPrimitives.WriteUInt32BigEndian (output.AsSpan (at + 8), (uint)size);
+			BinaryPrimitives.WriteUInt32BigEndian (output.AsSpan (at + 4), offset);
+			BinaryPrimitives.WriteUInt32BigEndian (output.AsSpan (at + 8), size);
 		}
 
 		return new BinaryData (output);
+	}
+
+	// Dictionary size is replaced. An entry that starts at or after the dictionary moves.
+	// An entry that contains the dictionary grows or shrinks with it. An entry that starts
+	// before the dictionary and ends inside it would be split, which is not a valid file.
+	static bool TryShift (TocEntry entry, bool isDictionary, TocEntry dictionary, long delta, int newDictionaryLength, out uint offset, out uint size)
+	{
+		long shiftedOffset = entry.Offset;
+		long shiftedSize = entry.Size;
+		if (isDictionary) {
+			shiftedSize = newDictionaryLength;
+		} else if ((ulong)entry.Offset >= dictionary.End) {
+			shiftedOffset += delta;
+		} else if (entry.Offset <= dictionary.Offset && entry.End >= dictionary.End) {
+			shiftedSize += delta;
+		} else if (entry.End > dictionary.Offset) {
+			offset = 0;
+			size = 0;
+			return false;
+		}
+
+		// Neither goes below zero: a moved offset was at least the old dictionary end, and a grown or shrunk
+		// size belongs to an entry that contains the dictionary. Both are 32-bit fields in the file.
+		if (shiftedOffset + shiftedSize > uint.MaxValue) {
+			offset = 0;
+			size = 0;
+			return false;
+		}
+
+		offset = (uint)shiftedOffset;
+		size = (uint)shiftedSize;
+		return true;
 	}
 
 	// The cover's image position is an absolute file offset into its own chunk, so it moves with the chunk.
@@ -607,13 +626,30 @@ public sealed class AudibleFile : IMediaFile
 
 		var at = (int)newOffset + 4;
 		var position = BinaryPrimitives.ReadUInt32BigEndian (output.AsSpan (at));
+		if (!TryDecideCover (position, entry, delta, output.Length, out var moved, out var write))
+			return false;
+		if (write)
+			BinaryPrimitives.WriteUInt32BigEndian (output.AsSpan (at), moved);
+		return true;
+	}
+
+	static bool TryDecideCover (uint position, TocEntry entry, long delta, long outputLength, out uint moved, out bool write)
+	{
+		write = false;
+		moved = 0;
+		var newOffset = entry.Offset + delta;
+		if (entry.Size < 8 || newOffset + 8 > outputLength)
+			return true;
+
 		if (position < entry.Offset || position > entry.End)
 			return true;
 
-		var moved = position + delta;
-		if (moved is < 0 or > uint.MaxValue)
+		var next = (long)position + delta;
+		if (next is < 0 or > uint.MaxValue)
 			return false;
-		BinaryPrimitives.WriteUInt32BigEndian (output.AsSpan (at), (uint)moved);
+
+		moved = (uint)next;
+		write = true;
 		return true;
 	}
 
@@ -631,7 +667,7 @@ public sealed class AudibleFile : IMediaFile
 
 		var rendered = Render (originalData);
 		if (rendered.IsEmpty)
-			return FileWriteResult.Failure ("Failed to render Audible file: the original data does not match the file that was read");
+			return FileWriteResult.Failure (NotTheReadFile);
 
 		var fs = fileSystem ?? _sourceFileSystem;
 		var result = AtomicFileWriter.Write (path, rendered.Span, fs);
@@ -709,11 +745,11 @@ public sealed class AudibleFile : IMediaFile
 		if (_disposed)
 			throw new ObjectDisposedException (nameof (AudibleFile));
 
-		cancellationToken.ThrowIfCancellationRequested ();
 		var rendered = Render (originalData.Span);
 		if (rendered.IsEmpty)
-			return FileWriteResult.Failure ("Failed to render Audible file: the original data does not match the file that was read");
+			return FileWriteResult.Failure (NotTheReadFile);
 
+		cancellationToken.ThrowIfCancellationRequested ();
 		var fs = fileSystem ?? _sourceFileSystem;
 		var result = await AtomicFileWriter.WriteAsync (path, rendered.Memory, fs, cancellationToken).ConfigureAwait (false);
 		if (result.IsSuccess && Rendered (rendered) is { } layout && SourcePath is not null)
@@ -738,10 +774,7 @@ public sealed class AudibleFile : IMediaFile
 		if (string.IsNullOrEmpty (SourcePath))
 			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
 
-		var read = FileHelper.SafeReadAllBytes (SourcePath!, fs);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-		return SaveToFile (path, read.Data!.Value.Span, fs);
+		return SaveFromSource (path, fs);
 	}
 
 	/// <summary>
@@ -765,7 +798,7 @@ public sealed class AudibleFile : IMediaFile
 	/// <param name="fileSystem">Optional file system abstraction for testing.</param>
 	/// <param name="cancellationToken">A token to cancel the operation.</param>
 	/// <returns>A task containing a result indicating success or failure.</returns>
-	public async Task<FileWriteResult> SaveToFileAsync (
+	public Task<FileWriteResult> SaveToFileAsync (
 		string path,
 		IFileSystem? fileSystem = null,
 		CancellationToken cancellationToken = default)
@@ -775,14 +808,231 @@ public sealed class AudibleFile : IMediaFile
 
 		var fs = fileSystem ?? _sourceFileSystem;
 		if (_originalData is not null)
-			return await SaveToFileAsync (path, _originalData, fs, cancellationToken).ConfigureAwait (false);
+			return SaveToFileAsync (path, _originalData, fs, cancellationToken);
 		if (string.IsNullOrEmpty (SourcePath))
-			return FileWriteResult.Failure ("No source path available. File was not read from disk.");
+			return Task.FromResult (FileWriteResult.Failure ("No source path available. File was not read from disk."));
 
-		var read = await FileHelper.SafeReadAllBytesAsync (SourcePath!, fs, cancellationToken).ConfigureAwait (false);
-		if (!read.IsSuccess)
-			return FileWriteResult.Failure ($"Failed to re-read source file: {read.Error}");
-		return await SaveToFileAsync (path, read.Data!.Value, fs, cancellationToken).ConfigureAwait (false);
+		return Task.FromResult (SaveFromSource (path, fs, cancellationToken));
+	}
+
+	// Copies the audio from the source. The header, dictionary, and cover position are the only
+	// bytes that change, and they follow the same rules as Render.
+	FileWriteResult SaveFromSource (string destinationPath, IFileSystem? fileSystem, CancellationToken cancellationToken = default)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			var opened = source!;
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var stream = opened.Stream;
+			var fileLength = opened.Length;
+			byte[] header;
+			byte[] dictionaryBytes;
+			CoverSplice[] splices;
+			long dictionaryOffset;
+			long dictionaryEnd;
+			long outputLength;
+			int tocEnd;
+			try {
+				header = ReadHeader (stream, copyBuffer);
+				var layout = ParseLayout (header, fileLength, out _);
+				if (layout is null || !layout.SameAs (_layout))
+					return FileWriteResult.Failure (NotTheReadFile);
+
+				var dictionary = layout.Toc[layout.DictionaryIndex];
+				var newDictionary = Tag.Render ();
+				var delta = (long)newDictionary.Length - dictionary.Size;
+				dictionaryEnd = (long)dictionary.End;
+				var newDeclared = (long)layout.DeclaredSize + delta;
+				if (newDeclared is < 0 or > uint.MaxValue || dictionaryEnd > fileLength || dictionary.Offset < (uint)layout.TocEnd)
+					return FileWriteResult.Failure (NotTheReadFile);
+
+				outputLength = (long)dictionary.Offset + newDictionary.Length + (fileLength - dictionaryEnd);
+				if (!TryPatchHeader (stream, header, layout, dictionary, delta, newDictionary.Length, (uint)newDeclared, outputLength, fileLength, copyBuffer, out splices))
+					return FileWriteResult.Failure (NotTheReadFile);
+
+				dictionaryBytes = newDictionary.Span.ToArray ();
+				dictionaryOffset = dictionary.Offset;
+				tocEnd = layout.TocEnd;
+			} catch (UnauthorizedAccessException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Access denied: {ex.Message}");
+			} catch (EndOfStreamException) {
+				return FileWriteResult.Failure (NotTheReadFile);
+			} catch (IOException ex) {
+				return FileWriteResult.Failure ($"Failed to re-read source file: Failed to read file: {ex.Message}");
+			}
+
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
+
+			var written = PathSave.Replace (destinationPath, opened, output => {
+				StreamCopy.Write (output, header, copyBuffer);
+				CopyRange (stream, output, tocEnd, dictionaryOffset - tocEnd, copyBuffer);
+				StreamCopy.Write (output, dictionaryBytes, copyBuffer);
+				CopyTail (stream, output, dictionaryEnd, fileLength, splices, copyBuffer);
+			});
+			source = null;
+			if (written.IsSuccess && SourcePath is not null && ParseLayout (header, outputLength, out _) is { } rendered)
+				RefreshLayout (rendered, ReadSourceHeader (fileSystem));
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
+	}
+
+	static byte[] ReadHeader (Stream stream, byte[] chunk)
+	{
+		var header = new byte[HeaderSize];
+		if (stream.Position != 0)
+			stream.Position = 0;
+		StreamCopy.Read (stream, header, 0, HeaderSize, chunk);
+		var tocBytes = TocBytes (header);
+		if (tocBytes <= header.Length)
+			return header;
+
+		var full = new byte[tocBytes];
+		header.AsSpan ().CopyTo (full);
+		StreamCopy.Read (stream, full, HeaderSize, tocBytes - HeaderSize, chunk);
+		return full;
+	}
+
+	static bool TryPatchHeader (
+		Stream stream,
+		byte[] header,
+		Layout layout,
+		TocEntry dictionary,
+		long delta,
+		int newDictionaryLength,
+		uint newDeclared,
+		long outputLength,
+		long fileLength,
+		byte[] chunk,
+		out CoverSplice[] splices)
+	{
+		var pending = new List<CoverSplice> ();
+		BinaryPrimitives.WriteUInt32BigEndian (header, newDeclared);
+		for (var i = 0; i < layout.Toc.Length; i++) {
+			var entry = layout.Toc[i];
+			if (!TryShift (entry, i == layout.DictionaryIndex, dictionary, delta, newDictionaryLength, out var offset, out var size)) {
+				splices = [];
+				return false;
+			}
+
+			if ((ulong)entry.Offset >= dictionary.End && entry.Type == CoverChunk) {
+				if (!TryReadCoverSplice (stream, entry, delta, outputLength, fileLength, chunk, out var splice, out var include)) {
+					splices = [];
+					return false;
+				}
+				if (include)
+					pending.Add (splice);
+			}
+
+			var at = HeaderSize + (i * TocEntrySize);
+			BinaryPrimitives.WriteUInt32BigEndian (header.AsSpan (at + 4), offset);
+			BinaryPrimitives.WriteUInt32BigEndian (header.AsSpan (at + 8), size);
+		}
+
+		splices = pending.ToArray ();
+		return true;
+	}
+
+	// newOffset + 8 extends past the output exactly when the position field is not in the source.
+	static bool TryReadCoverSplice (Stream stream, TocEntry entry, long delta, long outputLength, long fileLength, byte[] chunk, out CoverSplice splice, out bool include)
+	{
+		splice = default;
+		include = false;
+		if (entry.Size < 8 || (long)entry.Offset + 8 > fileLength)
+			return true;
+
+		var positionBytes = new byte[4];
+		var at = (long)entry.Offset + 4;
+		if (stream.Position != at)
+			stream.Position = at;
+		StreamCopy.Read (stream, positionBytes, 0, 4, chunk);
+		if (!TryDecideCover (BinaryPrimitives.ReadUInt32BigEndian (positionBytes), entry, delta, outputLength, out var moved, out var write))
+			return false;
+		if (!write)
+			return true;
+
+		splice = new CoverSplice (at, moved);
+		include = true;
+		return true;
+	}
+
+	readonly record struct CoverSplice (long SourceOffset, uint Value);
+
+	static void CopyRange (Stream source, Stream destination, long start, long count, byte[] chunk)
+	{
+		if (count <= 0)
+			return;
+
+		if (source.Position != start)
+			source.Position = start;
+		StreamCopy.Copy (source, destination, count, chunk);
+	}
+
+	// Later table-of-contents entries win when two cover positions share a byte, matching Render's sequential writes.
+	static void CopyTail (Stream source, Stream destination, long start, long end, CoverSplice[] splices, byte[] chunk)
+	{
+		if (end <= start)
+			return;
+
+		if (splices.Length == 0) {
+			CopyRange (source, destination, start, end - start, chunk);
+			return;
+		}
+
+		var replaced = new Dictionary<long, byte> ();
+		Span<byte> four = stackalloc byte[4];
+		foreach (var splice in splices) {
+			BinaryPrimitives.WriteUInt32BigEndian (four, splice.Value);
+			for (var i = 0; i < 4; i++)
+				replaced[splice.SourceOffset + i] = four[i];
+		}
+
+		var offsets = new long[replaced.Count];
+		replaced.Keys.CopyTo (offsets, 0);
+		Array.Sort (offsets);
+
+		if (source.Position != start)
+			source.Position = start;
+		var position = start;
+		var index = 0;
+		while (index < offsets.Length) {
+			var at = offsets[index];
+			if (at < position) {
+				index++;
+				continue;
+			}
+			if (at >= end)
+				break;
+
+			if (at > position)
+				StreamCopy.Copy (source, destination, at - position, chunk);
+
+			var run = at;
+			while (index < offsets.Length && offsets[index] == run && run < end) {
+				index++;
+				run++;
+			}
+
+			var count = (int)(run - at);
+			var bytes = new byte[count];
+			for (var i = 0; i < count; i++)
+				bytes[i] = replaced[at + i];
+			StreamCopy.Write (destination, bytes, chunk);
+			source.Position = run;
+			position = run;
+		}
+
+		if (position < end)
+			StreamCopy.Copy (source, destination, end - position, chunk);
 	}
 
 	/// <summary>

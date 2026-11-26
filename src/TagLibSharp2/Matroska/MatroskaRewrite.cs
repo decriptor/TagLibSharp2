@@ -702,7 +702,7 @@ static partial class MatroskaRewrite
 		WriteCrc (body, first.DataOffset, first.End, end);
 	}
 
-	sealed class Layout
+	internal sealed class Layout
 	{
 		public Layout (int segmentPosition, int idWidth, int sizeWidth, bool unknownSize, int dataOffset, int segmentEnd, List<Piece> pieces, bool isWebM)
 		{
@@ -739,7 +739,7 @@ static partial class MatroskaRewrite
 		public List<Piece> Pieces { get; }
 	}
 
-	readonly struct Piece
+	internal readonly struct Piece
 	{
 		public Piece (ulong id, int offset, int length, bool unknownSize)
 		{
