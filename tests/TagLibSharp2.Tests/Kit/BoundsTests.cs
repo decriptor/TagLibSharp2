@@ -149,6 +149,35 @@ public class BoundsTests
 		}, 10_000);
 	}
 
+	// Ubuntu CI measured these on EveryIfdWalk_IsLinearInTheEntries: the n-to-2n step is zero or negative, and
+	// treating that step as 1 made an 80-byte bump at 4n look like 80x growth.
+	[TestMethod]
+	public void AssertGrowsLinearly_FlatSeries_Passes ()
+	{
+		Bounds.AssertGrowsLinearly (24936, 24856, 24936);
+		Bounds.AssertGrowsLinearly (24968, 24968, 25048);
+		Bounds.AssertGrowsLinearly (1584, 1584, 1584);
+	}
+
+	[TestMethod]
+	public void AssertGrowsLinearly_SuperlinearSeries_Fails ()
+	{
+		var error = Assert.ThrowsExactly<AssertFailedException> (
+			() => Bounds.AssertGrowsLinearly (1_000_000, 2_000_000, 8_000_000));
+
+		Assert.Contains ("grew", error.Message);
+	}
+
+	// A first increment inside the noise floor must not excuse a jump at 4n.
+	[TestMethod]
+	public void AssertGrowsLinearly_FlatThenASpike_Fails ()
+	{
+		var error = Assert.ThrowsExactly<AssertFailedException> (
+			() => Bounds.AssertGrowsLinearly (24936, 24856, 1_000_000));
+
+		Assert.Contains ("grew", error.Message);
+	}
+
 	[TestMethod]
 	public void CountingStream_CountsReadsSeeksAndBytes ()
 	{

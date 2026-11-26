@@ -42,9 +42,11 @@ public static class Bounds
 	/// <remarks>
 	/// Measures the inputs built for <c>n</c>, <c>2n</c> and <c>4n</c> and compares the increments, so a
 	/// fixed cost cannot hide a quadratic one: linear work adds twice as much from 2n to 4n as from n to 2n,
-	/// quadratic work adds four times as much. The bound is <c>2 × slack</c>. A parser that copies each
-	/// nested payload, or rescans a list per item, fails here. Building the input is not measured, and each
-	/// size runs once before it is measured so one-time JIT and static allocations do not count.
+	/// quadratic work adds four times as much. The bound is <c>2 × slack</c>. An increment under the noise
+	/// floor (1 KB, or 1% of the n allocation) counts as no growth, so a flat series passes and a flat series
+	/// that then jumps still fails (<see cref="AssertGrowsLinearly"/>). A parser that copies each nested
+	/// payload, or rescans a list per item, fails here. Building the input is not measured, and each size runs
+	/// once before it is measured so one-time JIT and static allocations do not count.
 	/// </remarks>
 	/// <param name="runs">Runs measured per size; the least is kept. Above 1 it filters allocations another
 	/// thread causes, such as a shared <see cref="System.Buffers.ArrayPool{T}"/> that another test emptied.</param>
@@ -55,10 +57,32 @@ public static class Bounds
 		var one = Measure (build (n), run, runs);
 		var two = Measure (build (n * 2), run, runs);
 		var four = Measure (build (n * 4), run, runs);
-		var first = Math.Max (two - one, 1);
+		AssertGrowsLinearly (one, two, four, slack);
+	}
+
+	/// <summary>
+	/// Fails when the allocations measured for inputs of n, 2n and 4n grow faster than the input.
+	/// </summary>
+	/// <remarks>
+	/// An increment under the noise floor — 1 KB, or 1% of the n allocation, whichever is larger — counts as no
+	/// growth, so a flat or noisy-flat series passes. A series that is flat and then jumps still fails: the baseline
+	/// of a zero first increment is 1. Linear work adds twice as much from 2n to 4n as from n to 2n; the bound is
+	/// <c>2 × slack</c>.
+	/// </remarks>
+	public static void AssertGrowsLinearly (long one, long two, long four, double slack = 1.5)
+	{
+		var noise = Math.Max (1024L, one / 100);
+		var first = two - one;
 		var second = four - two;
-		if (second > first * 2 * slack)
-			Assert.Fail ($"allocation grew {second / (double)first:F1}x as fast from 2n to 4n as from n to 2n ({one} -> {two} -> {four} bytes); linear is 2x, the bound {2 * slack:F1}x");
+		if (Math.Abs (first) <= noise)
+			first = 0;
+		if (second <= noise)
+			second = 0;
+		if (first == 0 && second == 0)
+			return;
+		var baseline = Math.Max (first, 1);
+		if (second > baseline * 2 * slack)
+			Assert.Fail ($"allocation grew {second / (double)baseline:F1}x as fast from 2n to 4n as from n to 2n ({one} -> {two} -> {four} bytes); linear is 2x, the bound {2 * slack:F1}x");
 	}
 
 	static long Measure (byte[] input, Action<byte[]> run, int runs)
