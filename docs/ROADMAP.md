@@ -2,11 +2,11 @@
 
 > Generated: January 2026
 > Last Updated: November 2026
-> Status: Production ready - 18 formats read and write tags, polish phase
+> Status: Production ready - audio and video formats read and write tags; still images open with dimensions, polish phase
 
 ## Executive Summary
 
-TagLibSharp2 currently supports **18 formats** with read and write. The library has mature read/write capabilities for all major formats. Remaining gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). A path save copies the audio in 64 KB pieces instead of loading the file. `Render` and a save from a span still build one buffer.
+TagLibSharp2 reads and writes tags for the audio and video formats below. JPEG, PNG, GIF, BMP, PCX, Netpbm, TIFF, DNG, and SVG open with width and height. PNG text keywords, the GIF comment, and the JPEG COM marker can be edited. EXIF, IPTC, XMP, and SVG metadata are not read or written yet. Remaining audio gaps are niche formats: Speex (obsolete), TrueAudio (niche), and tracker formats (demoscene). Matroska/WebM saves tag values, chapters, and picture attachments. A path save copies the audio in 64 KB pieces instead of loading the file. `Render` and a save from a span still build one buffer.
 
 ---
 
@@ -31,6 +31,7 @@ TagLibSharp2 currently supports **18 formats** with read and write. The library 
 | Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values, chapters, picture attachments, and track enabled flags are saved. Other attachments are preserved, not rewritten |
 | MPEG PS / video ES | P2 | ✅ | ✅ | ✅ | - | ID3v2 and ID3v1 around the stream; duration from PTS or GOP time codes |
 | AVI (incl. OpenDML) | P2 | ✅ | ✅ | ✅ | - | RIFF INFO and ID32 tags; movi and every index kept valid. A path save copies movi in 64 KB pieces |
+| JPEG, PNG, GIF, BMP, PCX, Netpbm, TIFF, DNG, SVG | P2 | ✅ | Dimensions | PNG text, GIF comment, JPEG COM | - | Other image metadata is not read or written yet |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | AAC (ADTS/ADIF) | P1 | ✅ | ✅ | ✅ | - | ID3v2, APEv2, ID3v1 tags |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |

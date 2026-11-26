@@ -103,6 +103,44 @@ public class BoundsTests
 	}
 
 	[TestMethod]
+	public void AssertLinearAllocation_QuadraticWork_FailsWithSeveralRuns ()
+	{
+		// Keeping the least of three runs does not hide work that is quadratic on every run.
+		static void Quadratic (byte[] data)
+		{
+			for (var i = 0; i < data.Length; i += 16)
+				_ = data.AsSpan (i).ToArray ();
+		}
+
+		var error = Assert.ThrowsExactly<AssertFailedException> (
+			() => Bounds.AssertLinearAllocation (n => new byte[n], Quadratic, 4_096, runs: 3));
+
+		Assert.Contains ("grew", error.Message);
+	}
+
+	// Linear work whose first measured run at 4n also allocates 4 MB, as when another thread emptied a shared
+	// pool: one run sees the noise and fails, the least of three does not.
+	static Action<byte[]> LinearWithOneNoisyRun (int n)
+	{
+		var calls = new Dictionary<int, int> ();
+		return data => {
+			calls[data.Length] = calls.GetValueOrDefault (data.Length) + 1;
+			if (data.Length == 4 * n && calls[data.Length] == 2)
+				GC.KeepAlive (new byte[4 * 1024 * 1024]);
+			GC.KeepAlive ((byte[])data.Clone ());
+		};
+	}
+
+	[TestMethod]
+	public void AssertLinearAllocation_OneNoisyRun_FailsWithOneRun_AndPassesWithSeveral ()
+	{
+		Assert.ThrowsExactly<AssertFailedException> (
+			() => Bounds.AssertLinearAllocation (n => new byte[n], LinearWithOneNoisyRun (10_000), 10_000));
+
+		Bounds.AssertLinearAllocation (n => new byte[n], LinearWithOneNoisyRun (10_000), 10_000, runs: 3);
+	}
+
+	[TestMethod]
 	public void AssertLinearAllocation_LinearWorkBehindAFixedCost_Passes ()
 	{
 		Bounds.AssertLinearAllocation (n => new byte[n], data => {

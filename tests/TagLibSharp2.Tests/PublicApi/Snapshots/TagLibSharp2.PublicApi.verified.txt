@@ -1291,6 +1291,15 @@ namespace TagLibSharp2.Core
         Aac = 17,
         Audible = 18,
         Avi = 19,
+        Jpeg = 20,
+        Png = 21,
+        Gif = 22,
+        Bmp = 23,
+        Pcx = 24,
+        Netpbm = 25,
+        Tiff = 26,
+        Dng = 27,
+        Svg = 28,
     }
     [System.Flags]
     public enum MediaTypes
@@ -1470,6 +1479,7 @@ namespace TagLibSharp2.Core
         FlacMetadata = 256,
         Xmp = 512,
         Audible = 1024,
+        Image = 2048,
         AllTags = -1,
     }
     public sealed class ValidationIssue
@@ -2419,6 +2429,43 @@ namespace TagLibSharp2.Id3.Id3v2
         Utf16WithBom = 1,
         Utf16BE = 2,
         Utf8 = 3,
+    }
+}
+namespace TagLibSharp2.Image
+{
+    public sealed class StillImageFile : System.IDisposable, TagLibSharp2.Core.IMediaFile
+    {
+        public TagLibSharp2.Core.IMediaProperties? AudioProperties { get; }
+        public TagLibSharp2.Core.MediaFormat Format { get; }
+        public TagLibSharp2.Core.ImageProperties? ImageProperties { get; }
+        public TagLibSharp2.Core.MediaTypes MediaTypes { get; }
+        public string? SourcePath { get; }
+        public TagLibSharp2.Core.Tag? Tag { get; }
+        public TagLibSharp2.Core.VideoProperties? VideoProperties { get; }
+        public void Dispose() { }
+        public System.ReadOnlyMemory<byte> Render() { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public TagLibSharp2.Core.FileWriteResult SaveToFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.Task<TagLibSharp2.Core.FileWriteResult> SaveToFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool IsValidFormat(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Image.StillImageFileReadResult Read(System.ReadOnlySpan<byte> data) { }
+        public static TagLibSharp2.Image.StillImageFileReadResult ReadFromFile(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null) { }
+        public static System.Threading.Tasks.Task<TagLibSharp2.Image.StillImageFileReadResult> ReadFromFileAsync(string path, TagLibSharp2.Core.IFileSystem? fileSystem = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public static bool TryRead(System.ReadOnlySpan<byte> data, out TagLibSharp2.Image.StillImageFile? file) { }
+    }
+    public readonly struct StillImageFileReadResult : System.IEquatable<TagLibSharp2.Image.StillImageFileReadResult>
+    {
+        public string? Error { get; }
+        public TagLibSharp2.Image.StillImageFile? File { get; }
+        public bool IsSuccess { get; }
+        public bool Equals(TagLibSharp2.Image.StillImageFileReadResult other) { }
+        public override bool Equals(object? obj) { }
+        public override int GetHashCode() { }
+        public static TagLibSharp2.Image.StillImageFileReadResult Failure(string error) { }
+        public static TagLibSharp2.Image.StillImageFileReadResult Success(TagLibSharp2.Image.StillImageFile file) { }
+        public static bool operator !=(TagLibSharp2.Image.StillImageFileReadResult left, TagLibSharp2.Image.StillImageFileReadResult right) { }
+        public static bool operator ==(TagLibSharp2.Image.StillImageFileReadResult left, TagLibSharp2.Image.StillImageFileReadResult right) { }
     }
 }
 namespace TagLibSharp2.Matroska

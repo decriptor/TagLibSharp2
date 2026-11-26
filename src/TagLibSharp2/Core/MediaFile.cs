@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using TagLibSharp2.Aac;
 using TagLibSharp2.Aiff;
 using TagLibSharp2.Ape;
@@ -9,6 +10,7 @@ using TagLibSharp2.Asf;
 using TagLibSharp2.Audible;
 using TagLibSharp2.Dff;
 using TagLibSharp2.Dsf;
+using TagLibSharp2.Image;
 using TagLibSharp2.Matroska;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Mpeg;
@@ -416,6 +418,9 @@ public static class MediaFile
 			MediaFormat.MpegPs => FromMpegPs (await MpegPsFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Audible => FromAudible (await AudibleFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
 			MediaFormat.Avi => FromAvi (await AviFile.ReadAsync (stream, sourcePath, fileSystem, cancellationToken).ConfigureAwait (false)),
+			MediaFormat.Jpeg or MediaFormat.Png or MediaFormat.Gif or MediaFormat.Bmp or MediaFormat.Pcx
+				or MediaFormat.Netpbm or MediaFormat.Tiff or MediaFormat.Dng or MediaFormat.Svg
+				=> OpenImage (await StreamBytes.ReadToEndAsync (stream, cancellationToken).ConfigureAwait (false), format),
 			_ => OpenDetected (format, stream, sourcePath, fileSystem, pathHint)
 		};
 		return RememberMatroskaSource (result, sourcePath, fileSystem);
@@ -445,11 +450,15 @@ public static class MediaFile
 			_ => ReadFromData (StreamBytes.ReadToEnd (stream), pathHint)
 		};
 
-	// ReadFromData's path is only an extension hint. A path read can save Matroska back to that file.
+	// ReadFromData's path is only an extension hint. A path read can save Matroska and still images back to that file.
 	static MediaFileResult RememberMatroskaSource (MediaFileResult result, string? sourcePath, IFileSystem? fileSystem)
 	{
-		if (sourcePath is not null && result.IsSuccess && result.File is MatroskaFile matroska)
+		if (sourcePath is null || !result.IsSuccess)
+			return result;
+		if (result.File is MatroskaFile matroska)
 			matroska.SetSourcePath (sourcePath, fileSystem);
+		else if (result.File is StillImageFile image)
+			image.SetSource (sourcePath, fileSystem);
 		return result;
 	}
 
@@ -627,6 +636,8 @@ public static class MediaFile
 			MediaFormat.Aac => FromAac (AacFile.Read (data)),
 			MediaFormat.Audible => FromAudible (AudibleFile.Read (data.Span)),
 			MediaFormat.Avi => FromAvi (AviFile.Read (data.Span)),
+			MediaFormat.Jpeg or MediaFormat.Png or MediaFormat.Gif or MediaFormat.Bmp or MediaFormat.Pcx
+				or MediaFormat.Netpbm or MediaFormat.Tiff or MediaFormat.Dng or MediaFormat.Svg => OpenImage (data, format),
 			_ => MediaFileResult.Failure ($"Unknown or unsupported file format{(pathHint is not null ? $": {pathHint}" : "")}")
 		};
 
@@ -751,6 +762,11 @@ public static class MediaFile
 		if (MpegFrame.IsStartOfAudio (data))
 			return MediaFormat.Mp3;
 
+		// After the audio signatures. A markup check that decoded every unknown buffer
+		// would copy an MP3, an ID3 tag, or an ASF header on the way to "not an image".
+		if (data.Length >= 4 && ImageHeader.TryDetect (data, out var image))
+			return image == MediaFormat.Tiff && StillImageFile.HasDngName (pathHint) ? MediaFormat.Dng : image;
+
 		// Fall back to extension
 		if (!string.IsNullOrEmpty (pathHint)) {
 			var ext = Path.GetExtension (pathHint).ToUpperInvariant ();
@@ -774,6 +790,15 @@ public static class MediaFile
 				".MPG" or ".MPEG" or ".MPE" or ".VOB" or ".MPV" or ".M1V" or ".M2V" => MediaFormat.MpegPs,
 				".AAC" => MediaFormat.Aac,
 				".AVI" => MediaFormat.Avi,
+				".JPG" or ".JPEG" or ".JPE" => MediaFormat.Jpeg,
+				".PNG" => MediaFormat.Png,
+				".GIF" => MediaFormat.Gif,
+				".BMP" or ".DIB" => MediaFormat.Bmp,
+				".PCX" => MediaFormat.Pcx,
+				".PBM" or ".PGM" or ".PPM" or ".PNM" => MediaFormat.Netpbm,
+				".TIF" or ".TIFF" => MediaFormat.Tiff,
+				".DNG" => MediaFormat.Dng,
+				".SVG" => MediaFormat.Svg,
 				_ => MediaFormat.Unknown
 			};
 		}
@@ -949,6 +974,28 @@ public static class MediaFile
 
 		return MediaFileResult.Success (result.File!, result.File!.ApeTag, MediaFormat.MonkeysAudio);
 	}
+
+	static MediaFileResult OpenImage (ReadOnlyMemory<byte> data, MediaFormat format)
+	{
+		var opened = StillImageFile.Open (OwnedBytes (data), format);
+		return opened.IsSuccess
+			? MediaFileResult.Success (opened.File!, opened.File!.Tag, format)
+			: MediaFileResult.Failure (opened.Error!);
+	}
+
+	// Reuse the array behind a memory that already owns the whole buffer. A slice is copied.
+	static byte[] OwnedBytes (ReadOnlyMemory<byte> data)
+	{
+		if (MemoryMarshal.TryGetArray (data, out ArraySegment<byte> segment)
+			&& segment.Array is byte[] array
+			&& segment.Offset == 0
+			&& segment.Count == array.Length
+			&& data.Length == array.Length)
+			return array;
+
+		return data.ToArray ();
+	}
+
 
 	static MediaFileResult OpenAsf (ReadOnlyMemory<byte> data)
 	{
@@ -1141,5 +1188,32 @@ public enum MediaFormat
 	/// <summary>
 	/// AVI (RIFF <c>AVI </c> form, including OpenDML).
 	/// </summary>
-	Avi
+	Avi,
+
+	/// <summary>JPEG still image.</summary>
+	Jpeg,
+
+	/// <summary>PNG still image.</summary>
+	Png,
+
+	/// <summary>GIF still image.</summary>
+	Gif,
+
+	/// <summary>BMP still image.</summary>
+	Bmp,
+
+	/// <summary>PCX still image.</summary>
+	Pcx,
+
+	/// <summary>Netpbm raster (PBM, PGM, PPM, or PNM).</summary>
+	Netpbm,
+
+	/// <summary>TIFF still image.</summary>
+	Tiff,
+
+	/// <summary>DNG, a TIFF file with the DNG version tag or a .dng name.</summary>
+	Dng,
+
+	/// <summary>SVG image.</summary>
+	Svg
 }

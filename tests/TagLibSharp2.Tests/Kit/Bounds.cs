@@ -46,23 +46,28 @@ public static class Bounds
 	/// nested payload, or rescans a list per item, fails here. Building the input is not measured, and each
 	/// size runs once before it is measured so one-time JIT and static allocations do not count.
 	/// </remarks>
-	public static void AssertLinearAllocation (Func<int, byte[]> build, Action<byte[]> run, int n, double slack = 1.5)
+	/// <param name="runs">Runs measured per size; the least is kept. Above 1 it filters allocations another
+	/// thread causes, such as a shared <see cref="System.Buffers.ArrayPool{T}"/> that another test emptied.</param>
+	public static void AssertLinearAllocation (Func<int, byte[]> build, Action<byte[]> run, int n, double slack = 1.5, int runs = 1)
 	{
 		ArgumentNullException.ThrowIfNull (build);
 		ArgumentNullException.ThrowIfNull (run);
-		var one = Measure (build (n), run);
-		var two = Measure (build (n * 2), run);
-		var four = Measure (build (n * 4), run);
+		var one = Measure (build (n), run, runs);
+		var two = Measure (build (n * 2), run, runs);
+		var four = Measure (build (n * 4), run, runs);
 		var first = Math.Max (two - one, 1);
 		var second = four - two;
 		if (second > first * 2 * slack)
 			Assert.Fail ($"allocation grew {second / (double)first:F1}x as fast from 2n to 4n as from n to 2n ({one} -> {two} -> {four} bytes); linear is 2x, the bound {2 * slack:F1}x");
 	}
 
-	static long Measure (byte[] input, Action<byte[]> run)
+	static long Measure (byte[] input, Action<byte[]> run, int runs)
 	{
 		run (input);
-		return AllocatedBytes (() => run (input));
+		var least = long.MaxValue;
+		for (var r = 0; r < Math.Max (runs, 1); r++)
+			least = Math.Min (least, AllocatedBytes (() => run (input)));
+		return least;
 	}
 }
 

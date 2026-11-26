@@ -979,11 +979,16 @@ public readonly struct BinaryData : IEquatable<BinaryData>, IReadOnlyList<byte>,
 	/// Computes CRC-32 using the standard polynomial (0xEDB88320).
 	/// This is compatible with zlib/PNG CRC.
 	/// </summary>
-	public uint ComputeCrc32 ()
+	public uint ComputeCrc32 () => ComputeCrc32 (Data);
+
+	/// <summary>
+	/// Computes CRC-32 over <paramref name="data"/> without copying it.
+	/// </summary>
+	internal static uint ComputeCrc32 (ReadOnlySpan<byte> data)
 	{
 		var crc = 0xFFFFFFFF;
-		for (var i = 0; i < Data.Length; i++)
-			crc = Crc32Table[(crc ^ Data[i]) & 0xFF] ^ (crc >> 8);
+		for (var i = 0; i < data.Length; i++)
+			crc = Crc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
 		return ~crc;
 	}
 

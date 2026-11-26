@@ -16,7 +16,8 @@ namespace TagLibSharp2.Tests.Kit;
 /// <param name="Extension">Extension for the path hint and the saved file.</param>
 /// <param name="Structure">What repeats, for the test name and the report.</param>
 /// <param name="Build">Builds the file at a depth.</param>
-public sealed record DepthCase (string Name, MediaFormat Format, string Extension, string Structure, Func<int, byte[]> Build);
+/// <param name="Edit">The edit to save; null sets <see cref="DepthCases.LongTitle"/> and checks it reads back.</param>
+public sealed record DepthCase (string Name, MediaFormat Format, string Extension, string Structure, Func<int, byte[]> Build, Action<Tag>? Edit = null);
 
 /// <summary>
 /// Every structure in a supported format whose depth the file controls.
@@ -55,7 +56,39 @@ public static class DepthCases
 			"ID3v2.4 CHAP embedded in CHAP (ID3v2 Chapter Frame Addendum §3.1)", Id3Chapters),
 		new ("mp3-id3v2-ctoc", MediaFormat.Mp3, ".mp3",
 			"ID3v2.4 CTOC embedded in CTOC (ID3v2 Chapter Frame Addendum §3.2)", Id3Tocs),
+		new ("tiff-subifd", MediaFormat.Tiff, ".tif",
+			"TIFF/DNG SubIFD (tag 330) nested in SubIFD", TiffSubIfds),
+		new ("jpeg-xmp-gainmap-clear", MediaFormat.Jpeg, ".jpg",
+			"XMP elements nested in a gain-map property (hdrgm:GainMapMax), saved with Clear", JpegDeepXmp, t => t.Clear ()),
+		new ("jpeg-xmp-comment", MediaFormat.Jpeg, ".jpg",
+			"XMP elements nested next to exif:UserComment, saved with a Comment edit", JpegDeepXmp, t => t.Comment = "edited"),
 	];
+
+	// One APP1 segment holds at most 65,533 bytes, so the nesting stops where the packet would no longer fit.
+	static byte[] JpegDeepXmp (int depth)
+	{
+		const string Head = "http://ns.adobe.com/xap/1.0/\0<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>" +
+			"<rdf:Description rdf:about='' xmlns:hdrgm='http://ns.adobe.com/hdr-gain-map/1.0/' xmlns:exif='http://ns.adobe.com/exif/1.0/' hdrgm:Version='1.0'>" +
+			"<exif:UserComment>old</exif:UserComment><hdrgm:GainMapMax>";
+		const string Tail = "</hdrgm:GainMapMax></rdf:Description></rdf:RDF></x:xmpmeta>";
+		var levels = Math.Min (depth, (65_533 - Head.Length - Tail.Length) / 7);
+		var xmp = new System.Text.StringBuilder (Head);
+		for (var n = 0; n < levels; n++)
+			xmp.Append ("<a>");
+		for (var n = 0; n < levels; n++)
+			xmp.Append ("</a>");
+		xmp.Append (Tail);
+		var payload = System.Text.Encoding.ASCII.GetBytes (xmp.ToString ());
+		var app1 = new byte[4 + payload.Length];
+		app1[0] = 0xFF;
+		app1[1] = 0xE1;
+		app1[2] = (byte)((payload.Length + 2) >> 8);
+		app1[3] = (byte)(payload.Length + 2);
+		payload.CopyTo (app1, 4);
+		byte[] frame = [0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00];
+		byte[] scan = [0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x12, 0x34, 0xFF, 0xD9];
+		return [0xFF, 0xD8, .. app1, 0xFF, 0xFE, 0x00, 0x05, (byte)'o', (byte)'l', (byte)'d', .. frame, .. scan];
+	}
 
 	/// <summary>Finds a case by name.</summary>
 	public static DepthCase Find (string name) =>
@@ -211,6 +244,71 @@ public static class DepthCases
 		frame[2] = 0x90;
 		return Nesting.Concat (Nesting.Id3v2Tag (frames), frame, frame);
 	}
+
+	/// <summary>
+	/// Little-endian TIFF whose first IFD is a reduced-resolution preview pointing at a chain of SubIFDs.
+	/// The outermost IFD also stores width and height, so a depth cap still opens the file.
+	/// </summary>
+	static byte[] TiffSubIfds (int depth)
+	{
+		if (depth < 1)
+			depth = 1;
+		const int outerSize = 2 + (4 * 12) + 4;
+		const int middleSize = 2 + 12 + 4;
+		const int leafSize = 2 + (2 * 12) + 4;
+		var total = depth == 1 ? 8 + leafSize : 8 + outerSize + ((depth - 2) * middleSize) + leafSize;
+		var data = new byte[total];
+		data[0] = (byte)'I';
+		data[1] = (byte)'I';
+		data[2] = 42;
+		System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian (data.AsSpan (4), 8);
+		if (depth == 1) {
+			WriteLeaf (data, 8);
+			return data;
+		}
+
+		var leafAt = 8 + outerSize + ((depth - 2) * middleSize);
+		WriteCount (data, 8, 4);
+		WriteLong (data, 10, 254, 1);
+		WriteShort (data, 22, 256, 7);
+		WriteShort (data, 34, 257, 11);
+		WriteLong (data, 46, 330, 8 + outerSize);
+		for (var level = 0; level < depth - 2; level++) {
+			var at = 8 + outerSize + (level * middleSize);
+			var child = level + 1 < depth - 2 ? at + middleSize : leafAt;
+			WriteCount (data, at, 1);
+			WriteLong (data, at + 2, 330, child);
+		}
+
+		WriteLeaf (data, leafAt);
+		return data;
+
+		static void WriteLeaf (byte[] data, int at)
+		{
+			WriteCount (data, at, 2);
+			WriteShort (data, at + 2, 256, 7);
+			WriteShort (data, at + 14, 257, 11);
+		}
+
+		static void WriteCount (byte[] data, int at, int count) =>
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian (data.AsSpan (at), (ushort)count);
+
+		static void WriteShort (byte[] data, int at, int tag, int value)
+		{
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian (data.AsSpan (at), (ushort)tag);
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian (data.AsSpan (at + 2), 3);
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (at + 4), 1);
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian (data.AsSpan (at + 8), (ushort)value);
+		}
+
+		static void WriteLong (byte[] data, int at, int tag, int value)
+		{
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian (data.AsSpan (at), (ushort)tag);
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian (data.AsSpan (at + 2), 4);
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian (data.AsSpan (at + 4), 1);
+			System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian (data.AsSpan (at + 8), value);
+		}
+	}
 }
 
 /// <summary>
@@ -260,8 +358,12 @@ public static class DepthProbe
 			line += $" path={Outcome (opened)}";
 			if (opened.IsSuccess) {
 				step = "edit";
-				if (opened.Tag is not null)
-					opened.Tag.Title = DepthCases.LongTitle;
+				if (opened.Tag is not null) {
+					if (depthCase.Edit is not null)
+						depthCase.Edit (opened.Tag);
+					else
+						opened.Tag.Title = DepthCases.LongTitle;
+				}
 				line += $" edit={(opened.Tag is null ? "no-tag" : "ok")}";
 
 				step = "save";
@@ -272,7 +374,7 @@ public static class DepthProbe
 				if (write.IsSuccess) {
 					var again = MediaFile.Read (saved, files);
 					line += $" reread={Outcome (again)}";
-					if (again.IsSuccess && opened.Tag is not null && again.Tag?.Title != DepthCases.LongTitle)
+					if (again.IsSuccess && opened.Tag is not null && depthCase.Edit is null && again.Tag?.Title != DepthCases.LongTitle)
 						line += " title-lost";
 				}
 			}

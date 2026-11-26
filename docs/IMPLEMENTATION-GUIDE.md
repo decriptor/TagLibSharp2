@@ -134,6 +134,16 @@ how it was broken before.
    - **Fields the format requires** are kept: the Vorbis comment vendor string, which the header must
      carry (Xiph Vorbis comment, "vendor_length / vendor_string"), and Matroska's mandatory `MuxingApp`
      and `WritingApp` (RFC 9559).
+   - **Segments a decoder or colour management needs, or that carry the file's structure**, are kept: in
+     still images, JPEG APP0 JFIF/JFXX, APP2 ICC_PROFILE, APP2 MPF (the multi-picture index; its offsets and
+     sizes are rewritten, and Clear cleans every image it lists), APP2 ISO 21496-1 (gain map), APP14 Adobe
+     (colour transform), the gain-map XMP properties an HDR decoder needs (Ultra HDR `hdrgm` and the
+     `Container`/`Item` directory with only the item values the formats enumerate, Apple `apdi` and `HDRGainMap` version and headroom, motion-photo `Camera` flags, each with the value shape its format defines, written into a new packet; nothing of the original packet is copied.) and, for a version-65536 Apple gain map, a new Exif holding only Apple maker-note tags 33 and 48 (the headroom ImageIO and libultrahdr compute from them; decode parameters, no personal data; when an Exif repeats a pointer, a MakerNote or a tag, the values kept are the ones ImageIO applies (`AppleHeadroom.Keep`); nothing else of the Exif is kept, so it is a minimal carrier that omits Exif's mandatory format tags and `exiftool -validate` warns, while every tested reader reads it), and the APP11 JPEG
+     XT decoding boxes named in public sources (`ftyp`, `TONE`, `RTRF`, `LTRF`, `LCHK`, `SPEC`, `RESI`); PNG critical chunks and the decode/colour chunks (tRNS, gAMA, cHRM, sRGB, iCCP, cICP, mDCV, cLLI,
+     sBIT, bKGD, hIST, pHYs, sPLT, the APNG chunks, oFFs, pCAL, sCAL, sTER); GIF graphic control and plain text
+     extensions, NETSCAPE2.0/ANIMEXTS1.0 looping and ICCRGBG1012. Everything else goes, including C2PA
+     manifests (PNG caBX, JPEG APP11 JUMBF), which any edit invalidates, every other APP11 box (`xml `,
+     `uuid`, `json`, `Exif` and unknown ones carry metadata), and unknown APPn, chunks and extensions.
    - **Chapters** are file structure, not tag metadata. A tag `Clear()` keeps them in Matroska and in MP4
      (checked on main: ffprobe lists the same chapters after a Clear and a save). Use the chapter API to
      remove them.

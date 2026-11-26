@@ -35,6 +35,7 @@ A modern .NET library for reading and writing metadata in media files.
 | Audible .aa | ✅ | ✅¹ | ✅ |
 | Audible .aax (as MP4) | ✅ | ✅ | ✅ |
 | APE Tags (standalone) | ✅ | ✅ | — |
+| JPEG, PNG, GIF, BMP, PCX, Netpbm, TIFF, DNG, SVG | Dimensions; PNG text, GIF comment, JPEG COM | Those text fields | — |
 
 ¹ The text dictionary is written; the encrypted audio is copied unchanged. Edited `.aa` files have been checked with ffprobe, ffmpeg, and ExifTool, not with Audible's own apps, which may check a digest stored in the file. Keep a copy of the original, or save to a new path.
 
