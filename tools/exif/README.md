@@ -51,6 +51,8 @@ and `..._ForEveryMatrixInput` fail when the model and exiftool differ on any inp
 |------|-------|----------|
 | An entry of type 0 or 14 and above is skipped | `type 0 in the middle`, `type 19 last`, `type 255 in the middle` | the other entries are read |
 | A table whose first entry has such a type is dropped whole | `type 0 first`, `type 14 first` ... `type 255 first` | `-` |
+| The same drop, for a first entry of type 0 or 14, in IFD0, IFD1, an Exif IFD, a SubIFD, an interoperability IFD and a GPS IFD. A later type-14 entry in each is skipped. Both byte orders do this (the probes are little-endian; the editor tests pin both) | `IFD0 type 0 first`, `IFD0 type 14 first`, `IFD0 type 14 later`, and the same three for `IFD1`, `Exif`, `SubIFD`, `Interop` and `GPS` | `-` when the bad format is first; `E010E=1`, or `G0001=1` for GPS, when it is later |
+| An empty IFD0 is read and its next IFD is followed. An IFD0 whose first entry is type 0 is dropped and its next IFD is not | `the chain after an empty IFD0`, `the chain after an IFD0 whose first entry is type 0` | `E010E=1`, `-` |
 | A dropped main table ends the chain | `the chain after a table dropped for its first entry` | `-` |
 | An out-of-line value is hidden when its offset is under 8 | `value of 8 at 0 by IFD0 at 100` ... `at 7`, `value of 8 at 8 by IFD0 at 100` | `-`, `E9286=1` |
 | ... or when it overlaps its own table's count and entries (not the next offset) | `value at 41 by an Exif IFD at 40 to 70`, `... at 65`, `... at 66`, `... at 70` | `-`, `-`, `E9286=1`, `E9286=1` |

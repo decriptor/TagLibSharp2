@@ -20,9 +20,10 @@ namespace TagLibSharp2.Tests.Image;
 /// <remarks>
 /// The oracle is the tests' own reader (<see cref="ExifReaderModel"/>, checked against exiftool for every input
 /// here by <see cref="ExifReaderGoldenTests"/>). Two-sided and judged by consequence: a save must leave exactly what
-/// any reader sees, less the removed copies (no value masked); a refusal is right only when the same edit made
-/// without its check (<see cref="ExifEditor.SkipCheck"/>) would have changed something a reader sees, or when the
-/// unchecked edit is refused too (the linear bound); a field with no copy always saves with the Exif bytes unchanged.
+/// any reader sees, less the removed copies (no value masked), and exiftool must still read the same tables with
+/// the same other entries; a refusal is right only when the same edit made without its check
+/// (<see cref="ExifEditor.SkipCheck"/>) would have changed something either view sees, or when the unchecked edit
+/// is refused too (the linear bound); a field with no copy always saves with the Exif bytes unchanged.
 /// The test also asserts its own coverage: inputs, saves and refusals per relation, both byte orders, and every
 /// structure where the canonical input puts it.
 /// </remarks>
@@ -333,17 +334,27 @@ public class ExifEditMatrixTests
 			var got = ExifReaderModel.AnyReader (ExifIn (carrier, output)!).Visible ([]);
 			if (got != expected)
 				tally.Fail ("saved, and readers see more than the copies change", $"{cell}: readers would show\n    {got}\n  instead of\n    {expected}");
+			var exifAfter = ExiftoolView (ExifIn (carrier, output)!, removed);
+			if (exifAfter != ExiftoolView (tiff, removed))
+				tally.Fail ("saved, and exiftool reads a different table", $"{cell}: exiftool would show\n    {exifAfter}\n  instead of\n    {ExiftoolView (tiff, removed)}");
 			return;
 		}
 
-		// Refused: right when the unchecked edit would change what a reader sees, or is refused too (the bound).
+		// Refused: right when the unchecked edit would change what a reader sees, including which tables exiftool
+		// reads, or is refused too (the bound).
 		var (rawSaved, _, rawOutput) = Save (input, carrier, operation, unchecked_: true);
 		Tally.Add (tally.RefusedBy, RelationOf (name));
 		if (!rawSaved)
 			tally.Bound++;
-		else if (ExifReaderModel.AnyReader (ExifIn (carrier, rawOutput)!).Visible ([]) == expected)
+		else if (ExifReaderModel.AnyReader (ExifIn (carrier, rawOutput)!).Visible ([]) == expected
+			&& ExiftoolView (ExifIn (carrier, rawOutput)!, removed) == ExiftoolView (tiff, removed))
 			tally.Fail ("refused when safe", $"{cell}: refused, but the edit changes nothing else readers see: {error}");
 	}
+
+	// What exiftool shows once the removed tags are gone, in every table. A save or a refusal is wrong when the
+	// edit changes which tables it reads or which other entries those tables hold: compaction can move a format
+	// it does not read into the first entry, or out of it.
+	static string ExiftoolView (byte[] tiff, HashSet<int> removed) => ExifReaderModel.Exiftool (tiff).Visible (removed, anyTable: true);
 
 	// Whether any two bytes of the block, read in its byte order, are one of the tags.
 	static bool HoldsTag (byte[] tiff, HashSet<int> tags)

@@ -215,6 +215,13 @@ readonly ref struct TiffReader
 	}
 
 	/// <summary>
+	/// Whether exiftool reads an entry of this format (measured, exiftool 13.55): TIFF 6.0 §2 types 1-12 and IFD
+	/// (13, TIFF Technical Note 1). A first entry of any other format drops the whole table, and none of its
+	/// pointers or its next IFD is followed; a later entry of such a format is skipped and the table is read.
+	/// </summary>
+	public static bool FormatExiftoolReads (int type) => type is >= 1 and <= 13;
+
+	/// <summary>
 	/// The size of one value of a classic field type: TIFF 6.0 §2 types 1-12 and IFD (13, TIFF Technical Note 1); 0
 	/// for any other type.
 	/// </summary>

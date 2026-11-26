@@ -1203,6 +1203,277 @@ public class ExifEditTests
 		CollectionAssert.AreEqual (input, file.Render ().ToArray (), "nothing is written");
 	}
 
+	// Two SHORT strip-offset arrays that both fit, in two tables, name more values than half the data holds.
+	// Each is the first strip entry of its table, so both are read. The edit is refused and nothing is written.
+	[TestMethod]
+	[DataRow ("strips")]
+	[DataRow ("tiles")]
+	[DataRow ("thumb")]
+	public void Edit_RefusesWhenSharedValueArraysExceedTheData (string pair)
+	{
+		var tiff = StripBudgetTiff (pair, 60, 59);
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess, pair);
+		StringAssert.Contains (save.Error, "more strip, tile or thumbnail values than its data holds");
+		CollectionAssert.AreEqual (input, file.Render ().ToArray (), $"{pair}: nothing is written");
+	}
+
+	// 49 + 49 offset values and one inline length value from each table is 100, exactly half of 200 bytes. A bound
+	// that refuses at equality would refuse this, and the comment would stay.
+	[TestMethod]
+	public void Edit_SavesWhenSharedValueArraysFillTheDataExactly ()
+	{
+		var tiff = StripBudgetTiff ("strips", 49, 49);
+		var file = Open (InCarrier ("png", tiff), "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (0, UserCommentsInEveryExifIfd (ExifOf (file.Render ().ToArray ())).Count);
+	}
+
+	// Nothing of the field is in the block. The value-array bound is not a reason to refuse, and the Exif bytes stay.
+	[TestMethod]
+	public void Edit_OfATitle_SavesWhenValueArraysExceedTheDataAndNothingIsRemoved ()
+	{
+		var tiff = StripBudgetTiff ("strips", 60, 59);
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
+		file.Tag!.Title = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		CollectionAssert.AreEqual (tiff, ExifOf (file.Render ().ToArray ()));
+	}
+
+	// Length 200. IFD0 holds the UserComment and one SHORT offset array; IFD1 holds another. Each length entry is
+	// one inline SHORT. 60 + 59 + 2 is past half the data; 49 + 49 + 2 is exactly half.
+	static byte[] StripBudgetTiff (string pair, int first, int second)
+	{
+		var (off, len) = pair switch {
+			"tiles" => (0x0144, 0x0145),
+			"thumb" => (0x0201, 0x0202),
+			_ => (0x0111, 0x0117),
+		};
+		return new TiffBuilder (200).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x64636261), (off, 3, first, 80), (len, 3, 1, 0)], next: 50)
+			.Table (50, [(off, 3, second, 82), (len, 3, 1, 0)])
+			.ToArray ();
+	}
+
+	// Removing the first entry leaves a format exiftool does not read (0 or 14) in front. Measured with
+	// exiftool 13.55 -a -G1 -s -v3: the kept tag (Make, DateTimeOriginal or InteropIndex) is shown before and
+	// absent once that format is first, in IFD0, IFD1, the Exif IFD, a SubIFD and an interoperability IFD,
+	// both byte orders. The edit is refused and nothing is written. The unchecked edit does drop the tag.
+	public static IEnumerable<object[]> FirstEntryLost ()
+	{
+		foreach (var kind in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop" })
+			foreach (var type in new[] { 0, 14 })
+				foreach (var big in new[] { false, true })
+					yield return new object[] { kind, type, big };
+	}
+
+	[TestMethod]
+	[DynamicData (nameof (FirstEntryLost))]
+	public void Edit_RefusesWhenRemovingTheFirstEntryMakesTheNextOnesFormatUnreadable (string kind, int badType, bool bigEndian)
+	{
+		var (tiff, tag, text) = TableWhoseFirstEntryChanges (kind, badType, badIsTheComment: false, bigEndian);
+		Assert.AreEqual (text, ExifReaderModel.Exiftool (tiff).Strings ()[tag], $"{kind} type {badType}");
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		var order = bigEndian ? "big-endian" : "little-endian";
+		Assert.IsFalse (save.IsSuccess, $"{kind} type {badType} {order}");
+		StringAssert.Contains (save.Error, "cannot be updated");
+		CollectionAssert.AreEqual (input, file.Render ().ToArray (), $"{kind}: nothing is written");
+		var after = ExifReaderModel.Exiftool (ExifOf (UncheckedComment (input))).Strings ();
+		Assert.IsFalse (after.ContainsKey (tag), $"{kind} type {badType}: the unchecked edit drops {text}");
+	}
+
+	// The first entry is a UserComment of a format exiftool does not read, so the table is dropped and the tag
+	// after it is hidden. Removing that UserComment makes the table readable (type 0 and 19, measured). Refused.
+	public static IEnumerable<object[]> FirstEntryGained ()
+	{
+		foreach (var kind in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop" })
+			foreach (var type in new[] { 0, 19 })
+				foreach (var big in new[] { false, true })
+					yield return new object[] { kind, type, big };
+	}
+
+	[TestMethod]
+	[DynamicData (nameof (FirstEntryGained))]
+	public void Edit_RefusesWhenRemovingABadFirstEntryMakesTheTableReadable (string kind, int badType, bool bigEndian)
+	{
+		var (tiff, tag, text) = TableWhoseFirstEntryChanges (kind, badType, badIsTheComment: true, bigEndian);
+		Assert.IsFalse (ExifReaderModel.Exiftool (tiff).Strings ().ContainsKey (tag), $"{kind} type {badType}: the table is dropped");
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		var order = bigEndian ? "big-endian" : "little-endian";
+		Assert.IsFalse (save.IsSuccess, $"{kind} type {badType} {order}");
+		StringAssert.Contains (save.Error, "cannot be updated");
+		CollectionAssert.AreEqual (input, file.Render ().ToArray (), $"{kind}: nothing is written");
+		Assert.AreEqual (text, ExifReaderModel.Exiftool (ExifOf (UncheckedComment (input))).Strings ()[tag], $"{kind}: the unchecked edit reveals {text}");
+	}
+
+	// A format exiftool skips only when it is not the first entry stays where it is. The comment is removed and
+	// DateTimeOriginal stays. Measured: type 14 in the third entry does not drop the Exif IFD.
+	[TestMethod]
+	[DataRow (0, false)]
+	[DataRow (14, false)]
+	[DataRow (0, true)]
+	[DataRow (14, true)]
+	public void Edit_SavesWhenABadFormatEntryStaysOffTheFirstPosition (int badType, bool bigEndian)
+	{
+		const int TextAt = 300;
+		var date = "2009:09:09 09:09:09\0"u8.ToArray ();
+		var tiff = new TiffBuilder (340, bigEndian).Header (8)
+			.Table (8, [(0x8769, 4, 1, 40)])
+			.Table (40, [(0x9003, 2, date.Length, TextAt), (0x9286, 7, SecretUc.Length, 240), (0x0010, badType, 1, 0), (0x9004, 2, date.Length, TextAt)])
+			.Bytes (240, SecretUc).Bytes (TextAt, date).ToArray ();
+		var file = Open (InCarrier ("png", tiff), "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual ("2009:09:09 09:09:09", ExifReaderModel.Exiftool (ExifOf (file.Render ().ToArray ())).Strings ()[0x9003]);
+	}
+
+	// A comment edit does not remove GPS entries. A GPS table exiftool drops for its first entry stays dropped, and
+	// one it reads stays read. Measured: GPSLatitudeRef after a type-0 or type-14 entry is absent; in front of a
+	// type-14 entry it is "N".
+	[TestMethod]
+	[DataRow (0)]
+	[DataRow (14)]
+	public void Edit_KeepsAGpsTableUnreadWhenItsFirstEntryHasAFormatExiftoolDrops (int badType)
+	{
+		var tiff = new TiffBuilder (80).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x64636261), (0x8825, 4, 1, 40)])
+			.Table (40, [(0x0010, badType, 1, 0), (0x0001, 2, 2, 0x4E)])
+			.ToArray ();
+		Assert.IsFalse (ExifReaderModel.Exiftool (tiff).Summary ().Contains ("G0001", StringComparison.Ordinal), $"type {badType}");
+		var file = Open (InCarrier ("png", tiff), "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.IsFalse (ExifReaderModel.Exiftool (ExifOf (file.Render ().ToArray ())).Summary ().Contains ("G0001", StringComparison.Ordinal), $"type {badType}");
+	}
+
+	[TestMethod]
+	public void Edit_KeepsAGpsLatitudeRefThatStaysTheFirstEntry ()
+	{
+		var tiff = new TiffBuilder (80).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x64636261), (0x8825, 4, 1, 40)])
+			.Table (40, [(0x0001, 2, 2, 0x4E), (0x0010, 14, 1, 0)])
+			.ToArray ();
+		Assert.IsTrue (ExifReaderModel.Exiftool (tiff).Summary ().Contains ("G0001=1", StringComparison.Ordinal));
+		var file = Open (InCarrier ("png", tiff), "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.IsTrue (ExifReaderModel.Exiftool (ExifOf (file.Render ().ToArray ())).Summary ().Contains ("G0001=1", StringComparison.Ordinal));
+	}
+
+	// IFD0's only entry is a UserComment of type 0, and its next IFD holds Make. exiftool follows a next IFD of an
+	// empty table and does not follow one of a table dropped for its first entry (measured, both byte orders).
+	// Removing the UserComment would make Make appear. Refused.
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Edit_RefusesWhenRemovingTheOnlyBadFirstEntryFollowsTheNextIfd (bool bigEndian)
+	{
+		const int TextAt = 90;
+		var tiff = new TiffBuilder (100, bigEndian).Header (8)
+			.Table (8, [(0x9286, 0, SecretUc.Length, 40)], next: 60)
+			.Table (60, [(0x010F, 2, 6, TextAt)])
+			.Bytes (40, SecretUc).Bytes (TextAt, "Canon\0"u8).ToArray ();
+		Assert.IsFalse (ExifReaderModel.Exiftool (tiff).Strings ().ContainsKey (0x010F), bigEndian ? "big-endian" : "little-endian");
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess, save.Error);
+		StringAssert.Contains (save.Error, "cannot be updated");
+		CollectionAssert.AreEqual (input, file.Render ().ToArray (), "nothing is written");
+		Assert.AreEqual ("Canon", ExifReaderModel.Exiftool (ExifOf (UncheckedComment (input))).Strings ()[0x010F]);
+	}
+
+	// UserComment, then a format exiftool does not read, then one tag that kind shows; or the UserComment itself
+	// carrying that format, in front of the tag. The strings are what exiftool 13.55 prints for these bytes.
+	static (byte[] Tiff, int Tag, string Text) TableWhoseFirstEntryChanges (string kind, int badType, bool badIsTheComment, bool bigEndian)
+	{
+		const int CommentAt = 240;
+		const int TextAt = 300;
+		var tag = kind == "Interop" ? 0x0001 : kind == "Exif" ? 0x9003 : 0x010F;
+		var text = kind == "Interop" ? "R98" : kind == "Exif" ? "2009:09:09 09:09:09" : "Canon";
+		(int Tag, int Type, long Count, long Value) visible = kind switch {
+			"Interop" => (0x0001, 2, 4, bigEndian ? 0x52393800L : 0x00383952L),
+			"Exif" => (0x9003, 2, 20, TextAt),
+			_ => (0x010F, 2, 6, TextAt),
+		};
+		(int, int, long, long) comment = (0x9286, badIsTheComment ? badType : 7, SecretUc.Length, CommentAt);
+		(int, int, long, long)[] entries = badIsTheComment ? [comment, visible] : [comment, (0x0010, badType, 1, 0), visible];
+		var tiff = new TiffBuilder (360, bigEndian).Header (8);
+		switch (kind) {
+			case "IFD0":
+				tiff.Table (8, entries);
+				break;
+			case "IFD1":
+				tiff.Table (8, [(0x0100, 4, 1, 1)], next: 40).Table (40, entries);
+				break;
+			case "SubIFD":
+				tiff.Table (8, [(0x014A, 4, 1, 40)]).Table (40, entries);
+				break;
+			case "Exif":
+				tiff.Table (8, [(0x8769, 4, 1, 40)]).Table (40, entries);
+				break;
+			default:
+				tiff.Table (8, [(0x8769, 4, 1, 40)]).Table (40, [(0xA005, 4, 1, 80)]).Table (80, entries);
+				break;
+		}
+
+		tiff.Bytes (CommentAt, SecretUc);
+		if (kind == "Exif")
+			tiff.Bytes (TextAt, "2009:09:09 09:09:09\0"u8);
+		else if (kind != "Interop")
+			tiff.Bytes (TextAt, "Canon\0"u8);
+		return (tiff.ToArray (), tag, text);
+	}
+
+	static byte[] UncheckedComment (byte[] input)
+	{
+		var file = Open (input, "a.png");
+		file.Tag!.Comment = "New";
+		ExifEditor.SkipCheck = true;
+		try {
+			var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+			Assert.IsTrue (save.IsSuccess, save.Error);
+			return file.Render ().ToArray ();
+		} finally {
+			ExifEditor.SkipCheck = false;
+		}
+	}
+
 	// The next IFD of an Exif, GPS, interoperability or SubIFD table is read by no one. Its thumbnail, strips or
 	// tiles lie in the Exif IFD's compacted tail, so those bytes change, and the edit still saves: the pair is not
 	// a kept value of a table a reader reads. IFD1's thumbnail is on the main chain and is already refused.
@@ -1255,10 +1526,11 @@ public class ExifEditTests
 		Assert.IsFalse (strings.ContainsKey (0x9286), $"{parent} {pair}: UserComment is gone");
 	}
 
-	// Compaction of the Exif IFD clears the count of another table that ends on the data's last byte. The count is the
-	// high half of the Exif IFD's next offset, 0x10000: its later two bytes when little-endian, its first two when
-	// big-endian. The entry past that count still fits and matches, so a check that reads it would save. The edit is
-	// refused, and nothing is written.
+	// Compaction of the Exif IFD clears the count of another table. The count is the last two bytes of the Exif
+	// IFD's next-offset field, and the entry that follows is one the table's kind shows: ImageDescription "Hill",
+	// or GPSLatitudeRef "N" in a GPS table. That entry's tag and type are also the table's next offset, so a check
+	// that reads one entry past the edited count sees equal bytes and would save, dropping the tag. The edit is
+	// refused, and nothing is written. The unchecked edit does drop the tag.
 	[TestMethod]
 	[DataRow ("IFD1", false)]
 	[DataRow ("GPS", false)]
@@ -1270,27 +1542,61 @@ public class ExifEditTests
 	[DataRow ("SubIFD", true)]
 	public void Edit_RefusesWhenCompactionClearsTheCountOfATableThatEndsTheData (string kind, bool bigEndian)
 	{
-		const int Exif = 60;
-		var table = bigEndian ? 86 : 88;
-		var t = new TiffBuilder (bigEndian ? 100 : 102, bigEndian).Header (8);
-		if (kind == "IFD1")
-			t.Table (8, [(0x8769, 4, 1, Exif)], next: table);
-		else {
-			var pointer = kind switch { "GPS" => 0x8825, "Interop" => 0xA005, _ => 0x014A };
-			t.Table (8, [(0x8769, 4, 1, Exif), (pointer, 4, 1, table)]);
-		}
-
-		// The ending table's count is those two bytes of the next offset. Table() would overwrite them.
-		var tiff = t.Table (Exif, [(0x9286, 7, 4, 0x64636261), (0x9003, 2, 4, bigEndian ? 0x32303234 : 0x34323032)], next: 0x10000).ToArray ();
+		var tiff = EndingTableWithAVisibleEntry (kind, bigEndian);
+		var before = ExifReaderModel.Exiftool (tiff);
+		var order = bigEndian ? "big-endian" : "little-endian";
+		if (kind == "GPS")
+			Assert.IsTrue (before.Summary ().Contains ("G0001=1", StringComparison.Ordinal), $"{kind} {order}");
+		else
+			Assert.AreEqual ("Hill", before.Strings ()[0x010E], $"{kind} {order}");
 		var input = InCarrier ("png", tiff);
 		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
 
-		Assert.IsFalse (save.IsSuccess, $"{kind} {(bigEndian ? "big-endian" : "little-endian")}");
+		Assert.IsFalse (save.IsSuccess, $"{kind} {order}");
 		StringAssert.Contains (save.Error, "IFD tables that overlap");
 		CollectionAssert.AreEqual (input, file.Render ().ToArray (), $"{kind}: nothing is written");
+		var after = ExifReaderModel.Exiftool (ExifOf (UncheckedComment (input)));
+		if (kind == "GPS")
+			Assert.IsFalse (after.Summary ().Contains ("G0001", StringComparison.Ordinal), $"{kind}: the unchecked edit drops GPSLatitudeRef");
+		else
+			Assert.IsFalse (after.Strings ().ContainsKey (0x010E), $"{kind}: the unchecked edit drops ImageDescription");
+	}
+
+	// Exif at 60 (two entries). Its next-offset field is bytes 86-89, and the last two of those are a count of 1
+	// at 88. The entry starts at 90, past the bytes compaction clears, and the table's next offset equals that
+	// entry's tag and type. Both byte orders. Table() is not used for the ending table: it would overwrite the count.
+	static byte[] EndingTableWithAVisibleEntry (string kind, bool bigEndian)
+	{
+		const int Exif = 60;
+		const int Table = 88;
+		var exifNext = bigEndian ? 0x00000001L : 0x00010000L;
+		byte[] entry;
+		long tableNext;
+		if (kind == "GPS") {
+			entry = bigEndian
+				? [0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x4E, 0x00, 0x00, 0x00]
+				: [0x01, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x4E, 0x00, 0x00, 0x00];
+			tableNext = bigEndian ? 0x00010002L : 0x00020001L;
+		} else {
+			entry = bigEndian
+				? [0x01, 0x0E, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x48, 0x69, 0x6C, 0x6C]
+				: [0x0E, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x48, 0x69, 0x6C, 0x6C];
+			tableNext = bigEndian ? 0x010E0002L : 0x0002010EL;
+		}
+
+		var t = new TiffBuilder (106, bigEndian).Header (8);
+		if (kind == "IFD1")
+			t.Table (8, [(0x8769, 4, 1, Exif)], next: Table);
+		else {
+			var pointer = kind switch { "GPS" => 0x8825, "Interop" => 0xA005, _ => 0x014A };
+			t.Table (8, [(0x8769, 4, 1, Exif), (pointer, 4, 1, Table)]);
+		}
+
+		return t.Table (Exif, [(0x9286, 7, 4, 0x64636261), (0x9003, 2, 4, bigEndian ? 0x32303234 : 0x34323032)], next: exifNext)
+			.Bytes (90, entry).U32 (102, tableNext).ToArray ();
 	}
 
 	// ImageDescription "Hill", an Exif IFD whose UserComment is removed, and a protect-only table whose

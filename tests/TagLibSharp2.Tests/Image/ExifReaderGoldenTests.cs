@@ -94,8 +94,8 @@ public class ExifReaderGoldenTests
 
 	/// <summary>A probe of each reading rule, as the golden file lists them.</summary>
 	internal static IEnumerable<(string Name, byte[] Tiff)> Probes () =>
-		PointerTypes ().Concat (PointerValues ()).Concat (NextIfds ()).Concat (ValuePlaces ()).Concat (UnknownFormats ()).Concat (ReadOrder ())
-			.Concat (TooManyWarnings ());
+		PointerTypes ().Concat (PointerValues ()).Concat (NextIfds ()).Concat (ValuePlaces ()).Concat (UnknownFormats ())
+			.Concat (FirstEntryByKind ()).Concat (ReadOrder ()).Concat (TooManyWarnings ());
 
 	// exiftool stops reading a table at its 11th warning: 10 or 11 entries of each kind before an Exif IFD's
 	// UserComment (the counted kinds and three that are not), the count kept per table, IFD0 stopped before its Exif
@@ -287,6 +287,45 @@ public class ExifReaderGoldenTests
 			.Table (200, [(0x9286, 7, 14, 104)]).ToArray ());
 		yield return ("value inside a child table", new TiffBuilder (400).Header (100).Table (100, [(0x8769, 4, 1, 200), (0x9286, 7, 14, 204)])
 			.Table (200, [(0x9003, 2, 20, 300)]).ToArray ());
+	}
+
+	// A format outside 1-13 drops the whole table when it is the first entry, in every kind of table, and is skipped
+	// when it is later. An empty IFD0 is read and its next IFD is followed; one dropped for a type-0 first entry is
+	// not. Little-endian; the editor tests pin both byte orders. ImageDescription and GPSLatitudeRef are what the
+	// golden summary counts.
+	static IEnumerable<(string, byte[])> FirstEntryByKind ()
+	{
+		(int, int, long, long) desc = (0x010E, 2, 4, 0x6C6C6948);
+		(int, int, long, long) gps = (0x0001, 2, 2, 0x4E);
+		foreach (var kind in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop" }) {
+			yield return ($"{kind} type 0 first", KindTable (kind, [(0x0010, 0, 1, 0), desc]));
+			yield return ($"{kind} type 14 first", KindTable (kind, [(0x0010, 14, 1, 0), desc]));
+			yield return ($"{kind} type 14 later", KindTable (kind, [desc, (0x0010, 14, 1, 0)]));
+		}
+
+		yield return ("GPS type 0 first", GpsTable ([(0x0010, 0, 1, 0), gps]));
+		yield return ("GPS type 14 first", GpsTable ([(0x0010, 14, 1, 0), gps]));
+		yield return ("GPS type 14 later", GpsTable ([gps, (0x0010, 14, 1, 0)]));
+		yield return ("the chain after an empty IFD0", new TiffBuilder (80).Header (8).Table (8, [], next: 40).Table (40, [desc]).ToArray ());
+		yield return ("the chain after an IFD0 whose first entry is type 0", new TiffBuilder (80).Header (8)
+			.Table (8, [(0x0010, 0, 1, 0)], next: 40).Table (40, [desc]).ToArray ());
+
+		static byte[] KindTable (string kind, (int, int, long, long)[] entries)
+		{
+			var t = new TiffBuilder (120).Header (8);
+			switch (kind) {
+				case "IFD0": t.Table (8, entries); break;
+				case "IFD1": t.Table (8, [(0x0100, 4, 1, 1)], next: 40).Table (40, entries); break;
+				case "SubIFD": t.Table (8, [(0x014A, 4, 1, 40)]).Table (40, entries); break;
+				case "Exif": t.Table (8, [(0x8769, 4, 1, 40)]).Table (40, entries); break;
+				default: t.Table (8, [(0x8769, 4, 1, 40)]).Table (40, [(0xA005, 4, 1, 80)]).Table (80, entries); break;
+			}
+
+			return t.ToArray ();
+		}
+
+		static byte[] GpsTable ((int, int, long, long)[] entries) =>
+			new TiffBuilder (120).Header (8).Table (8, [(0x8825, 4, 1, 40)]).Table (40, entries).ToArray ();
 	}
 
 	// An entry of each type first, in the middle and last of a table with a UserComment, and a UserComment of each

@@ -331,13 +331,20 @@ sealed class ExifReaderModel
 	/// its next offset, and the bytes its offset/length pairs name (thumbnail, strips, tiles). Entries with a tag in <paramref name="removed"/> are left out of tables read with the Exif
 	/// tags. Nothing is masked: a value that lies on a table is compared too.
 	/// </summary>
-	public string Visible (HashSet<int> removed)
+	public string Visible (HashSet<int> removed) => Visible (removed, anyTable: false);
+
+	/// <summary>
+	/// <see cref="Visible(HashSet{int})"/>. When <paramref name="anyTable"/> is set, entries of a removed tag are
+	/// left out of every table, including one read only with the GPS tags: a table reached both ways loses those
+	/// copies, and that is the edit.
+	/// </summary>
+	public string Visible (HashSet<int> removed, bool anyTable)
 	{
 		var text = new StringBuilder ();
 		foreach (var t in Tables.OrderBy (t => t.At)) {
 			text.Append ('[').Append (t.At).Append (' ').Append (string.Join ("+", t.Kinds.OrderBy (k => k))).Append (']');
 			foreach (var (_, e) in Shown ().Where (s => s.Table == t)) {
-				if (t.ReadsExifTags && removed.Contains (U16 (e)))
+				if ((anyTable || t.ReadsExifTags) && removed.Contains (U16 (e)))
 					continue;
 				// An out-of-line value in the data is shown with its offset: where it lies decides whether exiftool shows
 				// it (the suspicious-offset rule). One past the data is shown by no reader, wherever it points, and nor is

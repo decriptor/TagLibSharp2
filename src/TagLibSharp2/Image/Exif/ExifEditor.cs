@@ -32,7 +32,8 @@ static class ExifEditor
 	/// False, with an error and nothing written, when the block is not classic TIFF or its tables overlap past the
 	/// bound that keeps the walk linear, and its bytes could hold an entry with one of the fields' tags; and, when
 	/// something is to be removed from structure that is not clean, when the edit would change anything else a
-	/// reader sees (<see cref="EditCheck"/>): a table, entry, next offset, value or offset/length data.
+	/// reader sees (<see cref="EditCheck"/>): a table, whether exiftool reads it, an entry, next offset, value or
+	/// offset/length data.
 	/// </returns>
 	internal static bool TryRemove (byte[] block, int start, ImageTag tag, string carrier, out bool changed, out string? error)
 	{
@@ -64,6 +65,10 @@ static class ExifEditor
 		var plan = RemovalPlan.Mark (tiff, graph, tags);
 		if (plan.Removing.Count == 0)
 			return true;
+		// The plan stopped before it had read every offset and length, so applying it could zero a strip, tile or
+		// thumbnail it never recorded. Nothing to remove never reaches here.
+		if (plan.ValueBudgetExceeded)
+			return Refuse ($"The {carrier} block names more strip, tile or thumbnail values than its data holds, so its copy of {what} cannot be updated.", out error);
 		if (SkipCheck || plan.IsClean ()) {
 			plan.Apply (block.AsSpan (start), tiff, graph);
 			changed = true;

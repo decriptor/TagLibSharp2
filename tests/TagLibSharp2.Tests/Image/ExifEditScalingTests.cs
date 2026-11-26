@@ -309,4 +309,116 @@ public class ExifEditScalingTests
 				Assert.AreEqual (0, UserCommentsInEveryExifIfd (ExifOf (output)).Count, $"{row}: no copy is left");
 		}
 	}
+
+	// N tables share one strip, tile or thumbnail array of N values. Reading and recording that array once per table
+	// is quadratic in N; reading it once is linear. Comment removes the one UserComment, Title removes nothing.
+	[TestMethod]
+	[DataRow ("png", "comment", "strips")]
+	[DataRow ("png", "title", "strips")]
+	[DataRow ("jpeg", "comment", "strips")]
+	[DataRow ("jpeg", "title", "strips")]
+	[DataRow ("png", "comment", "tiles")]
+	[DataRow ("png", "comment", "thumb")]
+	[DataRow ("png", "comment", "chain")]
+	public void Edit_SharedStripArray_IsLinearInTheTables (string carrier, string field, string shape)
+	{
+		const int n = 250;
+		var small = SharedStripSteps (carrier, field, shape, n);
+		var large = SharedStripSteps (carrier, field, shape, 4 * n);
+		var row = $"{field} {carrier} {shape}";
+		Assert.IsTrue (small > 0, $"{row}: the walk ran");
+		// A comment edit walks the tables when the file is opened, again to mark and again to check. A title edit
+		// marks and removes nothing. 320 steps a table is above both, and under reading the shared array once per table.
+		Assert.IsTrue (large <= 320L * 4 * n, $"{row}: {large} steps for {4 * n} tables");
+		Assert.IsTrue (large <= Math.Max (6 * small, 64), $"{row}: 4x the tables took {large / (double)small:F1}x the steps ({small} -> {large})");
+		Bounds.AssertLinearAllocation (size => SharedStripFile (carrier, shape, size), data => RunSharedStrip (field, data, carrier == "png" ? "a.png" : "a.jpg"), n, runs: 3);
+	}
+
+	// The reported sizes: about 85 KB at 2,000 tables and 169 KB at 4,000, each table sharing one strip array.
+	// A quadratic read exhausts a 1 GB heap at the larger one.
+	[TestMethod]
+	[DataRow (2000)]
+	[DataRow (4000)]
+	public void Edit_SharedStripArray_AtTheReportedSizes_RemovesTheComment (int n)
+	{
+		var data = SharedStripFile ("png", "strips", n);
+		Assert.IsTrue (data.Length > (n == 2000 ? 80_000 : 160_000), $"N={n}: {data.Length} bytes");
+		var output = RunSharedStrip ("comment", data, "a.png");
+		Assert.AreEqual (0, UserCommentsInEveryExifIfd (ExifOf (output)).Count, $"N={n}: the comment is removed");
+	}
+
+	static byte[] SharedStripFile (string carrier, string shape, int n) => carrier == "png"
+		? Png (PngChunk ("eXIf", SharedStripTiff (shape, n)), Text ("Comment", "c"))
+		: Jpeg (JpegExif (SharedStripTiff (shape, n)), JpegSegment (0xFE, "c"u8.ToArray ()));
+
+	static long SharedStripSteps (string carrier, string field, string shape, int n)
+	{
+		var data = SharedStripFile (carrier, shape, n);
+		IfdSteps.Count = 0;
+		var output = RunSharedStrip (field, data, carrier == "png" ? "a.png" : "a.jpg");
+		var comments = UserCommentsInEveryExifIfd (ExifOf (output)).Count;
+		Assert.AreEqual (field == "comment" ? 0 : 1, comments, $"{field} {carrier} {shape} N={n}");
+		return IfdSteps.Count;
+	}
+
+	static byte[] RunSharedStrip (string field, byte[] data, string name)
+	{
+		// JPEG stores only the comment, so assigning Title never reaches the editor. Measure that walk on the TIFF.
+		if (field == "title" && name.EndsWith (".jpg", StringComparison.Ordinal)) {
+			var tiff = ExifOf (data);
+			var tag = new ImageTag (MediaFormat.Jpeg, (ImageStores)0x3F);
+			tag.ReadField (ImageStores.Title, "Old");
+			tag.Title = "New";
+			Assert.IsTrue (ExifEditor.TryRemove (tiff, 0, tag, "jpeg APP1", out var changed, out var error), error);
+			Assert.IsFalse (changed, "jpeg title: the TIFF holds no title");
+			return data;
+		}
+
+		var file = Open (data, name);
+		if (field == "comment")
+			file.Tag!.Comment = "New";
+		else
+			file.Tag!.Title = "New";
+		var save = file.SaveToFile ("/out", new MockFileSystem ());
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		return file.Render ().ToArray ();
+	}
+
+	// IFD0 points at an Exif IFD that holds the UserComment, and at N tables that share one N-value offset array
+	// and one N-value length array: a SubIFD array, or a next-IFD chain.
+	static byte[] SharedStripTiff (string shape, int n)
+	{
+		var (offTag, lenTag) = shape switch {
+			"tiles" => (0x0144, 0x0145),
+			"thumb" => (0x0201, 0x0202),
+			_ => (0x0111, 0x0117),
+		};
+		var chain = shape == "chain";
+		const int Ifd0 = 8;
+		var ifd0Entries = chain ? 1 : 2;
+		var exifAt = Ifd0 + 2 + (12 * ifd0Entries) + 4;
+		var arrayAt = exifAt + 18;
+		var tablesAt = chain ? arrayAt : arrayAt + (4 * n);
+		const int TableSize = 30;
+		var offsetsAt = tablesAt + (TableSize * n);
+		var lengthsAt = offsetsAt + (4 * n);
+		var commentAt = lengthsAt + (4 * n);
+		var tiff = new TiffBuilder (commentAt + OldOne.Length).Header (Ifd0);
+		if (chain)
+			tiff.Table (Ifd0, [(0x8769, 4, 1, exifAt)], next: tablesAt);
+		else
+			tiff.Table (Ifd0, [(0x8769, 4, 1, exifAt), (0x014A, 4, n, arrayAt)]);
+		tiff.Table (exifAt, [(0x9286, 7, OldOne.Length, commentAt)]);
+		for (var i = 0; i < n; i++) {
+			var at = tablesAt + (TableSize * i);
+			var next = chain && i + 1 < n ? at + TableSize : 0L;
+			tiff.Table (at, [(offTag, 4, n, offsetsAt), (lenTag, 4, n, lengthsAt)], next);
+			if (!chain)
+				tiff.U32 (arrayAt + (4 * i), at);
+		}
+
+		for (var k = 0; k < n; k++)
+			tiff.U32 (offsetsAt + (4 * k), 8).U32 (lengthsAt + (4 * k), 4);
+		return tiff.Bytes (commentAt, OldOne).ToArray ();
+	}
 }
