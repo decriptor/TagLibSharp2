@@ -200,23 +200,7 @@ public sealed class ImagePathSaveTests
 		var header = TiffHeader (format);
 		var data = new byte[80 * 1024];
 		header.CopyTo (data, 0);
-		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
-		var source = "/in." + format;
-		var destination = "/out." + format;
-		fs.Add (source, data);
-		fs.MaxRead = data.Length;
-		var read = StillImageFile.ReadFromFile (source, fs);
-		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
-		Assert.IsTrue (read.IsSuccess, read.Error);
-		fs.ResetSourceLengthGets ();
-
-		var save = saveAsync
-			? await read.File!.SaveToFileAsync (destination, fs)
-			: read.File!.SaveToFile (destination, fs);
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		Assert.AreEqual (1, fs.SourceLengthGets);
-		CollectionAssert.AreEqual (data, fs.Bytes (destination));
+		await AssertWholeFileCopiedInChunks (data, "/in." + format, "/out." + format, saveAsync);
 	}
 
 	[TestMethod]
@@ -271,6 +255,55 @@ public sealed class ImagePathSaveTests
 		CollectionAssert.AreEqual (rendered, written);
 		const string expected = "742A2C24C2F5A7CC72B01607DCB6B3517A46B7FD146388CF59F68A8AE175D287";
 		Assert.AreEqual (expected, Convert.ToHexString (SHA256.HashData (written)));
+	}
+
+	[TestMethod]
+	[DataRow ("A838D2A6E158A95650468B27AE71DADC92C08B08C5173C822A932E7B7703E774")]
+	public void BmpPathSave_BytesEqualRender (string expectedHash)
+	{
+		var data = Bmp (4, 2);
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/in.bmp", data);
+		var read = StillImageFile.ReadFromFile ("/in.bmp", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		var rendered = read.File!.Render ().ToArray ();
+
+		var save = read.File.SaveToFile ("/out.bmp", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var written = fs.ReadAllBytes ("/out.bmp");
+		CollectionAssert.AreEqual (rendered, written);
+		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)));
+	}
+
+	/// <summary>
+	/// The file is a BMP header followed by pixels out to 80 KB. A path save copies that range in chunks.
+	/// </summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task BmpPathSave_OverOneChunk_CopiesTheFileInChunks (bool saveAsync)
+	{
+		await AssertWholeFileCopiedInChunks (Bmp (1, 1, 80 * 1024), "/in.bmp", "/out.bmp", saveAsync);
+	}
+
+	static async Task AssertWholeFileCopiedInChunks (byte[] data, string source, string destination, bool saveAsync)
+	{
+		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+		fs.Add (source, data);
+		fs.MaxRead = data.Length;
+		var read = StillImageFile.ReadFromFile (source, fs);
+		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		fs.ResetSourceLengthGets ();
+
+		var save = saveAsync
+			? await read.File!.SaveToFileAsync (destination, fs)
+			: read.File!.SaveToFile (destination, fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (1, fs.SourceLengthGets);
+		CollectionAssert.AreEqual (data, fs.Bytes (destination));
 	}
 
 	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedScan (int scanLength)
