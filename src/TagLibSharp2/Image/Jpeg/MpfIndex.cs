@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using TagLibSharp2.Image;
 using TagLibSharp2.Image.Tiff;
 
 namespace TagLibSharp2.Image.Jpeg;
@@ -66,7 +67,7 @@ sealed class MpfIndex
 				continue;
 			}
 
-			var length = (data[i + 2] << 8) | data[i + 3];
+			var length = Endian.U16 (data, i + 2, le: false);
 			if (length < 2 || i + 2 + length > data.Length)
 				break;
 			if (marker == 0xE2 && data.Slice (i + 4, length - 2).StartsWith ("MPF\0"u8))

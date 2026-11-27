@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Core;
+using TagLibSharp2.Image;
 
 namespace TagLibSharp2.Image.Jpeg;
 
@@ -65,7 +66,7 @@ static class JpegSize
 				continue;
 			if (i + 1 >= data.Length)
 				return false;
-			length = (data[i] << 8) | data[i + 1];
+			length = Endian.U16 (data, i, le: false);
 			return length >= 2 && i + length <= data.Length;
 		}
 
@@ -89,8 +90,8 @@ static class JpegSize
 		frame = default;
 		if (segment.Length < 7)
 			return false;
-		var height = (segment[3] << 8) | segment[4];
-		var width = (segment[5] << 8) | segment[6];
+		var height = Endian.U16 (segment, 3, le: false);
+		var width = Endian.U16 (segment, 5, le: false);
 		if (width <= 0 || height < 0)
 			return false;
 		var components = segment.Length >= 8 && segment[7] is >= 1 and <= 4 ? segment[7] : 1;
@@ -121,10 +122,10 @@ static class JpegSize
 				continue;
 			if (marker != 0xDC || i + 3 >= data.Length)
 				return false;
-			var length = (data[i] << 8) | data[i + 1];
+			var length = Endian.U16 (data, i, le: false);
 			if (length != 4)
 				return false;
-			lines = (data[i + 2] << 8) | data[i + 3];
+			lines = Endian.U16 (data, i + 2, le: false);
 			return lines > 0;
 		}
 

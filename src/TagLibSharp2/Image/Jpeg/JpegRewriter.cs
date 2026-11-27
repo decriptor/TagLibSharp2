@@ -3,6 +3,7 @@
 
 using System.Text;
 using TagLibSharp2.Core;
+using TagLibSharp2.Image;
 using TagLibSharp2.Image.Exif;
 using TagLibSharp2.Image.Xmp;
 
@@ -61,7 +62,7 @@ static class JpegRewriter
 
 			if (i + 1 >= data.Length)
 				return false;
-			var length = (data[i] << 8) | data[i + 1];
+			var length = Endian.U16 (data, i, le: false);
 			if (length < 2 || i + length > data.Length)
 				return false;
 			if (marker == 0xDA)
@@ -263,7 +264,7 @@ static class JpegRewriter
 		length = 0;
 		if (i + 1 >= data.Length)
 			return false;
-		length = (data[i] << 8) | data[i + 1];
+		length = Endian.U16 (data, i, le: false);
 		return length >= 2 && i + length <= data.Length;
 	}
 

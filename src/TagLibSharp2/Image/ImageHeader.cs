@@ -89,8 +89,8 @@ internal static class ImageHeader
 		if (!IsGif (data) || data.Length < 13)
 			return false;
 
-		var width = data[6] | (data[7] << 8);
-		var height = data[8] | (data[9] << 8);
+		var width = Endian.U16 (data, 6, le: true);
+		var height = Endian.U16 (data, 8, le: true);
 		if (width <= 0 || height <= 0)
 			return false;
 
@@ -115,9 +115,9 @@ internal static class ImageHeader
 		if (header == 12) {
 			if (data.Length < 26)
 				return false;
-			width = data[18] | (data[19] << 8);
-			height = data[20] | (data[21] << 8);
-			depth = data[24] | (data[25] << 8);
+			width = Endian.U16 (data, 18, le: true);
+			height = Endian.U16 (data, 20, le: true);
+			depth = Endian.U16 (data, 24, le: true);
 		} else if (header >= 16 && data.Length >= 26) {
 			width = Endian.I32 (data, 18, le: true);
 			var rawHeight = Endian.I32 (data, 22, le: true);
@@ -125,7 +125,7 @@ internal static class ImageHeader
 				return false;
 			height = rawHeight < 0 ? -rawHeight : rawHeight;
 			if (data.Length >= 30)
-				depth = data[28] | (data[29] << 8);
+				depth = Endian.U16 (data, 28, le: true);
 		} else {
 			return false;
 		}
@@ -146,10 +146,10 @@ internal static class ImageHeader
 		if (!IsPcx (data))
 			return false;
 
-		var xmin = data[4] | (data[5] << 8);
-		var ymin = data[6] | (data[7] << 8);
-		var xmax = data[8] | (data[9] << 8);
-		var ymax = data[10] | (data[11] << 8);
+		var xmin = Endian.U16 (data, 4, le: true);
+		var ymin = Endian.U16 (data, 6, le: true);
+		var xmax = Endian.U16 (data, 8, le: true);
+		var ymax = Endian.U16 (data, 10, le: true);
 		if (xmax < xmin || ymax < ymin)
 			return false;
 
