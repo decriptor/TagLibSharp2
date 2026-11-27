@@ -24,6 +24,21 @@ namespace TagLibSharp2.Image.Exif;
 /// </remarks>
 static class ExifEditor
 {
+	/// <summary>Compacting the edited tables would rewrite a protected range.</summary>
+	internal const string StructureWouldChange = "has IFD structure that removing its copy of";
+
+	/// <summary>Two IFD tables share a byte, so neither can be compacted.</summary>
+	internal const string TablesOverlap = "has IFD tables that overlap each other";
+
+	/// <summary>A SubIFD offset array lies in a table the edit rewrites.</summary>
+	internal const string SubIfdInsideTable = "has SubIFD offsets inside an IFD table";
+
+	/// <summary>A kept value lies in a table the edit rewrites.</summary>
+	internal const string ValueInsideTable = "has a value inside an IFD table that the edit rewrites";
+
+	/// <summary>An IFD pointer names the middle of another table.</summary>
+	internal const string PointerIntoTable = "has an IFD pointer into the middle of another IFD table";
+
 	/// <summary>Set by tests to see the edit an unchecked removal would make (the matrix judges refusals by it).</summary>
 	[ThreadStatic]
 	internal static bool SkipCheck;
@@ -75,7 +90,7 @@ static class ExifEditor
 		// The plan stopped before it had read every offset and length, so applying it could zero a strip, tile or
 		// thumbnail it never recorded. Nothing to remove never reaches here.
 		if (plan.ValueBudgetExceeded)
-			return Refuse ($"The {carrier} block names more strip, tile or thumbnail values than its data holds, so its copy of {what} cannot be updated.", out error);
+			return Refuse ($"The {carrier} block {PlainExif.OverBudget}, so its copy of {what} cannot be updated.", out error);
 		// A removed value that shares a byte, or a table whose compaction would rewrite something a reader sees.
 		// Nothing is written. Two protected ranges may share a byte; zeroing does not touch them.
 		if (!SkipCheck && (!plan.IsClean () || CompactionConflict (graph, plan, carrier, what) is not null))
@@ -125,18 +140,18 @@ static class ExifEditor
 	// Why a checked edit was refused: the structure the edit would rewrite, named from its shape.
 	static string Reason (IfdGraph graph, RemovalPlan plan, string carrier, string what) =>
 		CompactionConflict (graph, plan, carrier, what)
-		?? $"The {carrier} block has IFD structure that removing its copy of {what} would change, so the copy cannot be updated.";
+		?? StructureChange (carrier, what);
 
 	// The shape that explains a refusal, or null: a table being compacted shares a byte with another table, or an
 	// unread table's count, a pointer array or another kept value or data range lies in a table being compacted.
 	static string? CompactionConflict (IfdGraph graph, RemovalPlan plan, string carrier, string what)
 	{
 		if (CompactedRanges (graph, plan.Removing) is not CountedList<(long Start, long End)> compacted)
-			return $"The {carrier} block has IFD tables that overlap each other, so its copy of {what} cannot be updated.";
+			return Refusal (carrier, what, TablesOverlap);
 		for (var n = 0; n < graph.Unread.Count; n++) {
 			var at = graph.Unread[n];
 			if (ByteRanges.Overlaps (compacted, (at, at + 2)))
-				return $"The {carrier} block has an IFD pointer into the middle of another IFD table, so its copy of {what} cannot be updated.";
+				return Refusal (carrier, what, PointerIntoTable);
 		}
 
 		// A kept value inside a table being compacted would be rewritten: a SubIFD offset array (readers would follow it
@@ -144,9 +159,7 @@ static class ExifEditor
 		for (var n = 0; n < plan.Kept.Count; n++) {
 			var (start, end, kind) = plan.Kept[n];
 			if (ByteRanges.Overlaps (compacted, (start, end)))
-				return kind == TiffReader.SubIfdsPointer
-					? $"The {carrier} block has SubIFD offsets inside an IFD table, so its copy of {what} cannot be updated."
-					: $"The {carrier} block has a value inside an IFD table that the edit rewrites, so its copy of {what} cannot be updated.";
+				return Refusal (carrier, what, kind == TiffReader.SubIfdsPointer ? SubIfdInsideTable : ValueInsideTable);
 		}
 
 		// A protected range inside a table being compacted (a pointer's value, another table's bytes) would be
@@ -155,11 +168,17 @@ static class ExifEditor
 			var range = plan.Protected[n];
 			if (!ByteRanges.Overlaps (compacted, range) || IsCompactedTable (compacted, range))
 				continue;
-			return $"The {carrier} block has IFD structure that removing its copy of {what} would change, so the copy cannot be updated.";
+			return StructureChange (carrier, what);
 		}
 
 		return null;
 	}
+
+	static string StructureChange (string carrier, string what) =>
+		Refusal (carrier, what, $"{StructureWouldChange} {what} would change");
+
+	static string Refusal (string carrier, string what, string reason) =>
+		$"The {carrier} block {reason}, so its copy of {what} cannot be updated.";
 
 	// Compacted tables are sorted and disjoint, so the table a protected range names is one binary search.
 	static bool IsCompactedTable (CountedList<(long Start, long End)> compacted, (long Start, long End) range)

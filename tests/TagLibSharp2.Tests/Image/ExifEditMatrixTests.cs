@@ -227,6 +227,7 @@ public class ExifEditMatrixTests
 		public readonly Dictionary<string, int> SavedBy = [];
 		public readonly Dictionary<string, int> RefusedBy = [];
 		public readonly Dictionary<string, int> FailedBy = [];
+		public readonly Dictionary<string, int> SafeRefusal = [];
 		public readonly List<string> Failures = [];
 
 		public static void Add (Dictionary<string, int> counts, string key) => counts[key] = counts.GetValueOrDefault (key) + 1;
@@ -355,18 +356,59 @@ public class ExifEditMatrixTests
 		if (!rawSaved)
 			tally.Bound++;
 		else if (ExifReaderModel.AnyReader (ExifIn (carrier, rawOutput)!).Visible ([]) == expected
-			&& ExiftoolView (ExifIn (carrier, rawOutput)!, removed) == ExiftoolView (tiff, removed)
-			&& !IsNotPlainRefusal (error))
-			tally.Fail ("refused when safe", $"{cell}: refused, but the edit changes nothing else readers see: {error}");
+			&& ExiftoolView (ExifIn (carrier, rawOutput)!, removed) == ExiftoolView (tiff, removed)) {
+			Tally.Add (tally.SafeRefusal, ReasonKey (error));
+			if (!IsAcceptedRefusal (error))
+				tally.Fail ("refused when safe", $"{cell}: refused, but the edit changes nothing else readers see: {error}");
+		}
 	}
 
-	// A strict-clean refusal: the copy cannot be updated, and the reason is neither the linear walk bound nor a
-	// block that is not TIFF. Those two are judged by the unchecked edit, as before.
+	// A not-plain refusal names one PlainExif reason. A clean refusal names one ExifEditor reason. Both phrases
+	// are the production constants. A refusal that only says the copy cannot be updated matches neither.
+	static readonly string[] PlainReasons = [
+		PlainExif.NextCutShort,
+		PlainExif.PairTagRepeated,
+		PlainExif.PairTypeWrong,
+		PlainExif.PairArrayRepeated,
+		PlainExif.PairDoesNotFit,
+		PlainExif.FirstEntryChanges,
+		PlainExif.OverBudget,
+	];
+
+	static readonly string[] CleanReasons = [
+		ExifEditor.StructureWouldChange,
+		ExifEditor.TablesOverlap,
+		ExifEditor.SubIfdInsideTable,
+		ExifEditor.ValueInsideTable,
+		ExifEditor.PointerIntoTable,
+	];
+
 	static bool IsNotPlainRefusal (string? error) =>
+		error is not null && PlainReasons.Any (reason => error.Contains (reason, StringComparison.Ordinal));
+
+	// The walk-bound sentence contains TablesOverlap plus "beyond what its data holds", and a block that is not
+	// TIFF is its own refusal. Neither is a clean-structure reason; the unchecked edit judges those two.
+	static bool IsCleanRefusal (string? error) =>
 		error is not null
-		&& error.Contains ("cannot be updated", StringComparison.Ordinal)
 		&& !error.Contains ("beyond what its data holds", StringComparison.Ordinal)
-		&& !error.Contains ("not a TIFF", StringComparison.Ordinal);
+		&& !error.Contains ("not a TIFF", StringComparison.Ordinal)
+		&& CleanReasons.Any (reason => error.Contains (reason, StringComparison.Ordinal));
+
+	static bool IsAcceptedRefusal (string? error) => IsNotPlainRefusal (error) || IsCleanRefusal (error);
+
+	static string ReasonKey (string? error)
+	{
+		if (error is null)
+			return "(null)";
+		foreach (var reason in PlainReasons) {
+			if (error.Contains (reason, StringComparison.Ordinal))
+				return reason;
+		}
+
+		var block = error.IndexOf ("block ", StringComparison.Ordinal);
+		var so = error.IndexOf (", so", StringComparison.Ordinal);
+		return block >= 0 && so > block ? error[(block + "block ".Length)..so] : error;
+	}
 
 	// What exiftool shows once the removed tags are gone, in every table. A save or a refusal is wrong when the
 	// edit changes which tables it reads or which other entries those tables hold: compaction can move a format
@@ -403,7 +445,7 @@ public class ExifEditMatrixTests
 	{
 		var tally = RunMatrix (operation);
 
-		Console.WriteLine ($"{operation}: {tally.Inputs} inputs ({Format (tally.InputsBy)}); {tally.Saved} saved ({Format (tally.SavedBy)}); refused by relation: {Format (tally.RefusedBy)}; at the bound: {tally.Bound}");
+		Console.WriteLine ($"{operation}: {tally.Inputs} inputs ({Format (tally.InputsBy)}); {tally.Saved} saved ({Format (tally.SavedBy)}); refused by relation: {Format (tally.RefusedBy)}; at the bound: {tally.Bound}; safe refusal: {Format (tally.SafeRefusal)}");
 		Assert.AreEqual (0, tally.FailedBy.Values.Sum (), $"{operation}: failing cells of {tally.Inputs} by kind: {Format (tally.FailedBy)}\n" + string.Join ("\n", tally.Failures));
 		Assert.AreEqual (16, tally.InputsBy.Count, $"{operation}: every relation has inputs");
 		Assert.IsTrue (tally.InputsBy.Values.All (n => n >= 3 * 2), $"{operation}: every relation in both byte orders and every carrier");
@@ -417,8 +459,35 @@ public class ExifEditMatrixTests
 			CollectionAssert.AreEquivalent (CommentSaves, tally.SavedBy.Keys.ToList (), $"{operation}: {Format (tally.SavedBy)}");
 			Assert.AreEqual (16, tally.RefusedBy.Count, $"{operation}: refusals per relation: {Format (tally.RefusedBy)}");
 			Assert.AreEqual (6, tally.RefusedBy["disjoint"], "the base layout refuses");
+			Assert.AreEqual (Format (CommentSafe), Format (tally.SafeRefusal), operation);
+		} else if (operation == "Artist") {
+			Assert.AreEqual (Format (ArtistSafe), Format (tally.SafeRefusal), operation);
+		} else {
+			Assert.AreEqual ("", Format (tally.SafeRefusal), operation);
 		}
 	}
+
+	// Measured on the Comment matrix. The phrases are the production constants; the counts are the cells.
+	static Dictionary<string, int> CommentSafe { get; } = new () {
+		[$"{ExifEditor.StructureWouldChange} Comment would change"] = 31995,
+		[ExifEditor.TablesOverlap] = 1344,
+		[ExifEditor.SubIfdInsideTable] = 123,
+		[PlainExif.PairDoesNotFit] = 243,
+		[PlainExif.PairTypeWrong] = 18,
+		[ExifEditor.ValueInsideTable] = 282,
+		[ExifEditor.PointerIntoTable] = 1140,
+		[PlainExif.FirstEntryChanges] = 231,
+	};
+
+	static Dictionary<string, int> ArtistSafe { get; } = new () {
+		[$"{ExifEditor.StructureWouldChange} Artist would change"] = 27776,
+		[ExifEditor.TablesOverlap] = 654,
+		[ExifEditor.SubIfdInsideTable] = 10,
+		[PlainExif.PairDoesNotFit] = 202,
+		[PlainExif.PairTypeWrong] = 68,
+		[ExifEditor.ValueInsideTable] = 122,
+		[ExifEditor.PointerIntoTable] = 574,
+	};
 
 	// The coverage the matrix rests on: in the base layout every table is where readers find it, in its kinds, every
 	// copy is shown, the table under the GPS pointers and the unread target are read by no one, and both byte orders
