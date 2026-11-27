@@ -96,10 +96,10 @@ sealed class ImagePlan
 	/// <returns>The bytes the plan produces.</returns>
 	public byte[] Materialize (ReadOnlySpan<byte> source)
 	{
-		var output = new byte[checked ((int)Length)];
+		var output = new byte[checked((int)Length)];
 		var dest = 0;
 		foreach (var piece in _pieces) {
-			var count = checked ((int)piece.Length);
+			var count = checked((int)piece.Length);
 			CopyPiece (piece, 0, count, source, output.AsSpan (dest, count));
 			dest += count;
 		}
@@ -128,7 +128,7 @@ sealed class ImagePlan
 		if (start < 0 || count < 0 || start > Length || count > Length - start)
 			throw new ArgumentOutOfRangeException (nameof (start));
 
-		var output = new byte[checked ((int)count)];
+		var output = new byte[checked((int)count)];
 		if (count == 0)
 			return output;
 
@@ -244,8 +244,8 @@ sealed class ImagePlan
 				continue;
 			}
 
-			var offset = checked ((int)piece.Offset);
-			var count = checked ((int)piece.Length);
+			var offset = checked((int)piece.Offset);
+			var count = checked((int)piece.Length);
 			WriteChunked (destination, held.Slice (offset, count), chunk, cancellationToken);
 		}
 	}
@@ -285,9 +285,9 @@ sealed class ImagePlan
 	static void CopyPiece (Piece piece, long skip, int take, ReadOnlySpan<byte> source, Span<byte> destination)
 	{
 		if (piece.IsRange)
-			source.Slice (checked ((int)(piece.Offset + skip)), take).CopyTo (destination);
+			source.Slice (checked((int)(piece.Offset + skip)), take).CopyTo (destination);
 		else
-			piece.Bytes!.AsSpan (checked ((int)skip), take).CopyTo (destination);
+			piece.Bytes!.AsSpan (checked((int)skip), take).CopyTo (destination);
 	}
 
 	static void AddExisting (List<Piece> pieces, Piece piece)
@@ -308,8 +308,8 @@ sealed class ImagePlan
 			return;
 		}
 
-		var slice = new byte[checked ((int)count)];
-		piece.Bytes!.AsSpan (checked ((int)skip), slice.Length).CopyTo (slice);
+		var slice = new byte[checked((int)count)];
+		piece.Bytes!.AsSpan (checked((int)skip), slice.Length).CopyTo (slice);
 		AddLiteral (pieces, slice);
 	}
 

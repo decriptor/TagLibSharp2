@@ -287,7 +287,7 @@ static class JpegRewriter
 		bool _headroomInMakerNote;
 		bool _firstExif = true;
 
-		int Written => checked ((int)_plan.Length);
+		int Written => checked((int)_plan.Length);
 
 		public void Keep (int start, int count) => _plan.Copy (origin + (long)start, count);
 
