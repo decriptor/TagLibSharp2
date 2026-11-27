@@ -21,9 +21,10 @@ namespace TagLibSharp2.Tests.Image;
 /// The oracle is the tests' own reader (<see cref="ExifReaderModel"/>, checked against exiftool for every input
 /// here by <see cref="ExifReaderGoldenTests"/>). Two-sided and judged by consequence: a save must leave exactly what
 /// any reader sees, less the removed copies (no value masked), and exiftool must still read the same tables with
-/// the same other entries; a refusal is right only when the same edit made without its check
-/// (<see cref="ExifEditor.SkipCheck"/>) would have changed something either view sees, or when the unchecked edit
-/// is refused too (the linear bound); a field with no copy always saves with the Exif bytes unchanged.
+/// the same other entries; a refusal is right when the same edit made without its check
+/// (<see cref="ExifEditor.SkipCheck"/>) would have changed something either view sees, when the unchecked edit
+/// is refused too (the linear bound), or when the structure is not plain and the reason says the copy cannot be
+/// updated; a field with no copy always saves with the Exif bytes unchanged.
 /// The test also asserts its own coverage: inputs, saves and refusals per relation, both byte orders, and every
 /// structure where the canonical input puts it.
 /// </remarks>
@@ -211,6 +212,12 @@ public class ExifEditMatrixTests
 
 	static readonly string[] Carriers = ["jpeg APP1", "png eXIf", "png raw EXIF profile"];
 
+	// Relations whose comment does not share a protected byte, measured for Comment and Comment null.
+	static readonly string[] CommentSaves = [
+		"covers", "ends in count", "ends in value", "inside", "same start", "shares first byte", "shares last byte",
+		"starts in entries", "starts in next", "starts in value", "touches after", "touches before",
+	];
+
 	sealed class Tally
 	{
 		public int Inputs;
@@ -341,15 +348,25 @@ public class ExifEditMatrixTests
 		}
 
 		// Refused: right when the unchecked edit would change what a reader sees, including which tables exiftool
-		// reads, or is refused too (the bound).
+		// reads, when that edit is refused too (the bound), or when the structure is not plain. A not-plain
+		// refusal names its reason. The unchecked edit may still be safe; that over-refusal is accepted.
 		var (rawSaved, _, rawOutput) = Save (input, carrier, operation, unchecked_: true);
 		Tally.Add (tally.RefusedBy, RelationOf (name));
 		if (!rawSaved)
 			tally.Bound++;
 		else if (ExifReaderModel.AnyReader (ExifIn (carrier, rawOutput)!).Visible ([]) == expected
-			&& ExiftoolView (ExifIn (carrier, rawOutput)!, removed) == ExiftoolView (tiff, removed))
+			&& ExiftoolView (ExifIn (carrier, rawOutput)!, removed) == ExiftoolView (tiff, removed)
+			&& !IsNotPlainRefusal (error))
 			tally.Fail ("refused when safe", $"{cell}: refused, but the edit changes nothing else readers see: {error}");
 	}
+
+	// A strict-clean refusal: the copy cannot be updated, and the reason is neither the linear walk bound nor a
+	// block that is not TIFF. Those two are judged by the unchecked edit, as before.
+	static bool IsNotPlainRefusal (string? error) =>
+		error is not null
+		&& error.Contains ("cannot be updated", StringComparison.Ordinal)
+		&& !error.Contains ("beyond what its data holds", StringComparison.Ordinal)
+		&& !error.Contains ("not a TIFF", StringComparison.Ordinal);
 
 	// What exiftool shows once the removed tags are gone, in every table. A save or a refusal is wrong when the
 	// edit changes which tables it reads or which other entries those tables hold: compaction can move a format
@@ -391,10 +408,15 @@ public class ExifEditMatrixTests
 		Assert.AreEqual (16, tally.InputsBy.Count, $"{operation}: every relation has inputs");
 		Assert.IsTrue (tally.InputsBy.Values.All (n => n >= 3 * 2), $"{operation}: every relation in both byte orders and every carrier");
 		if (operation is "Comment" or "Comment null") {
-			// The edit both saves and refuses in every relation but the base layout (which only saves).
-			Assert.AreEqual (16, tally.SavedBy.Count, $"{operation}: saves per relation: {Format (tally.SavedBy)}");
-			Assert.AreEqual (15, tally.RefusedBy.Count, $"{operation}: refusals per relation: {Format (tally.RefusedBy)}");
-			Assert.IsFalse (tally.RefusedBy.ContainsKey ("disjoint"), "the base layout saves");
+			// Measured at this head. The canonical layout's unread table counts 257 entries, so its protected span
+			// runs to the end of the data and covers the comment values: that base layout refuses. Twelve relations
+			// still have a placement whose comment does not share a protected byte.
+			Assert.AreEqual (47712, tally.Inputs, operation);
+			Assert.AreEqual (534, tally.Saved, $"{operation}: {Format (tally.SavedBy)}");
+			Assert.AreEqual (48, tally.Bound, operation);
+			CollectionAssert.AreEquivalent (CommentSaves, tally.SavedBy.Keys.ToList (), $"{operation}: {Format (tally.SavedBy)}");
+			Assert.AreEqual (16, tally.RefusedBy.Count, $"{operation}: refusals per relation: {Format (tally.RefusedBy)}");
+			Assert.AreEqual (6, tally.RefusedBy["disjoint"], "the base layout refuses");
 		}
 	}
 
