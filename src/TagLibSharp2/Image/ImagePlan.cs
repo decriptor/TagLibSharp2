@@ -15,6 +15,22 @@ sealed class ImagePlan
 	/// <summary>Gets the number of bytes the plan produces.</summary>
 	public long Length { get; private set; }
 
+	/// <summary>Gets the exclusive end of the furthest original-file range.</summary>
+	public long SourceEnd {
+		get {
+			long end = 0;
+			foreach (var piece in _pieces) {
+				if (!piece.IsRange)
+					continue;
+				var pieceEnd = piece.Offset + piece.Length;
+				if (pieceEnd > end)
+					end = pieceEnd;
+			}
+
+			return end;
+		}
+	}
+
 	/// <summary>One range covering the whole original file.</summary>
 	/// <param name="length">Length of the original file.</param>
 	public static ImagePlan Whole (int length)

@@ -49,4 +49,23 @@ public sealed class ImagePathSaveCancellationTests
 		Assert.AreEqual ("Failed to re-read source file: File not found: /in.jpg", save.Error);
 		Assert.IsFalse (fs.FileExists ("/out.jpg"));
 	}
+
+	[TestMethod]
+	public async Task JpegPathSave_ShortSource_BeatsAnAlreadyCancelledToken ()
+	{
+		var data = Jpeg (JpegSegment (0xFE, "Old"u8.ToArray ()));
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/in.jpg", data);
+		var read = StillImageFile.ReadFromFile ("/in.jpg", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		fs.AddFile ("/in.jpg", [1]);
+		using var cts = new CancellationTokenSource ();
+		cts.Cancel ();
+
+		var save = await read.File!.SaveToFileAsync ("/out.jpg", fs, cts.Token);
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual ("The source ended before the requested bytes were copied", save.Error);
+		Assert.IsFalse (fs.FileExists ("/out.jpg"));
+	}
 }

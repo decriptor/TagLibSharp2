@@ -267,6 +267,8 @@ public sealed class StillImageFile : IMediaFile
 		try {
 			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
 				return error;
+			if (source!.Length < plan.SourceEnd)
+				return FileWriteResult.Failure ("The source ended before the requested bytes were copied");
 			if (cancellationToken.IsCancellationRequested)
 				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
 
