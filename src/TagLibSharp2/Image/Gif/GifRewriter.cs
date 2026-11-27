@@ -13,43 +13,67 @@ namespace TagLibSharp2.Image.Gif;
 /// </summary>
 static class GifRewriter
 {
+	internal const string HeaderError = "The GIF header is truncated, so the comment cannot be spliced in.";
+	internal const string SpliceError =
+		"The GIF block list is truncated or holds an unknown block, so the comment cannot be spliced in.";
+
 	public static void Read (ReadOnlySpan<byte> data, ImageTag tag)
 	{
 		if (TryComments (data, out var text))
 			tag.ReadField (ImageStores.Comment, text);
 	}
 
-	public static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
+	/// <summary>The edited file as new pieces and ranges of <paramref name="data"/>.</summary>
+	public static ImagePlan? Plan (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
 	{
 		error = null;
 		var replaceComment = tag.Changed (ImageStores.Comment);
 		if (!replaceComment && !tag.DropUnmapped)
 			return null;
 		if (!TryHeader (data, out var header)) {
-			error = "The GIF header is truncated, so the comment cannot be spliced in.";
+			error = HeaderError;
 			return null;
 		}
 
+		var plan = new ImagePlan ();
 		var comment = replaceComment ? tag.Field (ImageStores.Comment) : null;
-		using var builder = new BinaryDataBuilder (data.Length + 32);
 		if (comment is not null && data.StartsWith ("GIF87a"u8)) {
-			builder.Add ("GIF89a"u8);
-			builder.Add (data.Slice (6, header - 6));
+			plan.Add ("GIF89a"u8);
+			plan.Copy (6, header - 6);
 		} else {
-			builder.Add (data.Slice (0, header));
+			plan.Copy (0, header);
 		}
 
 		if (comment is not null)
-			AddComment (builder, comment);
-		if (TryCopyBlocks (data, header, tag, replaceComment, builder, out error))
-			return builder.ToArray ();
-		error ??= "The GIF block list is truncated or holds an unknown block, so the comment cannot be spliced in.";
+			plan.Add (CommentBytes (comment));
+		if (TryCopyBlocks (data, header, tag, replaceComment, plan, out error))
+			return plan;
+		error ??= SpliceError;
 		return null;
+	}
+
+	public static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
+	{
+		var plan = Plan (data, tag, out error);
+		return plan?.Materialize (data);
+	}
+
+	static byte[] CommentBytes (string comment)
+	{
+		using var builder = new BinaryDataBuilder ();
+		AddComment (builder, comment);
+		return builder.ToArray ();
 	}
 
 	// Copies the blocks after the header through the trailer and what follows it. False at a truncated or unknown
 	// block (error null), or when the XMP copy cannot be updated (error set).
-	static bool TryCopyBlocks (ReadOnlySpan<byte> data, int header, ImageTag tag, bool replaceComment, BinaryDataBuilder builder, out string? error)
+	static bool TryCopyBlocks (
+		ReadOnlySpan<byte> data,
+		int header,
+		ImageTag tag,
+		bool replaceComment,
+		ImagePlan plan,
+		out string? error)
 	{
 		error = null;
 		var mirrors = replaceComment && !tag.DropUnmapped;
@@ -58,39 +82,51 @@ static class GifRewriter
 			var start = i;
 			var introducer = data[i];
 			if (introducer == 0x3B) {
-				builder.Add (data.Slice (start));
+				plan.Copy (start, data.Length - start);
 				return true;
 			}
 
 			if (introducer == 0x2C) {
 				if (!SkipImage (data, ref i))
 					return false;
-				builder.Add (data.Slice (start, i - start));
+				plan.Copy (start, i - start);
 				continue;
 			}
 
 			if (introducer != 0x21 || i + 2 > data.Length || !SkipSubBlocks (data, ref i, startAtLabel: true))
 				return false;
-			if (!TryCopyExtension (data.Slice (start, i - start), tag, replaceComment, mirrors, builder, out error))
+			if (!TryCopyExtension (data, start, i - start, tag, replaceComment, mirrors, plan, out error))
 				return false;
 		}
 
 		return false;
 	}
 
-	static bool TryCopyExtension (ReadOnlySpan<byte> block, ImageTag tag, bool replaceComment, bool mirrors, BinaryDataBuilder builder, out string? error)
+	static bool TryCopyExtension (
+		ReadOnlySpan<byte> data,
+		int start,
+		int length,
+		ImageTag tag,
+		bool replaceComment,
+		bool mirrors,
+		ImagePlan plan,
+		out string? error)
 	{
 		error = null;
+		var block = data.Slice (start, length);
 		if ((replaceComment && block[1] == 0xFE) || (tag.DropUnmapped && !IsKeptOnClear (block)))
 			return true;
 		if (!mirrors || !IsXmp (block)) {
-			builder.Add (block);
+			plan.Copy (start, length);
 			return true;
 		}
 
 		if (!TryMirrorXmp (block, tag, out var edited, out error))
 			return false;
-		builder.Add (edited ?? block.ToArray ());
+		if (edited is not null)
+			plan.Add (edited);
+		else
+			plan.Copy (start, length);
 		return true;
 	}
 

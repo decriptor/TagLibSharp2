@@ -67,7 +67,7 @@ static class ImageRewrite
 		};
 		if (rewritten is null && error is null)
 			error = tag.Format switch {
-				MediaFormat.Gif => "The GIF block list is truncated or holds an unknown block, so the comment cannot be spliced in.",
+				MediaFormat.Gif => GifRewriter.SpliceError,
 				MediaFormat.Jpeg => JpegRewriter.SpliceError,
 				_ => "The image container could not be updated."
 			};
@@ -87,7 +87,9 @@ static class ImageRewrite
 	{
 		error = null;
 		if (format == MediaFormat.Png)
-			return TryPngPlan (data, tag, out plan, out error);
+			return TryEditedPlan (data, tag, PngRewriter.Plan, PngRewriter.SpliceError, out plan, out error);
+		if (format == MediaFormat.Gif)
+			return TryEditedPlan (data, tag, GifRewriter.Plan, GifRewriter.SpliceError, out plan, out error);
 		if (format is MediaFormat.Tiff or MediaFormat.Dng) {
 			plan = ImagePlan.Whole (data.Length);
 			return true;
@@ -98,18 +100,19 @@ static class ImageRewrite
 			return true;
 		}
 
-		if (tag is null || !tag.AffectsFile) {
-			plan = ImagePlan.Whole (data.Length);
-			return true;
-		}
-
-		plan = JpegRewriter.Plan (data, tag, out error);
-		if (plan is null && error is null)
-			error = JpegRewriter.SpliceError;
-		return plan is not null;
+		return TryEditedPlan (data, tag, JpegRewriter.Plan, JpegRewriter.SpliceError, out plan, out error);
 	}
 
-	static bool TryPngPlan (ReadOnlySpan<byte> data, ImageTag? tag, out ImagePlan? plan, out string? error)
+	/// <summary>
+	/// An unchanged file is one range of the original. An edit is that format's plan, or its splice error.
+	/// </summary>
+	static bool TryEditedPlan (
+		ReadOnlySpan<byte> data,
+		ImageTag? tag,
+		RewriterPlan build,
+		string spliceError,
+		out ImagePlan? plan,
+		out string? error)
 	{
 		error = null;
 		if (tag is null || !tag.AffectsFile) {
@@ -117,9 +120,11 @@ static class ImageRewrite
 			return true;
 		}
 
-		plan = PngRewriter.Plan (data, tag, out error);
+		plan = build (data, tag, out error);
 		if (plan is null && error is null)
-			error = PngRewriter.SpliceError;
+			error = spliceError;
 		return plan is not null;
 	}
+
+	delegate ImagePlan? RewriterPlan (ReadOnlySpan<byte> data, ImageTag tag, out string? error);
 }

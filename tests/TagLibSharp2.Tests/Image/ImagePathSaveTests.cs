@@ -219,6 +219,60 @@ public sealed class ImagePathSaveTests
 		CollectionAssert.AreEqual (data, fs.Bytes (destination));
 	}
 
+	[TestMethod]
+	[DataRow ("noop", "5B86097573C47754ABA72DC155E0C91A7862DD79EE5E83CA5A0C0D0CB533F4AE")]
+	[DataRow ("comment", "675CA34F2FA30837B29FEEE2FA9EF5A9788FF5759D567A80B93765CD9C3048D2")]
+	[DataRow ("comment-same", "5B86097573C47754ABA72DC155E0C91A7862DD79EE5E83CA5A0C0D0CB533F4AE")]
+	[DataRow ("comment-null", "C08F79AFFAC974D0C787A60E8E07EC2434A587AA7A1AEAAF030A89792307C272")]
+	[DataRow ("clear", "C08F79AFFAC974D0C787A60E8E07EC2434A587AA7A1AEAAF030A89792307C272")]
+	[DataRow ("xmp-comment", "8A5AF0623A623754A1F5FA84B55846FF5AF5DB7E568C7C487780E0FBB77DD391")]
+	public void GifPathSave_BytesEqualRender (string op, string expectedHash)
+	{
+		var data = GifInput (op);
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/in.gif", data);
+		var read = StillImageFile.ReadFromFile ("/in.gif", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		ApplyGif (read.File!, op);
+		var rendered = read.File!.Render ().ToArray ();
+
+		var save = read.File.SaveToFile ("/out.gif", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var written = fs.ReadAllBytes ("/out.gif");
+		CollectionAssert.AreEqual (rendered, written, op);
+		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), op);
+	}
+
+	/// <summary>The image block is 80 KB. The hash is the path save of that comment edit at 1322374a.</summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task GifPathSave_OverOneChunk_CopiesTheImageInChunks (bool saveAsync)
+	{
+		var data = Concat (GifScreen (1, 1, flags: 0), GifComment ("Old"), GifImage (80 * 1024), [0x3B]);
+		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+		fs.Add ("/in.gif", data);
+		fs.MaxRead = data.Length;
+		var read = StillImageFile.ReadFromFile ("/in.gif", fs);
+		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		fs.ResetSourceLengthGets ();
+		read.File!.Tag!.Comment = "PathSave";
+		var rendered = read.File.Render ().ToArray ();
+
+		var save = saveAsync
+			? await read.File.SaveToFileAsync ("/out.gif", fs)
+			: read.File.SaveToFile ("/out.gif", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (1, fs.SourceLengthGets);
+		var written = fs.Bytes ("/out.gif");
+		CollectionAssert.AreEqual (rendered, written);
+		const string expected = "742A2C24C2F5A7CC72B01607DCB6B3517A46B7FD146388CF59F68A8AE175D287";
+		Assert.AreEqual (expected, Convert.ToHexString (SHA256.HashData (written)));
+	}
+
 	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedScan (int scanLength)
 	{
 		var scan = new byte[scanLength];
@@ -256,6 +310,44 @@ public sealed class ImagePathSaveTests
 	};
 
 	static byte[] TiffHeader (string format) => format == "dng" ? TiffImage (2, 3, dng: true) : TiffImage (2, 3);
+
+	static byte[] GifInput (string op) => op switch {
+		"clear" => Gif (GifComment ("Old")),
+		"xmp-comment" => Gif (GifXmp (XmpPacket (Alt ("exif:UserComment", "Old")))),
+		_ => Gif (GifComment ("Old"))
+	};
+
+	static void ApplyGif (StillImageFile file, string op)
+	{
+		if (op is "comment" or "xmp-comment")
+			file.Tag!.Comment = "PathSave";
+		else if (op == "comment-same")
+			file.Tag!.Comment = file.Tag.Comment;
+		else if (op == "comment-null")
+			file.Tag!.Comment = null;
+		else if (op == "clear")
+			file.Tag!.Clear ();
+	}
+
+	static byte[] GifImage (int length)
+	{
+		var data = new byte[length];
+		data[0] = 0x2C;
+		data[6] = 1;
+		data[8] = 1;
+		var at = 11;
+		var remain = length - 12;
+		while (remain > 0) {
+			var take = Math.Min (255, remain - 1);
+			if (take <= 0)
+				break;
+			data[at++] = (byte)take;
+			at += take;
+			remain -= 1 + take;
+		}
+
+		return data;
+	}
 
 	static byte[] PngInput (string op) => op switch {
 		"noop" or "clear" => Png (Text ("Title", "Old"), Text ("Comment", "Old")),
