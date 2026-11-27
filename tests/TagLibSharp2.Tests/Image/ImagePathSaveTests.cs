@@ -67,6 +67,31 @@ public sealed class ImagePathSaveTests
 	}
 
 	/// <summary>
+	/// SOS, the entropy bytes and EOI are one range. Twelve of those bytes are SOS and EOI, so 65524
+	/// entropy bytes make a range of one chunk. The hash is that edit's Render at 1322374a.
+	/// </summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task JpegPathSave_ScanRangeOfOneChunk_CopiesInChunks (bool saveAsync)
+	{
+		var (file, fs) = OpenEditedScan (65524);
+		const string expected = "0789A82CD7EDB1141E9DF9809F92C7470E96865DD9F135345B5814E35140C4F1";
+		await AssertEditedRangeCopiedInChunks (file, fs, "/out.jpg", saveAsync, 65563, expected);
+	}
+
+	/// <summary>One entropy byte more makes the scan range one byte past a chunk.</summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task JpegPathSave_ScanRangeOneBytePastOneChunk_CopiesInChunks (bool saveAsync)
+	{
+		var (file, fs) = OpenEditedScan (65525);
+		const string expected = "B0F6D0E18A3A25868EA7A2803561336258F7BE6140CADCF132039882171AF7F1";
+		await AssertEditedRangeCopiedInChunks (file, fs, "/out.jpg", saveAsync, 65564, expected);
+	}
+
+	/// <summary>
 	/// A path save stays under a fixed ceiling at three scan sizes. Render of the same edit grows with the scan.
 	/// </summary>
 	[TestMethod]
@@ -166,6 +191,31 @@ public sealed class ImagePathSaveTests
 		CollectionAssert.AreEqual (rendered, written);
 		const string expected = "6911679D573A41B74F5D62F67F8E7861D80EF89E84BC57A7A43229FB2D2C7E24";
 		Assert.AreEqual (expected, Convert.ToHexString (SHA256.HashData (written)));
+	}
+
+	/// <summary>
+	/// The IDAT chunk and IEND are one range. A payload of 65512 leaves that range at one chunk.
+	/// The hash is that title edit's Render at 1322374a.
+	/// </summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task PngPathSave_ImageRangeOfOneChunk_CopiesInChunks (bool saveAsync)
+	{
+		var (file, fs) = OpenEditedPng (65512);
+		const string expected = "D11C553A3DF6AE66BC3F86FAB1BB822287AE291E1D94C2EE76ADBBC0A827B7E7";
+		await AssertEditedRangeCopiedInChunks (file, fs, "/out.png", saveAsync, 65595, expected);
+	}
+
+	/// <summary>One payload byte more makes the IDAT and IEND range one byte past a chunk.</summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task PngPathSave_ImageRangeOneBytePastOneChunk_CopiesInChunks (bool saveAsync)
+	{
+		var (file, fs) = OpenEditedPng (65513);
+		const string expected = "60CBAB68F8587CEE857A432094822F613C1AA69888C645DDA24BBA7CA163018B";
+		await AssertEditedRangeCopiedInChunks (file, fs, "/out.png", saveAsync, 65596, expected);
 	}
 
 	[TestMethod]
@@ -272,6 +322,31 @@ public sealed class ImagePathSaveTests
 		CollectionAssert.AreEqual (rendered, written);
 		const string expected = "742A2C24C2F5A7CC72B01607DCB6B3517A46B7FD146388CF59F68A8AE175D287";
 		Assert.AreEqual (expected, Convert.ToHexString (SHA256.HashData (written)));
+	}
+
+	/// <summary>
+	/// The image descriptor through its terminator, plus the trailer, are one range.
+	/// An image block of 65535 leaves that range at one chunk. The hash is that comment edit's Render at 1322374a.
+	/// </summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task GifPathSave_ImageRangeOfOneChunk_CopiesInChunks (bool saveAsync)
+	{
+		var (file, fs) = OpenEditedGif (65535);
+		const string expected = "685707F53F93F751577058C2EE4FB3B5AEFDC772DD11902075DC5ADD89089161";
+		await AssertEditedRangeCopiedInChunks (file, fs, "/out.gif", saveAsync, 65561, expected);
+	}
+
+	/// <summary>One image byte more makes that range one byte past a chunk.</summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task GifPathSave_ImageRangeOneBytePastOneChunk_CopiesInChunks (bool saveAsync)
+	{
+		var (file, fs) = OpenEditedGif (65536);
+		const string expected = "9BC4E3D57E9C451D715CA2D1D26E68CFB543A01D0C087AD6C166480774E8C93B";
+		await AssertEditedRangeCopiedInChunks (file, fs, "/out.gif", saveAsync, 65562, expected);
 	}
 
 	[TestMethod]
@@ -472,6 +547,72 @@ public sealed class ImagePathSaveTests
 		var low = Math.Min (saves[0], Math.Min (saves[1], saves[2]));
 		Assert.IsLessThan (64 * 1024, high - low, $"{format} allocated {saves[0]}, {saves[1]}, {saves[2]}");
 	}
+
+	/// <summary>
+	/// These formats have no tag, so a field edit and Clear cannot run.
+	/// A path save writes the original bytes. The hashes are those files at 1322374a.
+	/// </summary>
+	[TestMethod]
+	[DataRow ("tiff", "59753EFEE53644237F9F0F4299A3B7178C949D9447626418365C7D4E15005DBC")]
+	[DataRow ("dng", "96507B9AA0101B7949BE6B6E9761FE0B57B58BB977DED0232CD9096A1374BE5C")]
+	[DataRow ("bmp", "A838D2A6E158A95650468B27AE71DADC92C08B08C5173C822A932E7B7703E774")]
+	[DataRow ("pcx", "70D06D76319B1B57A94CE8A15C61DDBA97CAE09449EDCCFF98DDA08CBC790AF6")]
+	[DataRow ("pbm", "D4A32CD03B3F1505B9C4F1C75FA6486FCA66966838AC6CF05116F187D0B67F26")]
+	[DataRow ("pgm", "163DA6D87F525A13D835FACB08F325319D1B1A27EEB3449C357902F2475B9019")]
+	[DataRow ("ppm", "418B52874B4A321F1008AFE7BE2880BF8BE33DF6EA82B04FB122E0D0F902ED36")]
+	[DataRow ("svg", "41E5A673AEAFEF7655FF3785442EF6EFB7469DAC0D9E86FE9E5840832FC8541F")]
+	public void WholeFilePathSave_HasNoTag_AndSavedBytesEqualTheOriginal (string format, string expectedHash)
+	{
+		var data = OriginalWholeFile (format);
+		var fs = new MockFileSystem ();
+		var source = "/in." + format;
+		fs.AddFile (source, data);
+		var read = StillImageFile.ReadFromFile (source, fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		Assert.IsNull (read.File!.Tag, format);
+
+		var save = read.File.SaveToFile ("/out." + format, fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var written = fs.ReadAllBytes ("/out." + format);
+		CollectionAssert.AreEqual (data, written, format);
+		CollectionAssert.AreEqual (read.File.Render ().ToArray (), written, format);
+		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), format);
+	}
+
+	static async Task AssertEditedRangeCopiedInChunks (
+		StillImageFile file,
+		ChunkBoundedFileSystem fs,
+		string destination,
+		bool saveAsync,
+		int writtenLength,
+		string expectedHash)
+	{
+		fs.ResetSourceLengthGets ();
+		var rendered = file.Render ().ToArray ();
+
+		var save = saveAsync
+			? await file.SaveToFileAsync (destination, fs)
+			: file.SaveToFile (destination, fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (1, fs.SourceLengthGets);
+		var written = fs.Bytes (destination);
+		Assert.AreEqual (writtenLength, written.Length);
+		CollectionAssert.AreEqual (rendered, written);
+		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)));
+	}
+
+	static byte[] OriginalWholeFile (string format) => format switch {
+		"tiff" => TiffHeader ("tiff"),
+		"dng" => TiffHeader ("dng"),
+		"bmp" => Bmp (4, 2),
+		"pcx" => Pcx (0, 0, 1, 1, planes: 1),
+		"pbm" => NetpbmHeader ("P4"),
+		"pgm" => NetpbmHeader ("P5"),
+		"ppm" => NetpbmHeader ("P6"),
+		_ => "<svg width=\"2\" height=\"3\"></svg>"u8.ToArray ()
+	};
 
 	static byte[] WholeFile (string format, int length) => format switch {
 		"tiff" => HeaderAndTrailingBytes (TiffHeader ("tiff"), length),
