@@ -192,32 +192,32 @@ public class ExifPlainTests
 				edited = (8, [comment, hidden]);
 				break;
 			case "IFD1": {
-				var ifd1 = 8 + Span (1);
-				ifd0.Add ((0x0100, 4, 1, 1));
-				ifd0Next = ifd1;
-				edited = (ifd1, [comment, hidden]);
-				break;
-			}
+					var ifd1 = 8 + Span (1);
+					ifd0.Add ((0x0100, 4, 1, 1));
+					ifd0Next = ifd1;
+					edited = (ifd1, [comment, hidden]);
+					break;
+				}
 			case "Exif": {
-				var exif = 8 + Span (1);
-				ifd0.Add ((0x8769, 4, 1, exif));
-				edited = (exif, [comment, hidden]);
-				break;
-			}
+					var exif = 8 + Span (1);
+					ifd0.Add ((0x8769, 4, 1, exif));
+					edited = (exif, [comment, hidden]);
+					break;
+				}
 			case "SubIFD": {
-				var sub = 8 + Span (1);
-				ifd0.Add ((0x014A, 4, 1, sub));
-				edited = (sub, [comment, hidden]);
-				break;
-			}
+					var sub = 8 + Span (1);
+					ifd0.Add ((0x014A, 4, 1, sub));
+					edited = (sub, [comment, hidden]);
+					break;
+				}
 			default: {
-				var exif = 8 + Span (1);
-				var iop = exif + Span (1);
-				ifd0.Add ((0x8769, 4, 1, exif));
-				middle = (exif, [(0xA005, 4, 1, iop)]);
-				edited = (iop, [comment, hidden]);
-				break;
-			}
+					var exif = 8 + Span (1);
+					var iop = exif + Span (1);
+					ifd0.Add ((0x8769, 4, 1, exif));
+					middle = (exif, [(0xA005, 4, 1, iop)]);
+					edited = (iop, [comment, hidden]);
+					break;
+				}
 		}
 
 		var end = edited.At + Span (edited.Entries.Length);
@@ -253,43 +253,43 @@ public class ExifPlainTests
 				cut = (ifd0, [desc, comment]);
 				break;
 			case "Exif": {
-				var exif = ifd0 + Span (1);
-				ifd0Entries.Add ((0x8769, 4, 1, exif));
-				cut = (exif, [date, comment]);
-				break;
-			}
+					var exif = ifd0 + Span (1);
+					ifd0Entries.Add ((0x8769, 4, 1, exif));
+					cut = (exif, [date, comment]);
+					break;
+				}
 			case "IFD1": {
-				var ifd1 = ifd0 + Span (2);
-				ifd0Entries.Add (desc);
-				ifd0Entries.Add (comment);
-				ifd0Next = ifd1;
-				cut = (ifd1, [make]);
-				break;
-			}
+					var ifd1 = ifd0 + Span (2);
+					ifd0Entries.Add (desc);
+					ifd0Entries.Add (comment);
+					ifd0Next = ifd1;
+					cut = (ifd1, [make]);
+					break;
+				}
 			case "SubIFD": {
-				var sub = ifd0 + Span (3);
-				ifd0Entries.Add (desc);
-				ifd0Entries.Add (comment);
-				ifd0Entries.Add ((0x014A, 4, 1, sub));
-				cut = (sub, [make]);
-				break;
-			}
+					var sub = ifd0 + Span (3);
+					ifd0Entries.Add (desc);
+					ifd0Entries.Add (comment);
+					ifd0Entries.Add ((0x014A, 4, 1, sub));
+					cut = (sub, [make]);
+					break;
+				}
 			case "Interop": {
-				var exif = ifd0 + Span (1);
-				var iop = exif + Span (3);
-				ifd0Entries.Add ((0x8769, 4, 1, exif));
-				middle = (exif, [date, comment, (0xA005, 4, 1, iop)]);
-				cut = (iop, [index]);
-				break;
-			}
+					var exif = ifd0 + Span (1);
+					var iop = exif + Span (3);
+					ifd0Entries.Add ((0x8769, 4, 1, exif));
+					middle = (exif, [date, comment, (0xA005, 4, 1, iop)]);
+					cut = (iop, [index]);
+					break;
+				}
 			default: {
-				var gps = ifd0 + Span (3);
-				ifd0Entries.Add (desc);
-				ifd0Entries.Add (comment);
-				ifd0Entries.Add ((0x8825, 4, 1, gps));
-				cut = (gps, [index]);
-				break;
-			}
+					var gps = ifd0 + Span (3);
+					ifd0Entries.Add (desc);
+					ifd0Entries.Add (comment);
+					ifd0Entries.Add ((0x8825, 4, 1, gps));
+					cut = (gps, [index]);
+					break;
+				}
 		}
 
 		var full = cut.At + Span (cut.Entries.Length);
