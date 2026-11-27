@@ -62,6 +62,14 @@ static class ExifEditor
 			return !HoldsAnyTag (data, tags, tiff.LittleEndian, anyType: true)
 				|| Refuse ($"The {carrier} block has IFD tables that overlap each other beyond what its data holds, so its copy of {what} cannot be updated.", out error);
 
+		// Plain structure is decided before any range is recorded or any value array is read. Nothing to remove
+		// leaves the block as it is, including when the structure is not plain.
+		var verdict = PlainExif.Judge (tiff, graph, tags);
+		if (!verdict.Removes)
+			return true;
+		if (!verdict.Plain && !SkipCheck)
+			return Refuse ($"The {carrier} block {verdict.Why}, so its copy of {what} cannot be updated.", out error);
+
 		var plan = RemovalPlan.Mark (tiff, graph, tags);
 		if (plan.Removing.Count == 0)
 			return true;
