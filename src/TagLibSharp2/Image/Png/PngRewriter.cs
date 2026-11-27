@@ -15,6 +15,8 @@ namespace TagLibSharp2.Image.Png;
 /// </summary>
 static class PngRewriter
 {
+	internal const string SpliceError = "The PNG chunk list does not reach IEND, so the text cannot be spliced in.";
+
 	const string XmpKeyword = "XML:com.adobe.xmp";
 	const string RawXmpKeyword = "Raw profile type xmp";
 	const string RawExifKeyword = "Raw profile type exif";
@@ -88,17 +90,24 @@ static class PngRewriter
 		}
 	}
 
-	public static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
+	/// <summary>The edited file as new pieces and ranges of <paramref name="data"/>.</summary>
+	public static ImagePlan? Plan (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
 	{
 		error = null;
-		if (!PngChunks.TryWalk (data, out var chunks) || chunks.Count == 0 || !PngChunks.TypeEquals (data, chunks[^1], "IEND"u8)) {
-			error = "The PNG chunk list does not reach IEND, so the text cannot be spliced in.";
+		var walked = PngChunks.TryWalk (data, out var chunks);
+		var ends = walked && chunks.Count > 0 && PngChunks.TypeEquals (data, chunks[^1], "IEND"u8);
+		if (!ends) {
+			error = SpliceError;
 			return null;
 		}
 
-		var layout = Layout.Of (data, chunks);
-		var output = TryCopyChunks (data, chunks, tag, layout, out var outIdot, out var outIdat, out error);
-		return output is null ? null : DropStaleIdot (output, layout, outIdot, outIdat);
+		return CopyChunks (data, chunks, tag, Layout.Of (data, chunks), out error);
+	}
+
+	public static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
+	{
+		var plan = Plan (data, tag, out error);
+		return plan?.Materialize (data);
 	}
 
 	// Where new text goes: before the pixel data, and before Apple's iDOT, which records where the IDAT chunks are.
@@ -124,51 +133,81 @@ static class PngRewriter
 		}
 	}
 
-	static byte[]? TryCopyChunks (ReadOnlySpan<byte> data, List<PngChunk> chunks, ImageTag tag, Layout layout, out int outIdot, out int outIdat, out string? error)
+	static ImagePlan? CopyChunks (
+		ReadOnlySpan<byte> data,
+		List<PngChunk> chunks,
+		ImageTag tag,
+		Layout layout,
+		out string? error)
 	{
-		(outIdot, outIdat, error) = (-1, -1, null);
+		error = null;
+		var plan = new ImagePlan ();
 		var mirrors = !tag.DropUnmapped && MirrorFields.AnyChanged (tag);
 		// One inflation budget for every compressed copy in the file, as when it is read.
 		var budget = PngText.MaxInflatedText;
-		using var builder = new BinaryDataBuilder (data.Length + 64);
-		builder.Add (data.Slice (0, 8));
+		long outIdot = -1;
+		long outIdat = -1;
+		var copiedIdot = false;
+		plan.Copy (0, 8);
 		foreach (var chunk in chunks) {
 			if (chunk.Start == layout.Insert)
-				AddFields (builder, tag, onlyChanged: true);
+				plan.Add (ChangedFields (tag));
 			if (chunk.Start == layout.Idot)
-				outIdot = builder.Length;
+				outIdot = plan.Length;
 			if (chunk.Start == layout.Idat)
-				outIdat = builder.Length;
+				outIdat = plan.Length;
 			if (IsDropped (data, chunk, tag))
 				continue;
 			byte[]? edited = null;
-			if (mirrors && !TryMirrorChunk (data.Slice (chunk.Start, chunk.Length), tag, ref budget, out edited, out error))
+			var whole = data.Slice (chunk.Start, chunk.Length);
+			if (mirrors && !TryMirrorChunk (whole, tag, ref budget, out edited, out error))
 				return null;
-			if (edited is not null)
-				builder.Add (edited);
-			else
-				builder.Add (data.Slice (chunk.Start, chunk.Length));
+			if (edited is not null) {
+				plan.Add (edited);
+				continue;
+			}
+
+			if (chunk.Start == layout.Idot)
+				copiedIdot = true;
+			plan.Copy (chunk.Start, chunk.Length);
 		}
 
 		// PNG 3rd ed. §5.6: IEND is the last chunk. Whatever follows it (an appended archive, padding) is not
 		// the PNG's to change, so it is copied as it is.
-		builder.Add (data.Slice (chunks[^1].Start + chunks[^1].Length));
+		var tail = chunks[^1].Start + chunks[^1].Length;
+		plan.Copy (tail, data.Length - tail);
+		DropStaleIdot (plan, data, layout, outIdot, outIdat, copiedIdot);
+		return plan;
+	}
+
+	static byte[] ChangedFields (ImageTag tag)
+	{
+		using var builder = new BinaryDataBuilder ();
+		AddFields (builder, tag, onlyChanged: true);
 		return builder.ToArray ();
 	}
 
 	// iDOT holds the offset of the IDAT data from itself. When a chunk between them changed, the offset is wrong,
 	// so iDOT is dropped (a decoder then reads the IDAT chunks in order, as it does for any PNG).
-	static byte[] DropStaleIdot (byte[] output, Layout layout, int outIdot, int outIdat)
+	static void DropStaleIdot (
+		ImagePlan plan,
+		ReadOnlySpan<byte> data,
+		Layout layout,
+		long outIdot,
+		long outIdat,
+		bool copiedIdot)
 	{
-		var kept = outIdot >= 0 && outIdot + 8 <= output.Length && output.AsSpan (outIdot + 4, 4).SequenceEqual ("iDOT"u8);
+		var kept = copiedIdot && outIdot >= 0 && outIdot + 8 <= plan.Length && IsIdot (data, layout.Idot);
 		if (!kept || layout.Idat < 0 || outIdat - outIdot == layout.Idat - layout.Idot)
-			return output;
-		var size = 12 + PngChunks.ReadLength (output, outIdot);
-		var trimmed = new byte[output.Length - size];
-		output.AsSpan (0, outIdot).CopyTo (trimmed);
-		output.AsSpan (outIdot + size).CopyTo (trimmed.AsSpan (outIdot));
-		return trimmed;
+			return;
+		var length = PngChunks.ReadLength (data, layout.Idot);
+		if (length < 0)
+			return;
+		plan.Cut (outIdot, 12L + length);
 	}
+
+	static bool IsIdot (ReadOnlySpan<byte> data, int start) =>
+		data.Slice (start + 4, 4).SequenceEqual ("iDOT"u8);
 
 	static bool IsKeptOnClear (ReadOnlySpan<byte> type)
 	{

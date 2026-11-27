@@ -86,6 +86,8 @@ static class ImageRewrite
 		out string? error)
 	{
 		error = null;
+		if (format == MediaFormat.Png)
+			return TryPngPlan (data, tag, out plan, out error);
 		if (format != MediaFormat.Jpeg) {
 			plan = null;
 			return true;
@@ -99,6 +101,20 @@ static class ImageRewrite
 		plan = JpegRewriter.Plan (data, tag, out error);
 		if (plan is null && error is null)
 			error = JpegRewriter.SpliceError;
+		return plan is not null;
+	}
+
+	static bool TryPngPlan (ReadOnlySpan<byte> data, ImageTag? tag, out ImagePlan? plan, out string? error)
+	{
+		error = null;
+		if (tag is null || !tag.AffectsFile) {
+			plan = ImagePlan.Whole (data.Length);
+			return true;
+		}
+
+		plan = PngRewriter.Plan (data, tag, out error);
+		if (plan is null && error is null)
+			error = PngRewriter.SpliceError;
 		return plan is not null;
 	}
 }

@@ -135,6 +135,21 @@ sealed class ImagePlan
 		throw new ArgumentOutOfRangeException (nameof (count));
 	}
 
+	/// <summary>Removes an output span. Ranges on either side keep their original-file offsets.</summary>
+	/// <param name="start">Offset in the output.</param>
+	/// <param name="count">Number of bytes removed. Zero removes nothing.</param>
+	public void Cut (long start, long count)
+	{
+		if (count == 0)
+			return;
+
+		if (start < 0 || count < 0 || start > Length || count > Length - start)
+			throw new ArgumentOutOfRangeException (nameof (start));
+
+		ReplaceSpan (start, start + count, null);
+		Length -= count;
+	}
+
 	/// <summary>Replaces an output span with <paramref name="replacement"/> of the same length.</summary>
 	/// <param name="start">Offset in the output.</param>
 	/// <param name="count">Number of bytes replaced.</param>
@@ -147,10 +162,15 @@ sealed class ImagePlan
 		if (start < 0 || count < 0 || start > Length || count > Length - start || replacement.Length != count)
 			throw new ArgumentOutOfRangeException (nameof (start));
 
+		ReplaceSpan (start, start + count, replacement);
+	}
+
+	// insert null removes the span. Otherwise the span is replaced by those bytes.
+	void ReplaceSpan (long start, long end, byte[]? insert)
+	{
 		var next = new List<Piece> (_pieces.Count + 1);
 		long at = 0;
-		var end = start + count;
-		var inserted = false;
+		var inserted = insert is null;
 		foreach (var piece in _pieces) {
 			var pieceEnd = at + piece.Length;
 			if (pieceEnd <= start || at >= end) {
@@ -160,7 +180,7 @@ sealed class ImagePlan
 				if (before > 0)
 					AddSlice (next, piece, 0, before);
 				if (!inserted) {
-					AddLiteral (next, replacement);
+					AddLiteral (next, insert!);
 					inserted = true;
 				}
 

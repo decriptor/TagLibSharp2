@@ -103,6 +103,71 @@ public sealed class ImagePathSaveTests
 		Assert.IsGreaterThanOrEqualTo (n, renders[2] - renders[0], $"render allocated {renders[0]} then {renders[2]}");
 	}
 
+	[TestMethod]
+	[DataRow ("noop", "52B843CD828B9210F16992640E8C8BA9704B65E8F1C6F1D46492DCF130D6A55B")]
+	[DataRow ("title", "E9CF8A0A5A10EBA6CBF52534CB14F8F4E91764FE6CA2CA1D43E12AD83F0BD060")]
+	[DataRow ("comment", "9C0BB256C7E77EDFB89A1B83F2058F7C775881C389EA783A93752E7C10B01DEA")]
+	[DataRow ("comment-same", "0B09E5A56B0EDE41FCF1C6C6E835F80CD87AE103BBE932F4F6E2E315FB7E4B59")]
+	[DataRow ("comment-null", "67C719D3156D1CC53B47E4BCD0374DE29B16AEAB7747C9762BFD85172905891A")]
+	[DataRow ("clear", "67C719D3156D1CC53B47E4BCD0374DE29B16AEAB7747C9762BFD85172905891A")]
+	[DataRow ("xmp-title", "33C2B1D6DE01593E899AE1BD9A30E42388AB253C6A6E533289248A2C47F91BD3")]
+	[DataRow ("exif-artist", "AF12D9DE982466B70759290B53AE91276A86EDE9C5C56F8FDFFD7E0EB5C2D547")]
+	[DataRow ("raw-title", "927B1D44F059523F1CC166920FA476701A8EDC234BEDFF816FC74F035E89BA80")]
+	[DataRow ("idot-title", "F777A6B4481C719D125F9A369F3CCC412B754A0D072982B68776D5CC5679A1FF")]
+	[DataRow ("idot-comment", "CD31C8775AC912BECDB0EDABC7C0396431472F9649ACF506738B233712C23C77")]
+	public void PngPathSave_BytesEqualRender (string op, string expectedHash)
+	{
+		var data = PngInput (op);
+		var fs = new MockFileSystem ();
+		fs.AddFile ("/in.png", data);
+		var read = StillImageFile.ReadFromFile ("/in.png", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		ApplyPng (read.File!, op);
+		var rendered = read.File!.Render ().ToArray ();
+
+		var save = read.File.SaveToFile ("/out.png", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var written = fs.ReadAllBytes ("/out.png");
+		CollectionAssert.AreEqual (rendered, written, op);
+		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), op);
+	}
+
+	/// <summary>The IDAT chunk is 80 KB. The hash is the path save of that title edit at 1322374a.</summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task PngPathSave_OverOneChunk_CopiesTheImageDataInChunks (bool saveAsync)
+	{
+		var payload = new byte[80 * 1024 - 12];
+		var data = Concat (
+			PngSignature,
+			PngChunk ("IHDR", [0, 0, 0, 2, 0, 0, 0, 3, 8, 0, 0, 0, 0]),
+			Text ("Title", "Old"),
+			PngChunk ("IDAT", payload),
+			PngChunk ("IEND", []));
+		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+		fs.Add ("/in.png", data);
+		fs.MaxRead = data.Length;
+		var read = StillImageFile.ReadFromFile ("/in.png", fs);
+		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		fs.ResetSourceLengthGets ();
+		read.File!.Tag!.Title = "PathSave";
+		var rendered = read.File.Render ().ToArray ();
+
+		var save = saveAsync
+			? await read.File.SaveToFileAsync ("/out.png", fs)
+			: read.File.SaveToFile ("/out.png", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (1, fs.SourceLengthGets);
+		var written = fs.Bytes ("/out.png");
+		CollectionAssert.AreEqual (rendered, written);
+		const string expected = "6911679D573A41B74F5D62F67F8E7861D80EF89E84BC57A7A43229FB2D2C7E24";
+		Assert.AreEqual (expected, Convert.ToHexString (SHA256.HashData (written)));
+	}
+
 	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedScan (int scanLength)
 	{
 		var scan = new byte[scanLength];
@@ -138,6 +203,45 @@ public sealed class ImagePathSaveTests
 		"mpf-comment" => MpfJpeg (JpegSegment (0xFE, "Old"u8.ToArray ()), [], out _),
 		_ => Jpeg (JpegSegment (0xFE, "Old"u8.ToArray ()))
 	};
+
+	static byte[] PngInput (string op) => op switch {
+		"noop" or "clear" => Png (Text ("Title", "Old"), Text ("Comment", "Old")),
+		"title" => Png (Text ("Title", "Old")),
+		"xmp-title" => Png (Xmp (XmpPacket (Alt ("dc:title", "Old")))),
+		"exif-artist" => Png (
+			PngChunk ("eXIf", ExifTiff ([(0x010F, "Canon"), (0x013B, "Jane")], [])),
+			Text ("Author", "Jane")),
+		"raw-title" => Png (RawProfile ("xmp", "abcd"u8.ToArray ()), Text ("Title", "Old")),
+		"idot-title" => IdotPng (),
+		"idot-comment" => IdotPng (Text ("Comment", "Old")),
+		_ => Png (Text ("Comment", "Old"))
+	};
+
+	static byte[] IdotPng (params byte[][] between) =>
+		Concat (
+			PngSignature,
+			PngChunk ("IHDR", [0, 0, 0, 2, 0, 0, 0, 3, 8, 0, 0, 0, 0]),
+			Text ("Title", "Old"),
+			PngChunk ("iDOT", new byte[28]),
+			Concat (between),
+			PngChunk ("IDAT", [0x78, 0x9C, 0x03, 0x00]),
+			PngChunk ("IEND", []));
+
+	static void ApplyPng (StillImageFile file, string op)
+	{
+		if (op is "title" or "xmp-title" or "raw-title" or "idot-title")
+			file.Tag!.Title = "PathSave";
+		else if (op is "comment" or "idot-comment")
+			file.Tag!.Comment = op == "idot-comment" ? "A longer comment" : "PathSave";
+		else if (op == "comment-same")
+			file.Tag!.Comment = file.Tag.Comment;
+		else if (op == "comment-null")
+			file.Tag!.Comment = null;
+		else if (op == "exif-artist")
+			file.Tag!.Artist = "New";
+		else if (op == "clear")
+			file.Tag!.Clear ();
+	}
 
 	static void Apply (StillImageFile file, string op)
 	{
