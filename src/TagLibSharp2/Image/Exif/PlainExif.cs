@@ -7,13 +7,13 @@ namespace TagLibSharp2.Image.Exif;
 
 /// <summary>
 /// Whether a field edit may run. One pass over the tables already walked, before a <see cref="RemovalPlan"/> records
-/// a range or reads a value array. The structure is not plain when a strip, tile or thumbnail offset or length is
-/// not SHORT or LONG, when one of those arrays does not lie wholly in the data, when one of those arrays is named
-/// twice, when one table names the same offset or length twice, when a complete pair of them names more values
-/// than half the bytes, when a classic next-IFD field has
-/// only one, two or three of its four bytes (TIFF 6.0 §2), or
-/// when removing an entry would change whether exiftool reads that table's first entry. An absent next field is
-/// plain. An empty table is read. A first-entry change that shows nothing new is still refused.
+/// a range or reads a value array. The structure is not plain when a classic next-IFD field has only one, two or
+/// three of its four bytes (TIFF 6.0 §2), when one table names the same strip, tile or thumbnail offset or length
+/// twice, when one of those is not SHORT or LONG, when one of those arrays does not lie wholly in the data, when
+/// one array is named twice, when removing an entry would change whether exiftool reads that table's first entry,
+/// or when a complete pair names more values than half the bytes. The first of these reasons stands; a later check
+/// does not replace it. An absent next field is plain. An empty table is read. A first-entry change that shows
+/// nothing new is still refused.
 /// </summary>
 static class PlainExif
 {
@@ -113,6 +113,9 @@ static class PlainExif
 		}
 
 		// Counts come from the entry headers. Equality with half the bytes still fits, as two arrays can.
+		// The first reason stands. Order: a cut-short next field, a pair tag given twice, a type other than SHORT
+		// or LONG, an array that does not fit, one array named twice, then a first entry whose readability would
+		// change. The budget is reported only when none of those was found.
 		if (why is null && removes && budget > tiff.Length / 2)
 			why = "names more strip, tile or thumbnail values than its data holds";
 

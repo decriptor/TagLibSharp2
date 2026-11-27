@@ -824,6 +824,60 @@ public class ExifPlainTests
 		CollectionAssert.AreEqual (copy, tiff, where);
 	}
 
+	// The next field has one byte, and taking the comment out would hide the table. The cut-short reason is the one
+	// reported. The first-entry reason is a later check and does not replace it.
+	[TestMethod]
+	[DataRow (true)]
+	[DataRow (false)]
+	public void Edit_ReportsTheCutShortNextWhenTheFirstEntryWouldAlsoChange (bool littleEndian)
+	{
+		var tiff = new TiffBuilder (35, bigEndian: !littleEndian).Header (8)
+			.Entries (8, (0x9286, 7, 4, 0x61626364), (0x010F, 0, 1, 0))
+			.ToArray ();
+		var copy = (byte[])tiff.Clone ();
+		var where = littleEndian ? "LE" : "BE";
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "cut short", where);
+		Assert.IsFalse (error.Contains ("first entry"), where + ": " + error);
+		CollectionAssert.AreEqual (copy, tiff, where);
+	}
+
+	public static IEnumerable<object[]> BudgetAndFirstEntry ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var (offsets, lengths) in new[] { (0x0111, 0x0117), (0x0144, 0x0145), (0x0201, 0x0202) })
+				yield return [littleEndian, offsets, lengths];
+	}
+
+	// The comment is the only entry exiftool reads, and the pair names more values than half the bytes. The
+	// first-entry reason is reported. The value budget is used only when no earlier reason was found.
+	[TestMethod]
+	[DynamicData (nameof (BudgetAndFirstEntry))]
+	public void Edit_ReportsTheFirstEntryWhenTheValueBudgetAlsoApplies (bool littleEndian, int offsets, int lengths)
+	{
+		var tiff = new TiffBuilder (200, bigEndian: !littleEndian).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x61626364), (0x010F, 0, 1, 0), (offsets, 3, 100, 0), (lengths, 3, 1, 1)])
+			.ToArray ();
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{(littleEndian ? "LE" : "BE")} {offsets:X4}";
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "first entry", where);
+		Assert.IsFalse (error.Contains ("more strip, tile or thumbnail values than its data holds"), where + ": " + error);
+		CollectionAssert.AreEqual (copy, tiff, where);
+	}
+
 	static byte[] GivenTwice (bool littleEndian, string home, int pairTag)
 	{
 		const int Ifd0 = 8;
