@@ -11,7 +11,8 @@ namespace TagLibSharp2.Tests.Image;
 
 /// <summary>
 /// A field edit runs only on plain Exif. A strip, tile or thumbnail offset or length that is not SHORT or LONG,
-/// or an array of those values named more than once, is refused before a plan is built. The block is left as it was.
+/// an array of those values named more than once, or a next-IFD field with only one, two or three of its four bytes,
+/// is refused before a plan is built. The block is left as it was. A wholly absent next field is still edited.
 /// </summary>
 [TestClass]
 [TestCategory ("Unit")]
@@ -87,6 +88,135 @@ public class ExifPlainTests
 		if (extra is var (at, entries))
 			tiff.Table (at, entries);
 		return tiff.ToArray ();
+	}
+
+	public static IEnumerable<object[]> CutNextFields ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var home in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop", "GPS" })
+				foreach (var present in new[] { 0, 1, 2, 3, 4 })
+					yield return [littleEndian, home, present, false];
+		// An odd-aligned IFD0 still has 1, 2 or 3 next bytes. exiftool's directory-size rule is about those counts.
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var present in new[] { 1, 2, 3 })
+				yield return [littleEndian, "IFD0", present, true];
+	}
+
+	// Zero or four next bytes are a whole field (absent or present). One, two or three bytes are cut short.
+	[TestMethod]
+	[DynamicData (nameof (CutNextFields))]
+	public void Edit_RefusesWhenANextFieldIsCutShort (bool littleEndian, string home, int present, bool odd)
+	{
+		var tiff = CutNext (littleEndian, home, present, odd);
+		var copy = (byte[])tiff.Clone ();
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+		var where = $"{home} {(littleEndian ? "LE" : "BE")} {present} byte{(present == 1 ? "" : "s")}{(odd ? " odd" : "")}";
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		if (present is 0 or 4) {
+			Assert.IsTrue (saved, $"{where}: {error}");
+			Assert.IsTrue (changed, where);
+			return;
+		}
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "cut short", where);
+		CollectionAssert.AreEqual (copy, tiff, where);
+	}
+
+	// A cut-short next field is not plain, but a field the block does not hold is not removed, so the block is kept.
+	[TestMethod]
+	[DataRow (true)]
+	[DataRow (false)]
+	public void Edit_OfATitle_SavesWhenTheNextFieldIsCutShort (bool littleEndian)
+	{
+		var tiff = CutNext (littleEndian, "GPS", 1, odd: false);
+		var copy = (byte[])tiff.Clone ();
+		var tag = new ImageTag (MediaFormat.Png, (ImageStores)0x3F);
+		tag.ReadField (ImageStores.Title, "Old");
+		tag.Title = "New";
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsTrue (saved, error);
+		Assert.IsFalse (changed);
+		CollectionAssert.AreEqual (copy, tiff);
+	}
+
+	// The home table is the last bytes of the file. Its entries fit; `present` bytes of its 4-byte next field do.
+	static byte[] CutNext (bool littleEndian, string home, int present, bool odd)
+	{
+		var ifd0 = odd ? 9 : 8;
+		(int, int, long, long) desc = (0x010E, 2, 2, 0x4142);
+		(int, int, long, long) comment = (0x9286, 7, 4, 0x61626364);
+		(int, int, long, long) date = (0x9003, 2, 4, 0x31323334);
+		(int, int, long, long) make = (0x010F, 2, 2, 0x4D);
+		(int, int, long, long) index = (0x0001, 2, 2, 0x5239);
+		static int Span (int entries) => 2 + (12 * entries) + 4;
+
+		var ifd0Entries = new List<(int, int, long, long)> ();
+		(int At, (int, int, long, long)[] Entries)? middle = null;
+		(int At, (int, int, long, long)[] Entries) cut;
+		long ifd0Next = 0;
+		switch (home) {
+			case "IFD0":
+				cut = (ifd0, [desc, comment]);
+				break;
+			case "Exif": {
+				var exif = ifd0 + Span (1);
+				ifd0Entries.Add ((0x8769, 4, 1, exif));
+				cut = (exif, [date, comment]);
+				break;
+			}
+			case "IFD1": {
+				var ifd1 = ifd0 + Span (2);
+				ifd0Entries.Add (desc);
+				ifd0Entries.Add (comment);
+				ifd0Next = ifd1;
+				cut = (ifd1, [make]);
+				break;
+			}
+			case "SubIFD": {
+				var sub = ifd0 + Span (3);
+				ifd0Entries.Add (desc);
+				ifd0Entries.Add (comment);
+				ifd0Entries.Add ((0x014A, 4, 1, sub));
+				cut = (sub, [make]);
+				break;
+			}
+			case "Interop": {
+				var exif = ifd0 + Span (1);
+				var iop = exif + Span (3);
+				ifd0Entries.Add ((0x8769, 4, 1, exif));
+				middle = (exif, [date, comment, (0xA005, 4, 1, iop)]);
+				cut = (iop, [index]);
+				break;
+			}
+			default: {
+				var gps = ifd0 + Span (3);
+				ifd0Entries.Add (desc);
+				ifd0Entries.Add (comment);
+				ifd0Entries.Add ((0x8825, 4, 1, gps));
+				cut = (gps, [index]);
+				break;
+			}
+		}
+
+		var full = cut.At + Span (cut.Entries.Length);
+		var kept = cut.At + 2 + (12 * cut.Entries.Length) + present;
+		var tiff = new TiffBuilder (full, bigEndian: !littleEndian).Header (ifd0);
+		if (home == "IFD0")
+			tiff.Table (ifd0, cut.Entries);
+		else
+			tiff.Table (ifd0, [.. ifd0Entries], ifd0Next);
+		if (middle is var (midAt, midEntries))
+			tiff.Table (midAt, midEntries);
+		if (home != "IFD0")
+			tiff.Table (cut.At, cut.Entries);
+		return tiff.ToArray ()[..kept];
 	}
 
 	public static IEnumerable<object[]> SharedArrays ()

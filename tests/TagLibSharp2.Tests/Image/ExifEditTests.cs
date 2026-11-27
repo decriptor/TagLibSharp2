@@ -257,10 +257,9 @@ public class ExifEditTests
 
 	static readonly byte[] OldXp = Encoding.Unicode.GetBytes ("old xp comment\0");
 
-	// TIFF 6.0 §2 puts a 4-byte next-IFD offset after every table, but readers do not need it: exiftool, ImageIO and
-	// TagLib# read a table whose entries fit even when the offset is missing or cut short.
-	// So a Comment edit removes the copies from such a table, and protects a GPS, interoperability or IFD1 table
-	// of that shape from zeroing. The table under test is the last thing in the data, with 0 or 2 of its 4 bytes.
+	// TIFF 6.0 §2 puts a 4-byte next-IFD offset after every table. A field edit still runs when that field is wholly
+	// absent (cut = 4). One, two or three bytes present are not plain, so the edit is refused and nothing is written.
+	// The table under test is the last thing in the data.
 	[TestMethod]
 	[DataRow ("IFD0", 4)]
 	[DataRow ("IFD0", 2)]
@@ -322,6 +321,13 @@ public class ExifEditTests
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		if (cut != 4) {
+			Assert.IsFalse (save.IsSuccess, $"{table} cut {cut}: saved");
+			StringAssert.Contains (save.Error, "cut short", table);
+			CollectionAssert.AreEqual (bytes, PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload, table);
+			return;
+		}
 
 		Assert.IsTrue (save.IsSuccess, $"{table}: {save.Error}");
 		var exif = PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload;
