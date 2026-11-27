@@ -52,12 +52,6 @@ static class GifRewriter
 		return null;
 	}
 
-	public static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
-	{
-		var plan = Plan (data, tag, out error);
-		return plan?.Materialize (data);
-	}
-
 	static byte[] CommentBytes (string comment)
 	{
 		using var builder = new BinaryDataBuilder ();

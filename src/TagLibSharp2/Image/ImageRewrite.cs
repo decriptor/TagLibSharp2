@@ -49,35 +49,7 @@ static class ImageRewrite
 		return builder.ToArray ();
 	}
 
-	/// <summary>
-	/// Splices the edited text into <paramref name="data"/>. Every byte the edit does not concern is copied,
-	/// including anything after the last chunk, the GIF trailer, or the JPEG EOI.
-	/// </summary>
-	/// <returns>The new file, or null with <paramref name="error"/> naming why the container cannot be updated.</returns>
-	internal static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
-	{
-		error = null;
-		if (!tag.AffectsFile)
-			return null;
-		var rewritten = tag.Format switch {
-			MediaFormat.Png => PngRewriter.Rewrite (data, tag, out error),
-			MediaFormat.Gif => GifRewriter.Rewrite (data, tag, out error),
-			MediaFormat.Jpeg => JpegRewriter.Plan (data, tag, out error) is { } plan ? plan.Materialize (data) : null,
-			_ => null
-		};
-		if (rewritten is null && error is null)
-			error = tag.Format switch {
-				MediaFormat.Gif => GifRewriter.SpliceError,
-				MediaFormat.Jpeg => JpegRewriter.SpliceError,
-				_ => "The image container could not be updated."
-			};
-		return rewritten;
-	}
-
-	/// <summary>
-	/// A plan for a format whose path save copies original ranges.
-	/// True with a null plan means this format still renders as one buffer.
-	/// </summary>
+	/// <summary>A plan for a format whose path save copies original ranges. False when the container cannot be updated.</summary>
 	internal static bool TryPlan (
 		ReadOnlySpan<byte> data,
 		MediaFormat format,
@@ -90,17 +62,16 @@ static class ImageRewrite
 			return TryEditedPlan (data, tag, PngRewriter.Plan, PngRewriter.SpliceError, out plan, out error);
 		if (format == MediaFormat.Gif)
 			return TryEditedPlan (data, tag, GifRewriter.Plan, GifRewriter.SpliceError, out plan, out error);
+		if (format == MediaFormat.Jpeg)
+			return TryEditedPlan (data, tag, JpegRewriter.Plan, JpegRewriter.SpliceError, out plan, out error);
 		if (CopiesWholeFile (format)) {
 			plan = ImagePlan.Whole (data.Length);
 			return true;
 		}
 
-		if (format != MediaFormat.Jpeg) {
-			plan = null;
-			return true;
-		}
-
-		return TryEditedPlan (data, tag, JpegRewriter.Plan, JpegRewriter.SpliceError, out plan, out error);
+		plan = null;
+		error = "The image container could not be updated.";
+		return false;
 	}
 
 	/// <summary>

@@ -170,11 +170,9 @@ public sealed class StillImageFile : IMediaFile
 	/// </summary>
 	public ReadOnlyMemory<byte> Render ()
 	{
-		if (!TryOutput (out var plan, out var bytes, out _))
+		if (!TryOutput (out var plan, out _) || plan is null)
 			return _data;
-		if (plan is not null)
-			return plan.MaterializeShared (_data);
-		return bytes;
+		return plan.MaterializeShared (_data);
 	}
 
 	/// <summary>Writes the edited file to <paramref name="path"/>.</summary>
@@ -190,11 +188,9 @@ public sealed class StillImageFile : IMediaFile
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
 		if (SpliceFormat && !string.IsNullOrEmpty (SourcePath))
 			return WriteSpliceSource (path, fs, default);
-		if (!TryOutput (out var plan, out var bytes, out var error))
+		if (!TryOutput (out var plan, out var error) || plan is null)
 			return FileWriteResult.Failure (error ?? "The image container could not be updated.");
-		if (plan is not null)
-			return WritePlan (path, fs, plan);
-		return AtomicFileWriter.Write (path, bytes.Span, fs);
+		return WritePlan (path, fs, plan);
 	}
 
 	/// <summary>Writes <see cref="Render"/> back to <see cref="SourcePath"/>.</summary>
@@ -220,11 +216,9 @@ public sealed class StillImageFile : IMediaFile
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
 		if (SpliceFormat && !string.IsNullOrEmpty (SourcePath))
 			return Task.FromResult (WriteSpliceSource (path, fs, cancellationToken));
-		if (!TryOutput (out var plan, out var bytes, out var error))
+		if (!TryOutput (out var plan, out var error) || plan is null)
 			return Task.FromResult (FileWriteResult.Failure (error ?? "The image container could not be updated."));
-		if (plan is not null)
-			return Task.FromResult (WritePlan (path, fs, plan, cancellationToken));
-		return AtomicFileWriter.WriteAsync (path, bytes, fs, cancellationToken);
+		return Task.FromResult (WritePlan (path, fs, plan, cancellationToken));
 	}
 
 	bool SpliceFormat => Format is MediaFormat.Jpeg or MediaFormat.Png or MediaFormat.Gif;
@@ -236,10 +230,8 @@ public sealed class StillImageFile : IMediaFile
 		try {
 			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var openError))
 				return openError;
-			if (!TryOutput (out var plan, out var bytes, out var error))
+			if (!TryOutput (out var plan, out var error) || plan is null)
 				return FileWriteResult.Failure (error ?? "The image container could not be updated.");
-			if (plan is null)
-				return AtomicFileWriter.Write (path, bytes.Span, fileSystem);
 
 			var opened = source!;
 			source = null;
@@ -249,16 +241,9 @@ public sealed class StillImageFile : IMediaFile
 		}
 	}
 
-	// A plan when this format copies original ranges; otherwise the whole file in one buffer.
-	bool TryOutput (out ImagePlan? plan, out ReadOnlyMemory<byte> bytes, out string? error)
-	{
-		bytes = default;
-		if (!ImageRewrite.TryPlan (_data, Format, _tag, out plan, out error))
-			return false;
-		if (plan is not null)
-			return true;
-		return TryPrepare (out bytes, out error);
-	}
+	// Every format this file opens has a plan: a text rewriter, or the original bytes as one range.
+	bool TryOutput (out ImagePlan? plan, out string? error) =>
+		ImageRewrite.TryPlan (_data, Format, _tag, out plan, out error) && plan is not null;
 
 	FileWriteResult WritePlan (
 		string path,
@@ -336,24 +321,6 @@ public sealed class StillImageFile : IMediaFile
 			if (chunk is not null)
 				StreamCopy.Return (chunk);
 		}
-	}
-
-	bool TryPrepare (out ReadOnlyMemory<byte> bytes, out string? error)
-	{
-		error = null;
-		if (_tag is null || !_tag.AffectsFile) {
-			bytes = _data;
-			return true;
-		}
-
-		if (ImageRewrite.Rewrite (_data, _tag, out error) is byte[] rewritten) {
-			bytes = rewritten;
-			return true;
-		}
-
-		bytes = default;
-		error ??= "The image container could not be updated.";
-		return false;
 	}
 
 	/// <summary>Writes <see cref="Render"/> back to <see cref="SourcePath"/>.</summary>

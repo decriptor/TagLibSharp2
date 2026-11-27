@@ -104,12 +104,6 @@ static class PngRewriter
 		return CopyChunks (data, chunks, tag, Layout.Of (data, chunks), out error);
 	}
 
-	public static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
-	{
-		var plan = Plan (data, tag, out error);
-		return plan?.Materialize (data);
-	}
-
 	// Where new text goes: before the pixel data, and before Apple's iDOT, which records where the IDAT chunks are.
 	readonly record struct Layout (int Insert, int Idot, int Idat)
 	{
