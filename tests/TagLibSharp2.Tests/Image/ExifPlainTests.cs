@@ -4,6 +4,7 @@
 using TagLibSharp2.Core;
 using TagLibSharp2.Image;
 using TagLibSharp2.Image.Exif;
+using TagLibSharp2.Image.Tiff;
 using TagLibSharp2.Tests.Kit;
 using static TagLibSharp2.Tests.Image.ExifTestData;
 
@@ -11,9 +12,10 @@ namespace TagLibSharp2.Tests.Image;
 
 /// <summary>
 /// A field edit runs only on plain Exif. A strip, tile or thumbnail offset or length that is not SHORT or LONG,
-/// an array of those values named more than once, a next-IFD field with only one, two or three of its four bytes,
-/// or a first entry whose readability would change, is refused before a plan is built. The block is left as it was.
-/// A wholly absent next field is still edited. A first-entry change that shows nothing new is still refused.
+/// an array of those values named more than once, a complete pair that names more values than half the bytes,
+/// a next-IFD field with only one, two or three of its four bytes, or a first entry whose readability would
+/// change, is refused before a plan is built. The block is left as it was. A wholly absent next field is still
+/// edited. A first-entry change that shows nothing new is still refused.
 /// </summary>
 [TestClass]
 [TestCategory ("Unit")]
@@ -468,6 +470,94 @@ public class ExifPlainTests
 		for (var i = 0; i < s; i++)
 			for (var j = 0; j < s; j++)
 				tiff.Table (tabs + (30 * ((i * s) + j)), [(0x0111, 3, k, arrayA + (2 * k * i)), (0x0117, 3, k, arrayB + (2 * k * j))]);
+		return tiff.ToArray ();
+	}
+
+	public static IEnumerable<object[]> OverBudgetPairs ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var home in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop", "GPS" })
+				foreach (var (offsets, lengths) in new[] { (0x0111, 0x0117), (0x0144, 0x0145), (0x0201, 0x0202) })
+					yield return [littleEndian, home, offsets, lengths];
+	}
+
+	// Two complete pairs name more values than half the bytes. The refusal reads no value array: the same
+	// entries a title edit walks, and nothing more.
+	[TestMethod]
+	[DynamicData (nameof (OverBudgetPairs))]
+	public void Edit_RefusesAnOverBudgetPairBeforeReadingItsValues (bool littleEndian, string home, int offsets, int lengths)
+	{
+		var tiff = OverBudget (littleEndian, home, offsets, lengths);
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{home} {(littleEndian ? "LE" : "BE")} {offsets:X4}";
+		var title = new ImageTag (MediaFormat.Png, ImageStores.Png);
+		title.ReadField (ImageStores.Title, "Old");
+		title.Title = "New";
+
+		IfdSteps.Count = 0;
+		Assert.IsTrue (ExifEditor.TryRemove ((byte[])tiff.Clone (), 0, title, "eXIf", out _, out var titleError), $"{where}: {titleError}");
+		var idle = IfdSteps.Count;
+
+		IfdSteps.Count = 0;
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "more strip, tile or thumbnail values than its data holds", where);
+		CollectionAssert.AreEqual (copy, tiff, where);
+		Assert.AreEqual (idle, IfdSteps.Count, $"{where}: a refusal read value arrays ({IfdSteps.Count} steps, a title edit took {idle})");
+	}
+
+	// 60 + 59 offset values and one inline length from each table. The arrays overlap in the file and still fit,
+	// and their counts sum to more than half the bytes. Both tables are walked.
+	static byte[] OverBudget (bool littleEndian, string home, int offsets, int lengths)
+	{
+		const int Ifd0 = 8;
+		var big = new (int, int, long, long)[] { (offsets, 3, 60, 0), (lengths, 3, 1, 1) };
+		var small = new (int, int, long, long)[] { (offsets, 3, 59, 0), (lengths, 3, 1, 1) };
+		var comment = (0x9286, 7, 4L, 0x61626364L);
+		int length, arrayAt;
+		TiffBuilder tiff;
+		switch (home) {
+			case "IFD0":
+				length = 200;
+				arrayAt = 80;
+				tiff = new TiffBuilder (length, bigEndian: !littleEndian).Header (Ifd0);
+				big[0].Item4 = arrayAt;
+				small[0].Item4 = arrayAt + 2;
+				tiff.Table (Ifd0, [comment, big[0], big[1]], 50).Table (50, small);
+				break;
+			case "IFD1":
+				length = 200;
+				arrayAt = 80;
+				tiff = new TiffBuilder (length, bigEndian: !littleEndian).Header (Ifd0);
+				big[0].Item4 = arrayAt;
+				small[0].Item4 = arrayAt + 2;
+				tiff.Table (Ifd0, [comment, small[0], small[1]], 50).Table (50, big);
+				break;
+			case "Interop":
+				length = 230;
+				arrayAt = 110;
+				tiff = new TiffBuilder (length, bigEndian: !littleEndian).Header (Ifd0);
+				big[0].Item4 = arrayAt;
+				small[0].Item4 = arrayAt + 2;
+				tiff.Table (Ifd0, [comment, small[0], small[1], (0x8769, 4, 1, 62)])
+					.Table (62, [(0xA005, 4, 1, 80)])
+					.Table (80, big);
+				break;
+			default:
+				length = 212;
+				arrayAt = 92;
+				var pointer = home switch { "Exif" => 0x8769, "SubIFD" => 0x014A, _ => 0x8825 };
+				tiff = new TiffBuilder (length, bigEndian: !littleEndian).Header (Ifd0);
+				big[0].Item4 = arrayAt;
+				small[0].Item4 = arrayAt + 2;
+				tiff.Table (Ifd0, [comment, small[0], small[1], (pointer, 4, 1, 62)]).Table (62, big);
+				break;
+		}
+
 		return tiff.ToArray ();
 	}
 }

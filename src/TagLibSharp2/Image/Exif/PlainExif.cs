@@ -8,10 +8,10 @@ namespace TagLibSharp2.Image.Exif;
 /// <summary>
 /// Whether a field edit may run. One pass over the tables already walked, before a <see cref="RemovalPlan"/> records
 /// a range or reads a value array. The structure is not plain when a strip, tile or thumbnail offset or length is
-/// not SHORT or LONG, when one of those arrays is named twice, when a classic next-IFD field has only one, two or
-/// three of its four bytes (TIFF 6.0 §2), or when removing an entry would change whether exiftool reads that
-/// table's first entry. An absent next field is plain. An empty table is read. A first-entry change that shows
-/// nothing new is still refused.
+/// not SHORT or LONG, when one of those arrays is named twice, when a complete pair of them names more values than
+/// half the bytes, when a classic next-IFD field has only one, two or three of its four bytes (TIFF 6.0 §2), or
+/// when removing an entry would change whether exiftool reads that table's first entry. An absent next field is
+/// plain. An empty table is read. A first-entry change that shows nothing new is still refused.
 /// </summary>
 static class PlainExif
 {
@@ -21,14 +21,19 @@ static class PlainExif
 	/// <summary>
 	/// Strip, tile and thumbnail offset/length tags (TIFF 6.0 §3, tags 0x0111/0x0117, 0x0144/0x0145, and
 	/// JPEGInterchangeFormat 0x0201/0x0202) are plain only as SHORT (3) or LONG (4), and only when each array is
-	/// named once. A next-IFD field that is partly in the data is not plain. The first entry exiftool will see is
+	/// named once. A complete pair whose values, counted from the entry headers, exceed half the bytes is not
+	/// plain. A next-IFD field that is partly in the data is not plain. The first entry exiftool will see is
 	/// plain only when <see cref="TiffReader.FormatExiftoolReads"/> does not change; GPS tables are not edited.
 	/// </summary>
 	public static Verdict Judge (TiffReader tiff, IfdGraph graph, HashSet<int> tags)
 	{
 		string? why = null;
 		var removes = false;
+		long budget = 0;
 		HashSet<ValueArray>? named = null;
+		HashSet<ValueArray>? counted = null;
+		// One slot per side of the three pairs, reused for every table. Bits of `got` say which sides this table has.
+		var slots = new ValueArray[6];
 		for (var t = 0; t < graph.Tables.Count; t++) {
 			var (at, count, roles) = graph.Tables[t];
 			var edited = (roles & IfdGraph.ReadRoles) != 0;
@@ -40,6 +45,7 @@ static class PlainExif
 			var keptType = 0;
 			var keptOne = false;
 			var loses = false;
+			var got = 0;
 			for (var n = 0; n < count; n++) {
 				IfdSteps.Count++;
 				var entry = tiff.Entry (at, n);
@@ -63,6 +69,22 @@ static class PlainExif
 					named ??= [];
 					if (!named.Add (key))
 						why = "names one strip, tile or thumbnail array more than once";
+					var slot = PairSlot (tag);
+					slots[slot] = key;
+					got |= 1 << slot;
+				}
+			}
+
+			// Both sides of a pair, from this table's headers. A lone offset or length is not a value the plan reads.
+			if (why is null && got != 0) {
+				for (var pair = 0; pair < 6; pair += 2) {
+					if ((got & (3 << pair)) != (3 << pair))
+						continue;
+					counted ??= [];
+					if (counted.Add (slots[pair]))
+						budget += slots[pair].Count;
+					if (counted.Add (slots[pair + 1]))
+						budget += slots[pair + 1].Count;
 				}
 			}
 
@@ -78,10 +100,25 @@ static class PlainExif
 				break;
 		}
 
+		// Counts come from the entry headers. Equality with half the bytes still fits, as two arrays can.
+		if (why is null && removes && budget > tiff.Length / 2)
+			why = "names more strip, tile or thumbnail values than its data holds";
+
 		return new Verdict (why is null, removes, why);
 	}
 
 	static bool IsPairTag (int tag) => tag is 0x0111 or 0x0117 or 0x0144 or 0x0145 or 0x0201 or 0x0202;
+
+	// Strip, tile, then thumbnail; the offset side then the length side.
+	static int PairSlot (int tag) => tag switch {
+		0x0111 => 0,
+		0x0117 => 1,
+		0x0144 => 2,
+		0x0145 => 3,
+		0x0201 => 4,
+		0x0202 => 5,
+		_ => 0
+	};
 
 	// A SHORT or LONG array that lies wholly in the data. Inline values are the entry's own value field.
 	static bool TryValueArray (TiffReader tiff, long entry, out ValueArray key)
