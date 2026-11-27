@@ -28,17 +28,24 @@ public class ExifEditTests
 		yield return ["into the header", (Action<byte[], int, int>)((tiff, artist, _) => { BitConverter.GetBytes (8).CopyTo (tiff, artist + 4); BitConverter.GetBytes (0).CopyTo (tiff, artist + 8); })];
 	}
 
-	// A removed value is zeroed only where its bytes belong to it alone (rule 6: the other values keep theirs).
+	// A removed value that shares bytes with another value, or that lies inside an IFD table, is not plain: the edit
+	// is refused and nothing is written. A value that points into the header names no protected byte, so that edit saves.
 	[TestMethod]
 	[DynamicData (nameof (OverlappingExif))]
 	public void Edit_RemovedExifValue_NeverZeroesBytesItShares (string shape, Action<byte[], int, int> corrupt)
 	{
 		var tiff = ExifTiff ([(0x010F, "CanonMake"), (0x0110, "ModelName"), (0x013B, "OldArtist")], []);
 		corrupt (tiff, 8 + 2 + (2 * 12), 8 + 2);
-		var file = Open (Png (PngChunk ("eXIf", tiff), Text ("Author", "a")), "a.png");
+		var input = Png (PngChunk ("eXIf", tiff), Text ("Author", "a"));
+		var file = Open (input, "a.png");
 		file.Tag!.Artist = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+		if (shape != "into the header") {
+			AssertUnchangedRefusal (save, input, file.Render ().ToArray (), shape);
+			return;
+		}
+
 		Assert.IsTrue (save.IsSuccess, save.Error);
 		var exif = PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload;
 		CollectionAssert.AreEqual (tiff[..8], exif[..8], $"{shape}: header");
@@ -86,6 +93,8 @@ public class ExifEditTests
 		return data[..(Artist + 10)];
 	}
 
+	// Artist's value is also a thumbnail, an IFD1 string or a GPS string. Zeroing it would change that other use, so
+	// the edit is refused and the shared bytes stay.
 	[TestMethod]
 	[DataRow ("IFD1 value")]
 	[DataRow ("thumbnail")]
@@ -93,14 +102,12 @@ public class ExifEditTests
 	public void Edit_RemovedExifValue_KeepsBytesTheThumbnailIfd1OrGpsUse (string shape)
 	{
 		var tiff = SharedArtistTiff (shape);
-		var file = Open (Png (PngChunk ("eXIf", tiff), Text ("Author", "a")), "a.png");
+		var input = Png (PngChunk ("eXIf", tiff), Text ("Author", "a"));
+		var file = Open (input, "a.png");
 		file.Tag!.Artist = "New";
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		var exif = PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload;
-		Assert.IsTrue (exif.AsSpan ().IndexOf ("OldArtist\0"u8) > 0, $"{shape}: the shared bytes are kept");
-		Assert.IsFalse (ExifReaderModel.Of (exif).Strings ().ContainsKey (0x013B), $"{shape}: Artist is removed");
-		Assert.AreEqual ("CanonMake", ExifReaderModel.Of (exif).Strings ()[0x010F]);
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), shape);
+		Assert.IsTrue (tiff.AsSpan ().IndexOf ("OldArtist\0"u8) > 0, shape);
 	}
 
 	static readonly byte[] FilledApp1 = [0xFF, 0xFF, 0xFF, 0xFF, 0xE1];
@@ -119,8 +126,8 @@ public class ExifEditTests
 	}
 
 	// ImageIO merges every Exif IFD IFD0 points at and exiftool lists each, so a Comment edit removes UserComment
-	// from all of them. The GPS, interoperability and thumbnail data of every IFD is protected from zeroing, and
-	// when an offset/length pair is given twice nothing is zeroed (which bytes it names cannot be told).
+	// from all of them. The GPS, interoperability and thumbnail data of every IFD is protected from zeroing.
+	// A strip offset given twice is not plain: which bytes it names cannot be told, so that edit is refused.
 	[TestMethod]
 	[DataRow ("two Exif IFDs")]
 	[DataRow ("two Exif IFDs, the other way round")]
@@ -184,6 +191,21 @@ public class ExifEditTests
 		var file = Open (Png (PngChunk ("eXIf", tiff.ToArray ()), Text ("Comment", "c")), "a.png");
 		file.Tag!.Comment = "New";
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+		if (shape.StartsWith ("StripOffsets given twice", StringComparison.Ordinal)) {
+			Assert.IsFalse (save.IsSuccess, shape);
+			StringAssert.Contains (save.Error, "offset or length more than once", shape);
+			CollectionAssert.AreEqual (tiff.ToArray (), PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload, shape);
+			return;
+		}
+
+		// A second table's value, or a kept rational, occupies the comment's bytes. Removing the comment would change
+		// that structure, so the edit is refused.
+		if (shared) {
+			var input = Png (PngChunk ("eXIf", tiff.ToArray ()), Text ("Comment", "c"));
+			AssertUnchangedRefusal (save, input, file.Render ().ToArray (), shape);
+			return;
+		}
+
 		Assert.IsTrue (save.IsSuccess, $"{shape}: {save.Error}");
 
 		var exif = PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload;
@@ -203,9 +225,8 @@ public class ExifEditTests
 			Assert.AreEqual (0x9004, BitConverter.ToUInt16 (exif, ExifA + 14));
 		}
 
-		var zeroesNothing = shape.StartsWith ("StripOffsets given twice", StringComparison.Ordinal);
-		Assert.AreEqual (zeroesNothing, exif.AsSpan ().IndexOf ("old comment one"u8) >= 0, $"{shape}: the first comment's bytes are zeroed unless nothing can be");
-		Assert.AreEqual (shared || zeroesNothing, exif.AsSpan ().IndexOf ("old comment two"u8) >= 0, $"{shape}: the second comment's bytes are kept only when another IFD uses them");
+		Assert.IsTrue (exif.AsSpan ().IndexOf ("old comment one"u8) < 0, $"{shape}: the first comment's bytes are zeroed");
+		Assert.AreEqual (shared, exif.AsSpan ().IndexOf ("old comment two"u8) >= 0, $"{shape}: the second comment's bytes are kept only when another IFD uses them");
 	}
 
 	// A pointer no reader follows (its table is not inside the data) can hold no copy: the edit skips it, as Clear,
@@ -329,6 +350,14 @@ public class ExifEditTests
 			return;
 		}
 
+		// GPS, interoperability and IFD1 name the comment bytes as their own value. A wholly absent next field is
+		// still plain, but that share is not, so those edits are refused. IFD0 and the Exif IFD do not share it.
+		if (table is "GPS IFD" or "interoperability IFD" or "IFD1") {
+			var sharedInput = Png (PngChunk ("eXIf", bytes), Text ("Comment", "c"));
+			AssertUnchangedRefusal (save, sharedInput, file.Render ().ToArray (), table);
+			return;
+		}
+
 		Assert.IsTrue (save.IsSuccess, $"{table}: {save.Error}");
 		var exif = PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload;
 		Assert.AreEqual (length, exif.Length, $"{table}: nothing is written past the data");
@@ -338,11 +367,9 @@ public class ExifEditTests
 		Assert.AreEqual (protectedTable, exif.AsSpan ().IndexOf ("old comment one"u8) >= 0, $"{table}: the old comment's bytes are kept only when that table uses them");
 	}
 
-	// Zeroing a removed value must not change a byte any reader could parse as IFD structure. Here the removed
-	// UserComment's last byte (0x01) is the first count byte of a table P (big-endian 0x0102: 258 entries, which do
-	// not fit, so no reader reads it); zeroing it would make the count 2 and P readable, and every reader would show
-	// P's "hidden-uc" (measured with exiftool, ImageIO and TagLib#). P's count bytes are kept instead, whichever way the
-	// walk reaches P: an IFD0 0x8769, a nested Exif IFD's 0x8769, or IFD0's 0x014A SubIFD.
+	// The removed UserComment's last byte is the first count byte of a table P that no reader reads (big-endian
+	// 0x0102: 258 entries, which do not fit). Zeroing it would make the count 2. That share is not plain, so the edit
+	// is refused, whichever way the walk reaches P.
 	[TestMethod]
 	[DataRow ("png", "IFD0's Exif IFD pointer")]
 	[DataRow ("jpeg", "IFD0's Exif IFD pointer")]
@@ -370,16 +397,14 @@ public class ExifEditTests
 		};
 		var data = tiff.ToArray ();
 		Assert.AreEqual (1, UserCommentsInEveryExifIfd (data).Count, "the input shows its UserComment and not P's");
-		var file = Open (InCarrier (carrier, data), carrier == "png" ? "a.png" : "a.jpg");
+		var input = InCarrier (carrier, data);
+		var file = Open (input, carrier == "png" ? "a.png" : "a.jpg");
 		file.Tag!.Comment = "New";
 
-		Assert.IsTrue (file.SaveToFile ("/a", new MockFileSystem ()).IsSuccess, shape);
-		var exif = ExifOf (file.Render ().ToArray ());
-
-		Assert.AreEqual (0, UserCommentsInEveryExifIfd (exif).Count, $"{carrier} {shape}: no UserComment is shown");
-		AssertOnlyTheCopiesAreGone (data, exif, $"{carrier} {shape}", 0x9286, 0x9C9C);
-		Assert.AreEqual (0x01, exif[p], $"{carrier} {shape}: P's count is unchanged");
-		Assert.AreEqual (0x02, exif[p + 1]);
+		var save = file.SaveToFile ("/a", new MockFileSystem ());
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), $"{carrier} {shape}");
+		Assert.AreEqual (0x01, data[p], shape);
+		Assert.AreEqual (0x02, data[p + 1], shape);
 	}
 
 	// exiftool reads every table of IFD0's chain (IFD1, IFD2, ...), and from each, from every Exif IFD and every
@@ -439,9 +464,8 @@ public class ExifEditTests
 		AssertOnlyTheCopiesAreGone (data, exif, $"{carrier} {where}", removed);
 	}
 
-	// An array of SubIFD offsets is IFD structure as well: inside a table the edit compacts it would be rewritten
-	// (refused with its own reason, nothing written), and inside a removed value it is not zeroed (the SubIFDs
-	// readers reach stay the same). A differential fuzz found both shapes.
+	// An array of SubIFD offsets is IFD structure. Inside a table the edit compacts, or inside the removed value,
+	// removing the comment would rewrite it, so the edit is refused and nothing is written.
 	[TestMethod]
 	[DataRow ("inside the table the edit compacts")]
 	[DataRow ("inside the removed UserComment")]
@@ -474,17 +498,9 @@ public class ExifEditTests
 		var fs = new MockFileSystem ();
 		var save = file.SaveToFile ("/a.png", fs);
 
-		if (shape != "inside the removed UserComment") {
-			Assert.IsFalse (save.IsSuccess, shape);
-			StringAssert.Contains (save.Error, "SubIFD offsets");
-			CollectionAssert.AreEqual (input, file.Render ().ToArray ());
-		} else {
-			Assert.IsTrue (save.IsSuccess, save.Error);
-			var exif = ExifOf (file.Render ().ToArray ());
-			Assert.AreEqual (0, UserCommentsInEveryExifIfd (exif).Count);
-			AssertOnlyTheCopiesAreGone (data, exif, shape, 0x9286, 0x9C9C);
-			CollectionAssert.AreEqual (data[arrayAt..(arrayAt + 8)], exif[arrayAt..(arrayAt + 8)], "the SubIFD offsets are kept");
-		}
+		Assert.IsFalse (save.IsSuccess, shape);
+		StringAssert.Contains (save.Error, shape == "inside the removed UserComment" ? "IFD structure that removing" : "SubIFD offsets", shape);
+		CollectionAssert.AreEqual (input, file.Render ().ToArray (), shape);
 	}
 
 	// What exiftool does not read keeps its bytes: the next IFD of an Exif IFD (exiftool follows only IFD0's chain)
@@ -529,10 +545,9 @@ public class ExifEditTests
 		CollectionAssert.AreEqual (copy, tiff);
 	}
 
-	// The structure of a table no reader reads is kept whole when a removed value covers it: its count, its entries
-	// and its next offset, as far as the data goes (and only that: a removed value past it is still cleared). An
-	// unread table at offset 8, pointers into the header or at the data's last byte, and the next IFD of an Exif IFD
-	// or a GPS table (one level: the next IFD of that next IFD is named by nothing) are handled too.
+	// A removed value that covers an unread table, or that is the next offset of an Exif or GPS table, shares
+	// protected structure, so the edit is refused. A value that lies wholly before that structure, a pointer into
+	// the header or at the last byte, and the next IFD of an Exif IFD's next IFD (named by nothing) still save.
 	[TestMethod]
 	[DataRow ("the removed value covers an unread table's entries")]
 	[DataRow ("the removed value covers the last bytes of an unread table")]
@@ -603,10 +618,16 @@ public class ExifEditTests
 		}
 
 		var data = tiff.ToArray ();
-		var file = Open (InCarrier ("png", data), "a.png");
+		var input = InCarrier ("png", data);
+		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+		var overlaps = !cleared && shape != "a pointer into the header" && shape != "a pointer to the data's last byte";
+		if (overlaps) {
+			AssertUnchangedRefusal (save, input, file.Render ().ToArray (), shape);
+			return;
+		}
 
 		Assert.IsTrue (save.IsSuccess, $"{shape}: {save.Error}");
 		var exif = ExifOf (file.Render ().ToArray ());
@@ -665,10 +686,16 @@ public class ExifEditTests
 				break;
 		}
 
-		var file = Open (InCarrier (carrier, data), carrier == "png" ? "a.png" : "a.jpg");
+		var input = InCarrier (carrier, data);
+		var file = Open (input, carrier == "png" ? "a.png" : "a.jpg");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a", new MockFileSystem ());
+		// The second Exif IFD's count sits inside the removed value, so that edit is not plain.
+		if (shape == "an Exif IFD whose last entry runs 2 bytes past the data") {
+			AssertUnchangedRefusal (save, input, file.Render ().ToArray (), $"{carrier} {shape}");
+			return;
+		}
 
 		Assert.IsTrue (save.IsSuccess, $"{carrier} {shape}: {save.Error}");
 		var exif = ExifOf (file.Render ().ToArray ());
@@ -808,8 +835,8 @@ public class ExifEditTests
 		AssertOnlyTheCopiesAreGone (tiff, exif, "two arrays at one offset", 0x9286, 0x9C9C);
 	}
 
-	// Zeroing a removed value never touches a table's next-IFD offset: IFD0's removed XPComment value starts at IFD1's
-	// next offset, which names IFD2; after the edit the chain still reaches IFD2.
+	// IFD0's removed XPComment value starts at IFD1's next offset. That share is not plain, so the edit is refused
+	// and the next offset stays.
 	[TestMethod]
 	public void Edit_RemovedValue_NeverZeroesATablesNextOffset ()
 	{
@@ -817,36 +844,29 @@ public class ExifEditTests
 		var tiff = new TiffBuilder (Ifd2 + 40).Header (8).Table (8, [(0x9C9C, 1, 20, Next)], next: Ifd1)
 			.Table (Ifd1, [(0x0131, 2, 4, 0x41414141)], next: Ifd2).Table (Ifd2, [(0x0132, 2, 4, 0x32303031)]).ToArray ();
 		Assert.AreEqual (3, ExifReaderModel.Of (tiff).Tables.Count, "IFD0, IFD1 and IFD2 are read");
-		var file = Open (InCarrier ("png", tiff), "a.png");
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		var exif = ExifOf (file.Render ().ToArray ());
-		CollectionAssert.AreEqual (tiff[Next..(Next + 4)], exif[Next..(Next + 4)], "IFD1's next offset");
-		AssertOnlyTheCopiesAreGone (tiff, exif, "IFD1's next offset inside a removed value", 0x9286, 0x9C9C);
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), "IFD1's next offset inside a removed value");
 	}
 
-	// A table no reader reads (the next IFD of an Exif IFD: exiftool, ImageIO and TagLib# all ignore it, measured) may
-	// have a value inside the Exif IFD the edit compacts: compacting rewrites those bytes, which no reader shows, so
-	// the edit saves.
+	// The next IFD of an Exif IFD is read by no one, and its value sits inside the Exif IFD the edit would compact.
+	// Compaction would rewrite that protected range, so the edit is refused.
 	[TestMethod]
-	public void Edit_AValueOfATableNoReaderReads_InsideTheCompactedTable_Saves ()
+	public void Edit_AValueOfATableNoReaderReads_InsideTheCompactedTable_IsRefused ()
 	{
 		const int Exif = 40, Unread = 120, Values = 160;
 		var tiff = new TiffBuilder (Values + 40).Header (8).Table (8, [(0x8769, 4, 1, Exif)])
 			.Table (Exif, [(0x9286, 7, SecretUc.Length, Values), (0x9003, 2, 20, Values + 20)], next: Unread)
 			.Table (Unread, [(0x9004, 2, 20, Exif + 2)]).Bytes (Values, SecretUc).Bytes (Values + 20, "2001:02:03 04:05:06\0"u8).ToArray ();
-		var file = Open (InCarrier ("png", tiff), "a.png");
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		var exif = ExifOf (file.Render ().ToArray ());
-		Assert.AreEqual (1, U16 (exif, Exif, false), "the Exif IFD keeps only DateTimeOriginal");
-		AssertOnlyTheCopiesAreGone (tiff, exif, "an unread table's value inside the compacted table", 0x9286, 0x9C9C);
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), "an unread table's value inside the compacted table");
 	}
 
 	// exiftool reads an UNDEFINED pointer value as unsigned: 200 names the table at 200 (measured, probe
@@ -869,9 +889,8 @@ public class ExifEditTests
 		AssertOnlyTheCopiesAreGone (tiff, exif, "an UNDEFINED pointer of 200", 0x9286, 0x9C9C);
 	}
 
-	// Bytes a kept value uses are never zeroed, though other kept values lie inside it: IFD0's Artist (100 bytes)
-	// holds Copyright, Make and Model near its start and, past them, the removed XPComment. Artist keeps every byte,
-	// and the edit saves.
+	// IFD0's Artist (100 bytes) holds Copyright, Make and Model, and the removed XPComment sits inside those bytes.
+	// Removing the comment would change the kept value, so the edit is refused and Artist stays whole.
 	[TestMethod]
 	public void Edit_RemovedValueInsideAKeptValueThatHoldsOthers_IsNotZeroed ()
 	{
@@ -880,15 +899,12 @@ public class ExifEditTests
 		var tiff = new TiffBuilder (Artist + 120).Header (8)
 			.Table (8, [(0x013B, 2, 100, Artist), (0x8298, 2, 5, Artist + 10), (0x010F, 2, 5, Artist + 20), (0x0110, 2, 5, Artist + 30), (0x9C9C, 1, 10, Artist + 50)])
 			.Bytes (Artist, artist).ToArray ();
-		var file = Open (InCarrier ("png", tiff), "a.png");
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		var exif = ExifOf (file.Render ().ToArray ());
-		CollectionAssert.AreEqual (artist, exif[Artist..(Artist + 100)], "the Artist value keeps its bytes");
-		AssertOnlyTheCopiesAreGone (tiff, exif, "a removed value inside a kept one", 0x9286, 0x9C9C);
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), "a removed value inside a kept one");
 	}
 
 	// IFD0 at the end of the data, its next offset (IFD1, before it) the data's last 4 bytes: compacting IFD0 keeps the
@@ -913,8 +929,8 @@ public class ExifEditTests
 	}
 
 	// Strip offsets and byte counts given as SHORT or LONG arrays out of line: a removed UserComment that shares bytes
-	// with a strip they name is not cleared (the strip keeps its bytes). An array that ends at the data's last byte is
-	// read; one that runs past it names no strip (exiftool reads none), so the value is cleared.
+	// with a strip they name is not plain, so the edit is refused. An array that runs past the data names no strip
+	// (exiftool reads none), so that value is cleared and the edit saves.
 	[TestMethod]
 	[DataRow (3, false, false)]
 	[DataRow (4, false, false)]
@@ -944,20 +960,20 @@ public class ExifEditTests
 		}
 
 		var data = tiff.ToArray ();
-		var file = Open (InCarrier ("png", data), "a.png");
+		var input = InCarrier ("png", data);
+		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+		if (!cut) {
+			AssertUnchangedRefusal (save, input, file.Render ().ToArray (), $"type {type} atTheEnd {atTheEnd}");
+			return;
+		}
 
 		Assert.IsTrue (save.IsSuccess, save.Error);
 		var exif = ExifOf (file.Render ().ToArray ());
 		AssertOnlyTheCopiesAreGone (data, exif, "strips", 0x9286);
-		if (cut) {
-			CollectionAssert.AreEqual (new byte[removed.Length], exif[V..(V + removed.Length)], "no strip is named: the value is cleared");
-			return;
-		}
-
-		CollectionAssert.AreEqual (data[V..(V + removed.Length)], exif[V..(V + removed.Length)], "the third strip shares the value's bytes: they are kept");
+		CollectionAssert.AreEqual (new byte[removed.Length], exif[V..(V + removed.Length)], "no strip is named: the value is cleared");
 	}
 
 	// A data range of length 0 (an empty thumbnail) protects no byte: the removed XPComment around its offset is
@@ -1035,7 +1051,8 @@ public class ExifEditTests
 	// with every type and counts 0-2, and on corpus files whose pointer is typed SHORT or has count 2): the copy it
 	// shows from that table is removed, as is the one exiftool reads where the two decodings name different tables.
 	// With count 2 or RATIONAL the field is the offset of the pointer's own value, so that value is the table's first
-	// bytes; no reader shows it (exiftool: "Bad value"), and compacting the table may rewrite it.
+	// bytes. Compacting the table would rewrite that protected range, so those two edits are refused. The other
+	// shapes name a table whose bytes stay outside the compacted table, and the copy is removed.
 	[TestMethod]
 	[DataRow ("count 0", false)]
 	[DataRow ("typed ASCII", true)]
@@ -1064,10 +1081,15 @@ public class ExifEditTests
 		foreach (var table in tables)
 			t.Table (table, [(0x9286, 7, SecretUc.Length, Values), (0x9003, 2, 4, 0x30303032)]);
 		var tiff = t.ToArray ();
-		var file = Open (InCarrier ("jpeg", tiff), "a.jpg");
+		var input = InCarrier ("jpeg", tiff);
+		var file = Open (input, "a.jpg");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.jpg", new MockFileSystem ());
+		if (shape is "count 2" or "typed RATIONAL") {
+			AssertUnchangedRefusal (save, input, file.Render ().ToArray (), shape);
+			return;
+		}
 
 		Assert.IsTrue (save.IsSuccess, $"{shape}: {save.Error}");
 		var exif = ExifOf (file.Render ().ToArray ());
@@ -1135,7 +1157,8 @@ public class ExifEditTests
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
 
 		Assert.IsFalse (save.IsSuccess, shape);
-		StringAssert.Contains (save.Error, "a value inside an IFD table");
+		// A pair tag given twice is refused before compaction, so the thumbnail-inside-the-table reason is not reached.
+		StringAssert.Contains (save.Error, shape.Contains ("twice", StringComparison.Ordinal) ? "offset or length more than once" : "a value inside an IFD table");
 		CollectionAssert.AreEqual (input, file.Render ().ToArray (), $"{shape}: nothing is written");
 	}
 
@@ -1161,19 +1184,18 @@ public class ExifEditTests
 		CollectionAssert.AreEqual (input, file.Render ().ToArray (), $"{shape}: nothing is written");
 	}
 
-	// A thumbnail that starts in IFD0's entries and runs past the data is read by no one (exiftool: a bad offset):
-	// compacting IFD0 rewrites its first bytes, and the edit saves.
+	// A thumbnail that starts in IFD0's entries and runs past the data is still a protected range inside the table
+	// the edit would compact, so the edit is refused.
 	[TestMethod]
-	public void Edit_OfATableHoldingAThumbnailThatRunsPastTheData_Saves ()
+	public void Edit_OfATableHoldingAThumbnailThatRunsPastTheData_IsRefused ()
 	{
 		var tiff = new TiffBuilder (50).Header (8).Table (8, [(0x9286, 7, 4, 0x64636261), (0x0201, 4, 1, 42), (0x0202, 4, 1, 20)]).ToArray ();
-		var file = Open (InCarrier ("png", tiff), "a.png");
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		AssertOnlyTheCopiesAreGone (tiff, ExifOf (file.Render ().ToArray ()), "a thumbnail past the data", 0x9286);
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), "a thumbnail past the data");
 	}
 
 	// A GPS or interoperability pointer whose first value sits out of line, inside the Exif IFD the edit compacts.
@@ -1545,9 +1567,8 @@ public class ExifEditTests
 		}
 	}
 
-	// The next IFD of an Exif, GPS, interoperability or SubIFD table is read by no one. Its thumbnail, strips or
-	// tiles lie in the Exif IFD's compacted tail, so those bytes change, and the edit still saves: the pair is not
-	// a kept value of a table a reader reads. IFD1's thumbnail is on the main chain and is already refused.
+	// The next IFD of an Exif, GPS, interoperability or SubIFD table is read by no one, but its thumbnail, strips or
+	// tiles are a protected range inside the Exif IFD the edit would compact. That is not plain, so the edit is refused.
 	[TestMethod]
 	[DataRow ("Exif", "thumbnail", false)]
 	[DataRow ("Exif", "strips", false)]
@@ -1573,28 +1594,15 @@ public class ExifEditTests
 	[DataRow ("SubIFD", "thumbnail", true)]
 	[DataRow ("SubIFD", "strips", true)]
 	[DataRow ("SubIFD", "tiles", true)]
-	public void Edit_SavesWhenAProtectOnlyTablesDataLiesInTheCompactedTable (string parent, string pair, bool bigEndian)
+	public void Edit_RefusesWhenAProtectOnlyTablesDataLiesInTheCompactedTable (string parent, string pair, bool bigEndian)
 	{
-		var (tiff, exifAt, dataAt, protect, exifNext) = ProtectOnlyData (parent, pair, bigEndian);
-		var file = Open (InCarrier ("png", tiff), "a.png");
+		var tiff = ProtectOnlyData (parent, pair, bigEndian).Tiff;
+		var input = InCarrier ("png", tiff);
+		var file = Open (input, "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-
-		Assert.IsTrue (save.IsSuccess, $"{parent} {pair}: {save.Error}");
-		var output = file.Render ().ToArray ();
-		var exif = ExifOf (output);
-		Assert.AreEqual (1, U16 (exif, exifAt, bigEndian), $"{parent} {pair}: the Exif IFD keeps one entry");
-		CollectionAssert.AreEqual (DateTimeOriginalEntry (bigEndian), exif[(exifAt + 2)..(exifAt + 14)], $"{parent} {pair}: DateTimeOriginal");
-		CollectionAssert.AreEqual (exifNext, exif[(exifAt + 14)..(exifAt + 18)], $"{parent} {pair}: the Exif IFD's next offset");
-		CollectionAssert.AreEqual (new byte[12], exif[dataAt..(dataAt + 12)], $"{parent} {pair}: the protect-only table's data");
-		CollectionAssert.AreEqual (tiff[protect..(protect + 30)], exif[protect..(protect + 30)], $"{parent} {pair}: the protect-only table");
-		AssertOnlyTheCopiesAreGone (tiff, exif, $"{parent} {pair}", 0x9286, 0x9C9C);
-		Assert.AreEqual ("New", Open (output, "a.png").Tag!.Comment, parent);
-		var strings = ExifReaderModel.Of (exif).Strings ();
-		Assert.AreEqual ("Hill", strings[0x010E], $"{parent} {pair}: ImageDescription");
-		Assert.AreEqual ("2024", strings[0x9003], $"{parent} {pair}: DateTimeOriginal");
-		Assert.IsFalse (strings.ContainsKey (0x9286), $"{parent} {pair}: UserComment is gone");
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), $"{parent} {pair} {(bigEndian ? "big-endian" : "little-endian")}");
 	}
 
 	// Compaction of the Exif IFD clears the count of another table. The count is the last two bytes of the Exif
@@ -1704,7 +1712,10 @@ public class ExifEditTests
 		return (t.ToArray (), exifAt, dataAt, protect, nextBytes);
 	}
 
-	static byte[] DateTimeOriginalEntry (bool bigEndian) => bigEndian
-		? [0x90, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x32, 0x30, 0x32, 0x34]
-		: [0x03, 0x90, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x32, 0x30, 0x32, 0x34];
+	static void AssertUnchangedRefusal (FileWriteResult save, byte[] before, byte[] after, string because)
+	{
+		Assert.IsFalse (save.IsSuccess, $"{because}: {save.Error}");
+		StringAssert.Contains (save.Error, "cannot be updated", because);
+		CollectionAssert.AreEqual (before, after, because);
+	}
 }

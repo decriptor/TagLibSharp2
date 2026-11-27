@@ -12,14 +12,14 @@ namespace TagLibSharp2.Image.Exif;
 /// (<see cref="TiffReader.TryPointers"/>, <see cref="IfdGraph"/>; ImageIO reads a subset), and the Exif IFD that
 /// IFD0's 0x8769 field names read as a LONG whatever its type and count, as TagLib# reads it. GPS tables are
 /// read with GPS tags and left as they are. Each table is walked once. The entry table shrinks in place, so no offset
-/// moves. <see cref="RemovalPlan.IsClean"/> is the one predicate that decides whether an edit needs checking.
+/// moves. A field edit runs only when <see cref="PlainExif"/> calls the structure plain and
+/// <see cref="RemovalPlan.IsClean"/> agrees. Anything else is refused and nothing is written.
 /// </summary>
 /// <remarks>
-/// A removed value is zeroed only where its bytes belong to it alone: past the header, outside every IFD table
-/// (including GPS and interoperability tables), outside every kept entry's value and the data every offset/length
-/// pair names, and outside the count, entries and next offset of every table a pointer names that no reader reads
-/// (zeroing must not make such a table readable). When a pair is given twice, nothing is zeroed; the entry is
-/// removed and its bytes are left, unreachable.
+/// A field edit is refused when a removed value shares a protected byte, or when compacting a table would rewrite
+/// any protected range other than that table. Two protected ranges may share a byte; zeroing does not touch them.
+/// A pair given twice is not plain. The plan still zeroes nothing in that case, which a test reaches by skipping
+/// the plainness check.
 /// </remarks>
 static class ExifEditor
 {
@@ -30,10 +30,8 @@ static class ExifEditor
 	/// <summary>Removes the changed fields' entries from the TIFF at <paramref name="start"/>, in place.</summary>
 	/// <returns>
 	/// False, with an error and nothing written, when the block is not classic TIFF or its tables overlap past the
-	/// bound that keeps the walk linear, and its bytes could hold an entry with one of the fields' tags; and, when
-	/// something is to be removed from structure that is not clean, when the edit would change anything else a
-	/// reader sees (<see cref="EditCheck"/>): a table, whether exiftool reads it, an entry, next offset, value or
-	/// offset/length data.
+	/// bound that keeps the walk linear, and its bytes could hold an entry with one of the fields' tags; and when
+	/// something is to be removed from structure that is not plain or not clean.
 	/// </returns>
 	internal static bool TryRemove (byte[] block, int start, ImageTag tag, string carrier, out bool changed, out string? error)
 	{
@@ -77,19 +75,11 @@ static class ExifEditor
 		// thumbnail it never recorded. Nothing to remove never reaches here.
 		if (plan.ValueBudgetExceeded)
 			return Refuse ($"The {carrier} block names more strip, tile or thumbnail values than its data holds, so its copy of {what} cannot be updated.", out error);
-		if (SkipCheck || plan.IsClean ()) {
-			plan.Apply (block.AsSpan (start), tiff, graph);
-			changed = true;
-			return true;
-		}
-
-		// Structure that shares bytes or names tables no reader can read: the edit is made on a copy and kept only
-		// when every other table, entry, value and data range readers see is as it was.
-		var edited = data.ToArray ();
-		plan.Apply (edited, tiff, graph);
-		if (!EditCheck.KeepsEverythingElse (tiff, ifd0, graph, plan, edited))
+		// A removed value that shares a byte, or a table whose compaction would rewrite something a reader sees.
+		// Nothing is written. Two protected ranges may share a byte; zeroing does not touch them.
+		if (!SkipCheck && (!plan.IsClean () || CompactionConflict (graph, plan, carrier, what) is not null))
 			return Refuse (Reason (graph, plan, carrier, what), out error);
-		edited.CopyTo (block.AsSpan (start));
+		plan.Apply (block.AsSpan (start), tiff, graph);
 		changed = true;
 		return true;
 	}
@@ -158,7 +148,26 @@ static class ExifEditor
 					: $"The {carrier} block has a value inside an IFD table that the edit rewrites, so its copy of {what} cannot be updated.";
 		}
 
+		// A protected range inside a table being compacted (a pointer's value, another table's bytes) would be
+		// rewritten. The table's own range is one of those protected ranges and is the edit, so it does not count.
+		for (var n = 0; n < plan.Protected.Count; n++) {
+			var range = plan.Protected[n];
+			if (!ByteRanges.Overlaps (compacted, range) || IsCompactedTable (compacted, range))
+				continue;
+			return $"The {carrier} block has IFD structure that removing its copy of {what} would change, so the copy cannot be updated.";
+		}
+
 		return null;
+	}
+
+	static bool IsCompactedTable (CountedList<(long Start, long End)> compacted, (long Start, long End) range)
+	{
+		for (var n = 0; n < compacted.Count; n++) {
+			if (compacted[n].Start == range.Start && compacted[n].End == range.End)
+				return true;
+		}
+
+		return false;
 	}
 
 	// The sorted ranges of the tables being compacted, or null when one of them shares a byte with another table.

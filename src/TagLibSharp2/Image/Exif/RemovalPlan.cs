@@ -44,15 +44,11 @@ sealed class RemovalPlan
 	/// </summary>
 	public bool ValueBudgetExceeded { get; private set; }
 
-	// Each distinct SHORT or LONG array once, and each offset/length pair of arrays once. Keyed as a pointer array
-	// is: where it starts, how many values, and how wide each value is.
+	// Each distinct SHORT or LONG array once. Keyed as a pointer array is: where it starts, how many values, and
+	// how wide each value is. A plain edit names each array once; the cache still keeps a skipped check from
+	// reading one array twice.
 	readonly Dictionary<ValueArray, long[]> _values = new ();
-	readonly HashSet<(ValueArray Offsets, ValueArray Lengths)> _pairs = new ();
 	long _valuesRead;
-
-	// Removing entries changed whether exiftool reads the table: a first entry whose format is outside 1-13 drops
-	// the whole table, and an empty table is read. The edit then needs the check.
-	bool _firstEntryChanges;
 
 	public static RemovalPlan Mark (TiffReader tiff, IfdGraph graph, HashSet<int> tags)
 	{
@@ -74,14 +70,10 @@ sealed class RemovalPlan
 		return plan;
 	}
 
-	// Kept values of a table some reader reads are compared after a checked edit; every kept value is protected. The
-	// out-of-line value of an Exif, GPS or interoperability IFD pointer (count 2, or a wide type) is shown by no reader
-	// (exiftool: "Bad value"); what it leads to is compared as tables.
+	// Every kept value is protected. The out-of-line value of an Exif, GPS or interoperability IFD pointer (count 2,
+	// or a wide type) is shown by no reader (exiftool: "Bad value"); what it leads to is a table.
 	void MarkEntries (TiffReader tiff, long at, int count, bool edited, bool seen, HashSet<int> tags)
 	{
-		var firstType = count > 0 ? tiff.Type (tiff.Entry (at, 0)) : 0;
-		var keptType = 0;
-		var keptOne = false;
 		for (var n = 0; n < count; n++) {
 			IfdSteps.Count++;
 			var entry = tiff.Entry (at, n);
@@ -92,53 +84,32 @@ sealed class RemovalPlan
 				marks[n] = true;
 				if (range.End > range.Start)
 					Removed.Add (range);
-			} else {
-				if (!keptOne) {
-					keptOne = true;
-					keptType = tiff.Type (entry);
-				}
-
-				if (range.End > range.Start) {
-					Protected.Add (range);
-					if (seen && range.End <= tiff.Length && tiff.Tag (entry) is not (TiffReader.ExifIfdPointer or TiffReader.GpsIfdPointer or TiffReader.InteropIfdPointer))
-						Kept.Add ((range.Start, range.End, tiff.Tag (entry)));
-				}
+			} else if (range.End > range.Start) {
+				Protected.Add (range);
+				if (seen && range.End <= tiff.Length && tiff.Tag (entry) is not (TiffReader.ExifIfdPointer or TiffReader.GpsIfdPointer or TiffReader.InteropIfdPointer))
+					Kept.Add ((range.Start, range.End, tiff.Tag (entry)));
 			}
-		}
-
-		// The first entry exiftool will see, before and after. An empty table is read; a first entry whose format
-		// is outside 1-13 drops the table. GPS tables are not edited, so this is only a table that loses an entry.
-		if (Removing.ContainsKey (at)) {
-			var before = count == 0 || TiffReader.FormatExiftoolReads (firstType);
-			var after = !keptOne || TiffReader.FormatExiftoolReads (keptType);
-			if (before != after)
-				_firstEntryChanges = true;
 		}
 	}
 
 	/// <summary>
-	/// Whether the structure is clean: no table, value, offset/length data or would-be table that a pointer names
-	/// shares a byte with another, no offset/length pair is given twice, and removing entries does not change
-	/// whether exiftool reads a table (its first entry's format, or the table becoming empty). Then compaction and
-	/// zeroing change nothing but the copies (a would-be table keeps its bytes, so it stays unreadable), and the
-	/// edit needs no check. Editing only clean structure would mean refusing the rest here.
+	/// Whether zeroing the removed values would leave every protected byte alone, and no offset/length pair is given
+	/// twice. Two protected ranges may share a byte: that share is not zeroed. A table being compacted is a separate
+	/// question, answered where the edit is applied.
 	/// </summary>
 	public bool IsClean ()
 	{
-		if (Ambiguous || ValueBudgetExceeded || _firstEntryChanges)
+		if (Ambiguous || ValueBudgetExceeded)
 			return false;
-		var all = new CountedList<(long Start, long End)> ();
+		if (Removed.Count == 0 || Protected.Count == 0)
+			return true;
+		var guarded = new CountedList<(long Start, long End)> ();
 		for (var n = 0; n < Protected.Count; n++)
-			all.Add (Protected[n]);
-		for (var n = 0; n < Removed.Count; n++)
-			all.Add (Removed[n]);
-		all.Sort ((a, b) => a.Start.CompareTo (b.Start));
-		var end = long.MinValue;
-		for (var n = 0; n < all.Count; n++) {
-			var range = all[n];
-			if (range.Start < end)
+			guarded.Add (Protected[n]);
+		var merged = ByteRanges.Merge (guarded);
+		for (var n = 0; n < Removed.Count; n++) {
+			if (ByteRanges.Overlaps (merged, Removed[n]))
 				return false;
-			end = range.End;
 		}
 
 		return true;
@@ -188,10 +159,10 @@ sealed class RemovalPlan
 		data.Slice (newNext + 4, Math.Min (nextAt + 4, data.Length) - (newNext + 4)).Clear ();
 	}
 
-	// False when a tag of a pair appears more than once, so its ranges cannot be told. Each array is read once and
-	// each pair records its ranges once, however many tables name them. Values read across every table are bounded
-	// by half the bytes present: two arrays that both fit can pass that only by overlapping, and past it the plan
-	// stops reading rather than allocating.
+	// False when a tag of a pair appears more than once, so its ranges cannot be told. Each array is read once.
+	// Values read across every table are bounded by half the bytes present: two arrays that both fit can pass that
+	// only by overlapping, and past it the plan stops reading rather than allocating. A plain edit never reaches
+	// that bound; it is refused from the entry headers first.
 	bool AddDataRanges (TiffReader tiff, long ifd, int count, bool seen)
 	{
 		var single = true;
@@ -201,8 +172,6 @@ sealed class RemovalPlan
 			if (!hasOffsets || !hasLengths || ValueBudgetExceeded)
 				continue;
 			if (!TryValues (tiff, offsetsKey, out var offsets) || !TryValues (tiff, lengthsKey, out var lengths))
-				continue;
-			if (!_pairs.Add ((offsetsKey, lengthsKey)))
 				continue;
 			var shared = Math.Min (offsets.Length, lengths.Length);
 			for (var n = 0; n < shared; n++) {

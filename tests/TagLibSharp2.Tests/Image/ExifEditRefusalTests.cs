@@ -199,16 +199,15 @@ public class ExifEditRefusalTests
 		CollectionAssert.AreEqual (input, file.Render ().ToArray (), "the file is unchanged");
 	}
 
-	// A pointer whose table does not fit lands inside a table the edit compacts, and the compaction moves entries
-	// under it. When what is moved there reads as a table, readers would show a table that was not there (an oracle
-	// fuzz found UserComment entries shown that way): refused with its own reason, nothing written. When it still
-	// does not fit, nothing a reader sees changes but the copy: saved.
+	// A pointer whose table does not fit lands inside a table the edit compacts. That unread range overlaps the
+	// compacted table whether or not the bytes moved under it would read as a table, so both shapes are refused
+	// and nothing is written.
 	[TestMethod]
 	[DataRow (0x8769, false)]
 	[DataRow (0x8825, false)]
 	[DataRow (0x8769, true)]
 	[DataRow (0x8825, true)]
-	public void Edit_APointerIntoTheMiddleOfAnEditedTable_IsRefusedOnlyWhenATableAppearsThere (int tag, bool appears)
+	public void Edit_APointerIntoTheMiddleOfAnEditedTable_IsRefused (int tag, bool appears)
 	{
 		const int Ifd0 = 8, A = 40, Values = 100;
 		// The pointer lands on the tag of A's second entry (0x9003): read as a count, 36,867 entries do not fit. The
@@ -224,14 +223,10 @@ public class ExifEditRefusalTests
 		var fs = new MockFileSystem ();
 		var save = file.SaveToFile ("/a.png", fs);
 
-		Assert.AreEqual (!appears, save.IsSuccess, save.Error);
-		if (appears) {
-			StringAssert.Contains (save.Error, "into the middle of another IFD table");
-			Assert.IsFalse (fs.FileExists ("/a.png"));
-			CollectionAssert.AreEqual (input, file.Render ().ToArray ());
-		} else {
-			AssertOnlyTheCopiesAreGone (tiff, ExifOf (file.Render ().ToArray ()), "the pointer still names no table", 0x9286);
-		}
+		Assert.IsFalse (save.IsSuccess, $"{tag:X4} appears {appears}: {save.Error}");
+		StringAssert.Contains (save.Error, "into the middle of another IFD table");
+		Assert.IsFalse (fs.FileExists ("/a.png"));
+		CollectionAssert.AreEqual (input, file.Render ().ToArray ());
 	}
 
 	// A refusal is scoped to its reason: only a table the edit rewrites may not share bytes with another table, and
@@ -271,13 +266,23 @@ public class ExifEditRefusalTests
 		}
 
 		var data = tiff.ToArray ();
-		var file = Open (InCarrier (carrier, data), carrier == "png" ? "a.png" : "a.jpg");
+		var input = InCarrier (carrier, data);
+		var file = Open (input, carrier == "png" ? "a.png" : "a.jpg");
 		if (field == "Title")
 			file.Tag!.Title = "New";
 		else
 			file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a", new MockFileSystem ());
+
+		// The interoperability pointer's value sits inside the GPS table. Compaction of the Exif IFD does not rewrite
+		// the GPS table, but the pointer range is protected structure the edit would leave inconsistent, so it refuses.
+		if (shape == "an interoperability pointer into the GPS table's values") {
+			Assert.IsFalse (save.IsSuccess, $"{carrier} {shape}: {save.Error}");
+			StringAssert.Contains (save.Error, "cannot be updated");
+			CollectionAssert.AreEqual (input, file.Render ().ToArray (), shape);
+			return;
+		}
 
 		Assert.IsTrue (save.IsSuccess, $"{carrier} {shape} {field}: {save.Error}");
 		var exif = ExifOf (file.Render ().ToArray ());
@@ -291,12 +296,12 @@ public class ExifEditRefusalTests
 
 	// Tables at the edge of a table the edit compacts (A holds the UserComment): A's compaction moves its 4-byte
 	// next-IFD offset and clears where it was, so a table B whose count lies there would change (saving would lose B's
-	// DateTimeDigitized): refused, nothing written. An unread pointer whose count's second byte is A's count still
-	// names no table after A's count changes from 2 to 1: saved.
+	// DateTimeDigitized): refused, nothing written. An unread pointer whose count's second byte is A's first byte is
+	// a pointer into the middle of the compacted table, so that edit is refused too.
 	[TestMethod]
 	[DataRow ("B's count is the last two bytes of A's next-IFD offset", true)]
 	[DataRow ("B starts on the last byte of A's next-IFD offset", true)]
-	[DataRow ("a pointer whose count's second byte is A's first byte", false)]
+	[DataRow ("a pointer whose count's second byte is A's first byte", true)]
 	public void Edit_TablesThatTouchAnEditedTableAtItsEdge_AreRefusedWhenTheEditChangesThem (string shape, bool refused)
 	{
 		const int Ifd0 = 8, A = 40, Value = 140;

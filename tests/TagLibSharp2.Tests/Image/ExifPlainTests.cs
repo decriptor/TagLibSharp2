@@ -560,4 +560,98 @@ public class ExifPlainTests
 
 		return tiff.ToArray ();
 	}
+
+	public static IEnumerable<object[]> PairTagsGivenTwice ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var home in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop", "GPS" })
+				foreach (var tag in new[] { 0x0111, 0x0117, 0x0144, 0x0145, 0x0201, 0x0202 })
+					yield return [littleEndian, home, tag];
+	}
+
+	// One table names a strip, tile or thumbnail offset or length twice, as two different inline values.
+	// Which bytes the pair names cannot be told, so the edit is refused before a plan is built.
+	[TestMethod]
+	[DynamicData (nameof (PairTagsGivenTwice))]
+	public void Edit_RefusesWhenAPairTagIsGivenTwice (bool littleEndian, string home, int pairTag)
+	{
+		var tiff = GivenTwice (littleEndian, home, pairTag);
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{home} {(littleEndian ? "LE" : "BE")} {pairTag:X4}";
+		var title = new ImageTag (MediaFormat.Png, ImageStores.Png);
+		title.ReadField (ImageStores.Title, "Old");
+		title.Title = "New";
+		IfdSteps.Count = 0;
+		Assert.IsTrue (ExifEditor.TryRemove ((byte[])tiff.Clone (), 0, title, "eXIf", out _, out var titleError), $"{where}: {titleError}");
+		var idle = IfdSteps.Count;
+
+		IfdSteps.Count = 0;
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "offset or length more than once", where);
+		CollectionAssert.AreEqual (copy, tiff, where);
+		Assert.AreEqual (idle, IfdSteps.Count, $"{where}: a refusal built a plan ({IfdSteps.Count} steps, a title edit took {idle})");
+	}
+
+	// The UserComment value is also a GPS entry's value. Removing the comment would share those bytes, so the
+	// structure is not clean and the edit is refused. Both byte orders.
+	[TestMethod]
+	[DataRow (true)]
+	[DataRow (false)]
+	public void Edit_RefusesWhenARemovedValueSharesBytesWithAnotherTable (bool littleEndian)
+	{
+		const int Ifd0 = 8, Exif = 50, Gps = 90, Value = 120;
+		var comment = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+		var tiff = new TiffBuilder (140, bigEndian: !littleEndian).Header (Ifd0)
+			.Bytes (Value, comment)
+			.Table (Ifd0, [(0x8769, 4, 1, Exif), (0x8825, 4, 1, Gps)])
+			.Table (Exif, [(0x9286, 7, comment.Length, Value)])
+			.Table (Gps, [(0x001B, 7, comment.Length, Value)])
+			.ToArray ();
+		var copy = (byte[])tiff.Clone ();
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, littleEndian ? "LE: saved" : "BE: saved");
+		Assert.IsFalse (changed);
+		StringAssert.Contains (error, "cannot be updated");
+		StringAssert.Contains (error, "IFD structure that removing");
+		CollectionAssert.AreEqual (copy, tiff);
+	}
+
+	static byte[] GivenTwice (bool littleEndian, string home, int pairTag)
+	{
+		const int Ifd0 = 8;
+		var comment = (0x9286, 7, 4L, 0x61626364L);
+		var first = (pairTag, 4, 1L, 100L);
+		var second = (pairTag, 4, 1L, 200L);
+		var tiff = new TiffBuilder (120, bigEndian: !littleEndian).Header (Ifd0);
+		switch (home) {
+			case "IFD0":
+				tiff.Table (Ifd0, [comment, first, second]);
+				break;
+			case "IFD1":
+				tiff.Table (Ifd0, [comment], 40).Table (40, [first, second]);
+				break;
+			case "Exif":
+				tiff.Table (Ifd0, [comment, (0x8769, 4, 1, 40)]).Table (40, [first, second]);
+				break;
+			case "SubIFD":
+				tiff.Table (Ifd0, [comment, (0x014A, 4, 1, 40)]).Table (40, [first, second]);
+				break;
+			case "Interop":
+				tiff.Table (Ifd0, [comment, (0x8769, 4, 1, 40)]).Table (40, [(0xA005, 4, 1, 70)]).Table (70, [first, second]);
+				break;
+			default:
+				tiff.Table (Ifd0, [comment, (0x8825, 4, 1, 40)]).Table (40, [first, second]);
+				break;
+		}
+
+		return tiff.ToArray ();
+	}
 }

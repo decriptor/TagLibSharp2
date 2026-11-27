@@ -8,8 +8,9 @@ namespace TagLibSharp2.Image.Exif;
 /// <summary>
 /// Whether a field edit may run. One pass over the tables already walked, before a <see cref="RemovalPlan"/> records
 /// a range or reads a value array. The structure is not plain when a strip, tile or thumbnail offset or length is
-/// not SHORT or LONG, when one of those arrays is named twice, when a complete pair of them names more values than
-/// half the bytes, when a classic next-IFD field has only one, two or three of its four bytes (TIFF 6.0 §2), or
+/// not SHORT or LONG, when one of those arrays is named twice, when one table names the same offset or length
+/// twice, when a complete pair of them names more values than half the bytes, when a classic next-IFD field has
+/// only one, two or three of its four bytes (TIFF 6.0 §2), or
 /// when removing an entry would change whether exiftool reads that table's first entry. An absent next field is
 /// plain. An empty table is read. A first-entry change that shows nothing new is still refused.
 /// </summary>
@@ -46,6 +47,7 @@ static class PlainExif
 			var keptOne = false;
 			var loses = false;
 			var got = 0;
+			var seenSide = 0;
 			for (var n = 0; n < count; n++) {
 				IfdSteps.Count++;
 				var entry = tiff.Entry (at, n);
@@ -58,6 +60,14 @@ static class PlainExif
 				} else if (!keptOne) {
 					keptOne = true;
 					keptType = tiff.Type (entry);
+				}
+
+				// A second entry with the same pair tag names a different array. Which bytes it means is unknown.
+				if (IsPairTag (tag)) {
+					var side = PairSlot (tag);
+					if ((seenSide & (1 << side)) != 0 && why is null)
+						why = "names a strip, tile or thumbnail offset or length more than once";
+					seenSide |= 1 << side;
 				}
 
 				if (why is not null || !IsPairTag (tag) || tiff.Count (entry) == 0)
