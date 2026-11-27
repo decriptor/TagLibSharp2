@@ -218,7 +218,7 @@ public sealed class StillImageFile : IMediaFile
 		if (!TryOutput (out var plan, out var bytes, out var error))
 			return Task.FromResult (FileWriteResult.Failure (error ?? "The image container could not be updated."));
 		if (plan is not null)
-			return Task.FromResult (WritePlan (path, fs, plan));
+			return Task.FromResult (WritePlan (path, fs, plan, cancellationToken));
 		return AtomicFileWriter.WriteAsync (path, bytes, fs, cancellationToken);
 	}
 
@@ -233,11 +233,15 @@ public sealed class StillImageFile : IMediaFile
 		return TryPrepare (out bytes, out error);
 	}
 
-	FileWriteResult WritePlan (string path, IFileSystem fileSystem, ImagePlan plan)
+	FileWriteResult WritePlan (
+		string path,
+		IFileSystem fileSystem,
+		ImagePlan plan,
+		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
 			return WriteHeld (path, fileSystem, plan);
-		return WriteSource (path, fileSystem, plan);
+		return WriteSource (path, fileSystem, plan, cancellationToken);
 	}
 
 	// Ranges stay in _data. The source file is not opened.
@@ -252,13 +256,19 @@ public sealed class StillImageFile : IMediaFile
 	}
 
 	// Ranges are read back from the file that was opened, in the same order as Render.
-	FileWriteResult WriteSource (string path, IFileSystem? fileSystem, ImagePlan plan)
+	FileWriteResult WriteSource (
+		string path,
+		IFileSystem? fileSystem,
+		ImagePlan plan,
+		CancellationToken cancellationToken = default)
 	{
 		OpenedFile? source = null;
 		byte[]? chunk = null;
 		try {
 			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
 				return error;
+			if (cancellationToken.IsCancellationRequested)
+				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
 
 			chunk = StreamCopy.Rent ();
 			var copyBuffer = chunk;
