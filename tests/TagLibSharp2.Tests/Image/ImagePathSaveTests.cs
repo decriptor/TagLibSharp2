@@ -275,6 +275,40 @@ public sealed class ImagePathSaveTests
 	}
 
 	[TestMethod]
+	public void GifPathSave_AllocationStaysUnderTheCeilingWhileRenderGrows ()
+	{
+		const int n = 1024 * 1024;
+		const long ceiling = 256 * 1024;
+		// Screen 13 + comment extension for "PathSave" 12 + trailer 1.
+		const int framing = 26;
+		var saves = new long[3];
+		var renders = new long[3];
+		for (var size = 0; size < 3; size++) {
+			var imageLength = n << size;
+			var (file, fs) = OpenEditedGif (imageLength);
+			var path = $"/out-{imageLength}.gif";
+			var warm = file.SaveToFile (path, fs);
+			Assert.IsTrue (warm.IsSuccess, warm.Error);
+			_ = file.Render ();
+
+			FileWriteResult save = default;
+			saves[size] = LeastAllocated (() => save = file.SaveToFile (path, fs));
+			Assert.IsTrue (save.IsSuccess, save.Error);
+			Assert.AreEqual (imageLength + framing, fs.Bytes (path).Length);
+			Assert.IsLessThanOrEqualTo (ceiling, saves[size]);
+
+			ReadOnlyMemory<byte> rendered = default;
+			renders[size] = LeastAllocated (() => rendered = file.Render ());
+			GC.KeepAlive (rendered);
+		}
+
+		var high = Math.Max (saves[0], Math.Max (saves[1], saves[2]));
+		var low = Math.Min (saves[0], Math.Min (saves[1], saves[2]));
+		Assert.IsLessThan (64 * 1024, high - low, $"path save allocated {saves[0]}, {saves[1]}, {saves[2]}");
+		Assert.IsGreaterThanOrEqualTo (n, renders[2] - renders[0], $"render allocated {renders[0]} then {renders[2]}");
+	}
+
+	[TestMethod]
 	[DataRow ("A838D2A6E158A95650468B27AE71DADC92C08B08C5173C822A932E7B7703E774")]
 	public void BmpPathSave_BytesEqualRender (string expectedHash) =>
 		AssertPathSaveMatchesRender (Bmp (4, 2), "bmp", expectedHash);
@@ -467,6 +501,19 @@ public sealed class ImagePathSaveTests
 		Assert.IsTrue (save.IsSuccess, save.Error);
 		Assert.AreEqual (1, fs.SourceLengthGets);
 		CollectionAssert.AreEqual (data, fs.Bytes (destination));
+	}
+
+	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedGif (int imageLength)
+	{
+		var data = Concat (GifScreen (1, 1, flags: 0), GifComment ("Old"), GifImage (imageLength), [0x3B]);
+		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+		fs.Add ("/in.gif", data);
+		fs.MaxRead = data.Length;
+		var read = StillImageFile.ReadFromFile ("/in.gif", fs);
+		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.Tag!.Comment = "PathSave";
+		return (read.File, fs);
 	}
 
 	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedPng (int payloadLength)
