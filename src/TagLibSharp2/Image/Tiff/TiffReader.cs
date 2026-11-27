@@ -215,6 +215,24 @@ readonly ref struct TiffReader
 	}
 
 	/// <summary>
+	/// A SHORT (3) or LONG (4) array that lies wholly in the data (TIFF 6.0 §2). An inline value is the entry's own
+	/// value field. Any other type, a count of zero, or an array that runs past the data is not located.
+	/// </summary>
+	internal bool TryValueArray (long entry, out ValueArray key)
+	{
+		key = default;
+		var size = Type (entry) switch { 3 => 2, 4 => 4, _ => 0 };
+		var items = Count (entry);
+		if (size == 0 || items == 0)
+			return false;
+		var at = items * size <= 4 ? entry + 8 : Value (entry);
+		if (at < 0 || at > Length || items > (Length - at) / size)
+			return false;
+		key = new ValueArray (at, items, size);
+		return true;
+	}
+
+	/// <summary>
 	/// Whether exiftool reads an entry of this format (measured, exiftool 13.55): TIFF 6.0 §2 types 1-12 and IFD
 	/// (13, TIFF Technical Note 1). A first entry of any other format drops the whole table, and none of its
 	/// pointers or its next IFD is followed; a later entry of such a format is skipped and the table is read.
@@ -236,3 +254,6 @@ readonly ref struct TiffReader
 
 /// <summary>The offsets a pointer entry names: where they start, how many are followed, their size and signedness.</summary>
 readonly record struct PointerValues (long From, long Count, int Size, bool Signed);
+
+/// <summary>One SHORT or LONG value array: where it starts, how many values, and the size of each.</summary>
+readonly record struct ValueArray (long At, long Count, int Size);

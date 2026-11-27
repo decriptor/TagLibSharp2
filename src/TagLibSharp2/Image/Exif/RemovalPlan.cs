@@ -20,10 +20,6 @@ namespace TagLibSharp2.Image.Exif;
 /// </remarks>
 sealed class RemovalPlan
 {
-	// TIFF 6.0 offset/length pairs: JPEGInterchangeFormat and its length (0x0201/0x0202, the IFD1 thumbnail,
-	// Exif 2.32 §4.6.5), StripOffsets/StripByteCounts (0x0111/0x0117) and TileOffsets/TileByteCounts (0x0144/0x0145).
-	static readonly (int Offsets, int Lengths)[] DataPairs = [(0x0201, 0x0202), (0x0111, 0x0117), (0x0144, 0x0145)];
-
 	// Exif 2.32 §4.6.5. The block is undefined; a classic IFD in it is the note's own directory.
 	const int MakerNoteTag = 0x927C;
 	const int MakerNotePrefix = 32;
@@ -41,12 +37,12 @@ sealed class RemovalPlan
 	/// <summary>For each table that loses an entry, which of its entries go.</summary>
 	public Dictionary<long, CountedList<bool>> Removing { get; } = new ();
 
-	/// <summary>An offset/length pair is given twice, so which bytes it names is unknown: nothing is zeroed.</summary>
-	public bool Ambiguous { get; private set; }
-
 	/// <summary>
 	/// The offset and length arrays name more values, across every table, than half the bytes of the block. The
 	/// plan then does not hold every range, so an edit that has something to remove is refused rather than applied.
+	/// The plainness check refuses the same bound from the entry headers first. This stop remains so a caller that
+	/// skips that check neither allocates past the bound nor applies a partial plan. The comparison is
+	/// <see cref="ValueBudget.PastHalf"/>.
 	/// </summary>
 	public bool ValueBudgetExceeded { get; private set; }
 
@@ -67,7 +63,7 @@ sealed class RemovalPlan
 			var (at, count, roles) = graph.Tables[t];
 			var seen = (roles & IfdGraph.SeenRoles) != 0;
 			plan.Protected.Add (TiffReader.TableRange (at, count));
-			plan.Ambiguous |= !plan.AddDataRanges (tiff, at, count, seen);
+			plan.AddDataRanges (tiff, at, count, seen);
 			plan.MarkEntries (tiff, at, count, edited: (roles & IfdGraph.ReadRoles) != 0, seen, tags);
 		}
 
@@ -105,13 +101,13 @@ sealed class RemovalPlan
 	}
 
 	/// <summary>
-	/// Whether zeroing the removed values would leave every protected byte alone, and no offset/length pair is given
-	/// twice. Two protected ranges may share a byte: that share is not zeroed. A table being compacted is a separate
-	/// question, answered where the edit is applied.
+	/// Whether zeroing the removed values would leave every protected byte alone. Two protected ranges may share a
+	/// byte: that share is not zeroed. A table being compacted is a separate question, answered where the edit is
+	/// applied. A pair tag given twice is not this question: the plainness check owns it.
 	/// </summary>
 	public bool IsClean ()
 	{
-		if (Ambiguous || ValueBudgetExceeded)
+		if (ValueBudgetExceeded)
 			return false;
 		if (Removed.Count == 0 || Protected.Count == 0)
 			return true;
@@ -135,9 +131,6 @@ sealed class RemovalPlan
 			if (Removing.TryGetValue (at, out var marks))
 				CompactTable (data, tiff, at, count, marks);
 		}
-
-		if (Ambiguous)
-			return;
 
 		// One sort, then a binary search per removed value: linear-logarithmic in the entries, whatever their number.
 		var merged = ByteRanges.Merge (Protected);
@@ -295,16 +288,15 @@ sealed class RemovalPlan
 		data.Slice (newNext + 4, Math.Min (nextAt + 4, data.Length) - (newNext + 4)).Clear ();
 	}
 
-	// False when a tag of a pair appears more than once, so its ranges cannot be told. Each array is read once.
-	// Values read across every table are bounded by half the bytes present: two arrays that both fit can pass that
-	// only by overlapping, and past it the plan stops reading rather than allocating. A plain edit never reaches
-	// that bound; it is refused from the entry headers first.
-	bool AddDataRanges (TiffReader tiff, long ifd, int count, bool seen)
+	// Each array is read once. Values read across every table are bounded by half the bytes present: two arrays that
+	// both fit can pass that only by overlapping, and past it the plan stops reading rather than allocating. A plain
+	// edit never reaches that bound; it is refused from the entry headers first. A second entry with the same pair
+	// tag is the plainness check's reason, so the first entry is the one read here.
+	void AddDataRanges (TiffReader tiff, long ifd, int count, bool seen)
 	{
-		var single = true;
-		foreach (var (offsetsTag, lengthsTag) in DataPairs) {
-			var hasOffsets = TryKey (tiff, ifd, count, offsetsTag, ref single, out var offsetsKey);
-			var hasLengths = TryKey (tiff, ifd, count, lengthsTag, ref single, out var lengthsKey);
+		foreach (var (offsetsTag, lengthsTag) in OffsetLengthPairs.All) {
+			var hasOffsets = TryKey (tiff, ifd, count, offsetsTag, out var offsetsKey);
+			var hasLengths = TryKey (tiff, ifd, count, lengthsTag, out var lengthsKey);
 			if (!hasOffsets || !hasLengths || ValueBudgetExceeded)
 				continue;
 			if (!TryValues (tiff, offsetsKey, out var offsets) || !TryValues (tiff, lengthsKey, out var lengths))
@@ -316,27 +308,14 @@ sealed class RemovalPlan
 					Kept.Add ((offsets[n], offsets[n] + lengths[n], offsetsTag));
 			}
 		}
-
-		return single;
 	}
 
 	// The first SHORT or LONG entry with the tag, when every value lies in the data.
-	static bool TryKey (TiffReader tiff, long ifd, int count, int tag, ref bool single, out ValueArray key)
+	static bool TryKey (TiffReader tiff, long ifd, int count, int tag, out ValueArray key)
 	{
 		key = default;
-		var found = FindEntry (tiff, ifd, count, tag, ref single);
-		if (found < 0)
-			return false;
-		var entry = tiff.Entry (ifd, found);
-		var size = tiff.Type (entry) switch { 3 => 2, 4 => 4, _ => 0 };
-		var items = tiff.Count (entry);
-		if (size == 0 || items == 0)
-			return false;
-		var at = items * size <= 4 ? entry + 8 : tiff.Value (entry);
-		if (at < 0 || at > tiff.Length || items > (tiff.Length - at) / size)
-			return false;
-		key = new ValueArray (at, items, size);
-		return true;
+		var found = FindEntry (tiff, ifd, count, tag);
+		return found >= 0 && tiff.TryValueArray (tiff.Entry (ifd, found), out key);
 	}
 
 	// The values of one array, from the cache when a table already named it. Past the bound, or a count no array
@@ -347,7 +326,7 @@ sealed class RemovalPlan
 			values = cached;
 			return true;
 		}
-		if (key.Count > int.MaxValue || key.Count > tiff.Length / 2 - _valuesRead) {
+		if (key.Count > int.MaxValue || ValueBudget.PastHalf (_valuesRead, key.Count, tiff.Length)) {
 			ValueBudgetExceeded = true;
 			values = [];
 			return false;
@@ -366,25 +345,15 @@ sealed class RemovalPlan
 		return true;
 	}
 
-	// The first entry with the tag, or -1; <paramref name="single"/> turns false when a second entry has it.
-	static int FindEntry (TiffReader tiff, long ifd, int count, int tag, ref bool single)
+	// The first entry with the tag, or -1. A second entry with that tag is refused by the plainness check.
+	static int FindEntry (TiffReader tiff, long ifd, int count, int tag)
 	{
-		var found = -1;
 		for (var n = 0; n < count; n++) {
 			IfdSteps.Count++;
-			if (tiff.Tag (tiff.Entry (ifd, n)) != tag)
-				continue;
-			if (found >= 0) {
-				single = false;
-				break;
-			}
-
-			found = n;
+			if (tiff.Tag (tiff.Entry (ifd, n)) == tag)
+				return n;
 		}
 
-		return found;
+		return -1;
 	}
 }
-
-/// <summary>One SHORT or LONG value array: where it starts, how many values, and the size of each.</summary>
-readonly record struct ValueArray (long At, long Count, int Size);

@@ -18,8 +18,9 @@ namespace TagLibSharp2.Image.Exif;
 /// <remarks>
 /// A field edit is refused when a removed value shares a protected byte, or when compacting a table would rewrite
 /// any protected range other than that table. Two protected ranges may share a byte; zeroing does not touch them.
-/// A pair given twice is not plain. The plan still zeroes nothing in that case, which a test reaches by skipping
-/// the plainness check.
+/// A pair given twice is not plain, and only the plainness check decides that. Skipping that check still applies
+/// the edit from the first of each pair. The plan's value-budget stop stays, so a skipped check cannot read every
+/// offset past half the bytes.
 /// </remarks>
 static class ExifEditor
 {
