@@ -429,6 +429,50 @@ public sealed class ImagePathSaveTests
 		await AssertWholeFileCopiedInChunks (data, "/in." + format, "/out." + format, saveAsync);
 	}
 
+	/// <summary>
+	/// These formats copy one range and Render shares that buffer.
+	/// The path save of a 1, 2 and 4 MiB file stays under a fixed ceiling.
+	/// </summary>
+	[TestMethod]
+	[DataRow ("tiff")]
+	[DataRow ("dng")]
+	[DataRow ("bmp")]
+	[DataRow ("pcx")]
+	[DataRow ("pbm")]
+	[DataRow ("pgm")]
+	[DataRow ("ppm")]
+	[DataRow ("svg")]
+	public void WholeFilePathSave_AllocationStaysUnderTheCeiling (string format)
+	{
+		const int n = 1024 * 1024;
+		const long ceiling = 256 * 1024;
+		var saves = new long[3];
+		for (var size = 0; size < 3; size++) {
+			var length = n << size;
+			var data = WholeFile (format, length);
+			var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+			var source = "/in." + format;
+			var path = "/out-" + length + "." + format;
+			fs.Add (source, data);
+			fs.MaxRead = data.Length;
+			var read = StillImageFile.ReadFromFile (source, fs);
+			fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+			Assert.IsTrue (read.IsSuccess, read.Error);
+			var warm = read.File!.SaveToFile (path, fs);
+			Assert.IsTrue (warm.IsSuccess, warm.Error);
+
+			FileWriteResult save = default;
+			saves[size] = LeastAllocated (() => save = read.File.SaveToFile (path, fs));
+			Assert.IsTrue (save.IsSuccess, save.Error);
+			Assert.AreEqual (length, fs.Bytes (path).Length);
+			Assert.IsLessThanOrEqualTo (ceiling, saves[size]);
+		}
+
+		var high = Math.Max (saves[0], Math.Max (saves[1], saves[2]));
+		var low = Math.Min (saves[0], Math.Min (saves[1], saves[2]));
+		Assert.IsLessThan (64 * 1024, high - low, $"{format} allocated {saves[0]}, {saves[1]}, {saves[2]}");
+	}
+
 	static byte[] WholeFile (string format, int length) => format switch {
 		"tiff" => HeaderAndTrailingBytes (TiffHeader ("tiff"), length),
 		"dng" => HeaderAndTrailingBytes (TiffHeader ("dng"), length),
