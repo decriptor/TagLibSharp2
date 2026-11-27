@@ -430,4 +430,115 @@ public class ExifEditScalingTests
 			tiff.U32 (offsetsAt + (4 * k), 8).U32 (lengthsAt + (4 * k), 4);
 		return tiff.Bytes (commentAt, OldOne).ToArray ();
 	}
+
+	// A plain PNG eXIf chain of N one-entry IFDs (IFD0, then next, then next), each holding one inline value of
+	// the field. A Description, Artist, Copyright or Comment edit compacts every table. The compacted-table check
+	// is one sorted lookup per protected range: 4x the tables stays under 6x the steps. A scan of the compacted
+	// list per range is about 16x.
+	[TestMethod]
+	[DataRow ("description", false)]
+	[DataRow ("artist", false)]
+	[DataRow ("copyright", false)]
+	[DataRow ("comment", false)]
+	[DataRow ("description", true)]
+	public void Edit_CompactedIfdChain_IsLinearInTheTables (string field, bool bigEndian)
+	{
+		const int n = 2000;
+		long Steps (int size)
+		{
+			var data = CompactedChainPng (field, size, bigEndian);
+			var file = Open (data, "a.png");
+			SetChainField (file.Tag!, field);
+			IfdSteps.Count = 0;
+			var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+			var steps = IfdSteps.Count;
+			Assert.IsTrue (save.IsSuccess, $"{field} {(bigEndian ? "BE" : "LE")} N={size}: {save.Error}");
+			var output = file.Render ().ToArray ();
+			var row = $"{field} {(bigEndian ? "BE" : "LE")} N={size}";
+			// Compaction rewrites each table in place, so the chunk length stays and the entry is gone.
+			Assert.AreEqual (size, CountChainEntries (PngPayload (data, "eXIf"), field, bigEndian), $"{row}: the input holds one entry a table");
+			Assert.AreEqual (0, CountChainEntries (PngPayload (output, "eXIf"), field, bigEndian), $"{row}: every table is compacted");
+			return steps;
+		}
+
+		var small = Steps (n);
+		var large = Steps (4 * n);
+		var row = $"{field} {(bigEndian ? "BE" : "LE")}";
+		// 70 steps a table is the measured ceiling of one successful edit (8,000 tables took 559,440 steps).
+		// A scan of the compacted list per protected range took 32,475,618 steps at the same size.
+		Assert.IsTrue (large <= 70L * 4 * n, $"{row}: {large} steps for {4 * n} tables ({small} at {n})");
+		Assert.IsTrue (large <= Math.Max (6 * small, 64), $"{row}: 4x the tables took {large / (double)small:F1}x the steps ({small} -> {large})");
+		Bounds.AssertLinearAllocation (size => CompactedChainPng (field, size, bigEndian), data => {
+			var file = Open (data, "a.png");
+			SetChainField (file.Tag!, field);
+			_ = file.Render ();
+		}, n, runs: 3);
+	}
+
+	static void SetChainField (Tag tag, string field)
+	{
+		switch (field) {
+			case "artist":
+				tag.Artist = "x";
+				break;
+			case "copyright":
+				tag.Copyright = "x";
+				break;
+			case "comment":
+				tag.Comment = "x";
+				break;
+			default:
+				tag.Description = "x";
+				break;
+		}
+	}
+
+	// IFD0 and N-1 tables after it. Each table is 18 bytes: a count, one inline entry, and a next offset.
+	static byte[] CompactedChainPng (string field, int n, bool bigEndian)
+	{
+		var (tag, type, count, value) = field switch {
+			"artist" => (0x013B, 2, 4L, InlineAscii ("abc\0")),
+			"copyright" => (0x8298, 2, 4L, InlineAscii ("abc\0")),
+			"comment" => (0x9C9C, 1, 4L, InlineAscii ("abc\0")),
+			_ => (0x010E, 2, 4L, InlineAscii ("abc\0")),
+		};
+		var length = 8 + (18 * n);
+		var tiff = new TiffBuilder (length, bigEndian).Header (8);
+		for (var k = 0; k < n; k++) {
+			var at = 8 + (18 * k);
+			var next = k + 1 < n ? (long)(at + 18) : 0L;
+			tiff.Table (at, [(tag, type, count, value)], next);
+		}
+
+		return Png (PngChunk ("eXIf", tiff.ToArray ()));
+	}
+
+	// Four ASCII bytes stored in the entry's value field, in the TIFF's byte order.
+	static long InlineAscii (string text)
+	{
+		var bytes = Encoding.ASCII.GetBytes (text);
+		return bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+	}
+
+	// How many entry headers of this field the TIFF still holds. Compaction overwrites a removed entry, so a
+	// compacted chain counts zero.
+	static int CountChainEntries (byte[] tiff, string field, bool bigEndian)
+	{
+		var (tag, type) = field switch {
+			"artist" => (0x013B, 2),
+			"copyright" => (0x8298, 2),
+			"comment" => (0x9C9C, 1),
+			_ => (0x010E, 2),
+		};
+		var needle = bigEndian
+			? new byte[] { (byte)(tag >> 8), (byte)tag, (byte)(type >> 8), (byte)type }
+			: new byte[] { (byte)tag, (byte)(tag >> 8), (byte)type, (byte)(type >> 8) };
+		var count = 0;
+		for (var i = 0; i + needle.Length <= tiff.Length; i++) {
+			if (tiff[i] == needle[0] && tiff[i + 1] == needle[1] && tiff[i + 2] == needle[2] && tiff[i + 3] == needle[3])
+				count++;
+		}
+
+		return count;
+	}
 }

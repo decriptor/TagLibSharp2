@@ -160,11 +160,19 @@ static class ExifEditor
 		return null;
 	}
 
+	// Compacted tables are sorted and disjoint, so the table a protected range names is one binary search.
 	static bool IsCompactedTable (CountedList<(long Start, long End)> compacted, (long Start, long End) range)
 	{
-		for (var n = 0; n < compacted.Count; n++) {
-			if (compacted[n].Start == range.Start && compacted[n].End == range.End)
-				return true;
+		int low = 0, high = compacted.Count - 1;
+		while (low <= high) {
+			var mid = low + ((high - low) / 2);
+			var table = compacted[mid];
+			if (table.Start == range.Start)
+				return table.End == range.End;
+			if (table.Start < range.Start)
+				low = mid + 1;
+			else
+				high = mid - 1;
 		}
 
 		return false;
