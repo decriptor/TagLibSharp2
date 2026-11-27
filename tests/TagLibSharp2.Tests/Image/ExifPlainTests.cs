@@ -594,6 +594,40 @@ public class ExifPlainTests
 			.Table (40, [(lengths, 3, 41, 80)])
 			.ToArray ();
 
+	public static IEnumerable<object[]> InlineFourBytePairs ()
+	{
+		foreach (var littleEndian in new[] { true, false }) {
+			foreach (var (offsets, lengths) in new[] { (0x0111, 0x0117), (0x0144, 0x0145) })
+				yield return [littleEndian, 3, 2, offsets, lengths];
+			foreach (var (offsets, lengths) in new[] { (0x0111, 0x0117), (0x0144, 0x0145), (0x0201, 0x0202) })
+				yield return [littleEndian, 4, 1, offsets, lengths];
+		}
+	}
+
+	// Four bytes is still the entry's own value field: a SHORT count of 2, or a LONG count of 1. Two such entries
+	// may hold the same word and stay two arrays. The comment is removed.
+	[TestMethod]
+	[DynamicData (nameof (InlineFourBytePairs))]
+	public void Edit_SavesWhenAnInlinePairValueIsExactlyFourBytes (bool littleEndian, int type, int count, int offsets, int lengths)
+	{
+		var tiff = InlineFourBytes (littleEndian, type, count, offsets, lengths);
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{(littleEndian ? "LE" : "BE")} type {type} count {count} {offsets:X4}";
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsTrue (saved, $"{where}: {error}");
+		Assert.IsTrue (changed, where);
+		CollectionAssert.AreNotEqual (copy, tiff, where);
+	}
+
+	// Both sides store the word 100. That word is inside each entry. The bytes it names, 100..200, sit past the table.
+	static byte[] InlineFourBytes (bool littleEndian, int type, int count, int offsets, int lengths) =>
+		new TiffBuilder (220, bigEndian: !littleEndian).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x61626364), (offsets, type, count, 100), (lengths, type, count, 100)])
+			.ToArray ();
+
 	public static IEnumerable<object[]> PairTagsGivenTwice ()
 	{
 		foreach (var littleEndian in new[] { true, false })
