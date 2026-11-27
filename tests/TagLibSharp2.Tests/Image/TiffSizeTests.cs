@@ -38,6 +38,74 @@ public class TiffSizeTests
 		Assert.AreEqual (2, file.ImageProperties!.Value.Height);
 	}
 
+	// A classic IFD0 whose next-IFD field has 1 or 3 of its 4 bytes is not read, so the file has no size. The header
+	// is still TIFF. The open failure names that cut. 0, 2 and 4 bytes still open. BigTIFF is unaffected.
+	[TestMethod]
+	[DataRow (false, 1, 8)]
+	[DataRow (false, 3, 8)]
+	[DataRow (true, 1, 8)]
+	[DataRow (true, 3, 8)]
+	[DataRow (false, 1, 9)]
+	[DataRow (false, 3, 9)]
+	public void Tiff_WhoseIfd0NextFieldIsCutShort_NamesTheCutAndStaysClosed (bool bigEndian, int present, int ifd0)
+	{
+		var nextAt = ifd0 + 2 + (2 * 12);
+		var full = new TiffBuilder (nextAt + 4, bigEndian).Header (ifd0).Table (ifd0, [(256, 4, 1, 64), (257, 4, 1, 48)], 0).ToArray ();
+		var cut = full.AsSpan (0, nextAt + present).ToArray ();
+		var expected = $"IFD0's next-IFD field has {present} of its 4 bytes, so IFD0 is not read and the image has no size.";
+
+		var opened = StillImageFile.Read (cut);
+		Assert.IsNull (opened.File);
+		Assert.AreEqual (expected, opened.Error);
+
+		var tiff = MediaFile.ReadFromData (cut, "photo.tif");
+		Assert.IsNull (tiff.File);
+		Assert.AreEqual (expected, tiff.Error);
+
+		var dng = MediaFile.ReadFromData (cut, "photo.dng");
+		Assert.IsNull (dng.File);
+		Assert.AreEqual (expected, dng.Error);
+	}
+
+	[TestMethod]
+	[DataRow (0)]
+	[DataRow (2)]
+	[DataRow (4)]
+	public void Tiff_WhoseIfd0NextFieldHasAnEvenShare_Opens (int present)
+	{
+		var nextAt = 34;
+		var full = new TiffBuilder (nextAt + 4).Header (8).Table (8, [(256, 4, 1, 64), (257, 4, 1, 48)], 0).ToArray ();
+		var cut = full.AsSpan (0, nextAt + present).ToArray ();
+		var opened = StillImageFile.Read (cut);
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.AreEqual (64, opened.File!.ImageProperties!.Value.Width);
+		Assert.AreEqual (48, opened.File.ImageProperties!.Value.Height);
+	}
+
+	[TestMethod]
+	public void BigTiff_WhoseNextFieldHasOneByte_StillOpens ()
+	{
+		var opened = StillImageFile.Read (BigTiff (64, 48, littleEndian: true).AsSpan (0, 65).ToArray ());
+		Assert.IsTrue (opened.IsSuccess, opened.Error);
+		Assert.AreEqual (64, opened.File!.ImageProperties!.Value.Width);
+		Assert.AreEqual (48, opened.File.ImageProperties!.Value.Height);
+	}
+
+	[TestMethod]
+	public void Tiff_WhoseSizeIsNotAPositiveInt_SaysItIsNotATiffImage ()
+	{
+		AssertClosedAsNotTiff (TiffImage (0, 5));
+		AssertClosedAsNotTiff (new TiffBuilder (64).Header (8).Table (8, [(256, 9, 1, 0xFFFFFFFF), (257, 4, 1, 31)], 0).ToArray ());
+		AssertClosedAsNotTiff (new TiffBuilder (64).Header (8).Table (8, [(256, 4, 1, 1L << 31), (257, 4, 1, 31)], 0).ToArray ());
+	}
+
+	static void AssertClosedAsNotTiff (byte[] tiff)
+	{
+		var opened = StillImageFile.Read (tiff);
+		Assert.IsNull (opened.File);
+		Assert.AreEqual ("Not a Tiff image", opened.Error);
+	}
+
 	[TestMethod]
 	public void Tiff_ReducedPreview_YieldsToTheFullResolutionImage ()
 	{

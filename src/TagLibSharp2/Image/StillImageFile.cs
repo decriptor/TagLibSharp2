@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 using TagLibSharp2.Core;
+using TagLibSharp2.Image.Tiff;
 
 namespace TagLibSharp2.Image;
 
@@ -136,8 +137,10 @@ public sealed class StillImageFile : IMediaFile
 	/// <summary>Opens <paramref name="data"/> as <paramref name="format"/>. The array is kept, not copied.</summary>
 	internal static StillImageFileReadResult Open (byte[] data, MediaFormat format)
 	{
-		if (!ImageHeader.TryRead (data, format, out var properties))
-			return StillImageFileReadResult.Failure ($"Not a {format} image");
+		if (!ImageHeader.TryRead (data, format, out var properties)) {
+			var cut = format is MediaFormat.Tiff or MediaFormat.Dng ? TiffSize.Ifd0NextCutShort (data) : null;
+			return StillImageFileReadResult.Failure (cut ?? $"Not a {format} image");
+		}
 		var tag = ImageRewrite.CreateTag (data, format);
 		return StillImageFileReadResult.Success (new StillImageFile (data, format, properties, tag));
 	}

@@ -58,6 +58,20 @@ static class TiffSize
 		return true;
 	}
 
+	/// <summary>
+	/// Why a classic TIFF header has no size: IFD0's next-IFD field has 1 or 3 of its 4 bytes, so IFD0 is not read.
+	/// Null for every other file, including one whose size is 0, negative, or past <see cref="int.MaxValue"/>.
+	/// </summary>
+	internal static string? Ifd0NextCutShort (ReadOnlySpan<byte> data)
+	{
+		if (!TiffReader.TryOpen (data, out var tiff, out var first) || tiff.Big)
+			return null;
+		if (!tiff.TryTable (first, out var count) || !ClassicNextIsUnread (tiff, first, count))
+			return null;
+		var present = (int)Math.Min (4, tiff.Length - tiff.Entry (first, count));
+		return $"IFD0's next-IFD field has {present} of its 4 bytes, so IFD0 is not read and the image has no size.";
+	}
+
 	// IFD0, and the first full-resolution IFD in exiftool's order (IFD0 itself when it is one) or null.
 	static (IfdInfo Root, IfdInfo? Full) Walk (TiffReader tiff, long first)
 	{
