@@ -168,6 +168,57 @@ public sealed class ImagePathSaveTests
 		Assert.AreEqual (expected, Convert.ToHexString (SHA256.HashData (written)));
 	}
 
+	[TestMethod]
+	[DataRow ("tiff", "59753EFEE53644237F9F0F4299A3B7178C949D9447626418365C7D4E15005DBC")]
+	[DataRow ("dng", "96507B9AA0101B7949BE6B6E9761FE0B57B58BB977DED0232CD9096A1374BE5C")]
+	public void TiffPathSave_BytesEqualRender (string format, string expectedHash)
+	{
+		var data = TiffHeader (format);
+		var fs = new MockFileSystem ();
+		var path = "/in." + format;
+		fs.AddFile (path, data);
+		var read = StillImageFile.ReadFromFile (path, fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		var rendered = read.File!.Render ().ToArray ();
+
+		var save = read.File.SaveToFile ("/out." + format, fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var written = fs.ReadAllBytes ("/out." + format);
+		CollectionAssert.AreEqual (rendered, written, format);
+		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), format);
+	}
+
+	/// <summary>The file is a TIFF or DNG header followed by 80 KB. A path save copies that range in chunks.</summary>
+	[TestMethod]
+	[DataRow ("tiff", false)]
+	[DataRow ("tiff", true)]
+	[DataRow ("dng", false)]
+	[DataRow ("dng", true)]
+	public async Task TiffPathSave_OverOneChunk_CopiesTheFileInChunks (string format, bool saveAsync)
+	{
+		var header = TiffHeader (format);
+		var data = new byte[80 * 1024];
+		header.CopyTo (data, 0);
+		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+		var source = "/in." + format;
+		var destination = "/out." + format;
+		fs.Add (source, data);
+		fs.MaxRead = data.Length;
+		var read = StillImageFile.ReadFromFile (source, fs);
+		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		fs.ResetSourceLengthGets ();
+
+		var save = saveAsync
+			? await read.File!.SaveToFileAsync (destination, fs)
+			: read.File!.SaveToFile (destination, fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (1, fs.SourceLengthGets);
+		CollectionAssert.AreEqual (data, fs.Bytes (destination));
+	}
+
 	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedScan (int scanLength)
 	{
 		var scan = new byte[scanLength];
@@ -203,6 +254,8 @@ public sealed class ImagePathSaveTests
 		"mpf-comment" => MpfJpeg (JpegSegment (0xFE, "Old"u8.ToArray ()), [], out _),
 		_ => Jpeg (JpegSegment (0xFE, "Old"u8.ToArray ()))
 	};
+
+	static byte[] TiffHeader (string format) => format == "dng" ? TiffImage (2, 3, dng: true) : TiffImage (2, 3);
 
 	static byte[] PngInput (string op) => op switch {
 		"noop" or "clear" => Png (Text ("Title", "Old"), Text ("Comment", "Old")),

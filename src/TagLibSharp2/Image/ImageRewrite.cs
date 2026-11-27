@@ -88,6 +88,11 @@ static class ImageRewrite
 		error = null;
 		if (format == MediaFormat.Png)
 			return TryPngPlan (data, tag, out plan, out error);
+		if (format is MediaFormat.Tiff or MediaFormat.Dng) {
+			plan = ImagePlan.Whole (data.Length);
+			return true;
+		}
+
 		if (format != MediaFormat.Jpeg) {
 			plan = null;
 			return true;
