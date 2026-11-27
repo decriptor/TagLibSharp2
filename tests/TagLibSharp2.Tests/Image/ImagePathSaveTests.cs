@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using TagLibSharp2.Core;
 using TagLibSharp2.Image;
 using TagLibSharp2.Tests.Core;
+using TagLibSharp2.Tests.Kit;
 using static TagLibSharp2.Tests.Image.ImageTestBuilder;
 
 namespace TagLibSharp2.Tests.Image;
@@ -50,7 +51,61 @@ public sealed class ImagePathSaveTests
 	[DataRow (true)]
 	public async Task JpegPathSave_OverOneChunk_CopiesTheScanInChunks (bool saveAsync)
 	{
-		var scan = new byte[80 * 1024];
+		var (file, fs) = OpenEditedScan (80 * 1024);
+		fs.ResetSourceLengthGets ();
+		var rendered = file.Render ().ToArray ();
+
+		var save = saveAsync
+			? await file.SaveToFileAsync ("/out.jpg", fs)
+			: file.SaveToFile ("/out.jpg", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (1, fs.SourceLengthGets);
+		var written = fs.Bytes ("/out.jpg");
+		CollectionAssert.AreEqual (rendered, written);
+		Assert.AreEqual ("45C76CF7112DCCD5B2595DE1CFA0374CCD05E60FF8B1A0A7B147B3FB160A3937", Convert.ToHexString (SHA256.HashData (written)));
+	}
+
+	/// <summary>
+	/// A path save stays under a fixed ceiling at three scan sizes. Render of the same edit grows with the scan.
+	/// </summary>
+	[TestMethod]
+	public void JpegPathSave_AllocationStaysUnderTheCeilingWhileRenderGrows ()
+	{
+		const int n = 1024 * 1024;
+		const long ceiling = 256 * 1024;
+		// SOI 2 + SOF0 13 + COM "PathSave" 12 + SOS 10 + EOI 2.
+		const int framing = 39;
+		var saves = new long[3];
+		var renders = new long[3];
+		for (var size = 0; size < 3; size++) {
+			var scanLength = n << size;
+			var (file, fs) = OpenEditedScan (scanLength);
+			var path = $"/out-{scanLength}.jpg";
+			var warm = file.SaveToFile (path, fs);
+			Assert.IsTrue (warm.IsSuccess, warm.Error);
+			_ = file.Render ();
+
+			FileWriteResult save = default;
+			saves[size] = LeastAllocated (() => save = file.SaveToFile (path, fs));
+			Assert.IsTrue (save.IsSuccess, save.Error);
+			Assert.AreEqual (scanLength + framing, fs.Bytes (path).Length);
+			Assert.IsLessThanOrEqualTo (ceiling, saves[size]);
+
+			ReadOnlyMemory<byte> rendered = default;
+			renders[size] = LeastAllocated (() => rendered = file.Render ());
+			GC.KeepAlive (rendered);
+		}
+
+		var high = Math.Max (saves[0], Math.Max (saves[1], saves[2]));
+		var low = Math.Min (saves[0], Math.Min (saves[1], saves[2]));
+		Assert.IsLessThan (64 * 1024, high - low, $"path save allocated {saves[0]}, {saves[1]}, {saves[2]}");
+		Assert.IsGreaterThanOrEqualTo (n, renders[2] - renders[0], $"render allocated {renders[0]} then {renders[2]}");
+	}
+
+	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedScan (int scanLength)
+	{
+		var scan = new byte[scanLength];
 		Array.Fill (scan, (byte)0x11);
 		var data = Concat (
 			[0xFF, 0xD8],
@@ -65,19 +120,16 @@ public sealed class ImagePathSaveTests
 		var read = StillImageFile.ReadFromFile ("/in.jpg", fs);
 		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
 		Assert.IsTrue (read.IsSuccess, read.Error);
-		fs.ResetSourceLengthGets ();
 		read.File!.Tag!.Comment = "PathSave";
-		var rendered = read.File.Render ().ToArray ();
+		return (read.File, fs);
+	}
 
-		var save = saveAsync
-			? await read.File.SaveToFileAsync ("/out.jpg", fs)
-			: read.File.SaveToFile ("/out.jpg", fs);
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		Assert.AreEqual (1, fs.SourceLengthGets);
-		var written = fs.Bytes ("/out.jpg");
-		CollectionAssert.AreEqual (rendered, written);
-		Assert.AreEqual ("45C76CF7112DCCD5B2595DE1CFA0374CCD05E60FF8B1A0A7B147B3FB160A3937", Convert.ToHexString (SHA256.HashData (written)));
+	static long LeastAllocated (Action action)
+	{
+		var least = long.MaxValue;
+		for (var run = 0; run < 3; run++)
+			least = Math.Min (least, Bounds.AllocatedBytes (action));
+		return least;
 	}
 
 	static byte[] JpegInput (string op) => op switch {
