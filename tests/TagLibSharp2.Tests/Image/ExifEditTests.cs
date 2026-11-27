@@ -1238,6 +1238,51 @@ public class ExifEditTests
 		Assert.AreEqual (0, UserCommentsInEveryExifIfd (ExifOf (file.Render ().ToArray ())).Count);
 	}
 
+	// Two tables share one array of a strip pair and name different arrays on the other side. Only the second
+	// table's strip covers the UserComment value. Recording that pair on the cache hit keeps the strip; skipping
+	// the hit leaves it unprotected, and removing the comment zeroes it. Both byte orders, and either array shared.
+	[TestMethod]
+	[DataRow ("offsets", false)]
+	[DataRow ("offsets", true)]
+	[DataRow ("lengths", false)]
+	[DataRow ("lengths", true)]
+	public void Edit_SavesAStripNamedOnlyByTheSecondTableThatSharesAnArray (string shared, bool bigEndian)
+	{
+		var tiff = SharedPairTiff (shared, bigEndian);
+		var payload = tiff[170..178];
+		var file = Open (InCarrier ("png", tiff), "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		var where = $"{shared} {(bigEndian ? "big-endian" : "little-endian")}";
+		Assert.IsTrue (save.IsSuccess, $"{where}: {save.Error}");
+		var exif = ExifOf (file.Render ().ToArray ());
+		Assert.AreEqual (0, UserCommentsInEveryExifIfd (exif).Count, where);
+		CollectionAssert.AreEqual (payload, exif[170..178], $"{where}: the second table's strip");
+	}
+
+	// exiftool 13.55 reads a type 13 (IFD) entry, so a table whose first remaining entry is type 13 stays
+	// readable and the ImageDescription after it stays. A bound that stops at 12 refuses this edit.
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public void Edit_SavesWhenTheFirstKeptEntryHasIfdType (bool bigEndian)
+	{
+		var hill = bigEndian ? 0x48696C6C : 0x6C6C6948;
+		var tiff = new TiffBuilder (80, bigEndian).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x64636261), (0x0001, 13, 1, 0), (0x010E, 2, 4, hill)])
+			.ToArray ();
+		Assert.AreEqual ("Hill", ExifReaderModel.Exiftool (tiff).Strings ()[0x010E], bigEndian ? "big-endian" : "little-endian");
+		var file = Open (InCarrier ("png", tiff), "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual ("Hill", ExifReaderModel.Exiftool (ExifOf (file.Render ().ToArray ())).Strings ()[0x010E]);
+	}
+
 	// Nothing of the field is in the block. The value-array bound is not a reason to refuse, and the Exif bytes stay.
 	[TestMethod]
 	public void Edit_OfATitle_SavesWhenValueArraysExceedTheDataAndNothingIsRemoved ()
@@ -1266,6 +1311,29 @@ public class ExifEditTests
 			.Table (8, [(0x9286, 7, 4, 0x64636261), (off, 3, first, 80), (len, 3, 1, 0)], next: 50)
 			.Table (50, [(off, 3, second, 82), (len, 3, 1, 0)])
 			.ToArray ();
+	}
+
+	// Length 200. The UserComment value is the eight bytes at 170. IFD0's strip ends at 168, so it does not cover
+	// them. IFD1 shares one array with IFD0 and its strip is those eight bytes. The arrays are out of line, so a
+	// second table hits the value cache.
+	static byte[] SharedPairTiff (string shared, bool bigEndian)
+	{
+		var tiff = new TiffBuilder (200, bigEndian).Header (8);
+		if (shared == "offsets") {
+			tiff.U32 (100, 160).U32 (104, 160)
+				.U16 (108, 4).U16 (110, 4).U16 (112, 4)
+				.U16 (114, 20).U16 (116, 20).U16 (118, 20)
+				.Table (8, [(0x9286, 7, 8, 170), (0x0111, 4, 2, 100), (0x0117, 3, 3, 108)], next: 50)
+				.Table (50, [(0x0111, 4, 2, 100), (0x0117, 3, 3, 114)]);
+		} else {
+			tiff.U16 (100, 8).U16 (102, 8).U16 (104, 8)
+				.U32 (108, 160).U32 (112, 160)
+				.U32 (116, 170).U32 (120, 170)
+				.Table (8, [(0x9286, 7, 8, 170), (0x0111, 4, 2, 108), (0x0117, 3, 3, 100)], next: 50)
+				.Table (50, [(0x0111, 4, 2, 116), (0x0117, 3, 3, 100)]);
+		}
+
+		return tiff.Bytes (170, "strips!!"u8).ToArray ();
 	}
 
 	// Removing the first entry leaves a format exiftool does not read (0 or 14) in front. Measured with
