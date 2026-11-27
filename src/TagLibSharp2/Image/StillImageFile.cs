@@ -240,13 +240,20 @@ public sealed class StillImageFile : IMediaFile
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrEmpty (SourcePath))
-			return WriteHeld (path, fileSystem, plan);
+			return WriteHeld (path, fileSystem, plan, cancellationToken);
 		return WriteSource (path, fileSystem, plan, cancellationToken);
 	}
 
 	// Ranges stay in _data. The source file is not opened.
-	FileWriteResult WriteHeld (string path, IFileSystem fileSystem, ImagePlan plan)
+	FileWriteResult WriteHeld (
+		string path,
+		IFileSystem fileSystem,
+		ImagePlan plan,
+		CancellationToken cancellationToken = default)
 	{
+		if (cancellationToken.IsCancellationRequested)
+			return FileWriteResult.Failure ("Operation was cancelled");
+
 		var chunk = StreamCopy.Rent ();
 		try {
 			return AtomicFileWriter.WriteStream (path, fileSystem, output => plan.Write (null, _data, output, chunk));
