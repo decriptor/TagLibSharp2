@@ -14,10 +14,12 @@ namespace TagLibSharp2.Image.Tiff;
 /// </summary>
 /// <remarks>
 /// Tables, entries, next offsets and SubIFD offsets are read by <see cref="TiffReader"/>, as every IFD walk reads
-/// them. The walk is iterative (a file-controlled chain must not recurse), at most 64 SubIFD levels deep and 4,096
-/// IFDs in all, each IFD read once, and it stops when the entries it has read pass
-/// <see cref="TiffReader.EntryBound"/> (past it the tables share their entries). Detection reads IFD0 only. Unlike
-/// exiftool, a width and a height are taken from one IFD, never one from each.
+/// them. A classic IFD with 1 or 3 bytes of its 4-byte next-IFD field in the data is not read (exiftool 13.55:
+/// "Illegal directory size"); 0, 2 or 4 bytes are, and BigTIFF is read either way. The walk is iterative (a
+/// file-controlled chain must not recurse), at most 64 SubIFD levels deep and 4,096 IFDs in all, each IFD read
+/// once, and it stops when the entries it has read pass <see cref="TiffReader.EntryBound"/> (past it the tables
+/// share their entries). Detection reads IFD0 only. Unlike exiftool, a width and a height are taken from one IFD,
+/// never one from each.
 /// </remarks>
 static class TiffSize
 {
@@ -72,6 +74,9 @@ static class TiffSize
 			var (offset, depth) = stack.Pop ();
 			if (!tiff.TryTable (offset, out var count) || !Visit (visitedSmall, ref visited, seen, offset, tiff.Length))
 				continue;
+			// 1 or 3 bytes of a classic next-IFD field: exiftool drops the directory. Do not read its entries or follow it.
+			if (ClassicNextIsUnread (tiff, offset, count))
+				continue;
 			entries -= count;
 			if (entries < 0)
 				break;
@@ -88,6 +93,19 @@ static class TiffSize
 		}
 
 		return (root, null);
+	}
+
+	// exiftool 13.55 reads a classic IFD when 0, 2 or 4 bytes of its next-IFD field are present and drops it when 1
+	// or 3 are ("Illegal directory size"). BigTIFF still reports the image.
+	static bool ClassicNextIsUnread (TiffReader tiff, long table, long count)
+	{
+		if (tiff.Big)
+			return false;
+		var at = tiff.Entry (table, count);
+		if (at >= tiff.Length)
+			return false;
+		var present = (int)Math.Min (4, tiff.Length - at);
+		return present is 1 or 3;
 	}
 
 	// The work stack of offsets and their SubIFD depths: on the stack for a handful of IFDs, then on the heap,

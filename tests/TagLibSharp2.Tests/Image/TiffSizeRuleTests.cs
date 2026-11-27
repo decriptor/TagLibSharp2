@@ -52,6 +52,26 @@ public class TiffSizeRuleTests
 		yield return ("an entry with 2^31 values after the size", Classic ([(8, [(256, 3, 1, 3), (257, 3, 1, 2), (0x010E, 2, 1L << 31, 100)], 0)]), "3x2");
 		yield return ("IFD0 inside the header", new TiffBuilder (200).Header (2).Table (16, Size (30, 31)).ToArray (), "none");
 		yield return ("IFD0's entries past the data", Classic ([(8, Size (30, 31), 0)])[..30], "none");
+		// exiftool 13.55: a classic IFD whose next field has 1 or 3 bytes is an illegal directory and is not read.
+		// 0, 2 or 4 bytes are read. Measured for IFD0 (either endian, including an odd offset), IFD1 and a SubIFD.
+		foreach (var bigEndian in new[] { false, true }) {
+			var order = bigEndian ? "BE" : "LE";
+			foreach (var present in new[] { 0, 1, 2, 3, 4 }) {
+				var tiff = new TiffBuilder (64, bigEndian).Header (8).Table (8, Size (64, 48), 0).ToArray ();
+				yield return ($"IFD0 next field has {present} of 4 bytes, {order}", tiff[..(34 + present)], present is 1 or 3 ? "none" : "64x48");
+			}
+		}
+
+		foreach (var present in new[] { 0, 1, 2, 3, 4 }) {
+			var odd = new TiffBuilder (64).Header (9).Table (9, Size (64, 48), 0).ToArray ();
+			yield return ($"IFD0 at an odd offset, next field has {present} of 4 bytes", odd[..(35 + present)], present is 1 or 3 ? "none" : "64x48");
+			var ifd1 = Classic ([(8, Image (1, 10, 10), 80), (80, Image (0, 64, 48), 0)]);
+			yield return ($"IFD1 next field has {present} of 4 bytes", ifd1[..(118 + present)], present is 1 or 3 ? "10x10" : "64x48");
+			var sub = Classic ([(8, [.. Image (1, 10, 10), L (330, 80)], 0), (80, Image (0, 64, 48), 0)]);
+			yield return ($"SubIFD next field has {present} of 4 bytes", sub[..(118 + present)], present is 1 or 3 ? "10x10" : "64x48");
+		}
+
+		yield return ("BigTIFF LE, IFD0 next field has 1 of 8 bytes", Big (false, [(16, [(256, 16, 1, 64), (257, 16, 1, 48)], 0)])[..65], "64x48");
 
 		yield return ("full IFD0", Classic ([(8, [.. Image (0, 5, 5), L (330, 100)], 0), (100, Image (0, 6, 6), 0)]), "5x5");
 		yield return ("reduced IFD0, smaller full SubIFD", Classic ([(8, [.. Image (1, 10, 10), L (330, 100)], 0), (100, Image (0, 5, 5), 0)]), "5x5");
