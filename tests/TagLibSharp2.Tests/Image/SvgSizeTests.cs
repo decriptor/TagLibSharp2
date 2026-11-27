@@ -96,5 +96,9 @@ public class SvgSizeTests
 		AssertImage (relative, "drawing.svg", MediaFormat.Svg, 9, 8, "SVG");
 		var commas = System.Text.Encoding.UTF8.GetBytes ("""<svg viewBox="0,0,100,50"></svg>""");
 		AssertImage (commas, "drawing.svg", MediaFormat.Svg, 100, 50, "SVG");
+
+		// A '>' inside an earlier quoted attribute is not the end of the start tag.
+		var quoted = System.Text.Encoding.UTF8.GetBytes ("""<svg title="a > b" width="7" height="9"></svg>""");
+		AssertImage (quoted, "drawing.svg", MediaFormat.Svg, 7, 9, "SVG");
 	}
 }

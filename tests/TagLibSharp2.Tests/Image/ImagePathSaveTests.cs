@@ -45,6 +45,24 @@ public sealed class ImagePathSaveTests
 		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), op);
 	}
 
+	// An empty source path is not a file to re-open. The save writes the bytes already read, even if that path
+	// later holds something shorter.
+	[TestMethod]
+	public void JpegPathSave_EmptySourcePath_WritesTheOpenedBytes ()
+	{
+		var data = Jpeg (JpegSegment (0xFE, "old"u8.ToArray ()));
+		var fs = new MockFileSystem ();
+		fs.AddFile ("", data);
+		var read = StillImageFile.ReadFromFile ("", fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		fs.AddFile ("", [0x00]);
+
+		var save = read.File!.SaveToFile ("/out.jpg", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		CollectionAssert.AreEqual (data, fs.ReadAllBytes ("/out.jpg"));
+	}
+
 	/// <summary>The scan is 80 KB of 0x11. The hash is the path save of that edit at 1322374a.</summary>
 	[TestMethod]
 	[DataRow (false)]
