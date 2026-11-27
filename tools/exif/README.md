@@ -19,7 +19,9 @@ and `..._ForEveryMatrixInput` fail when the model and exiftool differ on any inp
 | A GPS IFD (0x8825) is read with GPS tags | `pointer 8825 in IFD0 type 4 count 1 LE` | `G0001=1` |
 | Nothing inside a GPS IFD is followed | `pointer 8769 in GPS type 4 count 1 LE` (and `A005`, `8825`, `014A`) | `-` |
 | The next IFD of an Exif, interoperability, SubIFD or GPS table is not read; IFD1's is | `next IFD of ExifIFD`, `... InteropIFD`, `... SubIFD`, `... GPS`, `... IFD1` | `-`, `-`, `-`, `G0001=1` (the GPS table only), `E9286=1` |
-| A table is read when its count and entries fit in the data; the next offset may be cut short | measured for IFD0, IFD1 and the Exif, GPS and interoperability IFDs; pinned by `ExifEditTests.Edit_ReadsATableWhoseNextOffsetIsMissing` | read |
+| A classic table is read when 0, 2 or 4 bytes of its next-IFD field are present, and dropped when 1 or 3 are | measured for IFD0, IFD1 and the Exif, GPS and interoperability IFDs (exiftool 13.55); size pinned by the TIFF size tests | read for 0, 2 and 4; dropped for 1 and 3 |
+
+The field editor is stricter than that read. It refuses a field edit when 1, 2 or 3 bytes of a classic next-IFD field are present, and it still edits when the next field is wholly absent. `Clear` does not use this rule. A first entry whose format would change whether exiftool reads the table is refused even when the change shows no new tag.
 
 ## How a pointer is decoded
 
