@@ -104,6 +104,94 @@ public class XmpMirrorTests
 		}
 	}
 
+	// N mirrored XMP copies sit next to each other, so each one is a new piece appended to the last. Appending
+	// copies the bytes gathered so far; four times the copies then adds about four times as much, and the bound
+	// is three. A list of pieces adds about twice as much.
+	[TestMethod]
+	[DataRow ("png")]
+	[DataRow ("gif")]
+	[DataRow ("jpeg")]
+	public void Edit_ManyMirroredXmpCopies_AllocatesLinearly (string format)
+	{
+		var sample = ManyMirroredXmp (format, 2);
+		var check = Open (sample, SampleName (format));
+		SetMirroredField (check.Tag!, format);
+		var saved = check.SaveToFile ("/a" + SampleName (format), new MockFileSystem ());
+		Assert.IsTrue (saved.IsSuccess, saved.Error);
+		var output = check.Render ().ToArray ();
+		Assert.AreEqual (2, CountPacketTitles (output, "New"), $"{format}: both packets hold the new value");
+		Assert.AreEqual (0, CountPacketTitles (output, "Old"), $"{format}: the old value is gone");
+		if (format == "png")
+			CollectionAssert.AreEqual (PngPayload (sample, "IDAT"), PngPayload (output, "IDAT"));
+
+		const int n = 200;
+		Bounds.AssertLinearAllocation (count => ManyMirroredXmp (format, count), data => {
+			var copies = CountPacketTitles (data, "Old");
+			var file = Open (data, SampleName (format));
+			SetMirroredField (file.Tag!, format);
+			var save = file.SaveToFile ("/a" + SampleName (format), new MockFileSystem ());
+			Assert.IsTrue (save.IsSuccess, $"{format}: {save.Error}");
+			Assert.AreEqual (copies, CountPacketTitles (file.Render ().ToArray (), "New"), $"{format} N={copies}");
+		}, n, runs: 3);
+	}
+
+	// PNG stores a title, so dc:title is the mirrored copy. JPEG and GIF store a comment, so the copy is UserComment.
+	static void SetMirroredField (Tag tag, string format)
+	{
+		if (format == "png")
+			tag.Title = "New";
+		else
+			tag.Comment = "New";
+	}
+
+	static string SampleName (string format) => format switch {
+		"gif" => "a.gif",
+		"jpeg" => "a.jpg",
+		_ => "a.png",
+	};
+
+	// Uncompressed copies of one dc:title packet: PNG tEXt, GIF application extension, JPEG APP1.
+	static byte[] ManyMirroredXmp (string format, int n)
+	{
+		var packet = format == "png"
+			? "<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:title><rdf:Alt><rdf:li xml:lang='x-default'>Old</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta>"
+			: "<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description rdf:about='' xmlns:exif='http://ns.adobe.com/exif/1.0/'><exif:UserComment><rdf:Alt><rdf:li xml:lang='x-default'>Old</rdf:li></rdf:Alt></exif:UserComment></rdf:Description></rdf:RDF></x:xmpmeta>";
+		var chunks = new byte[n][];
+		for (var i = 0; i < n; i++) {
+			chunks[i] = format switch {
+				"gif" => GifXmp (packet),
+				"jpeg" => JpegXmp (packet),
+				_ => Text ("XML:com.adobe.xmp", packet),
+			};
+		}
+
+		return format switch {
+			"gif" => Gif (chunks),
+			"jpeg" => Jpeg (chunks),
+			_ => Png (chunks),
+		};
+	}
+
+	static int CountPacketTitles (byte[] data, string title)
+	{
+		var needle = Encoding.ASCII.GetBytes (">" + title + "<");
+		var count = 0;
+		for (var i = 0; i + needle.Length <= data.Length; i++) {
+			var hit = true;
+			for (var b = 0; b < needle.Length; b++) {
+				if (data[i + b] != needle[b]) {
+					hit = false;
+					break;
+				}
+			}
+
+			if (hit)
+				count++;
+		}
+
+		return count;
+	}
+
 	public static IEnumerable<object[]> PacketTails ()
 	{
 		yield return ["jpeg", "NUL after the trailer (ImageIO)", new byte[] { 0 }];

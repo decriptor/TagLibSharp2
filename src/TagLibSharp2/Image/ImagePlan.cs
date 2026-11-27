@@ -313,19 +313,12 @@ sealed class ImagePlan
 		AddLiteral (pieces, slice);
 	}
 
+	// Each new piece stays its own entry. Copying it onto the previous piece would copy every byte gathered so
+	// far, once per piece.
 	static void AddLiteral (List<Piece> pieces, byte[] bytes)
 	{
 		if (bytes.Length == 0)
 			return;
-
-		if (pieces.Count > 0 && !pieces[^1].IsRange) {
-			var last = pieces[^1].Bytes!;
-			var combined = new byte[last.Length + bytes.Length];
-			last.CopyTo (combined, 0);
-			bytes.CopyTo (combined, last.Length);
-			pieces[^1] = new Piece (false, 0, combined.Length, combined);
-			return;
-		}
 
 		pieces.Add (new Piece (false, 0, bytes.Length, bytes));
 	}
