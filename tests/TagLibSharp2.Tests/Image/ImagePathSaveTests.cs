@@ -171,23 +171,8 @@ public sealed class ImagePathSaveTests
 	[TestMethod]
 	[DataRow ("tiff", "59753EFEE53644237F9F0F4299A3B7178C949D9447626418365C7D4E15005DBC")]
 	[DataRow ("dng", "96507B9AA0101B7949BE6B6E9761FE0B57B58BB977DED0232CD9096A1374BE5C")]
-	public void TiffPathSave_BytesEqualRender (string format, string expectedHash)
-	{
-		var data = TiffHeader (format);
-		var fs = new MockFileSystem ();
-		var path = "/in." + format;
-		fs.AddFile (path, data);
-		var read = StillImageFile.ReadFromFile (path, fs);
-		Assert.IsTrue (read.IsSuccess, read.Error);
-		var rendered = read.File!.Render ().ToArray ();
-
-		var save = read.File.SaveToFile ("/out." + format, fs);
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		var written = fs.ReadAllBytes ("/out." + format);
-		CollectionAssert.AreEqual (rendered, written, format);
-		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), format);
-	}
+	public void TiffPathSave_BytesEqualRender (string format, string expectedHash) =>
+		AssertPathSaveMatchesRender (TiffHeader (format), format, expectedHash);
 
 	/// <summary>The file is a TIFF or DNG header followed by 80 KB. A path save copies that range in chunks.</summary>
 	[TestMethod]
@@ -259,22 +244,8 @@ public sealed class ImagePathSaveTests
 
 	[TestMethod]
 	[DataRow ("A838D2A6E158A95650468B27AE71DADC92C08B08C5173C822A932E7B7703E774")]
-	public void BmpPathSave_BytesEqualRender (string expectedHash)
-	{
-		var data = Bmp (4, 2);
-		var fs = new MockFileSystem ();
-		fs.AddFile ("/in.bmp", data);
-		var read = StillImageFile.ReadFromFile ("/in.bmp", fs);
-		Assert.IsTrue (read.IsSuccess, read.Error);
-		var rendered = read.File!.Render ().ToArray ();
-
-		var save = read.File.SaveToFile ("/out.bmp", fs);
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		var written = fs.ReadAllBytes ("/out.bmp");
-		CollectionAssert.AreEqual (rendered, written);
-		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)));
-	}
+	public void BmpPathSave_BytesEqualRender (string expectedHash) =>
+		AssertPathSaveMatchesRender (Bmp (4, 2), "bmp", expectedHash);
 
 	/// <summary>
 	/// The file is a BMP header followed by pixels out to 80 KB. A path save copies that range in chunks.
@@ -285,6 +256,41 @@ public sealed class ImagePathSaveTests
 	public async Task BmpPathSave_OverOneChunk_CopiesTheFileInChunks (bool saveAsync)
 	{
 		await AssertWholeFileCopiedInChunks (Bmp (1, 1, 80 * 1024), "/in.bmp", "/out.bmp", saveAsync);
+	}
+
+	[TestMethod]
+	[DataRow ("70D06D76319B1B57A94CE8A15C61DDBA97CAE09449EDCCFF98DDA08CBC790AF6")]
+	public void PcxPathSave_BytesEqualRender (string expectedHash) =>
+		AssertPathSaveMatchesRender (Pcx (0, 0, 1, 1, planes: 1), "pcx", expectedHash);
+
+	/// <summary>An 80 KB PCX is a header and the bytes after it. A path save copies that range in chunks.</summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task PcxPathSave_OverOneChunk_CopiesTheFileInChunks (bool saveAsync)
+	{
+		var header = Pcx (0, 0, 1, 1, planes: 1);
+		var data = new byte[80 * 1024];
+		header.CopyTo (data, 0);
+		await AssertWholeFileCopiedInChunks (data, "/in.pcx", "/out.pcx", saveAsync);
+	}
+
+	static void AssertPathSaveMatchesRender (byte[] data, string extension, string expectedHash)
+	{
+		var fs = new MockFileSystem ();
+		var source = "/in." + extension;
+		var destination = "/out." + extension;
+		fs.AddFile (source, data);
+		var read = StillImageFile.ReadFromFile (source, fs);
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		var rendered = read.File!.Render ().ToArray ();
+
+		var save = read.File.SaveToFile (destination, fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var written = fs.ReadAllBytes (destination);
+		CollectionAssert.AreEqual (rendered, written, extension);
+		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), extension);
 	}
 
 	static async Task AssertWholeFileCopiedInChunks (byte[] data, string source, string destination, bool saveAsync)

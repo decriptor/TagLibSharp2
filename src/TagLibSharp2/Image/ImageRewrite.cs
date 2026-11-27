@@ -90,7 +90,7 @@ static class ImageRewrite
 			return TryEditedPlan (data, tag, PngRewriter.Plan, PngRewriter.SpliceError, out plan, out error);
 		if (format == MediaFormat.Gif)
 			return TryEditedPlan (data, tag, GifRewriter.Plan, GifRewriter.SpliceError, out plan, out error);
-		if (format is MediaFormat.Tiff or MediaFormat.Dng or MediaFormat.Bmp) {
+		if (format is MediaFormat.Tiff or MediaFormat.Dng or MediaFormat.Bmp or MediaFormat.Pcx) {
 			plan = ImagePlan.Whole (data.Length);
 			return true;
 		}
