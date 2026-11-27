@@ -628,6 +628,40 @@ public class ExifPlainTests
 			.Table (8, [(0x9286, 7, 4, 0x61626364), (offsets, type, count, 100), (lengths, type, count, 100)])
 			.ToArray ();
 
+	public static IEnumerable<object[]> ArraysAtZero ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var (offsets, lengths) in new[] { (0x0111, 0x0117), (0x0144, 0x0145), (0x0201, 0x0202) })
+				yield return [littleEndian, offsets, lengths];
+	}
+
+	// Both sides name the same three SHORT values at offset 0. That array fits, and it is one array, so the edit is
+	// refused before a plan is built. A budget refusal is a different reason.
+	[TestMethod]
+	[DynamicData (nameof (ArraysAtZero))]
+	public void Edit_RefusesWhenBothSidesNameTheArrayAtOffsetZero (bool littleEndian, int offsets, int lengths)
+	{
+		var tiff = ArrayAtZero (littleEndian, offsets, lengths);
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{(littleEndian ? "LE" : "BE")} {offsets:X4}";
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "one strip, tile or thumbnail array more than once", where);
+		Assert.IsFalse (error.Contains ("more strip, tile or thumbnail values than its data holds"), where + ": " + error);
+		CollectionAssert.AreEqual (copy, tiff, where);
+	}
+
+	// Three SHORT values at offset 0. Six bytes do not fit in an entry, the array lies in the block, and both sides name it.
+	static byte[] ArrayAtZero (bool littleEndian, int offsets, int lengths) =>
+		new TiffBuilder (80, bigEndian: !littleEndian).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x61626364), (offsets, 3, 3, 0), (lengths, 3, 3, 0)])
+			.ToArray ();
+
 	public static IEnumerable<object[]> PairTagsGivenTwice ()
 	{
 		foreach (var littleEndian in new[] { true, false })
