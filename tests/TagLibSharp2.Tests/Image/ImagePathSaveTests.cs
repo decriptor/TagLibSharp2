@@ -169,6 +169,40 @@ public sealed class ImagePathSaveTests
 	}
 
 	[TestMethod]
+	public void PngPathSave_AllocationStaysUnderTheCeilingWhileRenderGrows ()
+	{
+		const int n = 1024 * 1024;
+		const long ceiling = 256 * 1024;
+		// Signature 8 + IHDR 25 + tEXt "PathSave" 26 + IDAT overhead 12 + IEND 12.
+		const int framing = 83;
+		var saves = new long[3];
+		var renders = new long[3];
+		for (var size = 0; size < 3; size++) {
+			var payloadLength = n << size;
+			var (file, fs) = OpenEditedPng (payloadLength);
+			var path = $"/out-{payloadLength}.png";
+			var warm = file.SaveToFile (path, fs);
+			Assert.IsTrue (warm.IsSuccess, warm.Error);
+			_ = file.Render ();
+
+			FileWriteResult save = default;
+			saves[size] = LeastAllocated (() => save = file.SaveToFile (path, fs));
+			Assert.IsTrue (save.IsSuccess, save.Error);
+			Assert.AreEqual (payloadLength + framing, fs.Bytes (path).Length);
+			Assert.IsLessThanOrEqualTo (ceiling, saves[size]);
+
+			ReadOnlyMemory<byte> rendered = default;
+			renders[size] = LeastAllocated (() => rendered = file.Render ());
+			GC.KeepAlive (rendered);
+		}
+
+		var high = Math.Max (saves[0], Math.Max (saves[1], saves[2]));
+		var low = Math.Min (saves[0], Math.Min (saves[1], saves[2]));
+		Assert.IsLessThan (64 * 1024, high - low, $"path save allocated {saves[0]}, {saves[1]}, {saves[2]}");
+		Assert.IsGreaterThanOrEqualTo (n, renders[2] - renders[0], $"render allocated {renders[0]} then {renders[2]}");
+	}
+
+	[TestMethod]
 	[DataRow ("tiff", "59753EFEE53644237F9F0F4299A3B7178C949D9447626418365C7D4E15005DBC")]
 	[DataRow ("dng", "96507B9AA0101B7949BE6B6E9761FE0B57B58BB977DED0232CD9096A1374BE5C")]
 	public void TiffPathSave_BytesEqualRender (string format, string expectedHash) =>
@@ -433,6 +467,24 @@ public sealed class ImagePathSaveTests
 		Assert.IsTrue (save.IsSuccess, save.Error);
 		Assert.AreEqual (1, fs.SourceLengthGets);
 		CollectionAssert.AreEqual (data, fs.Bytes (destination));
+	}
+
+	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedPng (int payloadLength)
+	{
+		var data = Concat (
+			PngSignature,
+			PngChunk ("IHDR", [0, 0, 0, 2, 0, 0, 0, 3, 8, 0, 0, 0, 0]),
+			Text ("Title", "Old"),
+			PngChunk ("IDAT", new byte[payloadLength]),
+			PngChunk ("IEND", []));
+		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+		fs.Add ("/in.png", data);
+		fs.MaxRead = data.Length;
+		var read = StillImageFile.ReadFromFile ("/in.png", fs);
+		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		read.File!.Tag!.Title = "PathSave";
+		return (read.File, fs);
 	}
 
 	static (StillImageFile File, ChunkBoundedFileSystem Fs) OpenEditedScan (int scanLength)
