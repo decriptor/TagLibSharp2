@@ -90,7 +90,7 @@ static class ImageRewrite
 			return TryEditedPlan (data, tag, PngRewriter.Plan, PngRewriter.SpliceError, out plan, out error);
 		if (format == MediaFormat.Gif)
 			return TryEditedPlan (data, tag, GifRewriter.Plan, GifRewriter.SpliceError, out plan, out error);
-		if (format is MediaFormat.Tiff or MediaFormat.Dng or MediaFormat.Bmp or MediaFormat.Pcx) {
+		if (CopiesWholeFile (format)) {
 			plan = ImagePlan.Whole (data.Length);
 			return true;
 		}
@@ -127,4 +127,10 @@ static class ImageRewrite
 	}
 
 	delegate ImagePlan? RewriterPlan (ReadOnlySpan<byte> data, ImageTag tag, out string? error);
+
+	/// <summary>These formats have no metadata rewriter, so the plan is the original file.</summary>
+	static bool CopiesWholeFile (MediaFormat format) =>
+		format is MediaFormat.Tiff or MediaFormat.Dng
+			or MediaFormat.Bmp or MediaFormat.Pcx
+			or MediaFormat.Netpbm;
 }

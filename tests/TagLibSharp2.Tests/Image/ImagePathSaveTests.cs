@@ -182,9 +182,7 @@ public sealed class ImagePathSaveTests
 	[DataRow ("dng", true)]
 	public async Task TiffPathSave_OverOneChunk_CopiesTheFileInChunks (string format, bool saveAsync)
 	{
-		var header = TiffHeader (format);
-		var data = new byte[80 * 1024];
-		header.CopyTo (data, 0);
+		var data = HeaderAndTrailingBytes (TiffHeader (format));
 		await AssertWholeFileCopiedInChunks (data, "/in." + format, "/out." + format, saveAsync);
 	}
 
@@ -255,7 +253,8 @@ public sealed class ImagePathSaveTests
 	[DataRow (true)]
 	public async Task BmpPathSave_OverOneChunk_CopiesTheFileInChunks (bool saveAsync)
 	{
-		await AssertWholeFileCopiedInChunks (Bmp (1, 1, 80 * 1024), "/in.bmp", "/out.bmp", saveAsync);
+		var data = HeaderAndTrailingBytes (Bmp (1, 1));
+		await AssertWholeFileCopiedInChunks (data, "/in.bmp", "/out.bmp", saveAsync);
 	}
 
 	[TestMethod]
@@ -269,11 +268,47 @@ public sealed class ImagePathSaveTests
 	[DataRow (true)]
 	public async Task PcxPathSave_OverOneChunk_CopiesTheFileInChunks (bool saveAsync)
 	{
-		var header = Pcx (0, 0, 1, 1, planes: 1);
-		var data = new byte[80 * 1024];
-		header.CopyTo (data, 0);
+		var data = HeaderAndTrailingBytes (Pcx (0, 0, 1, 1, planes: 1));
 		await AssertWholeFileCopiedInChunks (data, "/in.pcx", "/out.pcx", saveAsync);
 	}
+
+	[TestMethod]
+	[DataRow ("P4", "pbm", "D4A32CD03B3F1505B9C4F1C75FA6486FCA66966838AC6CF05116F187D0B67F26")]
+	[DataRow ("P5", "pgm", "163DA6D87F525A13D835FACB08F325319D1B1A27EEB3449C357902F2475B9019")]
+	[DataRow ("P6", "ppm", "418B52874B4A321F1008AFE7BE2880BF8BE33DF6EA82B04FB122E0D0F902ED36")]
+	public void NetpbmPathSave_BytesEqualRender (string magic, string extension, string expectedHash) =>
+		AssertPathSaveMatchesRender (NetpbmHeader (magic), extension, expectedHash);
+
+	/// <summary>
+	/// An 80 KB Netpbm file is a header and the bytes after it. A path save copies that range in chunks.
+	/// </summary>
+	[TestMethod]
+	[DataRow ("P4", "pbm", false)]
+	[DataRow ("P4", "pbm", true)]
+	[DataRow ("P5", "pgm", false)]
+	[DataRow ("P5", "pgm", true)]
+	[DataRow ("P6", "ppm", false)]
+	[DataRow ("P6", "ppm", true)]
+	public async Task NetpbmPathSave_OverOneChunk_CopiesTheFileInChunks (string magic, string extension, bool saveAsync)
+	{
+		var data = HeaderAndTrailingBytes (NetpbmHeader (magic));
+		await AssertWholeFileCopiedInChunks (data, "/in." + extension, "/out." + extension, saveAsync);
+	}
+
+	const int BytesPastOneChunk = 80 * 1024;
+
+	static byte[] HeaderAndTrailingBytes (byte[] header)
+	{
+		var data = new byte[BytesPastOneChunk];
+		header.CopyTo (data, 0);
+		return data;
+	}
+
+	static byte[] NetpbmHeader (string magic) => magic switch {
+		"P5" => "P5\n1 1\n"u8.ToArray (),
+		"P6" => "P6\n1 1\n"u8.ToArray (),
+		_ => "P4\n1 1\n"u8.ToArray ()
+	};
 
 	static void AssertPathSaveMatchesRender (byte[] data, string extension, string expectedHash)
 	{
