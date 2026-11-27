@@ -178,6 +178,24 @@ public class BoundsTests
 		Assert.Contains ("grew", error.Message);
 	}
 
+	// The 1% floor must not hide a doubling that is still above the absolute 1 KB floor, and it must not
+	// turn a genuinely linear step that sits under that floor into a failure against a baseline of 1.
+	[TestMethod]
+	[DataRow (10_000L, 11_000L, 13_000L, false)]
+	[DataRow (1_000_000L, 1_008_000L, 1_024_000L, false)]
+	[DataRow (10_000_000L, 10_030_000L, 10_090_000L, false)]
+	[DataRow (10_000_000L, 10_030_000L, 10_120_000L, true)]
+	public void AssertGrowsLinearly_NoiseFloorEdges_MatchTheSeries (long one, long two, long four, bool superlinear)
+	{
+		if (!superlinear) {
+			Bounds.AssertGrowsLinearly (one, two, four);
+			return;
+		}
+
+		var error = Assert.ThrowsExactly<AssertFailedException> (() => Bounds.AssertGrowsLinearly (one, two, four));
+		Assert.Contains ("grew", error.Message);
+	}
+
 	[TestMethod]
 	public void CountingStream_CountsReadsSeeksAndBytes ()
 	{

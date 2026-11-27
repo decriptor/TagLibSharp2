@@ -65,24 +65,30 @@ public static class Bounds
 	/// </summary>
 	/// <remarks>
 	/// An increment under the noise floor — 1 KB, or 1% of the n allocation, whichever is larger — counts as no
-	/// growth, so a flat or noisy-flat series passes. A series that is flat and then jumps still fails: the baseline
-	/// of a zero first increment is 1. Linear work adds twice as much from 2n to 4n as from n to 2n; the bound is
-	/// <c>2 × slack</c>.
+	/// growth, so a flat or noisy-flat series passes. A series that is flat and then jumps still fails. When the
+	/// first increment is below the floor, the baseline is the floor, so a linear step just under it passes. A step
+	/// above the absolute 1 KB floor whose successor reaches <c>2 × slack</c> still fails when both steps sit under
+	/// 1% of a large n: zeroing both would hide that superlinear series. Linear work adds twice as much from 2n to
+	/// 4n as from n to 2n; the bound is <c>2 × slack</c>.
 	/// </remarks>
 	public static void AssertGrowsLinearly (long one, long two, long four, double slack = 1.5)
 	{
 		var noise = Math.Max (1024L, one / 100);
 		var first = two - one;
 		var second = four - two;
-		if (Math.Abs (first) <= noise)
-			first = 0;
-		if (second <= noise)
-			second = 0;
-		if (first == 0 && second == 0)
+		var bound = 2 * slack;
+		// Both steps are inside the floor. Compare them to each other when the first step is above the absolute
+		// 1 KB floor: a 3x jump under 1% of a large baseline is still superlinear, and the strict bound would miss
+		// a ratio that lands on 2 × slack exactly.
+		if (second <= noise && Math.Abs (first) <= noise) {
+			if (first > 1024 && second >= first * bound)
+				Assert.Fail ($"allocation grew {second / (double)first:F1}x as fast from 2n to 4n as from n to 2n ({one} -> {two} -> {four} bytes); linear is 2x, the bound {bound:F1}x");
 			return;
-		var baseline = Math.Max (first, 1);
-		if (second > baseline * 2 * slack)
-			Assert.Fail ($"allocation grew {second / (double)baseline:F1}x as fast from 2n to 4n as from n to 2n ({one} -> {two} -> {four} bytes); linear is 2x, the bound {2 * slack:F1}x");
+		}
+
+		var baseline = Math.Max (first, noise);
+		if (second > baseline * bound)
+			Assert.Fail ($"allocation grew {second / (double)baseline:F1}x as fast from 2n to 4n as from n to 2n ({one} -> {two} -> {four} bytes); linear is 2x, the bound {bound:F1}x");
 	}
 
 	static long Measure (byte[] input, Action<byte[]> run, int runs)
