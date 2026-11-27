@@ -561,6 +561,39 @@ public class ExifPlainTests
 		return tiff.ToArray ();
 	}
 
+	public static IEnumerable<object[]> LonePairSides ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var (offsets, lengths) in new[] { (0x0111, 0x0117), (0x0144, 0x0145), (0x0201, 0x0202) })
+				yield return [littleEndian, offsets, lengths];
+	}
+
+	// Each table names one side of a pair, and each array fits. A lone offset or length is not summed, so the
+	// counts stay under half the bytes and the comment is removed.
+	[TestMethod]
+	[DynamicData (nameof (LonePairSides))]
+	public void Edit_SavesWhenEachTableNamesOnlyOneSideOfAPair (bool littleEndian, int offsets, int lengths)
+	{
+		var tiff = LoneSides (littleEndian, offsets, lengths);
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{(littleEndian ? "LE" : "BE")} {offsets:X4}";
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsTrue (saved, $"{where}: {error}");
+		Assert.IsTrue (changed, where);
+		CollectionAssert.AreNotEqual (copy, tiff, where);
+	}
+
+	// IFD0 names the offset side (60 values at 80) and IFD1 names the length side (41 values at 80). 60 + 41 is
+	// over half of 200, and neither table has both sides.
+	static byte[] LoneSides (bool littleEndian, int offsets, int lengths) =>
+		new TiffBuilder (200, bigEndian: !littleEndian).Header (8)
+			.Table (8, [(0x9286, 7, 4, 0x61626364), (offsets, 3, 60, 80)], 40)
+			.Table (40, [(lengths, 3, 41, 80)])
+			.ToArray ();
+
 	public static IEnumerable<object[]> PairTagsGivenTwice ()
 	{
 		foreach (var littleEndian in new[] { true, false })
