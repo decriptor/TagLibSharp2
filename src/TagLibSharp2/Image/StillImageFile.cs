@@ -169,8 +169,10 @@ public sealed class StillImageFile : IMediaFile
 	/// </summary>
 	public ReadOnlyMemory<byte> Render ()
 	{
-		if (!TryPrepare (out var bytes, out _))
+		if (!TryOutput (out var plan, out var bytes, out _))
 			return _data;
+		if (plan is not null)
+			return plan.MaterializeShared (_data);
 		return bytes;
 	}
 
@@ -184,9 +186,11 @@ public sealed class StillImageFile : IMediaFile
 #else
 		ArgumentNullException.ThrowIfNull (path);
 #endif
-		if (!TryPrepare (out var bytes, out var error))
-			return FileWriteResult.Failure (error!);
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
+		if (!TryOutput (out var plan, out var bytes, out var error))
+			return FileWriteResult.Failure (error ?? "The image container could not be updated.");
+		if (plan is not null)
+			return WritePlan (path, fs, plan);
 		return AtomicFileWriter.Write (path, bytes.Span, fs);
 	}
 
@@ -210,10 +214,65 @@ public sealed class StillImageFile : IMediaFile
 #else
 		ArgumentNullException.ThrowIfNull (path);
 #endif
-		if (!TryPrepare (out var bytes, out var error))
-			return Task.FromResult (FileWriteResult.Failure (error!));
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
+		if (!TryOutput (out var plan, out var bytes, out var error))
+			return Task.FromResult (FileWriteResult.Failure (error ?? "The image container could not be updated."));
+		if (plan is not null)
+			return Task.FromResult (WritePlan (path, fs, plan));
 		return AtomicFileWriter.WriteAsync (path, bytes, fs, cancellationToken);
+	}
+
+	// A plan when this format copies original ranges; otherwise the whole file in one buffer.
+	bool TryOutput (out ImagePlan? plan, out ReadOnlyMemory<byte> bytes, out string? error)
+	{
+		bytes = default;
+		if (!ImageRewrite.TryPlan (_data, Format, _tag, out plan, out error))
+			return false;
+		if (plan is not null)
+			return true;
+		return TryPrepare (out bytes, out error);
+	}
+
+	FileWriteResult WritePlan (string path, IFileSystem fileSystem, ImagePlan plan)
+	{
+		if (string.IsNullOrEmpty (SourcePath))
+			return WriteHeld (path, fileSystem, plan);
+		return WriteSource (path, fileSystem, plan);
+	}
+
+	// Ranges stay in _data. The source file is not opened.
+	FileWriteResult WriteHeld (string path, IFileSystem fileSystem, ImagePlan plan)
+	{
+		var chunk = StreamCopy.Rent ();
+		try {
+			return AtomicFileWriter.WriteStream (path, fileSystem, output => plan.Write (null, _data, output, chunk));
+		} finally {
+			StreamCopy.Return (chunk);
+		}
+	}
+
+	// Ranges are read back from the file that was opened, in the same order as Render.
+	FileWriteResult WriteSource (string path, IFileSystem? fileSystem, ImagePlan plan)
+	{
+		OpenedFile? source = null;
+		byte[]? chunk = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
+				return error;
+
+			chunk = StreamCopy.Rent ();
+			var copyBuffer = chunk;
+			var opened = source!;
+			var written = PathSave.Replace (path, opened, output => {
+				plan.Write (opened.Stream, default, output, copyBuffer);
+			});
+			source = null;
+			return written;
+		} finally {
+			source?.Dispose ();
+			if (chunk is not null)
+				StreamCopy.Return (chunk);
+		}
 	}
 
 	bool TryPrepare (out ReadOnlyMemory<byte> bytes, out string? error)

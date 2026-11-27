@@ -16,7 +16,7 @@ namespace TagLibSharp2.Image.Jpeg;
 static class JpegRewriter
 {
 	const int MaxSegment = 65535;
-	const string SpliceError = "The JPEG marker list before the scan is truncated or malformed, so the comment cannot be spliced in.";
+	internal const string SpliceError = "The JPEG marker list before the scan is truncated or malformed, so the comment cannot be spliced in.";
 
 	public static void Read (ReadOnlySpan<byte> data, ImageTag tag)
 	{
@@ -24,7 +24,8 @@ static class JpegRewriter
 			tag.ReadField (ImageStores.Comment, text);
 	}
 
-	public static byte[]? Rewrite (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
+	/// <summary>The edited file as new pieces and ranges of <paramref name="data"/>.</summary>
+	public static ImagePlan? Plan (ReadOnlySpan<byte> data, ImageTag tag, out string? error)
 	{
 		error = null;
 		if (!tag.Changed (ImageStores.Comment) && !tag.DropUnmapped)
@@ -74,7 +75,7 @@ static class JpegRewriter
 		return true;
 	}
 
-	static byte[]? TryRewrite (ReadOnlySpan<byte> data, ImageTag tag, byte[]? comment, out string? error)
+	static ImagePlan? TryRewrite (ReadOnlySpan<byte> data, ImageTag tag, byte[]? comment, out string? error)
 	{
 		error = null;
 		var dropMetadata = tag.DropUnmapped;
@@ -98,14 +99,16 @@ static class JpegRewriter
 		// A version-65536 Apple gain map takes its headroom from the primary's maker note, so the later images are
 		// read first to know whether the primary keeps those two values (AppleHeadroom).
 		var options = new ImageOptions (comment, dropMetadata, Mirrors: comment is not null && !dropMetadata,
-			ItemLengths: dropMetadata ? cleaned.ConvertAll (c => (long)c.Bytes.Length) : null, AppleHeadroom: cleaned.Exists (c => c.HeadroomInMakerNote));
+			ItemLengths: dropMetadata ? cleaned.ConvertAll (c => c.Plan.Length) : null, AppleHeadroom: cleaned.Exists (c => c.HeadroomInMakerNote));
 		var primaryEnd = images.Count > 0 ? images[0].Start : data.Length;
-		var primary = RewriteImage (data.Slice (0, primaryEnd), tag, options, out error);
+		var primary = RewriteImage (data.Slice (0, primaryEnd), tag, options, 0, out error);
 		if (primary is null)
 			return null;
 		if (primary.InMpf < 0)
-			return primary.Bytes;
-		return images.Count == 0 ? ShiftMpEntries (primary, out error) : PlaceImages (data, primary, primaryEnd, images, cleaned, out error);
+			return primary.Plan;
+		if (images.Count == 0)
+			return ShiftMpEntries (primary, data, out error);
+		return PlaceImages (data, primary, primaryEnd, images, cleaned, out error);
 	}
 
 	// The later images are cleaned first: an Ultra HDR primary lists their lengths (Item:Length).
@@ -115,7 +118,7 @@ static class JpegRewriter
 		cleaned = [];
 		var options = new ImageOptions ([], DropMetadata: true, Mirrors: false, ItemLengths: null, AppleHeadroom: false);
 		foreach (var image in images) {
-			if (RewriteImage (data.Slice (image.Start, image.Size), tag, options, out _) is not JpegImage clean) {
+			if (RewriteImage (data.Slice (image.Start, image.Size), tag, options, image.Start, out _) is not JpegImage clean) {
 				error = $"Image {image.Entry + 1} of the JPEG MPF index cannot be parsed, so its metadata cannot be cleared.";
 				return false;
 			}
@@ -128,44 +131,56 @@ static class JpegRewriter
 
 	// Everything after the scan is copied, so the later images move with the bytes between the MP header and the
 	// scan, and image 1's size changes with everything before the scan.
-	static byte[]? ShiftMpEntries (JpegImage primary, out string? error)
+	static ImagePlan? ShiftMpEntries (JpegImage primary, ReadOnlySpan<byte> source, out string? error)
 	{
 		error = null;
 		var offsetDelta = (primary.OutRest - primary.OutMpf) - (long)(primary.InRest - primary.InMpf);
 		var sizeDelta = primary.OutRest - (long)primary.InRest;
 		if (offsetDelta == 0 && sizeDelta == 0)
-			return primary.Bytes;
-		if (MpfIndex.TryRewriteEntries (primary.Bytes, primary.OutMpf, primary.OutMpfEnd, (n, offset, size) => offset == 0 ? (0, size + sizeDelta) : (offset + offsetDelta, size)))
-			return primary.Bytes;
-		error = "The JPEG MPF index cannot be read, so the offsets of its other images cannot be kept right after the edit.";
-		return null;
+			return primary.Plan;
+		var count = primary.OutMpfEnd - primary.OutMpf;
+		var window = primary.Plan.MaterializeRange (primary.OutMpf, count, source);
+		if (!MpfIndex.TryRewriteEntries (window, 0, window.Length, (n, offset, size) => offset == 0 ? (0, size + sizeDelta) : (offset + offsetDelta, size))) {
+			error = "The JPEG MPF index cannot be read, so the offsets of its other images cannot be kept right after the edit.";
+			return null;
+		}
+
+		primary.Plan.Splice (primary.OutMpf, count, window);
+		return primary.Plan;
 	}
 
 	// The cleaned primary, then each cleaned later image in place of the old one with the bytes between copied, and
 	// every MP entry pointed at its image's new place.
-	static byte[]? PlaceImages (ReadOnlySpan<byte> data, JpegImage primary, int primaryEnd, List<MpImage> images, List<JpegImage> cleaned, out string? error)
+	static ImagePlan? PlaceImages (ReadOnlySpan<byte> data, JpegImage primary, int primaryEnd, List<MpImage> images, List<JpegImage> cleaned, out string? error)
 	{
 		error = null;
-		using var builder = new BinaryDataBuilder (data.Length);
-		builder.Add (primary.Bytes);
+		var output = new ImagePlan ();
+		output.Append (primary.Plan);
 		var placed = new Dictionary<int, (long Start, long Size)> ();
 		var at = primaryEnd;
 		for (var n = 0; n < images.Count; n++) {
-			builder.Add (data.Slice (at, images[n].Start - at));
-			placed[images[n].Entry] = (builder.Length, cleaned[n].Bytes.Length);
-			builder.Add (cleaned[n].Bytes);
+			var gap = images[n].Start - at;
+			if (gap > 0)
+				output.Copy (at, gap);
+			placed[images[n].Entry] = (output.Length, cleaned[n].Plan.Length);
+			output.Append (cleaned[n].Plan);
 			at = images[n].Start + images[n].Size;
 		}
 
-		builder.Add (data.Slice (at));
-		var output = builder.ToArray ();
-		var primaryDelta = primary.Bytes.Length - (long)primaryEnd;
+		if (at < data.Length)
+			output.Copy (at, data.Length - at);
+		var count = primary.OutMpfEnd - primary.OutMpf;
+		var window = output.MaterializeRange (primary.OutMpf, count, data);
+		var primaryDelta = primary.Plan.Length - primaryEnd;
 		var header = primary.OutMpf;
-		if (MpfIndex.TryRewriteEntries (output, header, primary.OutMpfEnd, (n, offset, size) =>
-			placed.TryGetValue (n, out var image) ? (image.Start - header, image.Size) : offset == 0 ? (0, size + primaryDelta) : (offset, size)))
-			return output;
-		error = "The JPEG MPF index cannot be read, so the offsets of its other images cannot be kept right after Clear.";
-		return null;
+		if (!MpfIndex.TryRewriteEntries (window, 0, window.Length, (n, offset, size) =>
+			placed.TryGetValue (n, out var image) ? (image.Start - header, image.Size) : offset == 0 ? (0, size + primaryDelta) : (offset, size))) {
+			error = "The JPEG MPF index cannot be read, so the offsets of its other images cannot be kept right after Clear.";
+			return null;
+		}
+
+		output.Splice (header, count, window);
+		return output;
 	}
 
 	// How one image is rewritten: the comment to add (null keeps the COM segments), whether its metadata is
@@ -175,7 +190,7 @@ static class JpegRewriter
 
 	sealed class JpegImage
 	{
-		public byte[] Bytes { get; init; } = [];
+		public ImagePlan Plan { get; init; } = new ();
 		public int InMpf { get; init; } = -1;
 		public int OutMpf { get; init; } = -1;
 		public int OutMpfEnd { get; init; } = -1;
@@ -186,13 +201,13 @@ static class JpegRewriter
 
 	// Rewrites the marker segments of one image up to its scan (or EOI), adds the new comment there, and copies
 	// the rest of the span as it is.
-	static JpegImage? RewriteImage (ReadOnlySpan<byte> data, ImageTag tag, ImageOptions options, out string? error)
+	static JpegImage? RewriteImage (ReadOnlySpan<byte> data, ImageTag tag, ImageOptions options, int origin, out string? error)
 	{
 		error = null;
 		if (!IsSoi (data))
 			return Fail (out error);
-		using var image = new ImageBuilder (data.Length + (options.Comment?.Length ?? 0), tag, options);
-		image.Builder.Add (data.Slice (0, 2));
+		var image = new ImageBuilder (tag, options, origin);
+		image.Keep (0, 2);
 		var i = 2;
 		while (i < data.Length) {
 			var start = i;
@@ -200,7 +215,7 @@ static class JpegRewriter
 				return Fail (out error);
 
 			if (marker is 0x01 or (>= 0xD0 and <= 0xD8)) {
-				image.Builder.Add (data.Slice (start, i - start));
+				image.Keep (start, i - start);
 				continue;
 			}
 
@@ -263,17 +278,18 @@ static class JpegRewriter
 	}
 
 	// The output of one image as its segments are kept, dropped or rewritten.
-	sealed class ImageBuilder (int capacity, ImageTag tag, ImageOptions options) : IDisposable
+	sealed class ImageBuilder (ImageTag tag, ImageOptions options, int origin)
 	{
+		readonly ImagePlan _plan = new ();
 		int _inMpf = -1;
 		int _outMpf = -1;
 		int _mpfLength;
 		bool _headroomInMakerNote;
 		bool _firstExif = true;
 
-		public BinaryDataBuilder Builder { get; } = new (capacity);
+		int Written => checked ((int)_plan.Length);
 
-		public void Dispose () => Builder.Dispose ();
+		public void Keep (int start, int count) => _plan.Copy (origin + (long)start, count);
 
 		public bool TryAdd (Segment segment, out string? error)
 		{
@@ -286,7 +302,7 @@ static class JpegRewriter
 				return true;
 			if (marker == 0xE2 && _inMpf < 0 && payload.StartsWith ("MPF\0"u8)) {
 				_inMpf = segment.Start + (segment.Whole.Length - payload.Length) + 4;
-				_outMpf = Builder.Length + (segment.Whole.Length - payload.Length) + 4;
+				_outMpf = Written + (segment.Whole.Length - payload.Length) + 4;
 				_mpfLength = payload.Length - 4;
 			}
 
@@ -294,12 +310,12 @@ static class JpegRewriter
 				if (!TryMirrorApp1 (payload, tag, out var edited, out error))
 					return false;
 				if (edited is not null) {
-					Add (segment.Fill, edited);
+					AddEdited (segment, edited);
 					return true;
 				}
 			}
 
-			Builder.Add (segment.Whole);
+			Keep (segment.Start, segment.Whole.Length);
 			return true;
 		}
 
@@ -313,7 +329,7 @@ static class JpegRewriter
 				if (kept is null || 2 + signature + kept.Length > MaxSegment)
 					return true;
 				_headroomInMakerNote |= makerNote;
-				Add (segment.Fill, SegmentBytes (0xE1, [.. payload.Slice (0, signature), .. kept]));
+				AddEdited (segment, SegmentBytes (0xE1, [.. payload.Slice (0, signature), .. kept]));
 				return true;
 			}
 
@@ -321,24 +337,25 @@ static class JpegRewriter
 				return false;
 			_firstExif = false;
 			if (options.AppleHeadroom && AppleHeadroom.Keep (payload.Slice (6)) is byte[] headroom)
-				Add (segment.Fill, SegmentBytes (0xE1, [.. "Exif\0\0"u8, .. headroom]));
+				AddEdited (segment, SegmentBytes (0xE1, [.. "Exif\0\0"u8, .. headroom]));
 			return true;
 		}
 
-		void Add (ReadOnlySpan<byte> fill, byte[] segment)
+		void AddEdited (Segment segment, byte[] replacement)
 		{
-			Builder.Add (fill);
-			Builder.Add (segment);
+			if (!segment.Fill.IsEmpty)
+				_plan.Copy (origin + (long)segment.Start, segment.Fill.Length);
+			_plan.Add (replacement);
 		}
 
 		public JpegImage Finish (ReadOnlySpan<byte> data, int rest)
 		{
 			if (options.Comment is { Length: > 0 })
-				Builder.Add (options.Comment);
-			var outRest = Builder.Length;
-			Builder.Add (data.Slice (rest));
+				_plan.Add (options.Comment);
+			var outRest = Written;
+			_plan.Copy (origin + (long)rest, data.Length - rest);
 			return new JpegImage {
-				Bytes = Builder.ToArray (),
+				Plan = _plan,
 				InMpf = _inMpf,
 				OutMpf = _outMpf,
 				OutMpfEnd = _outMpf < 0 ? -1 : _outMpf + _mpfLength,

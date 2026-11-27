@@ -44,6 +44,42 @@ public sealed class ImagePathSaveTests
 		Assert.AreEqual (expectedHash, Convert.ToHexString (SHA256.HashData (written)), op);
 	}
 
+	/// <summary>The scan is 80 KB of 0x11. The hash is the path save of that edit at 1322374a.</summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task JpegPathSave_OverOneChunk_CopiesTheScanInChunks (bool saveAsync)
+	{
+		var scan = new byte[80 * 1024];
+		Array.Fill (scan, (byte)0x11);
+		var data = Concat (
+			[0xFF, 0xD8],
+			JpegSegment (0xFE, "Old"u8.ToArray ()),
+			JpegSegment (0xC0, [0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00]),
+			JpegSegment (0xDA, [0x01, 0x01, 0x00, 0x00, 0x3F, 0x00]),
+			scan,
+			[0xFF, 0xD9]);
+		var fs = new ChunkBoundedFileSystem (data.Length + ChunkBoundedFileSystem.MaxChunk);
+		fs.Add ("/in.jpg", data);
+		fs.MaxRead = data.Length;
+		var read = StillImageFile.ReadFromFile ("/in.jpg", fs);
+		fs.MaxRead = ChunkBoundedFileSystem.MaxChunk;
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		fs.ResetSourceLengthGets ();
+		read.File!.Tag!.Comment = "PathSave";
+		var rendered = read.File.Render ().ToArray ();
+
+		var save = saveAsync
+			? await read.File.SaveToFileAsync ("/out.jpg", fs)
+			: read.File.SaveToFile ("/out.jpg", fs);
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.AreEqual (1, fs.SourceLengthGets);
+		var written = fs.Bytes ("/out.jpg");
+		CollectionAssert.AreEqual (rendered, written);
+		Assert.AreEqual ("45C76CF7112DCCD5B2595DE1CFA0374CCD05E60FF8B1A0A7B147B3FB160A3937", Convert.ToHexString (SHA256.HashData (written)));
+	}
+
 	static byte[] JpegInput (string op) => op switch {
 		"exif-comment" => Jpeg (JpegExif (ExifTiff ([(0x010F, "Canon")], [])), JpegSegment (0xFE, "Old"u8.ToArray ())),
 		"xmp-comment" => Jpeg (JpegXmp (XmpPacket (Alt ("exif:UserComment", "Old")))),

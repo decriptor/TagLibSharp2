@@ -62,15 +62,43 @@ static class ImageRewrite
 		var rewritten = tag.Format switch {
 			MediaFormat.Png => PngRewriter.Rewrite (data, tag, out error),
 			MediaFormat.Gif => GifRewriter.Rewrite (data, tag, out error),
-			MediaFormat.Jpeg => JpegRewriter.Rewrite (data, tag, out error),
+			MediaFormat.Jpeg => JpegRewriter.Plan (data, tag, out error) is { } plan ? plan.Materialize (data) : null,
 			_ => null
 		};
 		if (rewritten is null && error is null)
 			error = tag.Format switch {
 				MediaFormat.Gif => "The GIF block list is truncated or holds an unknown block, so the comment cannot be spliced in.",
-				MediaFormat.Jpeg => "The JPEG marker list before the scan is truncated or malformed, so the comment cannot be spliced in.",
+				MediaFormat.Jpeg => JpegRewriter.SpliceError,
 				_ => "The image container could not be updated."
 			};
 		return rewritten;
+	}
+
+	/// <summary>
+	/// A plan for a format whose path save copies original ranges.
+	/// True with a null plan means this format still renders as one buffer.
+	/// </summary>
+	internal static bool TryPlan (
+		ReadOnlySpan<byte> data,
+		MediaFormat format,
+		ImageTag? tag,
+		out ImagePlan? plan,
+		out string? error)
+	{
+		error = null;
+		if (format != MediaFormat.Jpeg) {
+			plan = null;
+			return true;
+		}
+
+		if (tag is null || !tag.AffectsFile) {
+			plan = ImagePlan.Whole (data.Length);
+			return true;
+		}
+
+		plan = JpegRewriter.Plan (data, tag, out error);
+		if (plan is null && error is null)
+			error = JpegRewriter.SpliceError;
+		return plan is not null;
 	}
 }
