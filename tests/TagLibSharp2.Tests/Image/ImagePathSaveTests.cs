@@ -308,25 +308,86 @@ public sealed class ImagePathSaveTests
 	[DataRow (true)]
 	public async Task SvgPathSave_OverOneChunk_CopiesTheFileInChunks (bool saveAsync)
 	{
-		await AssertWholeFileCopiedInChunks (SvgPastOneChunk (), "/in.svg", "/out.svg", saveAsync);
+		await AssertWholeFileCopiedInChunks (SvgOfLength (BytesPastOneChunk), "/in.svg", "/out.svg", saveAsync);
 	}
 
-	static byte[] SvgPastOneChunk ()
+	/// <summary>
+	/// A file of exactly one chunk used to be a single write. The path save still re-reads the source once.
+	/// </summary>
+	[TestMethod]
+	[DataRow ("tiff", false)]
+	[DataRow ("tiff", true)]
+	[DataRow ("dng", false)]
+	[DataRow ("dng", true)]
+	[DataRow ("bmp", false)]
+	[DataRow ("bmp", true)]
+	[DataRow ("pcx", false)]
+	[DataRow ("pcx", true)]
+	[DataRow ("pbm", false)]
+	[DataRow ("pbm", true)]
+	[DataRow ("pgm", false)]
+	[DataRow ("pgm", true)]
+	[DataRow ("ppm", false)]
+	[DataRow ("ppm", true)]
+	[DataRow ("svg", false)]
+	[DataRow ("svg", true)]
+	public async Task WholeFilePathSave_ExactChunk_RereadsTheSource (string format, bool saveAsync)
+	{
+		var data = WholeFile (format, ChunkBoundedFileSystem.MaxChunk);
+		await AssertWholeFileCopiedInChunks (data, "/in." + format, "/out." + format, saveAsync);
+	}
+
+	/// <summary>One byte past a chunk is still copied from the source, not written as one buffer.</summary>
+	[TestMethod]
+	[DataRow ("tiff", false)]
+	[DataRow ("tiff", true)]
+	[DataRow ("dng", false)]
+	[DataRow ("dng", true)]
+	[DataRow ("bmp", false)]
+	[DataRow ("bmp", true)]
+	[DataRow ("pcx", false)]
+	[DataRow ("pcx", true)]
+	[DataRow ("pbm", false)]
+	[DataRow ("pbm", true)]
+	[DataRow ("pgm", false)]
+	[DataRow ("pgm", true)]
+	[DataRow ("ppm", false)]
+	[DataRow ("ppm", true)]
+	[DataRow ("svg", false)]
+	[DataRow ("svg", true)]
+	public async Task WholeFilePathSave_OneBytePastOneChunk_CopiesInChunks (string format, bool saveAsync)
+	{
+		var data = WholeFile (format, ChunkBoundedFileSystem.MaxChunk + 1);
+		await AssertWholeFileCopiedInChunks (data, "/in." + format, "/out." + format, saveAsync);
+	}
+
+	static byte[] WholeFile (string format, int length) => format switch {
+		"tiff" => HeaderAndTrailingBytes (TiffHeader ("tiff"), length),
+		"dng" => HeaderAndTrailingBytes (TiffHeader ("dng"), length),
+		"bmp" => HeaderAndTrailingBytes (Bmp (1, 1), length),
+		"pcx" => HeaderAndTrailingBytes (Pcx (0, 0, 1, 1, planes: 1), length),
+		"pbm" => HeaderAndTrailingBytes (NetpbmHeader ("P4"), length),
+		"pgm" => HeaderAndTrailingBytes (NetpbmHeader ("P5"), length),
+		"ppm" => HeaderAndTrailingBytes (NetpbmHeader ("P6"), length),
+		_ => SvgOfLength (length)
+	};
+
+	static byte[] SvgOfLength (int length)
 	{
 		var open = "<svg width=\"2\" height=\"3\">"u8;
 		var close = "</svg>"u8;
-		var data = new byte[BytesPastOneChunk];
+		var data = new byte[length];
 		open.CopyTo (data);
-		Array.Fill (data, (byte)' ', open.Length, data.Length - open.Length - close.Length);
-		close.CopyTo (data.AsSpan (data.Length - close.Length));
+		Array.Fill (data, (byte)' ', open.Length, length - open.Length - close.Length);
+		close.CopyTo (data.AsSpan (length - close.Length));
 		return data;
 	}
 
 	const int BytesPastOneChunk = 80 * 1024;
 
-	static byte[] HeaderAndTrailingBytes (byte[] header)
+	static byte[] HeaderAndTrailingBytes (byte[] header, int length = BytesPastOneChunk)
 	{
-		var data = new byte[BytesPastOneChunk];
+		var data = new byte[length];
 		header.CopyTo (data, 0);
 		return data;
 	}
