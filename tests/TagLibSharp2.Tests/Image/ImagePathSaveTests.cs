@@ -295,6 +295,33 @@ public sealed class ImagePathSaveTests
 		await AssertWholeFileCopiedInChunks (data, "/in." + extension, "/out." + extension, saveAsync);
 	}
 
+	[TestMethod]
+	[DataRow ("41E5A673AEAFEF7655FF3785442EF6EFB7469DAC0D9E86FE9E5840832FC8541F")]
+	public void SvgPathSave_BytesEqualRender (string expectedHash) =>
+		AssertPathSaveMatchesRender ("<svg width=\"2\" height=\"3\"></svg>"u8.ToArray (), "svg", expectedHash);
+
+	/// <summary>
+	/// The padding sits inside the root element, so the file stays an SVG and is longer than one chunk.
+	/// </summary>
+	[TestMethod]
+	[DataRow (false)]
+	[DataRow (true)]
+	public async Task SvgPathSave_OverOneChunk_CopiesTheFileInChunks (bool saveAsync)
+	{
+		await AssertWholeFileCopiedInChunks (SvgPastOneChunk (), "/in.svg", "/out.svg", saveAsync);
+	}
+
+	static byte[] SvgPastOneChunk ()
+	{
+		var open = "<svg width=\"2\" height=\"3\">"u8;
+		var close = "</svg>"u8;
+		var data = new byte[BytesPastOneChunk];
+		open.CopyTo (data);
+		Array.Fill (data, (byte)' ', open.Length, data.Length - open.Length - close.Length);
+		close.CopyTo (data.AsSpan (data.Length - close.Length));
+		return data;
+	}
+
 	const int BytesPastOneChunk = 80 * 1024;
 
 	static byte[] HeaderAndTrailingBytes (byte[] header)

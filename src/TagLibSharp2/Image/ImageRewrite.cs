@@ -132,5 +132,5 @@ static class ImageRewrite
 	static bool CopiesWholeFile (MediaFormat format) =>
 		format is MediaFormat.Tiff or MediaFormat.Dng
 			or MediaFormat.Bmp or MediaFormat.Pcx
-			or MediaFormat.Netpbm;
+			or MediaFormat.Netpbm or MediaFormat.Svg;
 }
