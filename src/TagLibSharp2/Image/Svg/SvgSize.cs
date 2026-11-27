@@ -179,9 +179,7 @@ static class SvgSize
 		public int Length { get; }
 
 		public int this[int index] =>
-			_unit == 1
-				? _data[index]
-				: _bigEndian ? (_data[2 * index] << 8) | _data[(2 * index) + 1] : _data[2 * index] | (_data[(2 * index) + 1] << 8);
+			_unit == 1 ? _data[index] : Endian.U16 (_data, 2 * index, le: !_bigEndian);
 
 		/// <summary>ASCII case-insensitive match of <paramref name="token"/> at <paramref name="index"/>.</summary>
 		public bool StartsAt (int index, string token)
