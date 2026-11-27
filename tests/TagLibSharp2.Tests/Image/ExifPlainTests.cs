@@ -11,8 +11,9 @@ namespace TagLibSharp2.Tests.Image;
 
 /// <summary>
 /// A field edit runs only on plain Exif. A strip, tile or thumbnail offset or length that is not SHORT or LONG,
-/// an array of those values named more than once, or a next-IFD field with only one, two or three of its four bytes,
-/// is refused before a plan is built. The block is left as it was. A wholly absent next field is still edited.
+/// an array of those values named more than once, a next-IFD field with only one, two or three of its four bytes,
+/// or a first entry whose readability would change, is refused before a plan is built. The block is left as it was.
+/// A wholly absent next field is still edited. A first-entry change that shows nothing new is still refused.
 /// </summary>
 [TestClass]
 [TestCategory ("Unit")]
@@ -144,6 +145,90 @@ public class ExifPlainTests
 		Assert.IsTrue (saved, error);
 		Assert.IsFalse (changed);
 		CollectionAssert.AreEqual (copy, tiff);
+	}
+
+	public static IEnumerable<object[]> ReadableThenUnreadHomes ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var home in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop" })
+				yield return [littleEndian, home];
+	}
+
+	// The only entry exiftool reads is the UserComment. After it comes a type-0 entry and a next field of 0, so
+	// removing the comment drops the table and shows nothing new. That flip is still not plain.
+	[TestMethod]
+	[DynamicData (nameof (ReadableThenUnreadHomes))]
+	public void Edit_RefusesWhenTheOnlyReadableEntryGoesAndLeavesAnUnreadFirstEntry (bool littleEndian, string home)
+	{
+		var tiff = ReadableThenUnread (littleEndian, home);
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{home} {(littleEndian ? "LE" : "BE")}";
+		Assert.IsFalse (ExifReaderModel.Exiftool (tiff).Strings ().ContainsKey (0x010F), where);
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "first entry", where);
+		CollectionAssert.AreEqual (copy, tiff, where);
+	}
+
+	// UserComment, then a type-0 entry the table would hide once it is first. The next field is present and zero.
+	static byte[] ReadableThenUnread (bool littleEndian, string home)
+	{
+		(int, int, long, long) comment = (0x9286, 7, 4, 0x61626364);
+		(int, int, long, long) hidden = (0x010F, 0, 1, 0);
+		static int Span (int entries) => 2 + (12 * entries) + 4;
+		var ifd0 = new List<(int, int, long, long)> ();
+		(int At, (int, int, long, long)[] Entries)? middle = null;
+		(int At, (int, int, long, long)[] Entries) edited;
+		long ifd0Next = 0;
+		switch (home) {
+			case "IFD0":
+				edited = (8, [comment, hidden]);
+				break;
+			case "IFD1": {
+				var ifd1 = 8 + Span (1);
+				ifd0.Add ((0x0100, 4, 1, 1));
+				ifd0Next = ifd1;
+				edited = (ifd1, [comment, hidden]);
+				break;
+			}
+			case "Exif": {
+				var exif = 8 + Span (1);
+				ifd0.Add ((0x8769, 4, 1, exif));
+				edited = (exif, [comment, hidden]);
+				break;
+			}
+			case "SubIFD": {
+				var sub = 8 + Span (1);
+				ifd0.Add ((0x014A, 4, 1, sub));
+				edited = (sub, [comment, hidden]);
+				break;
+			}
+			default: {
+				var exif = 8 + Span (1);
+				var iop = exif + Span (1);
+				ifd0.Add ((0x8769, 4, 1, exif));
+				middle = (exif, [(0xA005, 4, 1, iop)]);
+				edited = (iop, [comment, hidden]);
+				break;
+			}
+		}
+
+		var end = edited.At + Span (edited.Entries.Length);
+		var tiff = new TiffBuilder (end, bigEndian: !littleEndian).Header (8);
+		if (home == "IFD0")
+			tiff.Table (8, edited.Entries);
+		else
+			tiff.Table (8, [.. ifd0], ifd0Next);
+		if (middle is var (midAt, midEntries))
+			tiff.Table (midAt, midEntries);
+		if (home != "IFD0")
+			tiff.Table (edited.At, edited.Entries);
+		return tiff.ToArray ();
 	}
 
 	// The home table is the last bytes of the file. Its entries fit; `present` bytes of its 4-byte next field do.
