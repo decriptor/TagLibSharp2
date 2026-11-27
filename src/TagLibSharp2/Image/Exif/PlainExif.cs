@@ -22,6 +22,7 @@ static class PlainExif
 	{
 		string? why = null;
 		var removes = false;
+		HashSet<ValueArray>? named = null;
 		for (var t = 0; t < graph.Tables.Count; t++) {
 			var (at, count, roles) = graph.Tables[t];
 			var edited = (roles & IfdGraph.ReadRoles) != 0;
@@ -31,8 +32,16 @@ static class PlainExif
 				var tag = tiff.Tag (entry);
 				if (edited && tags.Contains (tag))
 					removes = true;
-				if (why is null && IsPairTag (tag) && tiff.Count (entry) > 0 && tiff.Type (entry) is not (3 or 4))
+				if (why is not null || !IsPairTag (tag) || tiff.Count (entry) == 0)
+					continue;
+				if (tiff.Type (entry) is not (3 or 4))
 					why = "has a strip, tile or thumbnail offset or length that is not SHORT or LONG";
+				else if (TryValueArray (tiff, entry, out var key)) {
+					// One pass over entries. A second name of the same array is a shared or cross-paired pair.
+					named ??= [];
+					if (!named.Add (key))
+						why = "names one strip, tile or thumbnail array more than once";
+				}
 			}
 
 			if (why is not null && removes)
@@ -43,4 +52,19 @@ static class PlainExif
 	}
 
 	static bool IsPairTag (int tag) => tag is 0x0111 or 0x0117 or 0x0144 or 0x0145 or 0x0201 or 0x0202;
+
+	// A SHORT or LONG array that lies wholly in the data. Inline values are the entry's own value field.
+	static bool TryValueArray (TiffReader tiff, long entry, out ValueArray key)
+	{
+		key = default;
+		var size = tiff.Type (entry) == 3 ? 2 : 4;
+		var items = tiff.Count (entry);
+		if (items == 0)
+			return false;
+		var at = items * size <= 4 ? entry + 8 : tiff.Value (entry);
+		if (at < 0 || at > tiff.Length || items > (tiff.Length - at) / size)
+			return false;
+		key = new ValueArray (at, items, size);
+		return true;
+	}
 }

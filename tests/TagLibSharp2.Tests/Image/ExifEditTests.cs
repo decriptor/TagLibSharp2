@@ -1238,28 +1238,25 @@ public class ExifEditTests
 		Assert.AreEqual (0, UserCommentsInEveryExifIfd (ExifOf (file.Render ().ToArray ())).Count);
 	}
 
-	// Two tables share one array of a strip pair and name different arrays on the other side. Only the second
-	// table's strip covers the UserComment value. Recording that pair on the cache hit keeps the strip; skipping
-	// the hit leaves it unprotected, and removing the comment zeroes it. Both byte orders, and either array shared.
+	// Two tables share one array of a strip pair. That structure is not plain, so the comment stays and so does
+	// the strip. Both byte orders, and either array shared.
 	[TestMethod]
 	[DataRow ("offsets", false)]
 	[DataRow ("offsets", true)]
 	[DataRow ("lengths", false)]
 	[DataRow ("lengths", true)]
-	public void Edit_SavesAStripNamedOnlyByTheSecondTableThatSharesAnArray (string shared, bool bigEndian)
+	public void Edit_RefusesAStripNamedOnlyByTheSecondTableThatSharesAnArray (string shared, bool bigEndian)
 	{
 		var tiff = SharedPairTiff (shared, bigEndian);
-		var payload = tiff[170..178];
 		var file = Open (InCarrier ("png", tiff), "a.png");
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
 
 		var where = $"{shared} {(bigEndian ? "big-endian" : "little-endian")}";
-		Assert.IsTrue (save.IsSuccess, $"{where}: {save.Error}");
-		var exif = ExifOf (file.Render ().ToArray ());
-		Assert.AreEqual (0, UserCommentsInEveryExifIfd (exif).Count, where);
-		CollectionAssert.AreEqual (payload, exif[170..178], $"{where}: the second table's strip");
+		Assert.IsFalse (save.IsSuccess, where);
+		StringAssert.Contains (save.Error, "more than once", where);
+		CollectionAssert.AreEqual (tiff, ExifOf (file.Render ().ToArray ()), where);
 	}
 
 	// exiftool 13.55 reads a type 13 (IFD) entry, so a table whose first remaining entry is type 13 stays

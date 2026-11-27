@@ -292,7 +292,8 @@ public class ExifEditScalingTests
 		var row = $"{op} {carrier} {shape}";
 		if (op == "edit" || (op == "clear" && carrier == "jpeg"))
 			Assert.IsTrue (small > 0, $"{row}: the walk ran");
-		Assert.IsTrue (large <= 40L * 4 * n, $"{row}: {large} steps for {4 * n} entries");
+		// 44 leaves room for the plainness pass, which visits both entries of each cycle table once (measured at 42).
+		Assert.IsTrue (large <= 44L * 4 * n, $"{row}: {large} steps for {4 * n} entries");
 		Assert.IsTrue (large <= Math.Max (6 * small, 64), $"{row}: 4x the entries took {large / (double)Math.Max (small, 1):F1}x the steps");
 		Bounds.AssertLinearAllocation (size => WalkInput (carrier, shape, size), data => RunWalk (op, data, name), n, runs: 3);
 
@@ -310,8 +311,8 @@ public class ExifEditScalingTests
 		}
 	}
 
-	// N tables share one strip, tile or thumbnail array of N values. Reading and recording that array once per table
-	// is quadratic in N; reading it once is linear. Comment removes the one UserComment, Title removes nothing.
+	// N tables share one strip, tile or thumbnail array of N values. A comment edit refuses that structure before
+	// the values are read, in linear steps. Title removes nothing and does not read them either.
 	[TestMethod]
 	[DataRow ("png", "comment", "strips")]
 	[DataRow ("png", "title", "strips")]
@@ -327,24 +328,23 @@ public class ExifEditScalingTests
 		var large = SharedStripSteps (carrier, field, shape, 4 * n);
 		var row = $"{field} {carrier} {shape}";
 		Assert.IsTrue (small > 0, $"{row}: the walk ran");
-		// A comment edit walks the tables when the file is opened, again to mark and again to check. A title edit
-		// marks and removes nothing. 320 steps a table is above both, and under reading the shared array once per table.
+		// The refusal walks each table and does not read the shared array. 320 steps a table is above that.
 		Assert.IsTrue (large <= 320L * 4 * n, $"{row}: {large} steps for {4 * n} tables");
 		Assert.IsTrue (large <= Math.Max (6 * small, 64), $"{row}: 4x the tables took {large / (double)small:F1}x the steps ({small} -> {large})");
 		Bounds.AssertLinearAllocation (size => SharedStripFile (carrier, shape, size), data => RunSharedStrip (field, data, carrier == "png" ? "a.png" : "a.jpg"), n, runs: 3);
 	}
 
 	// The reported sizes: about 85 KB at 2,000 tables and 169 KB at 4,000, each table sharing one strip array.
-	// A quadratic read exhausts a 1 GB heap at the larger one.
+	// Recording a range per table exhausts a 1 GB heap at the larger one. The edit refuses and leaves the comment.
 	[TestMethod]
 	[DataRow (2000)]
 	[DataRow (4000)]
-	public void Edit_SharedStripArray_AtTheReportedSizes_RemovesTheComment (int n)
+	public void Edit_SharedStripArray_AtTheReportedSizes_RefusesTheComment (int n)
 	{
 		var data = SharedStripFile ("png", "strips", n);
 		Assert.IsTrue (data.Length > (n == 2000 ? 80_000 : 160_000), $"N={n}: {data.Length} bytes");
 		var output = RunSharedStrip ("comment", data, "a.png");
-		Assert.AreEqual (0, UserCommentsInEveryExifIfd (ExifOf (output)).Count, $"N={n}: the comment is removed");
+		Assert.AreEqual (1, UserCommentsInEveryExifIfd (ExifOf (output)).Count, $"N={n}: the comment stays");
 	}
 
 	static byte[] SharedStripFile (string carrier, string shape, int n) => carrier == "png"
@@ -357,7 +357,7 @@ public class ExifEditScalingTests
 		IfdSteps.Count = 0;
 		var output = RunSharedStrip (field, data, carrier == "png" ? "a.png" : "a.jpg");
 		var comments = UserCommentsInEveryExifIfd (ExifOf (output)).Count;
-		Assert.AreEqual (field == "comment" ? 0 : 1, comments, $"{field} {carrier} {shape} N={n}");
+		Assert.AreEqual (1, comments, $"{field} {carrier} {shape} N={n}: the shared array is not plain, and a title removes nothing");
 		return IfdSteps.Count;
 	}
 
@@ -380,6 +380,12 @@ public class ExifEditScalingTests
 		else
 			file.Tag!.Title = "New";
 		var save = file.SaveToFile ("/out", new MockFileSystem ());
+		if (field == "comment") {
+			Assert.IsFalse (save.IsSuccess, save.Error);
+			StringAssert.Contains (save.Error, "more than once");
+			return data;
+		}
+
 		Assert.IsTrue (save.IsSuccess, save.Error);
 		return file.Render ().ToArray ();
 	}

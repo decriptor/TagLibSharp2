@@ -49,8 +49,11 @@ public static class KitProgram
 			return OnSmallStack (() => DepthProbe.Run (DepthCases.Find (args[1]), depth, Console.Out));
 		if (args.Length == 2 && args[0] == "kit-selftest")
 			return OnSmallStack (() => SelfTest (args[1]));
+		if (args.Length == 2 && args[0] == "kit-exif-cross"
+			&& int.TryParse (args[1], NumberStyles.None, CultureInfo.InvariantCulture, out var tables))
+			return Image.ExifPlainTests.CrossInChild (tables);
 
-		Console.Error.WriteLine ("usage: TagLibSharp2.Tests kit-depth <case> <depth> | kit-selftest ok|overflow|stack|throw|allocate|hang");
+		Console.Error.WriteLine ("usage: TagLibSharp2.Tests kit-depth <case> <depth> | kit-selftest ok|overflow|stack|throw|allocate|hang | kit-exif-cross <s>");
 		Console.Error.WriteLine ($"cases: {string.Join (", ", DepthCases.All.Select (c => c.Name))}");
 		return UsageExitCode;
 	}
