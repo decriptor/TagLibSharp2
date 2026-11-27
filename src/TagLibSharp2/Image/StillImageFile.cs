@@ -187,6 +187,8 @@ public sealed class StillImageFile : IMediaFile
 		ArgumentNullException.ThrowIfNull (path);
 #endif
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
+		if (SpliceFormat && !string.IsNullOrEmpty (SourcePath))
+			return WriteSpliceSource (path, fs, default);
 		if (!TryOutput (out var plan, out var bytes, out var error))
 			return FileWriteResult.Failure (error ?? "The image container could not be updated.");
 		if (plan is not null)
@@ -215,11 +217,35 @@ public sealed class StillImageFile : IMediaFile
 		ArgumentNullException.ThrowIfNull (path);
 #endif
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
+		if (SpliceFormat && !string.IsNullOrEmpty (SourcePath))
+			return Task.FromResult (WriteSpliceSource (path, fs, cancellationToken));
 		if (!TryOutput (out var plan, out var bytes, out var error))
 			return Task.FromResult (FileWriteResult.Failure (error ?? "The image container could not be updated."));
 		if (plan is not null)
 			return Task.FromResult (WritePlan (path, fs, plan, cancellationToken));
 		return AtomicFileWriter.WriteAsync (path, bytes, fs, cancellationToken);
+	}
+
+	bool SpliceFormat => Format is MediaFormat.Jpeg or MediaFormat.Png or MediaFormat.Gif;
+
+	// The source is opened before the plan. A splice failure disposes it and beats a cancelled token.
+	FileWriteResult WriteSpliceSource (string path, IFileSystem fileSystem, CancellationToken cancellationToken)
+	{
+		OpenedFile? source = null;
+		try {
+			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var openError))
+				return openError;
+			if (!TryOutput (out var plan, out var bytes, out var error))
+				return FileWriteResult.Failure (error ?? "The image container could not be updated.");
+			if (plan is null)
+				return AtomicFileWriter.Write (path, bytes.Span, fileSystem);
+
+			var opened = source!;
+			source = null;
+			return CopyOpened (path, opened, plan, cancellationToken);
+		} finally {
+			source?.Dispose ();
+		}
 	}
 
 	// A plan when this format copies original ranges; otherwise the whole file in one buffer.
@@ -256,7 +282,10 @@ public sealed class StillImageFile : IMediaFile
 
 		var chunk = StreamCopy.Rent ();
 		try {
-			return AtomicFileWriter.WriteStream (path, fileSystem, output => plan.Write (null, _data, output, chunk));
+			return AtomicFileWriter.WriteStream (
+				path,
+				fileSystem,
+				output => plan.Write (null, _data, output, chunk, cancellationToken));
 		} finally {
 			StreamCopy.Return (chunk);
 		}
@@ -270,25 +299,39 @@ public sealed class StillImageFile : IMediaFile
 		CancellationToken cancellationToken = default)
 	{
 		OpenedFile? source = null;
-		byte[]? chunk = null;
 		try {
 			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var error))
 				return error;
-			if (source!.Length < plan.SourceEnd)
+
+			var opened = source!;
+			source = null;
+			return CopyOpened (path, opened, plan, cancellationToken);
+		} finally {
+			source?.Dispose ();
+		}
+	}
+
+	// Caller has transferred ownership of source. This disposes it on every path.
+	static FileWriteResult CopyOpened (
+		string path,
+		OpenedFile source,
+		ImagePlan plan,
+		CancellationToken cancellationToken)
+	{
+		byte[]? chunk = null;
+		try {
+			if (source.Length < plan.SourceEnd)
 				return FileWriteResult.Failure ("The source ended before the requested bytes were copied");
 			if (cancellationToken.IsCancellationRequested)
 				return FileWriteResult.Failure ("Failed to re-read source file: Operation was cancelled");
 
 			chunk = StreamCopy.Rent ();
 			var copyBuffer = chunk;
-			var opened = source!;
-			var written = PathSave.Replace (path, opened, output => {
-				plan.Write (opened.Stream, default, output, copyBuffer);
+			return PathSave.Replace (path, source, output => {
+				plan.Write (source.Stream, default, output, copyBuffer, cancellationToken);
 			});
-			source = null;
-			return written;
 		} finally {
-			source?.Dispose ();
+			source.Dispose ();
 			if (chunk is not null)
 				StreamCopy.Return (chunk);
 		}

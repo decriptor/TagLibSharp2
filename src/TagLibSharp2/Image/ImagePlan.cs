@@ -223,24 +223,62 @@ sealed class ImagePlan
 	/// <param name="held">Original bytes used when <paramref name="source"/> is null.</param>
 	/// <param name="destination">Stream that receives the output.</param>
 	/// <param name="chunk">Buffer from <see cref="StreamCopy.Rent"/>.</param>
-	public void Write (Stream? source, ReadOnlySpan<byte> held, Stream destination, byte[] chunk)
+	/// <param name="cancellationToken">Checked before each chunk. Cancelled copies throw.</param>
+	public void Write (
+		Stream? source,
+		ReadOnlySpan<byte> held,
+		Stream destination,
+		byte[] chunk,
+		CancellationToken cancellationToken = default)
 	{
 		foreach (var piece in _pieces) {
 			if (!piece.IsRange) {
-				StreamCopy.Write (destination, piece.Bytes!, chunk);
+				WriteChunked (destination, piece.Bytes, chunk, cancellationToken);
 				continue;
 			}
 
 			if (source is not null) {
 				if (source.Position != piece.Offset)
 					source.Position = piece.Offset;
-				StreamCopy.Copy (source, destination, piece.Length, chunk);
+				CopyChunked (source, destination, piece.Length, chunk, cancellationToken);
 				continue;
 			}
 
 			var offset = checked ((int)piece.Offset);
 			var count = checked ((int)piece.Length);
-			StreamCopy.Write (destination, held.Slice (offset, count), chunk);
+			WriteChunked (destination, held.Slice (offset, count), chunk, cancellationToken);
+		}
+	}
+
+	// One StreamCopy call is at most one chunk, so a cancel during a write stops the next chunk.
+	static void CopyChunked (
+		Stream source,
+		Stream destination,
+		long count,
+		byte[] chunk,
+		CancellationToken cancellationToken)
+	{
+		var left = count;
+		while (left > 0) {
+			cancellationToken.ThrowIfCancellationRequested ();
+			var take = left < StreamCopy.ChunkSize ? left : StreamCopy.ChunkSize;
+			StreamCopy.Copy (source, destination, take, chunk);
+			left -= take;
+		}
+	}
+
+	static void WriteChunked (
+		Stream destination,
+		ReadOnlySpan<byte> data,
+		byte[] chunk,
+		CancellationToken cancellationToken)
+	{
+		var offset = 0;
+		while (offset < data.Length) {
+			cancellationToken.ThrowIfCancellationRequested ();
+			var count = Math.Min (StreamCopy.ChunkSize, data.Length - offset);
+			StreamCopy.Write (destination, data.Slice (offset, count), chunk);
+			offset += count;
 		}
 	}
 

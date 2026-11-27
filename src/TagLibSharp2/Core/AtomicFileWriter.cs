@@ -186,6 +186,10 @@ public static class AtomicFileWriter
 			destinationExisted = fileSystem.FileExists (path);
 			fileSystem.Move (tempPath, path);
 			return FileWriteResult.Success (ReportedBytes (bytesWritten));
+		} catch (OperationCanceledException) {
+			if (tempPath is not null)
+				CleanupTempFile (tempPath, fileSystem);
+			return FileWriteResult.Failure ("Operation was cancelled");
 		} catch (EndOfStreamException ex) {
 			return FailWrite (
 				tempPath,
