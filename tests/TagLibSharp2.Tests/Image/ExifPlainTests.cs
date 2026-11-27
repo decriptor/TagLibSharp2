@@ -624,6 +624,42 @@ public class ExifPlainTests
 		CollectionAssert.AreEqual (copy, tiff);
 	}
 
+	// A comment that sits only in a GPS table, or only in the next IFD of an Exif table (protected, not read with
+	// Exif tags), is not a copy the field edit removes. The block is left as it is.
+	[TestMethod]
+	[DataRow (true)]
+	[DataRow (false)]
+	public void Edit_OfAComment_LeavesACommentThatSitsOnlyOutsideAReadTable (bool littleEndian)
+	{
+		var order = littleEndian ? "LE" : "BE";
+		// The comment is the table's first entry. Behind it is a type exiftool does not read, so taking the comment
+		// out would hide the table. These tables are not edited, so the comment stays and the block is unchanged.
+		var gps = new TiffBuilder (90, bigEndian: !littleEndian).Header (8)
+			.Table (8, [(0x010E, 2, 4, 0x41424344), (0x8825, 4, 1, 40)])
+			.Table (40, [(0x9286, 7, 4, 0x61626364), (0x010F, 0, 1, 0)])
+			.ToArray ();
+		var protect = new TiffBuilder (110, bigEndian: !littleEndian).Header (8)
+			.Table (8, [(0x8769, 4, 1, 40)])
+			.Table (40, [(0x9003, 2, 4, 0x31323334)], next: 70)
+			.Table (70, [(0x9286, 7, 4, 0x61626364), (0x010F, 0, 1, 0)])
+			.ToArray ();
+
+		foreach (var (name, tiff) in new[] { ("GPS", gps), ("protect-only", protect) })
+			AssertLeftAsItIs (tiff, $"{order} {name}");
+	}
+
+	static void AssertLeftAsItIs (byte[] tiff, string where)
+	{
+		var copy = (byte[])tiff.Clone ();
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsTrue (saved, $"{where}: {error}");
+		Assert.IsFalse (changed, where);
+		CollectionAssert.AreEqual (copy, tiff, where);
+	}
+
 	static byte[] GivenTwice (bool littleEndian, string home, int pairTag)
 	{
 		const int Ifd0 = 8;
