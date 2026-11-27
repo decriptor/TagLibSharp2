@@ -8,8 +8,9 @@ namespace TagLibSharp2.Image.Exif;
 /// <summary>
 /// Whether a field edit may run. One pass over the tables already walked, before a <see cref="RemovalPlan"/> records
 /// a range or reads a value array. The structure is not plain when a strip, tile or thumbnail offset or length is
-/// not SHORT or LONG, when one of those arrays is named twice, when one table names the same offset or length
-/// twice, when a complete pair of them names more values than half the bytes, when a classic next-IFD field has
+/// not SHORT or LONG, when one of those arrays does not lie wholly in the data, when one of those arrays is named
+/// twice, when one table names the same offset or length twice, when a complete pair of them names more values
+/// than half the bytes, when a classic next-IFD field has
 /// only one, two or three of its four bytes (TIFF 6.0 §2), or
 /// when removing an entry would change whether exiftool reads that table's first entry. An absent next field is
 /// plain. An empty table is read. A first-entry change that shows nothing new is still refused.
@@ -21,9 +22,9 @@ static class PlainExif
 
 	/// <summary>
 	/// Strip, tile and thumbnail offset/length tags (TIFF 6.0 §3, tags 0x0111/0x0117, 0x0144/0x0145, and
-	/// JPEGInterchangeFormat 0x0201/0x0202) are plain only as SHORT (3) or LONG (4), and only when each array is
-	/// named once. A complete pair whose values, counted from the entry headers, exceed half the bytes is not
-	/// plain. A next-IFD field that is partly in the data is not plain. The first entry exiftool will see is
+	/// JPEGInterchangeFormat 0x0201/0x0202) are plain only as SHORT (3) or LONG (4), and only when each array lies
+	/// wholly in the data and is named once. A complete pair whose values, counted from the entry headers, exceed
+	/// half the bytes is not plain. A next-IFD field that is partly in the data is not plain. The first entry exiftool will see is
 	/// plain only when <see cref="TiffReader.FormatExiftoolReads"/> does not change; GPS tables are not edited.
 	/// </summary>
 	public static Verdict Judge (TiffReader tiff, IfdGraph graph, HashSet<int> tags)
@@ -82,7 +83,8 @@ static class PlainExif
 					var slot = PairSlot (tag);
 					slots[slot] = key;
 					got |= 1 << slot;
-				}
+				} else
+					why = "has a strip, tile or thumbnail array that does not fit in its data";
 			}
 
 			// Both sides of a pair, from this table's headers. A lone offset or length is not a value the plan reads.

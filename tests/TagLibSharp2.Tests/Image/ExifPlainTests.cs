@@ -12,7 +12,8 @@ namespace TagLibSharp2.Tests.Image;
 
 /// <summary>
 /// A field edit runs only on plain Exif. A strip, tile or thumbnail offset or length that is not SHORT or LONG,
-/// an array of those values named more than once, a complete pair that names more values than half the bytes,
+/// an array of those values that does not lie wholly in the data, an array of those values named more than once,
+/// a complete pair that names more values than half the bytes,
 /// a next-IFD field with only one, two or three of its four bytes, or a first entry whose readability would
 /// change, is refused before a plan is built. The block is left as it was. A wholly absent next field is still
 /// edited. A first-entry change that shows nothing new is still refused.
@@ -661,6 +662,68 @@ public class ExifPlainTests
 		new TiffBuilder (80, bigEndian: !littleEndian).Header (8)
 			.Table (8, [(0x9286, 7, 4, 0x61626364), (offsets, 3, 3, 0), (lengths, 3, 3, 0)])
 			.ToArray ();
+
+	public static IEnumerable<object[]> TruncatedPairArrays ()
+	{
+		foreach (var littleEndian in new[] { true, false })
+			foreach (var home in new[] { "IFD0", "IFD1", "Exif", "SubIFD", "Interop", "GPS" })
+				foreach (var (offsets, lengths) in new[] { (0x0111, 0x0117), (0x0144, 0x0145), (0x0201, 0x0202) })
+					foreach (var offsetsBad in new[] { true, false })
+						yield return [littleEndian, home, offsets, lengths, offsetsBad];
+	}
+
+	// A SHORT array that starts in the block and runs past its end does not fit. The gate refuses that on its own,
+	// before the value budget, whichever side and whichever table names it.
+	[TestMethod]
+	[DynamicData (nameof (TruncatedPairArrays))]
+	public void Edit_RefusesWhenAPairArrayDoesNotFit (bool littleEndian, string home, int offsets, int lengths, bool offsetsBad)
+	{
+		var tiff = TruncatedPair (littleEndian, home, offsets, lengths, offsetsBad);
+		var copy = (byte[])tiff.Clone ();
+		var where = $"{home} {(littleEndian ? "LE" : "BE")} {(offsetsBad ? offsets : lengths):X4}";
+		var tag = new ImageTag (MediaFormat.Png, ImageStores.CommentOnly) { Comment = "n" };
+
+		var saved = ExifEditor.TryRemove (tiff, 0, tag, "eXIf", out var changed, out var error);
+
+		Assert.IsFalse (saved, $"{where}: saved");
+		Assert.IsFalse (changed, where);
+		StringAssert.Contains (error, "cannot be updated", where);
+		StringAssert.Contains (error, "does not fit in its data", where);
+		Assert.IsFalse (error.Contains ("more strip, tile or thumbnail values than its data holds"), where + ": " + error);
+		CollectionAssert.AreEqual (copy, tiff, where);
+	}
+
+	// Six SHORT values at offset 96 need 12 bytes, and the block ends four bytes later. The other side is one inline value.
+	static byte[] TruncatedPair (bool littleEndian, string home, int offsets, int lengths, bool offsetsBad)
+	{
+		const int Ifd0 = 8;
+		var comment = (0x9286, 7, 4L, 0x61626364L);
+		(int, int, long, long) side = offsetsBad ? (offsets, 3, 6, 96) : (lengths, 3, 6, 96);
+		(int, int, long, long) other = offsetsBad ? (lengths, 3, 1, 1) : (offsets, 3, 1, 1);
+		var tiff = new TiffBuilder (100, bigEndian: !littleEndian).Header (Ifd0);
+		switch (home) {
+			case "IFD0":
+				tiff.Table (Ifd0, [comment, side, other]);
+				break;
+			case "IFD1":
+				tiff.Table (Ifd0, [comment], 40).Table (40, [side, other]);
+				break;
+			case "Exif":
+				tiff.Table (Ifd0, [comment, (0x8769, 4, 1, 40)]).Table (40, [side, other]);
+				break;
+			case "SubIFD":
+				tiff.Table (Ifd0, [comment, (0x014A, 4, 1, 40)]).Table (40, [side, other]);
+				break;
+			case "Interop":
+				tiff.Table (Ifd0, [comment, (0x8769, 4, 1, 40)]).Table (40, [(0xA005, 4, 1, 60)]).Table (60, [side, other]);
+				break;
+			default:
+				tiff.Table (Ifd0, [comment, (0x8825, 4, 1, 40)]).Table (40, [side, other]);
+				break;
+		}
+
+		return tiff.ToArray ();
+	}
 
 	public static IEnumerable<object[]> PairTagsGivenTwice ()
 	{

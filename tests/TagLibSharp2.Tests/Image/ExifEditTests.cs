@@ -705,9 +705,10 @@ public class ExifEditTests
 	}
 
 	[TestMethod]
-	public void Edit_ExifWithStripOffsetsPastTheData_DoesNotThrow ()
+	public void Edit_RefusesWhenStripOffsetsStartPastTheData ()
 	{
-		// StripOffsets (0x0111) as two LONGs at an offset past the block, and its byte counts likewise.
+		// StripOffsets (0x0111) as two LONGs at an offset past the block, and its byte counts likewise. The array
+		// does not fit, so the artist edit is refused and nothing is written.
 		var tiff = ExifTiff ([(0x010F, "Canon"), (0x013B, "Old artist")], []);
 		var far = Concat (tiff[..10], new byte[12 * 2], tiff[10..]);
 		far[8] = 4;
@@ -726,11 +727,12 @@ public class ExifEditTests
 				BitConverter.GetBytes (value + 24).CopyTo (far, entry + 8);
 		}
 
-		var file = Open (Png (PngChunk ("eXIf", far), Text ("Author", "a")), "a.png");
+		var input = Png (PngChunk ("eXIf", far), Text ("Author", "a"));
+		var file = Open (input, "a.png");
 		file.Tag!.Artist = "New";
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		Assert.AreEqual ("Canon", ExifReaderModel.Of (PngChunks (file.Render ().ToArray ()).Single (c => c.Type == "eXIf").Payload).Strings ()[0x010F]);
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), "strip offsets past the data");
+		StringAssert.Contains (save.Error, "does not fit in its data");
 	}
 
 	// exiftool reads an interoperability IFD with the Exif tags and follows its pointers, and follows a pointer typed
@@ -929,8 +931,8 @@ public class ExifEditTests
 	}
 
 	// Strip offsets and byte counts given as SHORT or LONG arrays out of line: a removed UserComment that shares bytes
-	// with a strip they name is not plain, so the edit is refused. An array that runs past the data names no strip
-	// (exiftool reads none), so that value is cleared and the edit saves.
+	// with a strip they name is not plain, so the edit is refused. An array that runs past the data does not fit, so
+	// that edit is refused before the value budget and nothing is written.
 	[TestMethod]
 	[DataRow (3, false, false)]
 	[DataRow (4, false, false)]
@@ -965,15 +967,9 @@ public class ExifEditTests
 		file.Tag!.Comment = "New";
 
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
-		if (!cut) {
-			AssertUnchangedRefusal (save, input, file.Render ().ToArray (), $"type {type} atTheEnd {atTheEnd}");
-			return;
-		}
-
-		Assert.IsTrue (save.IsSuccess, save.Error);
-		var exif = ExifOf (file.Render ().ToArray ());
-		AssertOnlyTheCopiesAreGone (data, exif, "strips", 0x9286);
-		CollectionAssert.AreEqual (new byte[removed.Length], exif[V..(V + removed.Length)], "no strip is named: the value is cleared");
+		AssertUnchangedRefusal (save, input, file.Render ().ToArray (), $"type {type} atTheEnd {atTheEnd} cut {cut}");
+		if (cut)
+			StringAssert.Contains (save.Error, "does not fit in its data");
 	}
 
 	// A data range of length 0 (an empty thumbnail) protects no byte: the removed XPComment around its offset is
