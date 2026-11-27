@@ -31,7 +31,7 @@ TagLibSharp2 reads and writes tags for the audio and video formats below. JPEG, 
 | Matroska/WebM | P2 | ✅ | ✅ | ✅ | - | Tag values, chapters, picture attachments, and track enabled flags are saved. Other attachments are preserved, not rewritten |
 | MPEG PS / video ES | P2 | ✅ | ✅ | ✅ | - | ID3v2 and ID3v1 around the stream; duration from PTS or GOP time codes |
 | AVI (incl. OpenDML) | P2 | ✅ | ✅ | ✅ | - | RIFF INFO and ID32 tags; movi and every index kept valid. A path save copies movi in 64 KB pieces |
-| JPEG, PNG, GIF, BMP, PCX, Netpbm, TIFF, DNG, SVG | P2 | ✅ | Dimensions | PNG text, GIF comment, JPEG COM | - | Other image metadata is not read or written yet |
+| JPEG, PNG, GIF, BMP, PCX, Netpbm, TIFF, DNG, SVG | P2 | ✅ | Dimensions | PNG text, GIF comment, JPEG COM | - | A path save copies pixels in 64 KB pieces. Render still copies every other byte. Other image metadata is not read or written yet |
 | Ogg FLAC | P1 | ✅ | ✅ | ✅ | - | Recently added |
 | AAC (ADTS/ADIF) | P1 | ✅ | ✅ | ✅ | - | ID3v2, APEv2, ID3v1 tags |
 | Speex | P1 | ❌ | ❌ | ❌ | LOW | Uses Vorbis Comment |

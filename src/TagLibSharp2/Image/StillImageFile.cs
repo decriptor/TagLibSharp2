@@ -13,7 +13,8 @@ namespace TagLibSharp2.Image;
 /// <remarks>
 /// PNG text keywords, the GIF comment, and the JPEG COM marker can be edited
 /// through <see cref="Tag"/>. <see cref="Render"/> copies every other byte,
-/// including the pixels. BMP, PCX, Netpbm, TIFF, DNG, and SVG have no text
+/// including the pixels. A path save copies those pixels in 64 KB pieces.
+/// BMP, PCX, Netpbm, TIFF, DNG, and SVG have no text
 /// block here yet, so <see cref="Tag"/> is null and <see cref="Render"/> is
 /// the file that was read.
 /// </remarks>
