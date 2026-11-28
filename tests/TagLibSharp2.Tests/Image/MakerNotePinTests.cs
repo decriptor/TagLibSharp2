@@ -387,6 +387,47 @@ public partial class MakerNoteByteTests
 		CollectionAssert.AreEqual (comment, bytes[180..188]);
 	}
 
+	// Twenty-four maker notes share one IFD and differ by a byte, so each walk counts its entries again. The reads
+	// reach the TIFF length on the last entry of the last note, and that entry is not read.
+	static byte[] NotesWhoseEntryReadsEqualTheTiffLength ()
+	{
+		const int notes = 24;
+		const int entries = 34;
+		const int length = (notes * entries) - 1;
+		const int exif = 26;
+		var exifCount = notes + 1;
+		var commentAt = exif + 2 + (exifCount * 12) + 4;
+		var noteAt = commentAt + 8;
+		var table = 2 + (entries * 12) + 4;
+		var maker = new (int Tag, int Type, long Count, long Value)[entries];
+		for (var n = 0; n < entries; n++)
+			maker[n] = (n + 1, 1, 1, 0);
+		var exifEntries = new (int Tag, int Type, long Count, long Value)[exifCount];
+		for (var n = 0; n < notes; n++)
+			exifEntries[n] = (0x927C, 7, table + n, noteAt);
+		exifEntries[notes] = (0x9286, 7, 8, commentAt);
+		return new TiffBuilder (length).Header (8)
+			.Table (8, [(0x8769, 4, 1, exif)])
+			.Table (exif, exifEntries)
+			.Entries (noteAt, maker)
+			.Bytes (commentAt, [0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8])
+			.ToArray ();
+	}
+
+	[TestMethod]
+	public void Comment_StaysWhenMakerNoteEntryReadsReachTheTiffLength ()
+	{
+		var sentinel = new byte[] { 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8 };
+		var fileBytes = Png (PngChunk ("eXIf", NotesWhoseEntryReadsEqualTheTiffLength ()));
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.IsTrue (file.Render ().Span.IndexOf (sentinel) >= 0);
+	}
+
 	static ImageTag CommentTag ()
 	{
 		var tag = new ImageTag (MediaFormat.Png, ImageStores.Comment);

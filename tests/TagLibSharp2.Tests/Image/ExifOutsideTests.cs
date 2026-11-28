@@ -252,6 +252,195 @@ public class ExifOutsideTests
 		return Wrap (Tiff (offset));
 	}
 
+	[TestMethod]
+	public void Comment_OfAJpegWhoseStuffedMarkerHidesNoEndOfImage_IsRefused ()
+	{
+		var fileBytes = JpegWithExternalNote (located: false, trailer: true, comment: null);
+		var eoi = fileBytes.Length - Trailer.Length - 2;
+		fileBytes[eoi - 1] = 0x00;
+		var file = Open (fileBytes, "a.jpg");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.jpg", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (JpegReason, save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	public void Comment_OfTheSameLength_IsSavedWhenThePngAnchorStays ()
+	{
+		var fileBytes = PngNaming (fileAt: -1, comment: "abcd", between: false);
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "wxyz";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var output = file.Render ().ToArray ();
+		CollectionAssert.AreEqual (Trailer, output[^Trailer.Length..]);
+		Assert.AreEqual (fileBytes.Length, output.Length);
+	}
+
+	[TestMethod]
+	public void Comment_IsRefusedWhenTheNamedByteIsStrictlyAfterThePngChunk ()
+	{
+		var fileBytes = PngNaming (fileAt: -1, comment: "abcd", between: true);
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "longer";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (PngReason, save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	public void Comment_OfTheSameLength_IsSavedWhenTheNoteNamesTheCrc ()
+	{
+		var fileBytes = PngNaming (fileAt: int.MinValue, comment: "abcd", between: true);
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "wxyz";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var output = file.Render ().ToArray ();
+		CollectionAssert.AreEqual (Trailer, output[^Trailer.Length..]);
+		Assert.AreEqual (fileBytes.Length, output.Length);
+	}
+
+	[TestMethod]
+	public void Comment_IsRefusedWhenTheSignedNoteNamesTheByteAfterIdat ()
+	{
+		var fileBytes = PngNaming (fileAt: -4, comment: null, between: true, signature: true);
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (PngReason, save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	public void Comment_IsRefusedWhenTheNoteNamesTheLastTrailerByte ()
+	{
+		var fileBytes = PngNaming (fileAt: -2, comment: "abcd", between: true);
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "longer";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (PngReason, save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	public void Comment_IsRefusedWhenTheNoteNamesTheByteAfterIdat ()
+	{
+		var fileBytes = PngNaming (fileAt: -3, comment: "abcd", between: true);
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "longer";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (PngReason, save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	public void Comment_OfAPngWhoseHexProfileIsNotLocated_IsRefused ()
+	{
+		var fileBytes = PngWithUnlocatedHexProfile ();
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "longer";
+
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (PngReason, save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	// fileAt: -1 the trailer, -2 the last file byte, -3 the first IDAT payload byte, -4 the first byte of the IDAT
+	// chunk, int.MinValue the first CRC byte of eXIf. between puts a Title chunk after eXIf. signature prefixes Exif\0\0.
+	static byte[] PngNaming (int fileAt, string? comment, bool between, bool signature = false)
+	{
+		byte[] Tiff (int offset)
+		{
+			const int ifd0 = 8;
+			var exif = ifd0 + 2 + 12 + 4;
+			var note = exif + 2 + (2 * 12) + 4;
+			var noteLen = 2 + 12 + 4;
+			var length = note + noteLen;
+			var tiff = new TiffBuilder (length).Header (ifd0);
+			tiff.Table (ifd0, [(0x8769, 4, 1, exif)]);
+			tiff.Table (exif, [(0x927C, 7, noteLen, note), (0x9286, 7, 4, 0x41424344)]);
+			tiff.Entries (note, (0x0001, 7, Trailer.Length, offset));
+			return tiff.ToArray ();
+		}
+
+		byte[] Wrap (byte[] tiff)
+		{
+			var payload = signature ? Concat ("Exif\0\0"u8.ToArray (), tiff) : tiff;
+			var chunks = new List<byte[]> { PngChunk ("eXIf", payload) };
+			if (between)
+				chunks.Add (Text ("Title", "t"));
+			if (comment is not null)
+				chunks.Add (Text ("Comment", comment));
+			return Concat (Png (chunks.ToArray ()), Trailer);
+		}
+
+		var probe = Wrap (Tiff (0));
+		var marker = "II*"u8.ToArray ();
+		var tiffBase = 0;
+		for (var i = 0; i + 3 <= probe.Length; i++) {
+			if (probe[i] == marker[0] && probe[i + 1] == marker[1] && probe[i + 2] == marker[2]) {
+				tiffBase = i;
+				break;
+			}
+		}
+
+		var tiffLength = Tiff (0).Length;
+		var at = fileAt switch {
+			-1 => probe.Length - Trailer.Length,
+			-2 => probe.Length - 1,
+			-3 => IndexOf (probe, "IDAT"u8) + 4,
+			-4 => IndexOf (probe, "IDAT"u8) - 3,
+			_ => tiffBase + tiffLength
+		};
+		return Wrap (Tiff (at - tiffBase));
+	}
+
+	static int IndexOf (byte[] file, ReadOnlySpan<byte> needle)
+	{
+		var at = file.AsSpan ().IndexOf (needle);
+		return at < 0 ? 0 : at;
+	}
+
+	// An unlocated maker note and a description that starts at the TIFF end, in a hex profile, with bytes after IEND.
+	static byte[] PngWithUnlocatedHexProfile ()
+	{
+		var header = "OLYMP\0\u0001\0"u8.ToArray ();
+		const int ifd0 = 8;
+		var exif = ifd0 + 2 + (2 * 12) + 4;
+		var note = exif + 2 + (2 * 12) + 4;
+		var noteLen = header.Length + 2 + 12 + 4;
+		var length = note + noteLen;
+		var tiff = new TiffBuilder (length).Header (ifd0);
+		tiff.Table (ifd0, [(0x010E, 2, 5, length), (0x8769, 4, 1, exif)]);
+		tiff.Table (exif, [(0x927C, 7, noteLen, note), (0x9286, 7, 4, 0x41424344)]);
+		tiff.Bytes (note, header);
+		tiff.Entries (note + header.Length, (0x0001, 7, 4, 0));
+		return Concat (Png (RawProfile ("exif", tiff.ToArray ()), Text ("Comment", "abcd")), Trailer);
+	}
+
 	// The note header is not a classic IFD, so the note is not located. Bytes after IEND are the anchor.
 	static byte[] PngWithUnlocatedNote ()
 	{

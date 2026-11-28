@@ -511,4 +511,23 @@ public class ExifEditRefusalTests
 		StringAssert.Contains (save.Error, ExifEditor.StructureWouldChange);
 		Assert.AreEqual (save.Error.IndexOf ("Comment", StringComparison.Ordinal), save.Error.LastIndexOf ("Comment", StringComparison.Ordinal));
 	}
+
+	[TestMethod]
+	public void Comment_OfAJpegThatIsNotTiff_NamesTheExifBlock ()
+	{
+		var block = new byte[8];
+		"XX\0*"u8.CopyTo (block);
+		block[4] = 0x86;
+		block[5] = 0x92;
+		block[6] = 0x07;
+		var input = InCarrier ("jpeg", block);
+		var file = Open (input, "a.jpg");
+		file.Tag!.Comment = "New";
+
+		var save = file.SaveToFile ("/a.jpg", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual ("The JPEG Exif block is not a TIFF structure, so its copy of Comment cannot be updated.", save.Error);
+		CollectionAssert.AreEqual (input, file.Render ().ToArray ());
+	}
 }
