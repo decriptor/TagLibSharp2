@@ -108,6 +108,7 @@ public class XmpMirrorTests
 	// copies the bytes gathered so far; four times the copies then adds about four times as much, and the bound
 	// is three. A list of pieces adds about twice as much.
 	[TestMethod]
+	[DoNotParallelize]
 	[DataRow ("png")]
 	[DataRow ("gif")]
 	[DataRow ("jpeg")]

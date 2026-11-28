@@ -287,6 +287,106 @@ public partial class MakerNoteByteTests
 			.ToArray ();
 	}
 
+	[TestMethod]
+	public void KeptValueThatStartsAtTheTiffEnd_IsAnAnchor ()
+	{
+		const int length = 40;
+		var bytes = new TiffBuilder (length).Header (8)
+			.Table (8, [(0x010E, 2, 5, length), (0x9286, 2, 4, 0x41424344)])
+			.ToArray ();
+
+		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error, out var anchors), error);
+
+		Assert.IsTrue (changed);
+		Assert.AreEqual (1, anchors.PastBlock.Length);
+		Assert.AreEqual (length, anchors.PastBlock[0].Start);
+		Assert.AreEqual (length + 5L, anchors.PastBlock[0].End);
+	}
+
+	[TestMethod]
+	public void MakerValueThatStartsAtTheTiffEnd_IsAnAnchor ()
+	{
+		const int length = 120;
+		var bytes = new TiffBuilder (length).Header (8)
+			.Table (8, [(0x8769, 4, 1, 26)])
+			.Table (26, [(0x927C, 7, 18, 80), (0x9286, 2, 4, 0x41424344)])
+			.Entries (80, (0x0001, 7, 8, length))
+			.ToArray ();
+
+		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error, out var anchors), error);
+
+		Assert.IsTrue (changed);
+		Assert.AreEqual (1, anchors.PastBlock.Length);
+		Assert.AreEqual (length, anchors.PastBlock[0].Start);
+		Assert.AreEqual (length + 8L, anchors.PastBlock[0].End);
+	}
+
+	[TestMethod]
+	public void MakerValueThatStartsInsideAndRunsPastTheTiff_IsNotAnAnchor ()
+	{
+		const int length = 120;
+		var bytes = new TiffBuilder (length).Header (8)
+			.Table (8, [(0x8769, 4, 1, 26)])
+			.Table (26, [(0x927C, 7, 18, 80), (0x9286, 2, 4, 0x41424344)])
+			.Entries (80, (0x0001, 7, 8, length - 2))
+			.ToArray ();
+
+		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error, out var anchors), error);
+
+		Assert.IsTrue (changed);
+		Assert.AreEqual (0, anchors.PastBlock.Length);
+	}
+
+	[TestMethod]
+	public void CommentBeforeTheFirstTable_StaysWhenTheNoteIsNotLocated ()
+	{
+		var comment = new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA };
+		var bytes = new TiffBuilder (120).Header (8)
+			.Table (8, [(0x8769, 4, 1, 30)], 100)
+			.Table (30, [(0x927C, 7, 18, 60), (0x9286, 7, comment.Length, 90)])
+			.Entries (60, (0x0001, 0, 1, 0))
+			.Bytes (90, comment)
+			.Table (100, [])
+			.ToArray ();
+
+		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error), error);
+
+		Assert.IsTrue (changed);
+		CollectionAssert.AreEqual (comment, bytes[90..100]);
+	}
+
+	[TestMethod]
+	public void CommentPastAnUnreadTable_IsCleared ()
+	{
+		var comment = new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55 };
+		const int length = 80;
+		var bytes = new TiffBuilder (length).Header (8)
+			.Table (8, [(0x8769, 4, 1, 60), (0x9286, 2, comment.Length, length)])
+			.U16 (60, 50)
+			.ToArray ();
+
+		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error), error);
+
+		Assert.IsTrue (changed);
+	}
+
+	[TestMethod]
+	public void SecondWalkOfAnUnlocatedNote_StillLeavesTheComment ()
+	{
+		var comment = new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
+		var bytes = new TiffBuilder (220).Header (8)
+			.Table (8, [(0x8769, 4, 1, 38), (0x927C, 7, 18, 80)])
+			.Table (38, [(0x927C, 7, 18, 80), (0x9286, 7, comment.Length, 180)])
+			.Entries (80, (0x0001, 0, 1, 0))
+			.Bytes (180, comment)
+			.ToArray ();
+
+		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error), error);
+
+		Assert.IsTrue (changed);
+		CollectionAssert.AreEqual (comment, bytes[180..188]);
+	}
+
 	static ImageTag CommentTag ()
 	{
 		var tag = new ImageTag (MediaFormat.Png, ImageStores.Comment);

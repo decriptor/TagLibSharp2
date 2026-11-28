@@ -163,6 +163,19 @@ public class ImagePlanTests
 	}
 
 	[TestMethod]
+	public void OutputAt_NamesTheFirstByteOfACopiedRangeAndNotTheBytePastIt ()
+	{
+		var plan = new ImagePlan ();
+		plan.Add (new byte[] { 7, 7 });
+		plan.Copy (10, 4);
+
+		Assert.AreEqual (-1L, plan.OutputAt (0));
+		Assert.AreEqual (2L, plan.OutputAt (10));
+		Assert.AreEqual (5L, plan.OutputAt (13));
+		Assert.AreEqual (-1L, plan.OutputAt (14));
+	}
+
+	[TestMethod]
 	public void ImagePlan_CutAndSplice_KeepBytesOutsideTheSpan ()
 	{
 		var source = new byte[] { 1, 2, 3, 4, 5, 6 };

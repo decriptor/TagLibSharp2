@@ -142,6 +142,7 @@ public class ImageHostileTests
 	}
 
 	[TestMethod]
+	[DoNotParallelize]
 	[DynamicData (nameof (GrowingInputs))]
 	public void ReadAndRewrite_AllocateLinearly (string shape, Func<int, byte[]> build, string name, int n)
 	{
@@ -154,7 +155,7 @@ public class ImageHostileTests
 			_ = file.Render ();
 			tag.Clear ();
 			_ = file.Render ();
-		}, n);
+		}, n, runs: 3);
 		Assert.IsNotNull (shape);
 	}
 }

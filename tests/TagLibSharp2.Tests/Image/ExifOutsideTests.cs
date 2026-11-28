@@ -100,6 +100,63 @@ public class ExifOutsideTests
 	}
 
 	[TestMethod]
+	public void ArtistAndComment_OfAPngWhoseNoteNamesBytesAfterIend_NamesBothFields ()
+	{
+		var fileBytes = PngWithExternalNote ();
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Artist = "Ada";
+		file.Tag.Comment = "New";
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (
+			"The eXIf block names bytes past its own data that a length change before them would move, so its copy of Artist, Comment cannot be updated.",
+			save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	public void Comment_OfAPngWithAnUnlocatedNoteAndBytesAfterIend_IsRefused ()
+	{
+		var fileBytes = PngWithUnlocatedNote ();
+		var file = Open (fileBytes, "a.png");
+		file.Tag!.Comment = "New";
+		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
+
+		Assert.IsFalse (save.IsSuccess);
+		Assert.AreEqual (PngReason, save.Error);
+		CollectionAssert.AreEqual (fileBytes, file.Render ().ToArray ());
+	}
+
+	[TestMethod]
+	public void Comment_OfTheSameLength_IsSavedWhenAnUnlocatedNoteNamesNothing ()
+	{
+		var fileBytes = JpegWithExternalNote (located: false, trailer: true, comment: "old");
+		var file = Open (fileBytes, "a.jpg");
+		file.Tag!.Comment = "new";
+		var save = file.SaveToFile ("/a.jpg", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		var output = file.Render ().ToArray ();
+		CollectionAssert.AreEqual (Trailer, output[^Trailer.Length..]);
+		Assert.AreEqual (fileBytes.Length, output.Length);
+	}
+
+	[TestMethod]
+	public void Comment_OfAJpegWithAnUnlocatedNoteAndNoEndOfImage_IsSaved ()
+	{
+		var fileBytes = JpegWithExternalNote (located: false, trailer: false, comment: null);
+		// Drop the EOI and leave a marker prefix with no second byte, so the scan has no end of image.
+		fileBytes = [.. fileBytes[..^2], 0xFF];
+		var file = Open (fileBytes, "a.jpg");
+		file.Tag!.Comment = "New";
+		var save = file.SaveToFile ("/a.jpg", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.IsTrue (file.Render ().Span.IndexOf ("New"u8) >= 0);
+	}
+
+	[TestMethod]
 	public void Comment_OfAGifWithBytesAfterTheTrailer_IsSaved ()
 	{
 		var gif = Concat (Gif (GifComment ("old")), "AFTER"u8.ToArray ());
@@ -181,5 +238,22 @@ public class ExifOutsideTests
 
 		var offset = probe.Length - Trailer.Length - tiffBase;
 		return Wrap (Tiff (offset));
+	}
+
+	// The note header is not a classic IFD, so the note is not located. Bytes after IEND are the anchor.
+	static byte[] PngWithUnlocatedNote ()
+	{
+		var header = "OLYMP\0\u0001\0"u8.ToArray ();
+		const int ifd0 = 8;
+		var exif = ifd0 + 2 + 12 + 4;
+		var note = exif + 2 + (2 * 12) + 4;
+		var noteLen = header.Length + 2 + 12 + 4;
+		var length = note + noteLen;
+		var tiff = new TiffBuilder (length).Header (ifd0);
+		tiff.Table (ifd0, [(0x8769, 4, 1, exif)]);
+		tiff.Table (exif, [(0x927C, 7, noteLen, note), (0x9286, 7, 4, 0x41424344)]);
+		tiff.Bytes (note, header);
+		tiff.Entries (note + header.Length, (0x0001, 7, 4, 0));
+		return Concat (Png (PngChunk ("eXIf", tiff.ToArray ())), Trailer);
 	}
 }

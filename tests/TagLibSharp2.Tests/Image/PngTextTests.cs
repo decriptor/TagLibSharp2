@@ -291,6 +291,7 @@ public partial class PngTextTests
 
 	// One 1 MiB inflation budget for the whole file, shared by every compressed copy, as when it is read.
 	[TestMethod]
+	[DoNotParallelize]
 	public void Edit_CompressedCopies_ShareOneInflationBudget ()
 	{
 		var bombs = ManyCompressedPackets (10, 1_000_000);
@@ -308,6 +309,6 @@ public partial class PngTextTests
 			var png = Open (data, "a.png");
 			png.Tag!.Title = "New";
 			Assert.IsTrue (png.SaveToFile ("/a.png", new MockFileSystem ()).IsSuccess);
-		}, 20);
+		}, 20, runs: 3);
 	}
 }

@@ -218,6 +218,7 @@ public class ExifEditScalingTests
 	// However many IFD0 entries point at a table, a Comment edit walks it once: the steps and the allocation
 	// grow linearly (with a sort's log factor) in the entries, for PNG eXIf and JPEG APP1 (capped at 64 KB).
 	[TestMethod]
+	[DoNotParallelize]
 	[DataRow ("png", "self", 1000)]
 	[DataRow ("png", "one", 1000)]
 	[DataRow ("png", "mix", 1000)]
@@ -276,6 +277,7 @@ public class ExifEditScalingTests
 	}
 
 	[TestMethod]
+	[DoNotParallelize]
 	[DynamicData (nameof (Walks))]
 	public void EveryIfdWalk_IsLinearInTheEntries (string op, string carrier, string shape, int n)
 	{
@@ -317,6 +319,7 @@ public class ExifEditScalingTests
 	// N tables share one strip, tile or thumbnail array of N values. A comment edit refuses that structure before
 	// the values are read, in linear steps. Title removes nothing and does not read them either.
 	[TestMethod]
+	[DoNotParallelize]
 	[DataRow ("png", "comment", "strips")]
 	[DataRow ("png", "title", "strips")]
 	[DataRow ("jpeg", "comment", "strips")]
@@ -436,6 +439,7 @@ public class ExifEditScalingTests
 	// is one sorted lookup per protected range: 4x the tables stays under 6x the steps. A scan of the compacted
 	// list per range is about 16x.
 	[TestMethod]
+	[DoNotParallelize]
 	[DataRow ("description", false)]
 	[DataRow ("artist", false)]
 	[DataRow ("copyright", false)]

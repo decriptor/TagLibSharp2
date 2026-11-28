@@ -113,6 +113,7 @@ public sealed class ImagePathSaveTests
 	/// A path save stays under a fixed ceiling at three scan sizes. Render of the same edit grows with the scan.
 	/// </summary>
 	[TestMethod]
+	[DoNotParallelize]
 	public void JpegPathSave_AllocationStaysUnderTheCeilingWhileRenderGrows ()
 	{
 		const int n = 1024 * 1024;
@@ -237,6 +238,7 @@ public sealed class ImagePathSaveTests
 	}
 
 	[TestMethod]
+	[DoNotParallelize]
 	public void PngPathSave_AllocationStaysUnderTheCeilingWhileRenderGrows ()
 	{
 		const int n = 1024 * 1024;
@@ -368,6 +370,7 @@ public sealed class ImagePathSaveTests
 	}
 
 	[TestMethod]
+	[DoNotParallelize]
 	public void GifPathSave_AllocationStaysUnderTheCeilingWhileRenderGrows ()
 	{
 		const int n = 1024 * 1024;
@@ -527,6 +530,7 @@ public sealed class ImagePathSaveTests
 	/// The path save of a 1, 2 and 4 MiB file stays under a fixed ceiling.
 	/// </summary>
 	[TestMethod]
+	[DoNotParallelize]
 	[DataRow ("tiff")]
 	[DataRow ("dng")]
 	[DataRow ("bmp")]
@@ -758,13 +762,7 @@ public sealed class ImagePathSaveTests
 		return (read.File, fs);
 	}
 
-	static long LeastAllocated (Action action)
-	{
-		var least = long.MaxValue;
-		for (var run = 0; run < 3; run++)
-			least = Math.Min (least, Bounds.AllocatedBytes (action));
-		return least;
-	}
+	static long LeastAllocated (Action action) => Bounds.LeastAllocated (action);
 
 	static byte[] JpegInput (string op) => op switch {
 		"exif-comment" => Jpeg (JpegExif (ExifTiff ([(0x010F, "Canon")], [])), JpegSegment (0xFE, "Old"u8.ToArray ())),

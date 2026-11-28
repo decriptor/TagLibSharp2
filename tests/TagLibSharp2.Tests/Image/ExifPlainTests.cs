@@ -355,13 +355,15 @@ public partial class ExifPlainTests
 	// s = 10, 20, 40, 80 is the reported series (about 11 KB, 41 KB, 164 KB, 653 KB). Recording one range per
 	// cross-pair is superlinear and exhausts a 1 GB heap at s = 80. The refusal counts names and stops.
 	[TestMethod]
+	[DoNotParallelize]
 	public void Edit_CrossPairedSeries_IsRefusedInBoundedMemory ()
 	{
 		var crossRefused = true;
 		Bounds.AssertLinearAllocation (
 			tables => Cross ((int)Math.Ceiling (Math.Sqrt (tables)), 3, littleEndian: true),
 			tiff => crossRefused &= !Edit (tiff).Saved,
-			100);
+			100,
+			runs: 3);
 		Assert.IsTrue (crossRefused);
 
 		foreach (var (s, least) in new[] { (10, 8_000), (20, 30_000), (40, 100_000), (80, 600_000) }) {

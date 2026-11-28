@@ -174,6 +174,7 @@ public partial class TiffSizeTests
 	// A reduced IFD0 followed by N IFDs, the last of them without its next-IFD offset: the size walk reads each IFD
 	// once, so the reads grow linearly, as does the allocation.
 	[TestMethod]
+	[DoNotParallelize]
 	public void Tiff_IfdChainEndingWithoutANextOffset_IsReadLinearly ()
 	{
 		static byte[] Chain (int n)
@@ -381,6 +382,7 @@ public partial class TiffSizeTests
 	}
 
 	[TestMethod]
+	[DoNotParallelize]
 	public void Tiff_OverlappingTables_AllocateLinearly () =>
 		Bounds.AssertLinearAllocation (OverlappingTables, data => TiffSize.TryRead (data, dng: false, out _), 512, runs: 3);
 

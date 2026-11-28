@@ -45,18 +45,21 @@ public static class Bounds
 	/// quadratic work adds four times as much. The bound is <c>2 × slack</c>. An increment under the noise
 	/// floor (1 KB, or 1% of the n allocation) counts as no growth, so a flat series passes and a flat series
 	/// that then jumps still fails (<see cref="AssertGrowsLinearly"/>). A parser that copies each nested
-	/// payload, or rescans a list per item, fails here. Building the input is not measured, and each size runs
-	/// once before it is measured so one-time JIT and static allocations do not count.
+	/// payload, or rescans a list per item, fails here. Building the input is not measured. Each size is warmed
+	/// once, then the action alone is measured, and the least of the runs is kept
+	/// (<see cref="LeastAllocated"/>).
 	/// </remarks>
-	/// <param name="runs">Runs measured per size; the least is kept. Above 1 it filters allocations another
-	/// thread causes, such as a shared <see cref="System.Buffers.ArrayPool{T}"/> that another test emptied.</param>
+	/// <param name="runs">Runs measured per size; the least is kept. Above 1 it drops a one-off extra allocation.</param>
 	public static void AssertLinearAllocation (Func<int, byte[]> build, Action<byte[]> run, int n, double slack = 1.5, int runs = 1)
 	{
 		ArgumentNullException.ThrowIfNull (build);
 		ArgumentNullException.ThrowIfNull (run);
-		var one = Measure (build (n), run, runs);
-		var two = Measure (build (n * 2), run, runs);
-		var four = Measure (build (n * 4), run, runs);
+		var builtOne = build (n);
+		var builtTwo = build (n * 2);
+		var builtFour = build (n * 4);
+		var one = LeastAllocated (() => run (builtOne), runs);
+		var two = LeastAllocated (() => run (builtTwo), runs);
+		var four = LeastAllocated (() => run (builtFour), runs);
 		AssertGrowsLinearly (one, two, four, slack);
 	}
 
@@ -91,13 +94,43 @@ public static class Bounds
 			Assert.Fail ($"allocation grew {second / (double)baseline:F1}x as fast from 2n to 4n as from n to 2n ({one} -> {two} -> {four} bytes); linear is 2x, the bound {bound:F1}x");
 	}
 
-	static long Measure (byte[] input, Action<byte[]> run, int runs)
+	/// <summary>
+	/// Bytes allocated by <paramref name="action"/> alone: one warm-up, then the least of <paramref name="runs"/>
+	/// measured calls.
+	/// </summary>
+	/// <remarks>
+	/// The warm-up pays for JIT and static caches. Before each measured call, one array is returned to every
+	/// shared <see cref="System.Buffers.ArrayPool{T}"/> bucket. A rewriter rents a buffer that grows with the
+	/// input and returns it; the next call's smaller rent takes that larger buffer when its own bucket is empty,
+	/// and the following rent allocates a new one. Measured on the compacted IFD chain, that miss is one bucket:
+	/// 64 KB, 128 KB and 256 KB at 2,000, 4,000 and 8,000 tables. Counted only at 8,000, the second increment is
+	/// 3.0x the first, on the slack bound. With every rent a hit the same edit is 2.6x. A test that compares
+	/// sizes is marked not to run beside other tests, because another test's rent during the sample can still
+	/// take the buffer just returned.
+	/// </remarks>
+	public static long LeastAllocated (Action action, int runs = 3)
 	{
-		run (input);
+		ArgumentNullException.ThrowIfNull (action);
+		action ();
 		var least = long.MaxValue;
-		for (var r = 0; r < Math.Max (runs, 1); r++)
-			least = Math.Min (least, AllocatedBytes (() => run (input)));
+		for (var r = 0; r < Math.Max (runs, 1); r++) {
+			ReturnOneBufferToEachPoolBucket ();
+			least = Math.Min (least, AllocatedBytes (action));
+		}
+
 		return least;
+	}
+
+	// Rent from the largest bucket down while holding the arrays, so a small rent cannot take a larger bucket's
+	// only buffer, then return them smallest first so each bucket has one.
+	static void ReturnOneBufferToEachPoolBucket ()
+	{
+		var held = new byte[17][];
+		var count = 0;
+		for (var size = 1024 * 1024; size >= 16; size >>= 1)
+			held[count++] = System.Buffers.ArrayPool<byte>.Shared.Rent (size);
+		for (var i = count - 1; i >= 0; i--)
+			System.Buffers.ArrayPool<byte>.Shared.Return (held[i]);
 	}
 }
 
