@@ -14,7 +14,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>What a save keeps: every byte it does not edit, the bytes after the image, byte identity of a no-op save, and refusals with their own reason.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class ImageSaveContractTests
+public partial class ImageSaveContractTests
 {
 	[TestMethod]
 	public void SaveToFile_WhenTheContainerCannotBeUpdated_FailsAndDoesNotWrite ()

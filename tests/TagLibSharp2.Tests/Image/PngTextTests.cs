@@ -19,7 +19,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>PNG text chunks: reading and writing the mapped keywords, compression, the shared inflation budget, and keyword copies.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class PngTextTests
+public partial class PngTextTests
 {
 	[TestMethod]
 	public void Png_InflationBudget_SpentLeavesLaterChunksUncompressed ()

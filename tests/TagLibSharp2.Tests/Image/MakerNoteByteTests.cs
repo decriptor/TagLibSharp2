@@ -18,7 +18,7 @@ namespace TagLibSharp2.Tests.Image;
 /// </summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class MakerNoteByteTests
+public partial class MakerNoteByteTests
 {
 	static readonly byte[] Marker = "ASCII\0\0\0"u8.ToArray ();
 	static readonly byte[] Private = "KEEPKEEP"u8.ToArray ();

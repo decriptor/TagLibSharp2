@@ -16,7 +16,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>TIFF, DNG and BigTIFF width and height: IFD0, the reduced-preview rule, and the bounds of the IFD walk.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class TiffSizeTests
+public partial class TiffSizeTests
 {
 	// A TIFF whose only IFD has no next-IFD offset, or only 2 of its 4 bytes: exiftool reads ImageWidth 3 and
 	// ImageHeight 2 from it, so the file opens with those dimensions.

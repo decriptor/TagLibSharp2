@@ -18,7 +18,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>Removing a changed field from Exif: every table a reader reads loses its copy, and no byte other structure uses is changed.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class ExifEditTests
+public partial class ExifEditTests
 {
 	public static IEnumerable<object[]> OverlappingExif ()
 	{

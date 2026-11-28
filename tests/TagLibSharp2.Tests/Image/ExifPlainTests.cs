@@ -20,7 +20,7 @@ namespace TagLibSharp2.Tests.Image;
 /// </summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class ExifPlainTests
+public partial class ExifPlainTests
 {
 	public static IEnumerable<object[]> PairTypes ()
 	{

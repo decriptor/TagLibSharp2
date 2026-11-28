@@ -14,7 +14,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>The GIF comment extension: reading, writing, and where a new one goes.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class GifCommentTests
+public partial class GifCommentTests
 {
 	[TestMethod]
 	public void Gif_RoundTripsComment_AndLeavesImageBytesThatLookLikeAComment ()

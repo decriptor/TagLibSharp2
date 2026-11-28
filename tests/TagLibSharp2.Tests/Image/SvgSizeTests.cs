@@ -16,7 +16,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>SVG width and height from the root element or its viewBox, decoding only the root start tag.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class SvgSizeTests
+public partial class SvgSizeTests
 {
 	[TestMethod]
 	public void Svg_ReadsScientificLengthsNamespacedRootsUtf16AndALongPrologue ()

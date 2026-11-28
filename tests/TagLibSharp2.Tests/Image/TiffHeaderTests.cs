@@ -9,7 +9,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>The TIFF and BigTIFF headers a file is detected by, and the 8-byte reads BigTIFF needs.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class TiffHeaderTests
+public partial class TiffHeaderTests
 {
 	// A BigTIFF header is "II" 43 0 or "MM" 0 43 (byte order, then version 43 in that order), then offset size 8,
 	// reserved 0 and the first IFD's 8-byte offset: 16 bytes. Anything else, or fewer bytes, is not TIFF.

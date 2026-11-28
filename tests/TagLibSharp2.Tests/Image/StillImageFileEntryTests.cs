@@ -16,7 +16,7 @@ namespace TagLibSharp2.Tests.Image;
 /// <summary>Opening and saving a still image through every entry point: data, path, stream, sync and async, cancellation, and results.</summary>
 [TestClass]
 [TestCategory ("Unit")]
-public class StillImageFileEntryTests
+public partial class StillImageFileEntryTests
 {
 	[TestMethod]
 	public void Save_WithoutASourcePath_Fails ()
