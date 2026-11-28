@@ -61,6 +61,18 @@ public class ExifOutsideTests
 	}
 
 	[TestMethod]
+	public void Comment_OfAJpegWhoseNoteNamesTheByteAfterTheFile_IsSaved ()
+	{
+		var fileBytes = JpegWithExternalNote (located: true, trailer: false, comment: null);
+		var file = Open (fileBytes, "a.jpg");
+		file.Tag!.Comment = "New";
+		var save = file.SaveToFile ("/a.jpg", new MockFileSystem ());
+
+		Assert.IsTrue (save.IsSuccess, save.Error);
+		Assert.IsTrue (file.Render ().Span.IndexOf ("New"u8) >= 0);
+	}
+
+	[TestMethod]
 	public void Comment_OfAJpegWithAnUnlocatedNoteAndNoTrailer_IsSaved ()
 	{
 		var fileBytes = JpegWithExternalNote (located: false, trailer: false, comment: null);
