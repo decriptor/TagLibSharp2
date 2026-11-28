@@ -8,6 +8,7 @@ runs in CI, and none of them belongs in the package.
 | [`compare/grid.cs`](compare/grid.cs) | Before/after grid: detection, key tags and a hash of each fixed edit's saved bytes, one TSV line per file |
 | [`compare/readers.sh`](compare/readers.sh) | Shows what ffprobe, exiftool, mutagen and mediainfo read for common fields, side by side |
 | [`fuzz/fuzz.cs`](fuzz/fuzz.cs) | Truncation and byte-flip fuzz over real files: span read, stream read and a no-op save |
+| [`exif/golden.sh`](exif/golden.sh) | Regenerates the exiftool golden files the Exif reader model is checked against; [`exif/README.md`](exif/README.md) lists the measured rules |
 | [`mutation.sh`](mutation.sh) | Stryker.NET mutation testing of the library files a branch changes |
 | [`GenerateApiMatrix`](GenerateApiMatrix.cs) | Writes the API matrix from a built assembly |
 

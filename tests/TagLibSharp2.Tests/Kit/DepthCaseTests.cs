@@ -25,7 +25,10 @@ public class DepthCaseTests
 
 		Assert.IsTrue (result.IsSuccess, result.Error);
 		Assert.AreEqual (depthCase.Format, result.Format);
-		Assert.IsNotNull (result.Tag);
+		if (depthCase.Format == MediaFormat.Tiff)
+			Assert.IsNull (result.Tag);
+		else
+			Assert.IsNotNull (result.Tag);
 	}
 
 	[TestMethod]

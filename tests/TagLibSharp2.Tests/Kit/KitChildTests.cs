@@ -30,7 +30,11 @@ public class KitChildTests
 
 		Assert.AreNotEqual (0, result.ExitCode, result.Describe ());
 		Assert.IsFalse (result.TimedOut);
-		Assert.IsTrue (result.Error.Contains ("stack overflow", StringComparison.OrdinalIgnoreCase), result.Describe ());
+		// Unix prints "Stack overflow." Windows often dies on the guard page with
+		// STATUS_STACK_OVERFLOW or STATUS_ACCESS_VIOLATION and writes nothing.
+		var stackOverflow = result.Error.Contains ("stack overflow", StringComparison.OrdinalIgnoreCase)
+			|| result.ExitCode is -1073741571 or -1073741819;
+		Assert.IsTrue (stackOverflow, result.Describe ());
 	}
 
 	[TestMethod]

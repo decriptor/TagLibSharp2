@@ -9,8 +9,8 @@
 		<Version>$(ReleaseVersion)</Version>
 
 		<!-- Package Metadata -->
-		<Description>A modern .NET library for reading and writing metadata in media files. Supports 18 formats: MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A (AAC/ALAC, including Audible .aax), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack, Matroska/WebM, MPEG program streams (.mpg/.vob/.m2v), Audible .aa, and APE tags. Clean, span-based API designed for performance. MIT licensed alternative to TagLib#.</Description>
-		<PackageTags>audio;metadata;id3;flac;vorbis;ogg;opus;mp3;mp4;m4a;aac;alac;wav;aiff;dsf;dsd;dff;dsdiff;ape;asf;wma;wavpack;musepack;mpc;monkeys-audio;mpeg;mpg;vob;audible;aa;aax;audiobook;tags;taglib;music;album-art;replaygain;musicbrainz</PackageTags>
+		<Description>A modern .NET library for reading and writing metadata in media files. Supports MP3 (ID3v1/ID3v2), FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, WAV, AIFF, MP4/M4A (AAC/ALAC, including Audible .aax), ASF/WMA, DSF (DSD), DFF (DSDIFF), WavPack, Monkey's Audio (.ape), Musepack, Matroska/WebM, MPEG program streams (.mpg/.vob/.m2v), raw AAC, Audible .aa, and APE tags. Still images (JPEG, PNG, GIF, BMP, PCX, Netpbm, TIFF, DNG, SVG) open with width and height. PNG text, GIF comments, and JPEG COM markers can be edited. Clean, span-based API designed for performance. MIT licensed alternative to TagLib#.</Description>
+		<PackageTags>audio;metadata;id3;flac;vorbis;ogg;opus;mp3;mp4;m4a;aac;alac;wav;aiff;dsf;dsd;dff;dsdiff;ape;asf;wma;wavpack;musepack;mpc;monkeys-audio;mpeg;mpg;vob;audible;aa;aax;audiobook;tags;taglib;music;album-art;replaygain;musicbrainz;image;jpeg;png;gif;tiff;svg</PackageTags>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://github.com/decriptor/TagLibSharp2</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>

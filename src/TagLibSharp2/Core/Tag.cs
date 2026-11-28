@@ -73,6 +73,11 @@ public enum TagTypes
 	Audible = 1 << 10,
 
 	/// <summary>
+	/// Text stored in a still image: PNG keywords, a GIF comment, or a JPEG COM marker.
+	/// </summary>
+	Image = 1 << 11,
+
+	/// <summary>
 	/// All tag types.
 	/// </summary>
 	AllTags = unchecked((int)0xFFFFFFFF)

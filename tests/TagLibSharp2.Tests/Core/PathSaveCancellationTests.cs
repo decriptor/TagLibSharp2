@@ -10,6 +10,7 @@ using TagLibSharp2.Asf;
 using TagLibSharp2.Audible;
 using TagLibSharp2.Core;
 using TagLibSharp2.Dsf;
+using TagLibSharp2.Image;
 using TagLibSharp2.Mp4;
 using TagLibSharp2.Mpeg;
 using TagLibSharp2.Musepack;
@@ -21,6 +22,7 @@ using TagLibSharp2.Tests.Audible;
 using TagLibSharp2.Tests.Mpeg;
 using TagLibSharp2.WavPack;
 using TagLibSharp2.Xiph;
+using static TagLibSharp2.Tests.Image.ImageTestBuilder;
 
 namespace TagLibSharp2.Tests.Core;
 
@@ -205,10 +207,13 @@ public sealed class PathSaveCancellationTests
 		yield return ["oggflac", "Failed to render Ogg FLAC file"];
 		yield return ["m4a", "Failed to render MP4 file"];
 		yield return ["mpg", "The original data is not the MPEG stream that was read"];
+		foreach (var image in new[] { "jpeg", "png", "gif", "tiff", "dng", "bmp", "pcx", "netpbm", "svg" })
+			yield return new object[] { image, "The source ended before the requested bytes were copied" };
 	}
 
 	static readonly string[] Kinds = [
-		"vorbis", "opus", "oggflac", "mp3", "flac", "asf", "dsf", "ape", "wv", "mpc", "aac", "mpg", "aa", "m4a", "wav", "aiff"
+		"vorbis", "opus", "oggflac", "mp3", "flac", "asf", "dsf", "ape", "wv", "mpc", "aac", "mpg", "aa", "m4a", "wav", "aiff",
+		"jpeg", "png", "gif", "tiff", "dng", "bmp", "pcx", "netpbm", "svg"
 	];
 
 	static CancellationToken Cancelled ()
@@ -280,6 +285,7 @@ public sealed class PathSaveCancellationTests
 			Mp4File mp4 => mp4.SaveToFileAsync (path, fs, token),
 			WavFile wav => wav.SaveToFileAsync (path, fs, token),
 			AiffFile aiff => aiff.SaveToFileAsync (path, fs, token),
+			StillImageFile image => image.SaveToFileAsync (path, fs, token),
 			_ => throw new InvalidOperationException (file.GetType ().FullName)
 		};
 
@@ -306,6 +312,15 @@ public sealed class PathSaveCancellationTests
 		"wav" => Wav (8),
 		"aiff" => Aiff (8, ssndSize: 8),
 		"aiff-huge" => Aiff (8, ssndSize: 0x80000000),
+		"jpeg" => Jpeg (),
+		"png" => Png (),
+		"gif" => Gif (),
+		"tiff" => TiffImage (2, 3),
+		"dng" => TiffImage (2, 3, dng: true),
+		"bmp" => Bmp (4, 2),
+		"pcx" => Pcx (0, 0, 1, 1, planes: 1),
+		"netpbm" => "P4\n1 1\n"u8.ToArray (),
+		"svg" => "<svg width=\"2\" height=\"3\"></svg>"u8.ToArray (),
 		_ => throw new InvalidOperationException (kind)
 	};
 
@@ -436,92 +451,5 @@ public sealed class PathSaveCancellationTests
 		Assert.ThrowsExactly<NotSupportedException> (() => source.Write (new byte[1], 0, 1));
 		source.Flush ();
 		Assert.AreEqual (1, source.Read (new byte[1], 0, 1));
-	}
-
-	sealed class ProbeFileSystem : IFileSystem
-	{
-		public MockFileSystem Store { get; } = new ();
-
-		public bool Seekable { get; set; } = true;
-
-		public string? OpenReadFault { get; set; }
-
-		public void Add (string path, byte[] data) => Store.AddFile (path, data);
-
-		public bool FileExists (string path) => Store.FileExists (path);
-
-		public Stream OpenRead (string path)
-		{
-			if (OpenReadFault == "denied")
-				throw new UnauthorizedAccessException ("Access denied");
-			if (OpenReadFault == "io")
-				throw new IOException ("disk fault");
-
-			var stream = Store.OpenRead (path);
-			if (Seekable)
-				return stream;
-			return new UnseekableStream (stream);
-		}
-
-		public Stream OpenReadWrite (string path) => Store.OpenReadWrite (path);
-
-		public Stream Create (string path) => Store.Create (path);
-
-		public byte[] ReadAllBytes (string path) => Store.ReadAllBytes (path);
-
-		public Task<byte[]> ReadAllBytesAsync (string path, CancellationToken cancellationToken = default) =>
-			Store.ReadAllBytesAsync (path, cancellationToken);
-
-		public void WriteAllBytes (string path, ReadOnlySpan<byte> data) => Store.WriteAllBytes (path, data);
-
-		public Task WriteAllBytesAsync (string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default) =>
-			Store.WriteAllBytesAsync (path, data, cancellationToken);
-
-		public void Delete (string path) => Store.Delete (path);
-
-		public void Move (string sourcePath, string destinationPath) => Store.Move (sourcePath, destinationPath);
-
-		public string? GetDirectoryName (string path) => Store.GetDirectoryName (path);
-
-		public string GetFileName (string path) => Store.GetFileName (path);
-
-		public string CombinePath (string path1, string path2) => Store.CombinePath (path1, path2);
-	}
-
-	sealed class UnseekableStream : Stream
-	{
-		readonly Stream _inner;
-
-		public UnseekableStream (Stream inner) => _inner = inner;
-
-		public override bool CanRead => _inner.CanRead;
-
-		public override bool CanSeek => false;
-
-		public override bool CanWrite => false;
-
-		public override long Length => throw new NotSupportedException ();
-
-		public override long Position {
-			get => throw new NotSupportedException ();
-			set => throw new NotSupportedException ();
-		}
-
-		public override void Flush () => _inner.Flush ();
-
-		public override int Read (byte[] buffer, int offset, int count) => _inner.Read (buffer, offset, count);
-
-		public override long Seek (long offset, SeekOrigin origin) => throw new NotSupportedException ();
-
-		public override void SetLength (long value) => throw new NotSupportedException ();
-
-		public override void Write (byte[] buffer, int offset, int count) => throw new NotSupportedException ();
-
-		protected override void Dispose (bool disposing)
-		{
-			if (disposing)
-				_inner.Dispose ();
-			base.Dispose (disposing);
-		}
 	}
 }

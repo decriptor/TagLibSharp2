@@ -21,6 +21,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- What exiftool shows for the generated Exif inputs; regenerate with tools/exif/golden.sh. -->
+		<EmbeddedResource Include="Image/Golden/*.txt" LogicalName="Golden.%(Filename)%(Extension)" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\..\src\TagLibSharp2\TagLibSharp2.csproj" />
 	</ItemGroup>
 

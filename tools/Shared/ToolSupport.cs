@@ -22,6 +22,8 @@ static class ToolSupport
 		".flac", ".ogg", ".oga", ".ogv", ".opus", ".spx", ".wav", ".aif", ".aiff", ".aifc", ".dsf", ".dff",
 		".wv", ".ape", ".mpc", ".mp+", ".mpp", ".wma", ".wmv", ".asf", ".mpg", ".mpeg", ".mpe", ".vob",
 		".mpv", ".m1v", ".m2v", ".avi", ".aac", ".aa", ".aax", ".tta",
+		".jpg", ".jpeg", ".jpe", ".png", ".gif", ".bmp", ".dib", ".pcx",
+		".pbm", ".pgm", ".ppm", ".pnm", ".tif", ".tiff", ".dng", ".svg",
 	};
 
 	// Never opened, even with --all: source and text that sits beside sample media.
