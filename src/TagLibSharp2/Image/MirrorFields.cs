@@ -39,6 +39,17 @@ static class MirrorFields
 		return false;
 	}
 
+	internal static string ChangedNames (ImageTag tag)
+	{
+		var names = new List<string> ();
+		foreach (var field in All) {
+			if (tag.Changed (field.Store))
+				names.Add (field.Name);
+		}
+
+		return string.Join (", ", names);
+	}
+
 	internal sealed class MirrorField (ImageStores store, string name, string xmpNamespace, string xmpName, bool ordered, int[] ifd0, int[] exifIfd, string[] text)
 	{
 		public ImageStores Store { get; } = store;

@@ -172,25 +172,8 @@ public class XmpMirrorTests
 		};
 	}
 
-	static int CountPacketTitles (byte[] data, string title)
-	{
-		var needle = Encoding.ASCII.GetBytes (">" + title + "<");
-		var count = 0;
-		for (var i = 0; i + needle.Length <= data.Length; i++) {
-			var hit = true;
-			for (var b = 0; b < needle.Length; b++) {
-				if (data[i + b] != needle[b]) {
-					hit = false;
-					break;
-				}
-			}
-
-			if (hit)
-				count++;
-		}
-
-		return count;
-	}
+	static int CountPacketTitles (byte[] data, string title) =>
+		Bytes.Count (data, Encoding.ASCII.GetBytes (">" + title + "<"));
 
 	public static IEnumerable<object[]> PacketTails ()
 	{

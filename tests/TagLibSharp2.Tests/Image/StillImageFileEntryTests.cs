@@ -99,10 +99,17 @@ public class StillImageFileEntryTests
 		_ = StillImageFile.ReadFromFile ("/a.png", fs);
 		var limit = png.Length + (256 * 1024);
 
-		Bounds.AssertAllocatesAtMost (limit, () => Assert.IsTrue (MediaFile.Read ("/a.png", fs).IsSuccess), "MediaFile.Read");
-		Bounds.AssertAllocatesAtMost (limit, () => Assert.IsTrue (StillImageFile.ReadFromFile ("/a.png", fs).IsSuccess), "StillImageFile.ReadFromFile");
+		var read = MediaFile.Read ("/a.png", fs);
+		Bounds.AssertAllocatesAtMost (limit, () => read = MediaFile.Read ("/a.png", fs), "MediaFile.Read");
+		Assert.IsTrue (read.IsSuccess, read.Error);
+		var fromFile = StillImageFile.ReadFromFile ("/a.png", fs);
+		Bounds.AssertAllocatesAtMost (limit, () => fromFile = StillImageFile.ReadFromFile ("/a.png", fs), "StillImageFile.ReadFromFile");
+		Assert.IsTrue (fromFile.IsSuccess, fromFile.Error);
 		using var stream = new MemoryStream (png, writable: false);
-		Bounds.AssertAllocatesAtMost (limit, () => Assert.IsTrue (MediaFile.Read (stream, "a.png").IsSuccess), "MediaFile.Read (stream)");
+		var fromStream = MediaFile.Read (stream, "a.png");
+		stream.Position = 0;
+		Bounds.AssertAllocatesAtMost (limit, () => fromStream = MediaFile.Read (stream, "a.png"), "MediaFile.Read (stream)");
+		Assert.IsTrue (fromStream.IsSuccess, fromStream.Error);
 	}
 
 	[TestMethod]

@@ -25,7 +25,7 @@ namespace TagLibSharp2.Image.Exif;
 static class ExifEditor
 {
 	/// <summary>Compacting the edited tables would rewrite a protected range.</summary>
-	internal const string StructureWouldChange = "has IFD structure that removing its copy of";
+	internal const string StructureWouldChange = "has IFD structure that removing the copy would change";
 
 	/// <summary>Two IFD tables share a byte, so neither can be compacted.</summary>
 	internal const string TablesOverlap = "has IFD tables that overlap each other";
@@ -39,6 +39,18 @@ static class ExifEditor
 	/// <summary>An IFD pointer names the middle of another table.</summary>
 	internal const string PointerIntoTable = "has an IFD pointer into the middle of another IFD table";
 
+	/// <summary>
+	/// A kept entry or a located maker note names bytes past this block, and the edit would move them.
+	/// </summary>
+	internal const string PastData = "names bytes past its own data that a length change before them would move";
+
+	/// <summary>Where a located maker note points outside the block, and whether every note was located.</summary>
+	internal readonly record struct ExifAnchors (bool NotesLocated, (long Start, long End)[] PastBlock);
+
+	/// <summary>The refusal for <see cref="PastData"/>, naming <paramref name="what"/> once.</summary>
+	internal static string PastDataReason (string carrier, string what) =>
+		$"The {carrier} block {PastData}, so its copy of {what} cannot be updated.";
+
 	/// <summary>Set by tests to see the edit an unchecked removal would make (the matrix judges refusals by it).</summary>
 	[ThreadStatic]
 	internal static bool SkipCheck;
@@ -49,10 +61,14 @@ static class ExifEditor
 	/// bound that keeps the walk linear, and its bytes could hold an entry with one of the fields' tags; and when
 	/// something is to be removed from structure that is not plain or not clean.
 	/// </returns>
-	internal static bool TryRemove (byte[] block, int start, ImageTag tag, string carrier, out bool changed, out string? error)
+	internal static bool TryRemove (byte[] block, int start, ImageTag tag, string carrier, out bool changed, out string? error) =>
+		TryRemove (block, start, tag, carrier, out changed, out error, out _);
+
+	internal static bool TryRemove (byte[] block, int start, ImageTag tag, string carrier, out bool changed, out string? error, out ExifAnchors anchors)
 	{
 		changed = false;
 		error = null;
+		anchors = new (true, []);
 		if (!TryRequest (tag, out var tags, out var what))
 			return true;
 		var data = block.AsSpan (start);
@@ -85,6 +101,7 @@ static class ExifEditor
 			return Refuse ($"The {carrier} block {verdict.Why}, so its copy of {what} cannot be updated.", out error);
 
 		var plan = RemovalPlan.Mark (tiff, graph, tags);
+		anchors = new (plan.AllNotesLocated, plan.PastBlock);
 		if (plan.Removing.Count == 0)
 			return true;
 		// The plan stopped before it had read every offset and length, so applying it could zero a strip, tile or
@@ -175,7 +192,7 @@ static class ExifEditor
 	}
 
 	static string StructureChange (string carrier, string what) =>
-		Refusal (carrier, what, $"{StructureWouldChange} {what} would change");
+		Refusal (carrier, what, StructureWouldChange);
 
 	static string Refusal (string carrier, string what, string reason) =>
 		$"The {carrier} block {reason}, so its copy of {what} cannot be updated.";
@@ -183,19 +200,8 @@ static class ExifEditor
 	// Compacted tables are sorted and disjoint, so the table a protected range names is one binary search.
 	static bool IsCompactedTable (CountedList<(long Start, long End)> compacted, (long Start, long End) range)
 	{
-		int low = 0, high = compacted.Count - 1;
-		while (low <= high) {
-			var mid = low + ((high - low) / 2);
-			var table = compacted[mid];
-			if (table.Start == range.Start)
-				return table.End == range.End;
-			if (table.Start < range.Start)
-				low = mid + 1;
-			else
-				high = mid - 1;
-		}
-
-		return false;
+		var low = ByteRanges.FirstEndingAfter (compacted, range.Start);
+		return low < compacted.Count && compacted[low].Start == range.Start && compacted[low].End == range.End;
 	}
 
 	// The sorted ranges of the tables being compacted, or null when one of them shares a byte with another table.

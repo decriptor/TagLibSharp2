@@ -469,7 +469,7 @@ public class ExifEditMatrixTests
 
 	// Measured on the Comment matrix. The phrases are the production constants; the counts are the cells.
 	static Dictionary<string, int> CommentSafe { get; } = new () {
-		[$"{ExifEditor.StructureWouldChange} Comment would change"] = 31995,
+		[ExifEditor.StructureWouldChange] = 31995,
 		[ExifEditor.TablesOverlap] = 1344,
 		[ExifEditor.SubIfdInsideTable] = 123,
 		[PlainExif.PairDoesNotFit] = 243,
@@ -480,7 +480,7 @@ public class ExifEditMatrixTests
 	};
 
 	static Dictionary<string, int> ArtistSafe { get; } = new () {
-		[$"{ExifEditor.StructureWouldChange} Artist would change"] = 27776,
+		[ExifEditor.StructureWouldChange] = 27776,
 		[ExifEditor.TablesOverlap] = 654,
 		[ExifEditor.SubIfdInsideTable] = 10,
 		[PlainExif.PairDoesNotFit] = 202,

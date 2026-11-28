@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Diagnostics.CodeAnalysis;
 using TagLibSharp2.Core;
 using TagLibSharp2.Image.Tiff;
 
@@ -173,7 +174,7 @@ public sealed class StillImageFile : IMediaFile
 	/// </summary>
 	public ReadOnlyMemory<byte> Render ()
 	{
-		if (!TryOutput (out var plan, out _) || plan is null)
+		if (!TryOutput (out var plan, out _))
 			return _data;
 		return plan.MaterializeShared (_data);
 	}
@@ -191,8 +192,8 @@ public sealed class StillImageFile : IMediaFile
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
 		if (SpliceFormat && !string.IsNullOrEmpty (SourcePath))
 			return WriteSpliceSource (path, fs, default);
-		if (!TryOutput (out var plan, out var error) || plan is null)
-			return FileWriteResult.Failure (error ?? "The image container could not be updated.");
+		if (!TryOutput (out var plan, out var error))
+			return FileWriteResult.Failure (error);
 		return WritePlan (path, fs, plan);
 	}
 
@@ -219,8 +220,8 @@ public sealed class StillImageFile : IMediaFile
 		var fs = fileSystem ?? _fileSystem ?? DefaultFileSystem.Instance;
 		if (SpliceFormat && !string.IsNullOrEmpty (SourcePath))
 			return Task.FromResult (WriteSpliceSource (path, fs, cancellationToken));
-		if (!TryOutput (out var plan, out var error) || plan is null)
-			return Task.FromResult (FileWriteResult.Failure (error ?? "The image container could not be updated."));
+		if (!TryOutput (out var plan, out var error))
+			return Task.FromResult (FileWriteResult.Failure (error));
 		return Task.FromResult (WritePlan (path, fs, plan, cancellationToken));
 	}
 
@@ -233,8 +234,8 @@ public sealed class StillImageFile : IMediaFile
 		try {
 			if (!PathSave.TryOpen (SourcePath!, fileSystem, out source, out var openError))
 				return openError;
-			if (!TryOutput (out var plan, out var error) || plan is null)
-				return FileWriteResult.Failure (error ?? "The image container could not be updated.");
+			if (!TryOutput (out var plan, out var error))
+				return FileWriteResult.Failure (error);
 
 			var opened = source!;
 			source = null;
@@ -245,8 +246,8 @@ public sealed class StillImageFile : IMediaFile
 	}
 
 	// Every format this file opens has a plan: a text rewriter, or the original bytes as one range.
-	bool TryOutput (out ImagePlan? plan, out string? error) =>
-		ImageRewrite.TryPlan (_data, Format, _tag, out plan, out error) && plan is not null;
+	bool TryOutput ([NotNullWhen (true)] out ImagePlan? plan, [NotNullWhen (false)] out string? error) =>
+		ImageRewrite.TryPlan (_data, Format, _tag, out plan, out error);
 
 	FileWriteResult WritePlan (
 		string path,

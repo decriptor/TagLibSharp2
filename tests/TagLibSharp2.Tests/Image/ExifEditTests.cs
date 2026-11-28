@@ -1223,7 +1223,7 @@ public class ExifEditTests
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
 
 		Assert.IsFalse (save.IsSuccess, $"{tag:X4} {(bigEndian ? "big-endian" : "little-endian")}");
-		StringAssert.Contains (save.Error, "IFD structure that removing its copy of Comment would change");
+		StringAssert.Contains (save.Error, ExifEditor.StructureWouldChange);
 		CollectionAssert.AreEqual (input, file.Render ().ToArray (), "nothing is written");
 	}
 

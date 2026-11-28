@@ -357,19 +357,21 @@ public class ExifPlainTests
 	[TestMethod]
 	public void Edit_CrossPairedSeries_IsRefusedInBoundedMemory ()
 	{
+		var crossRefused = true;
 		Bounds.AssertLinearAllocation (
 			tables => Cross ((int)Math.Ceiling (Math.Sqrt (tables)), 3, littleEndian: true),
-			tiff => Assert.IsFalse (Edit (tiff).Saved),
+			tiff => crossRefused &= !Edit (tiff).Saved,
 			100);
+		Assert.IsTrue (crossRefused);
 
 		foreach (var (s, least) in new[] { (10, 8_000), (20, 30_000), (40, 100_000), (80, 600_000) }) {
 			var tiff = Cross (s, 17 * s, littleEndian: true);
 			Assert.IsTrue (tiff.Length > least, $"s={s}: {tiff.Length} bytes");
-			var allocated = Bounds.AssertAllocatesAtMost (Math.Max (8_000_000L, tiff.Length * 40L), () => {
-				var edit = Edit (tiff);
-				Assert.IsFalse (edit.Saved, edit.Error);
-				StringAssert.Contains (edit.Error, "more than once");
-			}, $"s={s}");
+			_ = Edit (tiff);
+			(bool Saved, string? Error) edit = default;
+			var allocated = Bounds.AssertAllocatesAtMost (Math.Max (8_000_000L, tiff.Length * 40L), () => edit = Edit (tiff), $"s={s}");
+			Assert.IsFalse (edit.Saved, edit.Error);
+			StringAssert.Contains (edit.Error, "more than once");
 			Assert.IsTrue (allocated < tiff.Length * 40L, $"s={s} allocated {allocated}");
 		}
 

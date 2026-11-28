@@ -43,11 +43,15 @@ public class SvgSizeTests
 	public void Svg_DetectionCopiesNothing_AndReadingDecodesOnlyTheRootTag (string name, byte[] data)
 	{
 		_ = MediaFile.DetectFormat (data);
-		Bounds.AssertAllocatesAtMost (Noise, () => Assert.AreEqual (MediaFormat.Svg, MediaFile.DetectFormat (data)), name);
+		var format = MediaFile.DetectFormat (data);
+		Bounds.AssertAllocatesAtMost (Noise, () => format = MediaFile.DetectFormat (data), name);
+		Assert.AreEqual (MediaFormat.Svg, format, name);
 
 		ImageProperties? properties = null;
 		_ = ImageHeader.TryRead (data, MediaFormat.Svg, out _);
-		Bounds.AssertAllocatesAtMost (2 * Noise, () => Assert.IsTrue (ImageHeader.TryRead (data, MediaFormat.Svg, out properties)), name);
+		var read = false;
+		Bounds.AssertAllocatesAtMost (2 * Noise, () => read = ImageHeader.TryRead (data, MediaFormat.Svg, out properties), name);
+		Assert.IsTrue (read, name);
 		Assert.AreEqual (7, properties!.Value.Width, name);
 		Assert.AreEqual (9, properties.Value.Height, name);
 	}

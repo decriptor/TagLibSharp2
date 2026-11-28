@@ -25,20 +25,26 @@ static class ByteRanges
 		return merged;
 	}
 
-	// The merged ranges are disjoint and sorted, so their ends are sorted too: find the first that ends after
-	// the range starts, and check that it starts before the range ends.
-	public static bool Overlaps (CountedList<(long Start, long End)> merged, (long Start, long End) range)
+	/// <summary>The first range whose end is past <paramref name="start"/>, or <c>sorted.Count</c> when none is.</summary>
+	public static int FirstEndingAfter (CountedList<(long Start, long End)> sorted, long start)
 	{
-		int low = 0, high = merged.Count;
+		int low = 0, high = sorted.Count;
 		while (low < high) {
 			IfdSteps.Count++;
 			var mid = low + ((high - low) / 2);
-			if (merged[mid].End <= range.Start)
+			if (sorted[mid].End <= start)
 				low = mid + 1;
 			else
 				high = mid;
 		}
 
+		return low;
+	}
+
+	// The merged ranges are disjoint and sorted, so their ends are sorted too.
+	public static bool Overlaps (CountedList<(long Start, long End)> merged, (long Start, long End) range)
+	{
+		var low = FirstEndingAfter (merged, range.Start);
 		return low < merged.Count && merged[low].Start < range.End;
 	}
 }

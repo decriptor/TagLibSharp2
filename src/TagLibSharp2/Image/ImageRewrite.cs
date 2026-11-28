@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Stephen Shaw and contributors
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
+using System.Diagnostics.CodeAnalysis;
 using TagLibSharp2.Core;
 using TagLibSharp2.Image.Gif;
 using TagLibSharp2.Image.Jpeg;
@@ -54,8 +55,8 @@ static class ImageRewrite
 		ReadOnlySpan<byte> data,
 		MediaFormat format,
 		ImageTag? tag,
-		out ImagePlan? plan,
-		out string? error)
+		[NotNullWhen (true)] out ImagePlan? plan,
+		[NotNullWhen (false)] out string? error)
 	{
 		error = null;
 		if (format == MediaFormat.Png)
@@ -82,8 +83,8 @@ static class ImageRewrite
 		ImageTag? tag,
 		RewriterPlan build,
 		string spliceError,
-		out ImagePlan? plan,
-		out string? error)
+		[NotNullWhen (true)] out ImagePlan? plan,
+		[NotNullWhen (false)] out string? error)
 	{
 		error = null;
 		if (tag is null || !tag.AffectsFile) {

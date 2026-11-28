@@ -63,7 +63,7 @@ public class MutationPinWave2Tests
 		Assert.IsTrue (changed);
 		CollectionAssert.AreEqual (new byte[] { 0x00, 0x00, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 }, bytes[160..168]);
 		Assert.AreEqual (0x5A, bytes[168]);
-		Assert.AreEqual (131L, IfdSteps.Count);
+		Assert.AreEqual (136L, IfdSteps.Count);
 	}
 
 	[TestMethod]
@@ -147,10 +147,10 @@ public class MutationPinWave2Tests
 	}
 
 	[TestMethod]
-	public void MakerIfdWhoseNextFieldSticksOutOfTheNote_DoesNotKeepTheComment ()
+	public void MakerIfdWhoseNextFieldSticksOutOfTheNote_LeavesTheComment ()
 	{
-		// The entry fits in the 14-byte note. The 4-byte next field does not, so the note is not an IFD and its
-		// target does not protect the comment.
+		// The entry fits in the 14-byte note. The 4-byte next field does not, so the note is not located and the
+		// comment, which sits outside the tables, stays.
 		var comment = new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
 		var bytes = new TiffBuilder (200).Header (8)
 			.Table (8, [(0x8769, 4, 1, 26)])
@@ -162,7 +162,7 @@ public class MutationPinWave2Tests
 		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error), error);
 
 		Assert.IsTrue (changed);
-		CollectionAssert.AreEqual (new byte[comment.Length], bytes[160..168]);
+		CollectionAssert.AreEqual (comment, bytes[160..168]);
 	}
 
 	[TestMethod]
@@ -198,7 +198,7 @@ public class MutationPinWave2Tests
 	}
 
 	[TestMethod]
-	public void MakerIfdWithARepeatedTag_DoesNotKeepTheComment ()
+	public void MakerIfdWithARepeatedTag_LeavesTheComment ()
 	{
 		var comment = new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
 		var bytes = new TiffBuilder (200).Header (8)
@@ -211,7 +211,7 @@ public class MutationPinWave2Tests
 		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error), error);
 
 		Assert.IsTrue (changed);
-		CollectionAssert.AreEqual (new byte[comment.Length], bytes[160..168]);
+		CollectionAssert.AreEqual (comment, bytes[160..168]);
 	}
 
 	[TestMethod]
@@ -339,14 +339,15 @@ public class MutationPinWave2Tests
 	}
 
 	[TestMethod]
-	public void BinaryByte_StopsTheMakerNoteBeforeAnIfdThatWouldKeepTheComment ()
+	public void BinaryByte_StopsTheMakerNote_AndLeavesTheComment ()
 	{
-		var bytes = CommentBesideMakerNote (ifdAt: 81, prefix: 0x1F, commentAt: 160, comment: [0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB], targetAt: 160, targetCount: 6);
+		var comment = new byte[] { 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB };
+		var bytes = CommentBesideMakerNote (ifdAt: 81, prefix: 0x1F, commentAt: 160, comment: comment, targetAt: 160, targetCount: 6);
 
 		Assert.IsTrue (ExifEditor.TryRemove (bytes, 0, CommentTag (), "eXIf", out var changed, out var error), error);
 
 		Assert.IsTrue (changed);
-		CollectionAssert.AreEqual (new byte[] { 0, 0, 0, 0, 0, 0 }, bytes[160..166]);
+		CollectionAssert.AreEqual (comment, bytes[160..166]);
 	}
 
 	[TestMethod]

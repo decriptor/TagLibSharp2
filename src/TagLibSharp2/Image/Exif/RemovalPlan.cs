@@ -16,7 +16,9 @@ namespace TagLibSharp2.Image.Exif;
 /// table no reader reads (its count, entries and next offset as far as the data goes), and the bytes a maker note
 /// (Exif 2.32 §4.6.5 tag 0x927C) or one of its entries names. A removed value inside the note's own block still
 /// overlaps that kept value, so the edit is refused. A value the note's entries name past the block is kept and
-/// the edit runs: zeroing it would change the note, and refusing would reject a plain file.
+/// the edit runs: zeroing it would change the note, and refusing would reject a plain file. A maker note whose
+/// IFD this pass does not finish (a version byte, a rejected entry, an unknown layout, or the entry budget)
+/// leaves every removed value outside the tables as it was.
 /// </remarks>
 sealed class RemovalPlan
 {
@@ -56,13 +58,38 @@ sealed class RemovalPlan
 	// a share with them is not a reason to refuse.
 	readonly CountedList<(long Start, long End)> _makerOwned = new ();
 
+	// The IFD tables. A removed value outside them is left in place when a maker note was not fully located.
+	readonly CountedList<(long Start, long End)> _tables = new ();
+
+	// False when any UNDEFINED maker note was not walked to the end: a version byte, a rejected entry, an
+	// unknown layout, or the entry budget. Zeroing then leaves removed values outside the tables as they are.
+	bool _allNotesLocated = true;
+
+	// TIFF-relative ranges a located note or a kept entry names that are not inside this block.
+	readonly List<(long Start, long End)> _pastBlock = [];
+
+	internal bool AllNotesLocated => _allNotesLocated;
+
+	internal (long Start, long End)[] PastBlock => _pastBlock.ToArray ();
+
+	// Entry reads across every maker note. One note fits: its entries occupy twelve bytes each. A second walk of
+	// the same bytes, or of a blob that overlaps one already walked, stops at the size of the block.
+	long _noteBudget;
+	long _noteEntriesRead;
+	bool _noteBudgetSpent;
+
+	// The outside targets of a blob already walked, or null when that walk did not locate the IFD.
+	readonly Dictionary<(long Start, long End), CountedList<(long Start, long End)>?> _noteScans = new ();
+
 	public static RemovalPlan Mark (TiffReader tiff, IfdGraph graph, HashSet<int> tags)
 	{
-		var plan = new RemovalPlan ();
+		var plan = new RemovalPlan { _noteBudget = tiff.Length };
 		for (var t = 0; t < graph.Tables.Count; t++) {
 			var (at, count, roles) = graph.Tables[t];
 			var seen = (roles & IfdGraph.SeenRoles) != 0;
-			plan.Protected.Add (TiffReader.TableRange (at, count));
+			var table = TiffReader.TableRange (at, count);
+			plan._tables.Add (table);
+			plan.Protected.Add (table);
 			plan.AddDataRanges (tiff, at, count, seen);
 			plan.MarkEntries (tiff, at, count, edited: (roles & IfdGraph.ReadRoles) != 0, seen, tags);
 		}
@@ -70,7 +97,9 @@ sealed class RemovalPlan
 		for (var n = 0; n < graph.Unread.Count; n++) {
 			var at = graph.Unread[n];
 			var entries = at + 2 <= tiff.Length ? tiff.U16 (at) : 0;
-			plan.Protected.Add ((at, Math.Min (at + 2 + (entries * 12L) + 4, tiff.Length)));
+			var unread = (at, Math.Min (at + 2 + (entries * 12L) + 4, tiff.Length));
+			plan._tables.Add (unread);
+			plan.Protected.Add (unread);
 		}
 
 		return plan;
@@ -92,8 +121,12 @@ sealed class RemovalPlan
 					Removed.Add (range);
 			} else if (range.End > range.Start) {
 				Protected.Add (range);
-				if (seen && range.End <= tiff.Length && tiff.Tag (entry) is not (TiffReader.ExifIfdPointer or TiffReader.GpsIfdPointer or TiffReader.InteropIfdPointer))
-					Kept.Add ((range.Start, range.End, tiff.Tag (entry)));
+				if (seen && tiff.Tag (entry) is not (TiffReader.ExifIfdPointer or TiffReader.GpsIfdPointer or TiffReader.InteropIfdPointer)) {
+					if (range.Start >= tiff.Length)
+						_pastBlock.Add (range);
+					else if (range.End <= tiff.Length)
+						Kept.Add ((range.Start, range.End, tiff.Tag (entry)));
+				}
 				if (tiff.Tag (entry) == MakerNoteTag && tiff.Type (entry) == 7)
 					RecordMakerNote (tiff, range);
 			}
@@ -137,8 +170,12 @@ sealed class RemovalPlan
 		var maker = ByteRanges.Merge (_makerOwned);
 		for (var n = 0; n < Removed.Count; n++) {
 			var range = Removed[n];
-			if (range.Start >= TiffReader.HeaderSize && range.End <= data.Length && !ByteRanges.Overlaps (merged, range))
-				ClearExcept (data, range, maker);
+			if (range.Start < TiffReader.HeaderSize || range.End > data.Length || ByteRanges.Overlaps (merged, range))
+				continue;
+			// A note this pass did not finish may name any byte outside the tables. Leave those bytes.
+			if (!_allNotesLocated && !InsideTable (range))
+				continue;
+			ClearExcept (data, range, maker);
 		}
 	}
 
@@ -147,15 +184,7 @@ sealed class RemovalPlan
 	static void ClearExcept (Span<byte> data, (long Start, long End) range, CountedList<(long Start, long End)> maker)
 	{
 		var cursor = range.Start;
-		int low = 0, high = maker.Count;
-		while (low < high) {
-			IfdSteps.Count++;
-			var mid = low + ((high - low) / 2);
-			if (maker[mid].End <= range.Start)
-				low = mid + 1;
-			else
-				high = mid;
-		}
+		var low = ByteRanges.FirstEndingAfter (maker, range.Start);
 
 		for (var n = low; n < maker.Count; n++) {
 			var keep = maker[n];
@@ -184,19 +213,43 @@ sealed class RemovalPlan
 		if (blob.Start < 0 || end <= blob.Start)
 			return;
 		_makerOwned.Add ((blob.Start, end));
-		if (TryMakerTargets (tiff, blob.Start, end, out var outside)) {
-			for (var n = 0; n < outside.Count; n++)
-				_makerOwned.Add (outside[n]);
+		var key = (blob.Start, end);
+		if (_noteScans.TryGetValue (key, out var cached)) {
+			if (cached is null)
+				_allNotesLocated = false;
+			CopyRanges (cached);
+			return;
 		}
+
+		if (_noteBudgetSpent || _noteEntriesRead >= _noteBudget || !TryMakerTargets (tiff, blob.Start, end, out var outside)) {
+			_allNotesLocated = false;
+			_noteScans[key] = null;
+			return;
+		}
+
+		_noteScans[key] = outside;
+		CopyRanges (outside);
 	}
 
-	static bool TryMakerTargets (TiffReader tiff, long blobStart, long blobEnd, out CountedList<(long Start, long End)> outside)
+	void CopyRanges (CountedList<(long Start, long End)>? ranges)
+	{
+		if (ranges is null)
+			return;
+		for (var n = 0; n < ranges.Count; n++)
+			_makerOwned.Add (ranges[n]);
+	}
+
+	bool TryMakerTargets (TiffReader tiff, long blobStart, long blobEnd, out CountedList<(long Start, long End)> outside)
 	{
 		outside = new CountedList<(long Start, long End)> ();
 		var last = blobStart + MakerNotePrefix;
 		for (var at = blobStart; at + 2 <= blobEnd && at <= last; at++) {
+			if (_noteBudgetSpent)
+				return false;
 			if (TryNoteIfd (tiff, at, blobStart, blobEnd, out outside))
 				return true;
+			if (_noteBudgetSpent)
+				return false;
 			if (at < 0 || at >= tiff.Length || !IsAsciiOrNul (tiff.Data[(int)at]))
 				break;
 		}
@@ -206,7 +259,7 @@ sealed class RemovalPlan
 
 	// A classic IFD wholly inside the block: a count, sorted tags, types 1-12 (TIFF 6.0 §2). False leaves
 	// <paramref name="outside"/> unused.
-	static bool TryNoteIfd (
+	bool TryNoteIfd (
 		TiffReader tiff,
 		long at,
 		long blobStart,
@@ -225,8 +278,15 @@ sealed class RemovalPlan
 		var fromNote = true;
 		var fromTiff = true;
 		var extra = new CountedList<(long Start, long End)> ();
+		var past = new List<(long Start, long End)> ();
 		long previous = -1;
 		for (var n = 0; n < count; n++) {
+			if (_noteEntriesRead >= _noteBudget) {
+				_noteBudgetSpent = true;
+				return false;
+			}
+
+			_noteEntriesRead++;
 			IfdSteps.Count++;
 			var entry = tiff.Entry (at, n);
 			var tag = tiff.Tag (entry);
@@ -239,16 +299,27 @@ sealed class RemovalPlan
 			if (size <= 0)
 				continue;
 			var offset = range.Start;
-			if (!Fits (blobStart, offset, size, blobEnd))
+			var inNote = Fits (blobStart, offset, size, blobEnd);
+			var inTiff = Fits (0, offset, size, tiff.Length);
+			if (!inNote)
 				fromNote = false;
-			if (!Fits (0, offset, size, tiff.Length))
-				fromTiff = false;
+			if (!inTiff && offset >= tiff.Length)
+				past.Add ((offset, offset + size));
 			else if (!WhollyInside (offset, size, blobStart, blobEnd))
 				extra.Add ((offset, offset + size));
+			if (!inTiff)
+				fromTiff = false;
+			// A count taken from a version byte can look like an IFD. Past the first byte, a value that fits
+			// neither the note nor the TIFF is not that IFD.
+			if (at > blobStart && !inNote && !inTiff)
+				return false;
 		}
 
 		if (!fromNote && fromTiff)
 			outside = extra;
+		// Note-relative offsets stay inside the note. Anything else that does not fit is a file offset past the block.
+		if (!fromNote)
+			_pastBlock.AddRange (past);
 		return true;
 	}
 
@@ -258,6 +329,17 @@ sealed class RemovalPlan
 			return false;
 		var start = origin + offset;
 		return start <= limit && size <= limit - start;
+	}
+
+	bool InsideTable ((long Start, long End) range)
+	{
+		for (var n = 0; n < _tables.Count; n++) {
+			var table = _tables[n];
+			if (range.Start >= table.Start && range.End <= table.End)
+				return true;
+		}
+
+		return false;
 	}
 
 	static bool WhollyInside (long start, long size, long low, long high) =>
@@ -303,9 +385,14 @@ sealed class RemovalPlan
 				continue;
 			var shared = Math.Min (offsets.Length, lengths.Length);
 			for (var n = 0; n < shared; n++) {
-				Protected.Add ((offsets[n], offsets[n] + lengths[n]));
-				if (seen && offsets[n] + lengths[n] <= tiff.Length)
-					Kept.Add ((offsets[n], offsets[n] + lengths[n], offsetsTag));
+				var end = offsets[n] + lengths[n];
+				if (end < offsets[n])
+					continue;
+				Protected.Add ((offsets[n], end));
+				if (offsets[n] >= tiff.Length)
+					_pastBlock.Add ((offsets[n], end));
+				else if (seen && end <= tiff.Length)
+					Kept.Add ((offsets[n], end, offsetsTag));
 			}
 		}
 	}

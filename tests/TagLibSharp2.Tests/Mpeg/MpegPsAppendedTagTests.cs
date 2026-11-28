@@ -426,14 +426,5 @@ public sealed class MpegPsAppendedTagTests
 		return Concat (header, extended, body, footer);
 	}
 
-	internal static int Count (byte[] data, ReadOnlySpan<byte> needle)
-	{
-		var count = 0;
-		for (var i = 0; i + needle.Length <= data.Length; i++) {
-			if (data.AsSpan (i, needle.Length).SequenceEqual (needle))
-				count++;
-		}
-
-		return count;
-	}
+	internal static int Count (byte[] data, ReadOnlySpan<byte> needle) => TagLibSharp2.Tests.Kit.Bytes.Count (data, needle);
 }

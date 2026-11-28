@@ -207,7 +207,7 @@ static class JpegRewriter
 		error = null;
 		if (!IsSoi (data))
 			return Fail (out error);
-		var image = new ImageBuilder (tag, options, origin);
+		var image = new ImageBuilder (tag, options, origin, data.Length);
 		image.Keep (0, 2);
 		var i = 2;
 		while (i < data.Length) {
@@ -221,12 +221,12 @@ static class JpegRewriter
 			}
 
 			if (marker == 0xD9)
-				return image.Finish (data, start);
+				return image.Finish (data, start, tag, out error);
 			if (!TryLength (data, i, out var length))
 				return Fail (out error);
 
 			if (marker == 0xDA)
-				return image.Finish (data, start);
+				return image.Finish (data, start, tag, out error);
 
 			// Fill bytes (0xFF) before the marker (T.81 §B.1.1.2) are part of what is kept or rewritten.
 			var segment = new Segment (marker, start, data.Slice (start, i - 2 - start), data.Slice (start, i + length - start), data.Slice (i + 2, length - 2));
@@ -235,7 +235,7 @@ static class JpegRewriter
 				return null;
 		}
 
-		return image.Finish (data, data.Length);
+		return image.Finish (data, data.Length, tag, out error);
 	}
 
 	static JpegImage? Fail (out string? error)
@@ -279,9 +279,11 @@ static class JpegRewriter
 	}
 
 	// The output of one image as its segments are kept, dropped or rewritten.
-	sealed class ImageBuilder (ImageTag tag, ImageOptions options, int origin)
+	sealed class ImageBuilder (ImageTag tag, ImageOptions options, int origin, int imageLength)
 	{
 		readonly ImagePlan _plan = new ();
+		readonly List<long> _anchors = [];
+		bool _unlocatedNote;
 		int _inMpf = -1;
 		int _outMpf = -1;
 		int _mpfLength;
@@ -308,8 +310,10 @@ static class JpegRewriter
 			}
 
 			if (options.Mirrors && marker == 0xE1) {
-				if (!TryMirrorApp1 (payload, tag, out var edited, out error))
+				if (!TryMirrorApp1 (payload, tag, out var edited, out var anchors, out error))
 					return false;
+				if (payload.StartsWith ("Exif\0\0"u8))
+					NoteExif (segment, anchors);
 				if (edited is not null) {
 					AddEdited (segment, edited);
 					return true;
@@ -349,21 +353,84 @@ static class JpegRewriter
 			_plan.Add (replacement);
 		}
 
-		public JpegImage Finish (ReadOnlySpan<byte> data, int rest)
+		void NoteExif (Segment segment, ExifEditor.ExifAnchors anchors)
+		{
+			var payloadAt = origin + segment.Start + segment.Whole.Length - segment.Payload.Length;
+			var tiffAt = payloadAt + 6;
+			var segmentEnd = payloadAt + segment.Payload.Length;
+			var fileEnd = origin + imageLength;
+			if (!anchors.NotesLocated)
+				_unlocatedNote = true;
+			foreach (var range in anchors.PastBlock) {
+				var start = tiffAt + range.Start;
+				var end = tiffAt + range.End;
+				if (end <= segmentEnd || start >= fileEnd)
+					continue;
+				var at = start < segmentEnd ? segmentEnd : start;
+				if (at < fileEnd)
+					_anchors.Add (at);
+			}
+		}
+
+		// The first byte after EOI, when the scan or the marker list copied from rest still holds one.
+		static int EndOfImage (ReadOnlySpan<byte> data, int from)
+		{
+			for (var i = from; i + 1 < data.Length; i++) {
+				if (data[i] != 0xFF)
+					continue;
+				if (data[i + 1] == 0x00) {
+					i++;
+					continue;
+				}
+
+				if (data[i + 1] == 0xD9)
+					return i;
+			}
+
+			return -1;
+		}
+
+		public JpegImage? Finish (ReadOnlySpan<byte> data, int rest, ImageTag tag, out string? error)
 		{
 			if (options.Comment is { Length: > 0 })
 				_plan.Add (options.Comment);
 			var outRest = Written;
 			_plan.Copy (origin + (long)rest, data.Length - rest);
-			return new JpegImage {
-				Plan = _plan,
-				InMpf = _inMpf,
-				OutMpf = _outMpf,
-				OutMpfEnd = _outMpf < 0 ? -1 : _outMpf + _mpfLength,
-				InRest = rest,
-				OutRest = outRest,
-				HeadroomInMakerNote = _headroomInMakerNote
-			};
+			if (_unlocatedNote && EndOfImage (data, rest) is var eoi && eoi >= 0 && eoi + 2 < data.Length)
+				_anchors.Add (origin + eoi + 2);
+			error = Shifted (tag);
+			if (error is not null)
+				return null;
+			return Built (outRest, rest);
+		}
+
+		JpegImage Built (int outRest, int rest) => new () {
+			Plan = _plan,
+			InMpf = _inMpf,
+			OutMpf = _outMpf,
+			OutMpfEnd = _outMpf < 0 ? -1 : _outMpf + _mpfLength,
+			InRest = rest,
+			OutRest = outRest,
+			HeadroomInMakerNote = _headroomInMakerNote
+		};
+
+		// A source byte that lands elsewhere was moved by a shorter or longer segment before it.
+		string? Shifted (ImageTag tag)
+		{
+			// The matrix sets SkipCheck to see the edit a plainness bypass would write. The trailer rule is a
+			// separate refusal and stays out of that look.
+			if (ExifEditor.SkipCheck || _anchors.Count == 0)
+				return null;
+			var anchor = long.MaxValue;
+			foreach (var at in _anchors) {
+				if (at < anchor)
+					anchor = at;
+			}
+
+			if (_plan.OutputAt (anchor) == anchor)
+				return null;
+			var what = MirrorFields.ChangedNames (tag);
+			return what.Length == 0 ? null : ExifEditor.PastDataReason ("JPEG Exif", what);
 		}
 	}
 
@@ -378,12 +445,17 @@ static class JpegRewriter
 	// A Comment edit also changes the copies of the comment in APP1: Exif UserComment and XPComment, and XMP
 	// exif:UserComment. Extended XMP is spread over several segments and keyed by a digest of its content; when
 	// it may hold the comment, the save is refused rather than leave a stale copy.
-	static bool TryMirrorApp1 (ReadOnlySpan<byte> payload, ImageTag tag, out byte[]? edited, out string? error)
+	static bool TryMirrorApp1 (ReadOnlySpan<byte> payload, ImageTag tag, out byte[]? edited, out ExifEditor.ExifAnchors anchors, out string? error)
 	{
 		edited = null;
+		anchors = new (true, []);
 		error = null;
-		if (payload.StartsWith ("Exif\0\0"u8))
-			return new ExifCarrier ("JPEG Exif", exif => SegmentBytes (0xE1, exif)).TryEdit (payload, tag, out edited, out error);
+		if (payload.StartsWith ("Exif\0\0"u8)) {
+			var carrier = new ExifCarrier ("JPEG Exif", exif => SegmentBytes (0xE1, exif));
+			var editedOk = carrier.TryEdit (payload, tag, out edited, out error);
+			anchors = carrier.Anchors;
+			return editedOk;
+		}
 		if (TryXmpSignature (payload, out var signature))
 			return TryMirrorXmp (payload, signature, tag, out edited, out error);
 		if (payload.StartsWith ("http://ns.adobe.com/xmp/extension/\0"u8) && payload.IndexOf ("UserComment"u8) >= 0) {

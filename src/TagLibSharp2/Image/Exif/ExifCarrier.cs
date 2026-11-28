@@ -14,6 +14,9 @@ sealed class ExifCarrier (string name, Func<byte[], byte[]> wrap)
 {
 	public string Name { get; } = name;
 
+	/// <summary>Set by <see cref="TryEdit"/> from the walk that edits the block. Empty until then.</summary>
+	public ExifEditor.ExifAnchors Anchors { get; private set; } = new (true, []);
+
 	/// <summary>Removes the changed fields' copies from the TIFF in <paramref name="block"/>.</summary>
 	/// <param name="block">The Exif bytes, with or without the signature.</param>
 	/// <param name="tag">The tag whose changed fields are removed.</param>
@@ -24,8 +27,9 @@ sealed class ExifCarrier (string name, Func<byte[], byte[]> wrap)
 		rewritten = null;
 		var exif = block.ToArray ();
 		var start = block.StartsWith ("Exif\0\0"u8) ? 6 : 0;
-		if (!ExifEditor.TryRemove (exif, start, tag, Name, out var changed, out error))
+		if (!ExifEditor.TryRemove (exif, start, tag, Name, out var changed, out error, out var anchors))
 			return false;
+		Anchors = anchors;
 		if (changed)
 			rewritten = wrap (exif);
 		return true;

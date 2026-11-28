@@ -15,6 +15,22 @@ sealed class ImagePlan
 	/// <summary>Gets the number of bytes the plan produces.</summary>
 	public long Length { get; private set; }
 
+	/// <summary>
+	/// Where <paramref name="source"/> lands in the output, or -1 when the plan does not copy that byte.
+	/// Equal to <paramref name="source"/> when every byte before it kept its length.
+	/// </summary>
+	public long OutputAt (long source)
+	{
+		long at = 0;
+		foreach (var piece in _pieces) {
+			if (piece.IsRange && source >= piece.Offset && source < piece.Offset + piece.Length)
+				return at + (source - piece.Offset);
+			at += piece.Length;
+		}
+
+		return -1;
+	}
+
 	/// <summary>Gets the exclusive end of the furthest original-file range.</summary>
 	public long SourceEnd {
 		get {

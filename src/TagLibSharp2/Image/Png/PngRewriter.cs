@@ -136,6 +136,7 @@ static class PngRewriter
 	{
 		error = null;
 		var plan = new ImagePlan ();
+		var outside = new Outside { FileLength = data.Length };
 		var mirrors = !tag.DropUnmapped && MirrorFields.AnyChanged (tag);
 		// One inflation budget for every compressed copy in the file, as when it is read.
 		var budget = PngText.MaxInflatedText;
@@ -154,7 +155,7 @@ static class PngRewriter
 				continue;
 			byte[]? edited = null;
 			var whole = data.Slice (chunk.Start, chunk.Length);
-			if (mirrors && !TryMirrorChunk (whole, tag, ref budget, out edited, out error))
+			if (mirrors && !TryMirrorChunk (whole, tag, ref budget, chunk.Start, outside, out edited, out error))
 				return null;
 			if (edited is not null) {
 				plan.Add (edited);
@@ -171,7 +172,40 @@ static class PngRewriter
 		var tail = chunks[^1].Start + chunks[^1].Length;
 		plan.Copy (tail, data.Length - tail);
 		DropStaleIdot (plan, data, layout, outIdot, outIdat, copiedIdot);
+		if (outside.Unlocated && tail < data.Length)
+			outside.Anchors.Add (tail);
+		if (Moved (plan, outside.Anchors)) {
+			var what = MirrorFields.ChangedNames (tag);
+			error = what.Length == 0 ? SpliceError : ExifEditor.PastDataReason (outside.Carrier, what);
+			return null;
+		}
+
 		return plan;
+	}
+
+	// A located entry's file position past its chunk, or the byte after a chunk whose note was not located.
+	sealed class Outside
+	{
+		public List<long> Anchors { get; } = [];
+
+		public bool Unlocated { get; set; }
+
+		public string Carrier { get; set; } = "eXIf";
+
+		public int FileLength { get; set; }
+	}
+
+	static bool Moved (ImagePlan plan, List<long> anchors)
+	{
+		if (ExifEditor.SkipCheck || anchors.Count == 0)
+			return false;
+		var anchor = long.MaxValue;
+		foreach (var at in anchors) {
+			if (at < anchor)
+				anchor = at;
+		}
+
+		return plan.OutputAt (anchor) != anchor;
 	}
 
 	static byte[] ChangedFields (ImageTag tag)
@@ -233,7 +267,7 @@ static class PngRewriter
 
 	// A changed field is also changed in the XMP packet and the Exif profile that copy it, so that no reader shows
 	// the old value from there. A chunk with a bad CRC is not read by PNG decoders and is copied as it is.
-	static bool TryMirrorChunk (ReadOnlySpan<byte> whole, ImageTag tag, ref int budget, out byte[]? edited, out string? error)
+	static bool TryMirrorChunk (ReadOnlySpan<byte> whole, ImageTag tag, ref int budget, int chunkStart, Outside outside, out byte[]? edited, out string? error)
 	{
 		edited = null;
 		error = null;
@@ -241,8 +275,12 @@ static class PngRewriter
 		if (!PngChunks.CrcMatches (whole))
 			return true;
 		var payload = whole.Slice (8, whole.Length - 12);
-		if (type.SequenceEqual ("eXIf"u8))
-			return new ExifCarrier ("eXIf", exif => PngChunks.Chunk ("eXIf"u8, exif)).TryEdit (payload, tag, out edited, out error);
+		if (type.SequenceEqual ("eXIf"u8)) {
+			var carrier = new ExifCarrier ("eXIf", exif => PngChunks.Chunk ("eXIf"u8, exif));
+			var ok = carrier.TryEdit (payload, tag, out edited, out error);
+			Note (chunkStart, whole.Length, payload, carrier.Anchors, outside, contiguous: true, "eXIf");
+			return ok;
+		}
 		if (!PngChunks.IsTextChunk (type) || !PngText.TryKeyword (payload, out var keyword, out var rest))
 			return true;
 		if (keyword is not (XmpKeyword or RawXmpKeyword or RawExifKeyword or RawApp1Keyword))
@@ -258,7 +296,7 @@ static class PngRewriter
 
 		var text = new TextChunk (type.ToArray (), keyword, header);
 		if (keyword != XmpKeyword)
-			return TryMirrorRawProfile (text, body, tag, out edited, out error);
+			return TryMirrorRawProfile (text, body, tag, chunkStart, whole.Length, outside, out edited, out error);
 		if (!TryMirrorXmp (Encoding.UTF8.GetString (body), tag, out var packet, out error))
 			return false;
 		edited = packet is null ? null : text.Build (Encoding.UTF8.GetBytes (packet));
@@ -284,7 +322,7 @@ static class PngRewriter
 		return true;
 	}
 
-	static bool TryMirrorRawProfile (TextChunk text, byte[] body, ImageTag tag, out byte[]? edited, out string? error)
+	static bool TryMirrorRawProfile (TextChunk text, byte[] body, ImageTag tag, int chunkStart, int chunkLength, Outside outside, out byte[]? edited, out string? error)
 	{
 		edited = null;
 		error = null;
@@ -294,11 +332,43 @@ static class PngRewriter
 			return true;
 
 		byte[] Encode (byte[] bytes) => text.Build (Polyfills.Latin1.GetBytes (RawProfile.Encode (name, bytes)));
-		if (text.Keyword != RawXmpKeyword)
-			return new ExifCarrier (text.Keyword, Encode).TryEdit (profile, tag, out edited, out error);
+		if (text.Keyword != RawXmpKeyword) {
+			var carrier = new ExifCarrier (text.Keyword, Encode);
+			var ok = carrier.TryEdit (profile, tag, out edited, out error);
+			Note (chunkStart, chunkLength, profile, carrier.Anchors, outside, contiguous: false, text.Keyword);
+			return ok;
+		}
 		if (!TryMirrorXmp (Encoding.UTF8.GetString (profile), tag, out var packet, out error))
 			return false;
 		edited = packet is null ? null : Encode (Encoding.UTF8.GetBytes (packet));
 		return true;
+	}
+
+	// Contiguous Exif (an eXIf chunk) names a file byte. A hex profile does not, so the byte after its chunk stands
+	// for every offset past the decoded TIFF.
+	static void Note (int chunkStart, int chunkLength, ReadOnlySpan<byte> payload, ExifEditor.ExifAnchors anchors, Outside outside, bool contiguous, string carrier)
+	{
+		if (!anchors.NotesLocated)
+			outside.Unlocated = true;
+		if (anchors.PastBlock.Length == 0)
+			return;
+		// A hex-encoded profile's offsets address the decoded TIFF, not bytes in the file. Only a contiguous
+		// eXIf chunk names a file position past its own chunk.
+		if (!contiguous)
+			return;
+		outside.Carrier = carrier;
+		var chunkEnd = chunkStart + chunkLength;
+		var fileLength = outside.FileLength;
+		var payloadAt = chunkStart + 8;
+		var tiffAt = payload.StartsWith ("Exif\0\0"u8) ? payloadAt + 6 : payloadAt;
+		foreach (var range in anchors.PastBlock) {
+			var start = tiffAt + range.Start;
+			var end = tiffAt + range.End;
+			if (end <= chunkEnd || start >= fileLength)
+				continue;
+			var at = start < chunkEnd ? chunkEnd : start;
+			if (at < fileLength)
+				outside.Anchors.Add (at);
+		}
 	}
 }

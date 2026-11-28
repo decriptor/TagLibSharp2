@@ -508,6 +508,7 @@ public class ExifEditRefusalTests
 		var save = file.SaveToFile ("/a.png", new MockFileSystem ());
 
 		Assert.IsFalse (save.IsSuccess);
-		StringAssert.Contains (save.Error, "has IFD structure that removing its copy of Comment would change");
+		StringAssert.Contains (save.Error, ExifEditor.StructureWouldChange);
+		Assert.AreEqual (save.Error.IndexOf ("Comment", StringComparison.Ordinal), save.Error.LastIndexOf ("Comment", StringComparison.Ordinal));
 	}
 }

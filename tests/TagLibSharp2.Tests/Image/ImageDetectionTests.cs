@@ -90,13 +90,14 @@ public class ImageDetectionTests
 	[DynamicData (nameof (MarkupThatIsNotSvg))]
 	public void DetectFormat_OfMarkup_DoesNotDecodeIt (string name, byte[] data)
 	{
-		// DetectFormat walks every audio signature before markup. That walk allocated 6880 bytes for the HTML
-		// row on ubuntu-latest, and 8136 bytes for the XML row in a local run. Both are far under a copy of the
-		// mebibyte body, and under the 64 KiB scan window. The shared Noise ceiling stays 4096 for the image sniff.
-		const int detectCeiling = 16 * 1024;
 		_ = MediaFile.DetectFormat (data);
-		Bounds.AssertAllocatesAtMost (detectCeiling, () => Assert.AreNotEqual (MediaFormat.Svg, MediaFile.DetectFormat (data)), name);
-		Bounds.AssertAllocatesAtMost (Noise, () => Assert.IsFalse (StillImageFile.IsValidFormat (data)), name);
+		var format = MediaFile.DetectFormat (data);
+		Bounds.AssertAllocatesAtMost (Noise, () => format = MediaFile.DetectFormat (data), name);
+		Assert.AreNotEqual (MediaFormat.Svg, format, name);
+		_ = StillImageFile.IsValidFormat (data);
+		var image = StillImageFile.IsValidFormat (data);
+		Bounds.AssertAllocatesAtMost (Noise, () => image = StillImageFile.IsValidFormat (data), name);
+		Assert.IsFalse (image, name);
 	}
 
 	[TestMethod]
